@@ -1,0 +1,437 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #05060c;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  color: #dfe7ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+canvas.game {
+  display: block;
+  position: fixed;
+  inset: 0;
+}
+
+/* ---------- HUD ---------- */
+#hud {
+  position: fixed;
+  left: 18px;
+  bottom: 16px;
+  color: #dfe7ff;
+  z-index: 5;
+  pointer-events: none;
+  text-shadow: 0 1px 8px rgba(0, 20, 60, 0.8);
+  letter-spacing: 0.02em;
+}
+#hud .spd {
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+#hud .spd small {
+  font-size: 14px;
+  font-weight: 400;
+  opacity: 0.7;
+  margin-left: 4px;
+}
+#hud .gear {
+  font-size: 15px;
+  opacity: 0.85;
+  margin-top: 3px;
+}
+#topbar {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  color: #cfe0ff;
+  z-index: 5;
+  pointer-events: none;
+  font-size: 14px;
+  opacity: 0.9;
+  text-shadow: 0 1px 6px rgba(0, 10, 40, 0.9);
+}
+.ind {
+  opacity: 0.14;
+  font-size: 19px;
+  color: #57ff9a;
+  transition: opacity 0.05s;
+}
+.ind.on {
+  opacity: 1;
+  text-shadow: 0 0 12px #37ff8a;
+}
+#toast {
+  position: fixed;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #eaf2ff;
+  background: rgba(8, 12, 28, 0.66);
+  border: 1px solid rgba(120, 160, 255, 0.25);
+  padding: 7px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  z-index: 6;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+#exitHint {
+  position: fixed;
+  top: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #eaffe9;
+  background: rgba(6, 42, 22, 0.78);
+  border: 1px solid rgba(110, 240, 170, 0.45);
+  padding: 8px 20px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  z-index: 6;
+  opacity: 0;
+  transition: opacity 0.25s;
+  pointer-events: none;
+  text-shadow: 0 0 10px rgba(90, 255, 160, 0.6);
+}
+#mmap {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 25;
+  border-radius: 12px;
+  border: 1px solid rgba(150, 170, 210, 0.3);
+  background: rgba(8, 10, 18, 0.78);
+}
+
+/* ---------- Menu ---------- */
+.menuRoot {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(
+    120% 90% at 50% 110%,
+    rgba(19, 26, 61, 0.92) 0%,
+    rgba(7, 10, 24, 0.94) 55%,
+    rgba(4, 5, 12, 0.97) 100%
+  );
+  backdrop-filter: blur(3px);
+}
+.menuRoot.paused {
+  background: rgba(4, 6, 14, 0.72);
+}
+.menuTitle {
+  color: #f2f6ff;
+  font-size: min(9vw, 56px);
+  margin: 0 0 4px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 34px rgba(90, 140, 255, 0.75), 0 0 8px rgba(255, 255, 255, 0.4);
+}
+.menuJp {
+  color: #ff5f8f;
+  font-size: min(5vw, 24px);
+  letter-spacing: 0.5em;
+  text-shadow: 0 0 22px rgba(255, 80, 140, 0.9);
+  margin-bottom: 22px;
+}
+.menuSub {
+  color: #93a3cc;
+  font-size: 14px;
+  margin: 3px 0;
+}
+.menuBtns {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 26px;
+  min-width: 260px;
+}
+.menuBtn {
+  color: #eaf2ff;
+  background: rgba(20, 28, 58, 0.55);
+  border: 1px solid rgba(140, 180, 255, 0.5);
+  padding: 12px 34px;
+  border-radius: 26px;
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+.menuBtn:hover {
+  background: rgba(48, 70, 130, 0.65);
+  box-shadow: 0 0 26px rgba(80, 130, 255, 0.35);
+}
+.menuBtn.primary {
+  box-shadow: 0 0 26px rgba(80, 130, 255, 0.35) inset, 0 0 22px rgba(80, 130, 255, 0.25);
+  animation: pulse 2.2s infinite;
+}
+@keyframes pulse {
+  50% {
+    box-shadow: 0 0 34px rgba(80, 130, 255, 0.6) inset, 0 0 30px rgba(80, 130, 255, 0.45);
+  }
+}
+.menuBack {
+  margin-top: 22px;
+  color: #7d8aa8;
+  background: none;
+  border: none;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  font-family: inherit;
+}
+.menuBack:hover {
+  color: #cfd9f2;
+}
+
+/* ---------- Panels (settings/controls/garage) ---------- */
+.panel {
+  width: min(560px, 94vw);
+  max-height: 84vh;
+  overflow: auto;
+  background: rgba(13, 16, 26, 0.96);
+  border: 1px solid rgba(150, 170, 210, 0.22);
+  border-radius: 14px;
+  padding: 18px 22px;
+  font-size: 13px;
+  color: #d5dbea;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+}
+.panel h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  letter-spacing: 0.14em;
+  color: #eef2fb;
+}
+.panel .jp2 {
+  color: #7d8aa8;
+  font-size: 11px;
+  margin-bottom: 12px;
+}
+.panel .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 9px 0;
+  gap: 12px;
+}
+.panel .row label {
+  flex: 1;
+}
+.panel input[type="range"] {
+  flex: 1.2;
+  accent-color: #5f8dff;
+}
+.panel input[type="checkbox"] {
+  accent-color: #5f8dff;
+  transform: scale(1.15);
+}
+.panel select,
+.panel button {
+  background: #1a1f30;
+  color: #dfe5f2;
+  border: 1px solid #33405e;
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.panel .val {
+  width: 48px;
+  text-align: right;
+  color: #9fb0d4;
+  font-variant-numeric: tabular-nums;
+}
+.panel hr {
+  border: 0;
+  border-top: 1px solid rgba(120, 140, 180, 0.16);
+  margin: 12px 0;
+}
+.panel .btnrow {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+/* controls table */
+.ctrlGrid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 7px 16px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.ctrlGrid b {
+  color: #8fd0ff;
+  font-weight: 600;
+}
+
+/* ---------- Garage ---------- */
+.garageCars {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+.carCard {
+  border: 1px solid rgba(120, 145, 200, 0.25);
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  background: rgba(18, 22, 38, 0.6);
+  transition: all 0.15s;
+}
+.carCard:hover {
+  border-color: rgba(140, 180, 255, 0.6);
+}
+.carCard.sel {
+  border-color: #6f9dff;
+  box-shadow: 0 0 18px rgba(90, 140, 255, 0.35);
+  background: rgba(28, 38, 70, 0.7);
+}
+.carCard h3 {
+  margin: 0 0 2px;
+  font-size: 15px;
+  color: #eef2fb;
+}
+.carCard .carJp {
+  color: #7d8aa8;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.statRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #9fb0d4;
+  margin: 3px 0;
+}
+.statRow span {
+  width: 52px;
+}
+.statBar {
+  flex: 1;
+  height: 5px;
+  background: rgba(60, 75, 110, 0.4);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.statBar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #4f7dff, #6fd2ff);
+  border-radius: 3px;
+}
+.paintRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.paintDot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+}
+.paintDot.sel {
+  border-color: #fff;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+}
+
+/* ---------- Touch controls ---------- */
+.tc {
+  position: fixed;
+  bottom: 18px;
+  z-index: 8;
+  width: 74px;
+  height: 74px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(150, 180, 255, 0.4);
+  background: rgba(15, 20, 45, 0.4);
+  color: #cdd9ff;
+  font-size: 24px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+body.touch .tc {
+  display: flex;
+}
+#tcL { left: 16px; }
+#tcR { left: 104px; }
+#tcG { right: 16px; bottom: 104px; }
+#tcB { right: 16px; }
+#tcC { right: 104px; width: 56px; height: 56px; font-size: 16px; bottom: 26px; }
+body.touch #mmap { bottom: 186px; right: 10px; }
+
+#swheel {
+  position: fixed;
+  left: 14px;
+  bottom: 16px;
+  width: 132px;
+  height: 132px;
+  z-index: 26;
+  display: flex;
+  border-radius: 50%;
+  border: 4px solid rgba(180, 195, 225, 0.5);
+  background: rgba(12, 15, 25, 0.5);
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  user-select: none;
+}
+#swheelInner {
+  font-size: 26px;
+  color: #9fb2d8;
+  text-align: center;
+  line-height: 0.8;
+  pointer-events: none;
+}
+
+#gearBtn {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 30;
+  font-size: 20px;
+  color: #cfd6e6;
+  background: rgba(10, 12, 20, 0.55);
+  border: 1px solid rgba(160, 175, 205, 0.25);
+  border-radius: 8px;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  backdrop-filter: blur(6px);
+}
