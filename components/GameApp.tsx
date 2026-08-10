@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Game } from "@/game/engine";
 import { CARS, PAINTS, getCar } from "@/game/carspecs";
+import { carPreviewURL } from "@/game/carpreview";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults,
   type Profile, type GameSettings,
@@ -290,6 +291,25 @@ function SteerWheel({ game }: { game: Game }) {
 
 /* ================= garage ================= */
 
+function CarPreview({ carId, paintHex }: { carId: string; paintHex: number }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const raf = requestAnimationFrame(() => {
+      if (!cancelled) setUrl(carPreviewURL(carId, paintHex));
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [carId, paintHex]);
+  return (
+    <div className="carImg">
+      {url && <img src={url} alt="" draggable={false} />}
+    </div>
+  );
+}
+
 function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
   const [carId, setCarId] = useState(game.carId);
   const [paintIx, setPaintIx] = useState(game.paintIx);
@@ -310,6 +330,7 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
               className={"carCard" + (carId === c.id ? " sel" : "")}
               onClick={() => sel(c.id, paintIx)}
             >
+              <CarPreview carId={c.id} paintHex={PAINTS[paintIx % PAINTS.length].hex} />
               <h3>{c.name} <span style={{ opacity: 0.6 }}>{c.jp}</span></h3>
               <div className="carJp">{c.blurb}</div>
               {(

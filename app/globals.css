@@ -314,6 +314,19 @@ canvas.game {
   box-shadow: 0 0 18px rgba(90, 140, 255, 0.35);
   background: rgba(28, 38, 70, 0.7);
 }
+.carCard .carImg {
+  aspect-ratio: 480 / 260;
+  margin: -4px -6px 6px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 70%, rgba(60, 80, 140, 0.25), rgba(10, 12, 20, 0) 70%);
+}
+.carCard .carImg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
 .carCard h3 {
   margin: 0 0 2px;
   font-size: 15px;
