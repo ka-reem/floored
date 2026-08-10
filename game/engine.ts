@@ -19,6 +19,18 @@ import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap } from "./minimap";
 
+const WX_SVG = (body: string) =>
+  `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">${body}</svg>`;
+const WX_ICONS: Record<string, string> = {
+  moon: WX_SVG(`<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>`),
+  sun: WX_SVG(
+    `<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>`
+  ),
+  rain: WX_SVG(
+    `<path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.2"/><path d="M8 19v2M12 18v3M16 19v2"/>`
+  ),
+};
+
 export interface UiBridge {
   toast(msg: string): void;
   exitHint(text: string | null): void;
@@ -759,7 +771,13 @@ export class Game {
         ec.textContent = (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
       }
       const ew = document.getElementById("wx");
-      if (ew) ew.textContent = this.rain ? "☔" : this.dayFactor() < 0.35 ? "🌙" : "☀";
+      if (ew) {
+        const wx = this.rain ? "rain" : this.dayFactor() < 0.35 ? "moon" : "sun";
+        if (ew.dataset.wx !== wx) {
+          ew.dataset.wx = wx;
+          ew.innerHTML = WX_ICONS[wx];
+        }
+      }
       /* exit navigation hint */
       if (car.y > 4 && Math.abs(car.u) > 1) {
         const ex = nearestExitAhead(this.world, car.z, Math.cos(car.h));
