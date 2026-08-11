@@ -13,6 +13,7 @@ import { HX, DECKY, LANE_OFF } from "./world/const";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
 import { buildPlayerCar, type PlayerRig } from "./player";
+import { COCKPIT_REF } from "./cockpit";
 import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
 import { RainFX, SmokeFX } from "./fx";
@@ -86,6 +87,7 @@ export class Game {
   private sun: THREE.DirectionalLight;
   private amb: THREE.AmbientLight;
   private chasePos = new THREE.Vector3();
+  private lookPos = new THREE.Vector3();
   private head = { x: 0, y: 0, vx: 0, vy: 0 };
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
@@ -192,6 +194,7 @@ export class Game {
     this.car = freshCarState(HX + LANE_OFF[1], DECKY, -430, 0, 23);
     this.buildRig();
     this.chasePos.set(this.car.x, DECKY + 2.4, this.car.z - 8);
+    this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
 
     this.timeSpeed = this.settings.autoTime ? 150 : 0;
     this.bindInput();
@@ -213,6 +216,7 @@ export class Game {
         this.car.wvx = 0;
         this.car.wvz = 0;
         this.chasePos.set(this.car.x - Math.sin(this.car.h) * 5, this.car.y + 1.85, this.car.z - Math.cos(this.car.h) * 5);
+        this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
       },
       setCam: (i: number) => (this.camMode = i % 3),
       setInput: (o: Partial<DriverInput> | null) => (this.debug.override = o),
@@ -524,6 +528,7 @@ export class Game {
     car.wvz = 0;
     car.slope = 0;
     this.chasePos.set(car.x - Math.sin(car.h) * 5, car.y + 1.85, car.z - Math.cos(car.h) * 5);
+    this.lookPos.set(car.x, car.y + 0.95, car.z);
   }
 
   /* ---------------- per-frame systems ---------------- */
@@ -673,6 +678,14 @@ export class Game {
       this.tmpV.set(
         car.x - fx * dist * back, car.y + 1.85, car.z - fz * dist * back);
       this.chasePos.lerp(this.tmpV, 1 - Math.exp(-5.5 * dt));
+      // smoothing lags a moving target by ~speed/5.5 m; cap the trail so the
+      // camera can't drift arbitrarily far behind at high speed
+      const dxC = this.chasePos.x - car.x, dzC = this.chasePos.z - car.z;
+      const hd = Math.hypot(dxC, dzC), maxD = dist + 1.2;
+      if (hd > maxD) {
+        this.chasePos.x = car.x + (dxC / hd) * maxD;
+        this.chasePos.z = car.z + (dzC / hd) * maxD;
+      }
       this.chasePos.y = Math.max(
         this.chasePos.y,
         this.terrain.heightAt(this.chasePos.x, this.chasePos.z, car.y) + 1.2
@@ -683,7 +696,9 @@ export class Game {
         car.y + 0.95,
         car.z + fz * 2.8 * back - fx * car.delta * 1.6
       );
-      this.camera.lookAt(this.tmpV2);
+      // aim is smoothed too — the delta term above snaps with keyboard taps
+      this.lookPos.lerp(this.tmpV2, 1 - Math.exp(-9 * dt));
+      this.camera.lookAt(this.lookPos);
     } else {
       const back = this.lookBack ? Math.PI : 0;
       this.head.vx += (-car.ayS * 0.006 - this.head.x * 46) * dt;
@@ -697,7 +712,7 @@ export class Game {
       const P = this.spec.shell;
       const local =
         this.camMode === 1
-          ? this.tmpV.set(0.36 + this.head.x, P.belt + 0.47 + this.head.y, 0.1)
+          ? this.tmpV.set(0.36 * (P.W / COCKPIT_REF.W) + this.head.x, P.belt + 0.47 + this.head.y, 0.1)
           : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5, P.L / 2 - 0.6);
       this.camera.position.copy(this.rig.carGroup.localToWorld(this.tmpV2.copy(local)));
       this.camera.rotation.y = car.h + Math.PI + back;
