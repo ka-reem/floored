@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { carShellGeos, makeWheel, roundedBoxGeo } from "./carshape";
 import { paintTexF, carbonTexF } from "./textures";
-import { buildCockpit, type Cockpit } from "./cockpit";
+import { buildCockpit, COCKPIT_REF, type Cockpit } from "./cockpit";
 import type { CarSpec } from "./carspecs";
 
 /* Player car assembly: smoothed shell + parametric detailing (bumpers, trim,
@@ -99,8 +99,10 @@ export function buildPlayerCar(
   ]) {
     const li = new THREE.Mesh(linerG, linerM);
     li.position.set(x, P.ride, z);
+    // rotation.z alone puts the half-cylinder axis on the axle with the dome
+    // upward; adding rotation.y here flips the radius sideways so the shell
+    // bulges out through the fenders
     li.rotation.z = Math.PI / 2;
-    li.rotation.y = Math.PI / 2;
     exteriorG.add(li);
   }
 
@@ -109,8 +111,8 @@ export function buildPlayerCar(
   rmesh(roundedBoxGeo(P.W - 0.05, 0.24, 0.5, 0.1), trimMat, 0, P.nose * 0.72, L2 - 0.06);
   rmesh(roundedBoxGeo(P.W - 0.06, 0.26, 0.44, 0.1), trimMat, 0, P.tail * 0.72, -L2 + 0.04);
   box(P.W * 0.68, 0.1, 0.02, chromeMat, 0, P.nose + 0.08, L2 + 0.06);
-  box(0.44, 0.14, 0.02, new THREE.MeshBasicMaterial({ color: 0xf2f4f8 }), 0, P.nose * 0.68, L2 + 0.07); // plate F
-  box(0.44, 0.14, 0.02, new THREE.MeshBasicMaterial({ color: 0xf2f4f8 }), 0, P.tail * 0.8, -L2 - 0.06); // plate R
+  box(0.44, 0.14, 0.02, new THREE.MeshBasicMaterial({ color: 0xf2f4f8 }), 0, P.nose * 0.68, L2 + 0.2); // plate F
+  box(0.44, 0.14, 0.02, new THREE.MeshBasicMaterial({ color: 0xf2f4f8 }), 0, P.tail * 0.8, -L2 - 0.2); // plate R
   box(P.W * 0.85, 0.05, 0.4, carbonM, 0, P.ride * 0.72, L2 - 0.24);
   box(P.W * 0.82, 0.09, 0.34, carbonM, 0, P.ride * 0.78, -L2 + 0.22);
   for (const s of [-1, 1]) box(0.022, 0.1, P.L * 0.78, carbonM, s * (P.W / 2 - 0.005), P.ride * 0.88, 0);
@@ -196,20 +198,21 @@ export function buildPlayerCar(
   const tailMat = new THREE.MeshStandardMaterial({ color: 0x2a0508, emissive: 0xff2233, emissiveIntensity: 1.7 });
   const sigMatL = new THREE.MeshStandardMaterial({ color: 0x2a1a06, emissive: 0xffa028, emissiveIntensity: 0 });
   const sigMatR = new THREE.MeshStandardMaterial({ color: 0x2a1a06, emissive: 0xffa028, emissiveIntensity: 0 });
+  // lamps must sit proud of the bumper trim, which reaches L2+0.19 front / -L2-0.18 rear
   const hlY = P.nose * 0.9, hlX = P.W * 0.31;
-  box(P.W * 0.25, 0.09, 0.06, headMat, -hlX, hlY, L2 + 0.015, false);
-  box(P.W * 0.25, 0.09, 0.06, headMat, hlX, hlY, L2 + 0.015, false);
-  box(P.W * 0.22, 0.02, 0.05, headMat, -hlX, hlY - 0.065, L2 + 0.02, false);
-  box(P.W * 0.22, 0.02, 0.05, headMat, hlX, hlY - 0.065, L2 + 0.02, false);
+  box(P.W * 0.25, 0.09, 0.06, headMat, -hlX, hlY, L2 + 0.17, false);
+  box(P.W * 0.25, 0.09, 0.06, headMat, hlX, hlY, L2 + 0.17, false);
+  box(P.W * 0.22, 0.02, 0.05, headMat, -hlX, hlY - 0.065, L2 + 0.175, false);
+  box(P.W * 0.22, 0.02, 0.05, headMat, hlX, hlY - 0.065, L2 + 0.175, false);
   const tlY = P.tail * 0.88;
-  box(P.W * 0.23, 0.1, 0.06, tailMat, -hlX, tlY, -L2 - 0.005, false);
-  box(P.W * 0.23, 0.1, 0.06, tailMat, hlX, tlY, -L2 - 0.005, false);
+  box(P.W * 0.23, 0.1, 0.06, tailMat, -hlX, tlY, -L2 - 0.16, false);
+  box(P.W * 0.23, 0.1, 0.06, tailMat, hlX, tlY, -L2 - 0.16, false);
   const ledMat = new THREE.MeshStandardMaterial({ color: 0x220305, emissive: 0xff2030, emissiveIntensity: 1.4 });
-  box(P.W * 0.78, 0.045, 0.03, ledMat, 0, tlY + 0.06, -L2 - 0.01, false);
-  box(0.12, 0.08, 0.06, sigMatL, -(P.W / 2 - 0.08), hlY - 0.01, L2 - 0.02, false);
-  box(0.12, 0.08, 0.06, sigMatL, -(P.W / 2 - 0.06), tlY - 0.02, -L2 + 0.02, false);
-  box(0.12, 0.08, 0.06, sigMatR, P.W / 2 - 0.08, hlY - 0.01, L2 - 0.02, false);
-  box(0.12, 0.08, 0.06, sigMatR, P.W / 2 - 0.06, tlY - 0.02, -L2 + 0.02, false);
+  box(P.W * 0.78, 0.045, 0.03, ledMat, 0, tlY + 0.06, -L2 - 0.185, false);
+  box(0.12, 0.08, 0.06, sigMatL, -(P.W / 2 - 0.08), hlY - 0.01, L2 + 0.16, false);
+  box(0.12, 0.08, 0.06, sigMatL, -(P.W / 2 - 0.06), tlY - 0.02, -L2 - 0.15, false);
+  box(0.12, 0.08, 0.06, sigMatR, P.W / 2 - 0.08, hlY - 0.01, L2 + 0.16, false);
+  box(0.12, 0.08, 0.06, sigMatR, P.W / 2 - 0.06, tlY - 0.02, -L2 - 0.15, false);
   const mkrM = new THREE.MeshStandardMaterial({ color: 0x241204, emissive: 0xffa028, emissiveIntensity: 1.1 });
   const mkrR = new THREE.MeshStandardMaterial({ color: 0x240406, emissive: 0xff2233, emissiveIntensity: 1.0 });
   for (const s of [-1, 1]) {
@@ -223,7 +226,7 @@ export function buildPlayerCar(
   for (const s of [-1, 1]) {
     const sp = new THREE.Sprite(hlGlowMat);
     sp.scale.set(0.85, 0.85, 1);
-    sp.position.set(s * hlX, hlY, L2 + 0.1);
+    sp.position.set(s * hlX, hlY, L2 + 0.24);
     exteriorG.add(sp);
   }
   const plateGlowMat = new THREE.SpriteMaterial({
@@ -233,7 +236,7 @@ export function buildPlayerCar(
   {
     const pg = new THREE.Sprite(plateGlowMat);
     pg.scale.set(0.5, 0.28, 1);
-    pg.position.set(0, P.tail * 0.8, -L2 - 0.1);
+    pg.position.set(0, P.tail * 0.8, -L2 - 0.24);
     exteriorG.add(pg);
   }
   const spotL = new THREE.SpotLight(0xdfe9ff, 0, 90, 0.46, 0.42, 1.4);
@@ -249,6 +252,8 @@ export function buildPlayerCar(
 
   /* cockpit */
   const cockpit = buildCockpit(spec.cockpitAccent, mirrorTexture);
+  cockpit.group.position.y = P.belt - COCKPIT_REF.belt;
+  cockpit.group.scale.x = P.W / COCKPIT_REF.W;
   bodyG.add(cockpit.group);
 
   return {

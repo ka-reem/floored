@@ -18,6 +18,9 @@ export interface Cockpit {
   dropletsUpdate(dt: number, wiping: boolean, wiperRotZ: number, raining: boolean, speed: number): void;
 }
 
+/* Dimensions the fixed interior geometry was modelled against (first car's shell) */
+export const COCKPIT_REF = { belt: 0.82, W: 1.84 };
+
 export interface GaugeFlags {
   lightsOn: boolean; sigL: boolean; sigR: boolean; rain: boolean; tcOn: boolean;
   odo: number; revLimit: number;
