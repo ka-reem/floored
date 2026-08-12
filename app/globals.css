@@ -386,8 +386,8 @@ canvas.game {
   width: 74px;
   height: 74px;
   border-radius: 50%;
-  border: 1.5px solid rgba(150, 180, 255, 0.4);
-  background: rgba(15, 20, 45, 0.4);
+  border: 1.5px solid rgba(150, 180, 255, 0.3);
+  background: rgba(15, 20, 45, 0.25);
   color: #cdd9ff;
   font-size: 24px;
   display: none;
@@ -403,7 +403,14 @@ body.touch .tc {
 #tcG { right: 16px; bottom: 104px; }
 #tcB { right: 16px; }
 #tcC { right: 104px; width: 56px; height: 56px; font-size: 16px; bottom: 26px; }
-body.touch #mmap { bottom: 186px; right: 10px; }
+/* phones: shrink the fixed 172px canvas to a small corner map above the pedals */
+body.touch #mmap {
+  width: 84px;
+  height: 84px;
+  bottom: 190px;
+  right: 12px;
+  opacity: 0.85;
+}
 
 #swheel {
   position: fixed;
