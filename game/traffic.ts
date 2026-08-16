@@ -3,6 +3,7 @@ import { clamp, lerp, rand, pick, TAU, angDiff, mulberry32 } from "./util";
 import { roundedBoxGeo, hullShape, glassShape, roofShape, shellExtrude } from "./carshape";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { ShellParams } from "./carspecs";
+import { loadNpcModels, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
 import { HX, LANE_LAT, LANE_W } from "./world/const";
 import { getCorridor } from "./world/corridor";
 import { signalPhase, type WorldData } from "./world/data";
@@ -32,13 +33,21 @@ import type { NpcHit } from "./collide";
    smoke, block traffic, then dissolve out. */
 
 /* ===================== NPC models =====================
-   Everyday city traffic, all procedural: a hybrid hatch, a plain sedan, a
-   compact, a kei box van, a crossover, plus a delivery van, box truck, bus and
-   bike. Each style is baked once into a near and a far geometry and drawn as an
-   InstancedMesh, so the whole fleet costs a fixed ~20 draw calls however many
-   cars are live. Per-instance paint rides in a `paintCol` attribute and only
-   reaches vertices flagged `paintable`, which keeps glass, bumpers, lamps and
-   tyres out of the paint job. */
+   Everyday city traffic: a hybrid hatch, a plain sedan, a compact, a kei box
+   van, a crossover, plus a delivery van, box truck, bus and bike. Each style is
+   baked once into a near and a far geometry and drawn as an InstancedMesh, so
+   the whole fleet costs a fixed ~20 draw calls however many cars are live.
+   Per-instance paint rides in a `paintCol` attribute and only reaches vertices
+   flagged `paintable`, which keeps glass, bumpers, lamps and tyres out of the
+   paint job.
+
+   Both LODs start out procedural — the shells below — and the near tier is then
+   upgraded in place to a real modelled bodyshell per style as npcmodels.ts
+   loads them (see applyModel). The far tier stays procedural on purpose: past
+   70 m a car is a few dozen pixels, and the coarse shell is already cheaper
+   than anything worth decimating a model down to. Nothing here waits on that
+   load and nothing breaks without it, so a missing or slow model file costs the
+   look and nothing else. */
 
 const BODY: Record<string, ShellParams> = {
   // long fastback greenhouse, low nose — the silhouette of a hybrid hatch
@@ -492,6 +501,8 @@ export class Traffic {
   private npcMat: THREE.MeshStandardMaterial;
   private styles: StyleMesh[] = [];
   private styleOf: Record<string, number> = {};
+  /** per style, the loaded model's real lamp clusters; null until one lands */
+  private lampsOf: (NpcLamps | null)[] = [];
   private wheelInst: THREE.InstancedMesh;
   private wheelCount = 0;
   private clouds: Record<string, Cloud> = {};
@@ -571,13 +582,17 @@ export class Traffic {
         scene.add(m);
         return { mesh: m, paint, diss, n: 0 };
       };
+      this.lampsOf.push(null);
       this.styles.push({ near: mk(true), far: mk(false) });
     }
 
+    /* Sized for MAX_WHEELS rather than four: a modelled body may carry a
+       second rear axle (the box truck does), and its wheels are only known
+       once that model lands. */
     this.wheelInst = new THREE.InstancedMesh(
       wheelGeo(),
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0.15 }),
-      N * 4
+      N * MAX_WHEELS
     );
     this.wheelInst.frustumCulled = false;
     this.wheelInst.count = 0;
@@ -632,6 +647,50 @@ export class Traffic {
         hVis: 0, x: 0, y: -999, z: 0, spin: 0, wob: 0,
         wreck: null, fade: 1, ccKind: null, ccCd: 0,
       });
+    }
+
+    /* Upgrade to the real bodyshells in the background. Everything above is
+       already a working fleet; each model that lands swaps one style's near
+       LOD in place, and any that never lands simply stays procedural. */
+    void loadNpcModels(Object.keys(this.styleOf), (m) => this.applyModel(m));
+  }
+
+  /** Swap one style's near LOD over to a loaded bodyshell. Instance state —
+      matrices, paint colours, dissolve — is untouched, so this can land on any
+      frame, mid-drive, with cars of that style already on screen. */
+  private applyModel(m: NpcModel) {
+    const si = this.styleOf[m.style];
+    if (si === undefined) return;
+    const lod = this.styles[si].near;
+    const old = lod.mesh.geometry;
+    if (old === m.geo) return;
+
+    // the per-instance buffers move across to the new geometry as the same
+    // objects, so they must be off the old one before it is disposed — a
+    // dispose would otherwise free buffers the mesh is still drawing from
+    m.geo.setAttribute("paintCol", lod.paint);
+    m.geo.setAttribute("dissolve", lod.diss);
+    lod.mesh.geometry = m.geo;
+    old.deleteAttribute("paintCol");
+    old.deleteAttribute("dissolve");
+    old.dispose();
+
+    this.lampsOf[si] = m.lamps;
+
+    /* Put the shared wheels in this body's own arches. wr/wz are visual only
+       (wheel placement and roll rate), so this is safe to change under a car
+       that is already driving. */
+    if (m.wheels.length >= 2) {
+      let r = 0;
+      for (const w of m.wheels) r += w.r;
+      r /= m.wheels.length;
+      const offs = m.wheels.map((w) => [w.z, w.x] as [number, number]);
+      for (const n of this.npcs) {
+        if (n.type !== m.style) continue;
+        n.wr = r;
+        n.wz = Math.abs(offs[0][0]);
+        n.wheelOffs = offs;
+      }
     }
   }
 
@@ -1645,6 +1704,14 @@ export class Traffic {
         a[o + 2] = z;
       } else a[o + 1] = -999;
     };
+    /* Lamp positions are quoted in body-local metres — lateral, height,
+       forward — and `emit` puts them in the world. The basis lives outside the
+       loop so this stays a closure over plain numbers and allocates nothing,
+       which matters at 120 cars a frame. */
+    let bfx = 0, bfz = 0, brx = 0, brz = 0, bx = 0, by = 0, bz = 0;
+    const emit = (
+      cloud: Cloud, slot: number, lx: number, ly: number, lz: number, show: boolean
+    ) => put(cloud, slot, bx + bfx * lz + brx * lx, by + ly, bz + bfz * lz + brz * lx, show);
     for (let i = 0; i < this.npcs.length; i++) {
       li = i;
       const n = this.npcs[i];
@@ -1655,32 +1722,49 @@ export class Traffic {
         }
         continue;
       }
-      const fx = Math.sin(n.hVis), fz = Math.cos(n.hVis), rx = fz, rz = -fx;
-      const cx2 = n.x, cz2 = n.z, cy = n.y, hl = n.L / 2, hw2 = n.W / 2 - 0.22;
+      bfx = Math.sin(n.hVis);
+      bfz = Math.cos(n.hVis);
+      brx = bfz;
+      brz = -bfx;
+      bx = n.x;
+      by = n.y;
+      bz = n.z;
       const wrecked = !!n.wreck;
       const running = night && !wrecked;
-      put(SP.head, 0, cx2 + fx * hl - rx * hw2, cy + 0.68, cz2 + fz * hl - rz * hw2, running);
-      put(SP.head, 1, cx2 + fx * hl + rx * hw2, cy + 0.68, cz2 + fz * hl + rz * hw2, running);
-      put(SP.tail, 0, cx2 - fx * hl - rx * hw2, cy + 0.74, cz2 - fz * hl - rz * hw2, running && !n.brake);
-      put(SP.tail, 1, cx2 - fx * hl + rx * hw2, cy + 0.74, cz2 - fz * hl + rz * hw2, running && !n.brake);
-      put(SP.brake, 0, cx2 - fx * hl - rx * hw2, cy + 0.74, cz2 - fz * hl - rz * hw2, !wrecked && n.brake);
-      put(SP.brake, 1, cx2 - fx * hl + rx * hw2, cy + 0.74, cz2 - fz * hl + rz * hw2, !wrecked && n.brake);
+      /* Where this style's lamps actually are. A loaded model reports its own
+         clusters; until then it is the bumper-relative guess the procedural
+         shells put their lamp boxes at. Slot 0 is always the -lateral side, so
+         the blinker still picks its side by the sign the driving code sets. */
+      const LM = this.lampsOf[n.style];
+      const hl = n.L / 2, hw2 = n.W / 2 - 0.22;
+      const hd = LM?.head, tl = LM?.tail;
+      const hx0 = hd ? hd[0][0] : -hw2, hy0 = hd ? hd[0][1] : 0.68, hz0 = hd ? hd[0][2] : hl;
+      const hx1 = hd ? hd[1][0] : hw2, hy1 = hd ? hd[1][1] : 0.68, hz1 = hd ? hd[1][2] : hl;
+      const tx0 = tl ? tl[0][0] : -hw2, ty0 = tl ? tl[0][1] : 0.74, tz0 = tl ? tl[0][2] : -hl;
+      const tx1 = tl ? tl[1][0] : hw2, ty1 = tl ? tl[1][1] : 0.74, tz1 = tl ? tl[1][2] : -hl;
+      emit(SP.head, 0, hx0, hy0, hz0, running);
+      emit(SP.head, 1, hx1, hy1, hz1, running);
+      emit(SP.tail, 0, tx0, ty0, tz0, running && !n.brake);
+      emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake);
+      emit(SP.brake, 0, tx0, ty0, tz0, !wrecked && n.brake);
+      emit(SP.brake, 1, tx1, ty1, tz1, !wrecked && n.brake);
       // signals — wrecks flash hazards on both slots
       if (wrecked) {
-        put(SP.sig, 0, cx2 + fx * hl - rx * hw2, cy + 0.66, cz2 + fz * hl - rz * hw2, blinkOn);
-        put(SP.sig, 1, cx2 - fx * hl + rx * hw2, cy + 0.72, cz2 - fz * hl + rz * hw2, blinkOn);
+        emit(SP.sig, 0, hx0, hy0, hz0, blinkOn);
+        emit(SP.sig, 1, tx1, ty1, tz1, blinkOn);
       } else {
-        const sx = n.blink < 0 ? -1 : 1, show = n.blink !== 0 && blinkOn;
-        put(SP.sig, 0, cx2 + fx * hl + rx * hw2 * sx, cy + 0.66, cz2 + fz * hl + rz * hw2 * sx, show);
-        put(SP.sig, 1, cx2 - fx * hl + rx * hw2 * sx, cy + 0.72, cz2 - fz * hl + rz * hw2 * sx, show);
+        const left = n.blink < 0, show = n.blink !== 0 && blinkOn;
+        emit(SP.sig, 0, left ? hx0 : hx1, left ? hy0 : hy1, left ? hz0 : hz1, show);
+        emit(SP.sig, 1, left ? tx0 : tx1, left ? ty0 : ty1, left ? tz0 : tz1, show);
       }
-      put(SP.roof, 0, cx2, cy + 1.36, cz2, n.type === "taxi" && night && !wrecked);
-      put(SP.roof, 1, cx2, cy - 999, cz2, false);
+      emit(SP.roof, 0, 0, 1.36, 0, n.type === "taxi" && night && !wrecked);
+      emit(SP.roof, 1, 0, -999, 0, false);
       const isPol = n.type === "police", flash = (now * 3.2) % 1 < 0.5;
-      put(SP.polR, 0, cx2 + rx * 0.24, cy + 1.38, cz2 + rz * 0.24, isPol && flash);
-      put(SP.polR, 1, cx2, cy - 999, cz2, false);
-      put(SP.polB, 0, cx2 - rx * 0.24, cy + 1.38, cz2 - rz * 0.24, isPol && !flash);
-      put(SP.polB, 1, cx2, cy - 999, cz2, false);
+      const fr = LM?.flashR, fb = LM?.flashB;
+      emit(SP.polR, 0, fr ? fr[0] : 0.24, fr ? fr[1] : 1.38, fr ? fr[2] : 0, isPol && flash);
+      emit(SP.polR, 1, 0, -999, 0, false);
+      emit(SP.polB, 0, fb ? fb[0] : -0.24, fb ? fb[1] : 1.38, fb ? fb[2] : 0, isPol && !flash);
+      emit(SP.polB, 1, 0, -999, 0, false);
     }
     for (const key in SP) (SP[key].geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
   }
