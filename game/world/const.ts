@@ -10,6 +10,10 @@ export const CONNECT_Z = [-260, 0, 260]; // exit/on-ramp z positions
 export const RAMP_W = 10.5;
 export const RAMP_X1 = HX - RW / 2 - 0.6; // ramp top (west side)
 export const RAMP_X0 = RAMP_X1 - 56; // ramp foot (west side)
+/** how far a ramp runs along the deck while it curves away from it */
+export const RAMP_RUN = 110;
+/** length of the gore taper where the ramp pavement opens out of the deck edge */
+export const RAMP_NOSE = 13;
 export const FRONT_X = RAMP_X0 - 2; // west frontage road centerline
 export const EFRONT_X = 2 * HX - FRONT_X; // east frontage road centerline
 

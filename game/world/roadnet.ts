@@ -1,6 +1,7 @@
 import { clamp, rrand, type Rng } from "../util";
 import type { Terrain } from "./terrain";
-import { TOWN, FRONT_X, EFRONT_X, CONNECT_Z, ROAD_W, FRONT_W } from "./const";
+import { TOWN, FRONT_X, EFRONT_X, ROAD_W, FRONT_W } from "./const";
+import { rampFootZs } from "./ramps";
 
 /* Seeded road-network graph: a jittered grid with pruned links and curved
    edges, plus straight frontage roads flanking the expressway. Streets are
@@ -142,9 +143,14 @@ export function buildRoadNet(rng: Rng, terrain: Terrain): RoadNet {
     }
 
   /* ---- west frontage road (straight, passes through all ramp feet) ---- */
+  const footZs = rampFootZs();
   const frontZs: number[] = [];
-  for (let z = TOWN.z0 + 10; z <= TOWN.z1 - 10; z += 76) frontZs.push(z);
-  for (const cz of CONNECT_Z) frontZs.push(cz);
+  for (let z = TOWN.z0 + 10; z <= TOWN.z1 - 10; z += 76) {
+    // don't drop a node right next to a ramp foot; the feet win
+    if (footZs.some((fz) => Math.abs(z - fz) < 26)) continue;
+    frontZs.push(z);
+  }
+  for (const fz of footZs) frontZs.push(fz);
   frontZs.sort((a, b) => a - b);
   const dedup = frontZs.filter((z, i) => i === 0 || z - frontZs[i - 1] > 24);
   let prevF: number | null = null;
@@ -172,12 +178,14 @@ export function buildRoadNet(rng: Rng, terrain: Terrain): RoadNet {
   }
 
   /* ---- east frontage strip ---- */
+  const eastZs: number[] = [];
+  for (let z = -408; z <= 408; z += 68)
+    if (!footZs.some((fz) => Math.abs(z - fz) < 26)) eastZs.push(z);
+  for (const fz of footZs) eastZs.push(fz);
+  eastZs.sort((a, b) => a - b);
   let prevE: number | null = null;
-  for (let z = -340; z <= 340; z += 68) {
-    let zz = z;
-    for (const cz of CONNECT_Z) if (Math.abs(z - cz) < 30) zz = cz;
-    if (prevE !== null && Math.abs(nodes[prevE].z - zz) < 24) continue;
-    const id = addNode(EFRONT_X, zz, true);
+  for (const z of eastZs.filter((z, i, arr) => i === 0 || z - arr[i - 1] > 24)) {
+    const id = addNode(EFRONT_X, z, true);
     if (prevE !== null) addEdge(prevE, id, 0, FRONT_W, true);
     prevE = id;
   }

@@ -1,4 +1,4 @@
-import { HX, HZ, RW, RAMP_X0, CONNECT_Z } from "./world/const";
+import { HX, HZ, RW, CONNECT_Z } from "./world/const";
 import type { WorldData } from "./world/data";
 import type { CarState } from "./physics";
 import type { Npc } from "./traffic";
@@ -56,20 +56,34 @@ export function drawMiniMap(
     g.lineTo(DX, tz(Math.max(-HZ, car.z - Wp / (2 * sc))));
     g.stroke();
   }
-  // ramps + exits
+  // ramps: real curved centrelines from the terrain's ramp data
   g.lineWidth = 3;
+  g.strokeStyle = "rgba(120,255,190,.85)";
+  for (const r of world.terrain.ramps) {
+    const mx = (r.x0 + r.x1) / 2, mz = (r.z0 + r.z1) / 2;
+    if (Math.abs(mx - car.x) > R + (r.x1 - r.x0) / 2) continue;
+    if (Math.abs(mz - car.z) > R + (r.z1 - r.z0) / 2) continue;
+    const n = r.pts.length - 1;
+    g.beginPath();
+    let started = false;
+    for (let i = 0; i <= n; i += 2) {
+      const p = r.pts[Math.min(i, n)];
+      const X = tx(p.x), Z = tz(p.z);
+      if (X < -20 || X > Wp + 20 || Z < -20 || Z > Wp + 20) {
+        started = false;
+        continue;
+      }
+      if (!started) {
+        g.moveTo(X, Z);
+        started = true;
+      } else g.lineTo(X, Z);
+    }
+    g.stroke();
+  }
+  // exit numbers
   CONNECT_Z.forEach((cz, gi) => {
     const Z = tz(cz);
     if (Z < -8 || Z > Wp + 8) return;
-    g.strokeStyle = "rgba(120,255,190,.85)";
-    g.beginPath();
-    g.moveTo(tx(RAMP_X0 - 8), Z);
-    g.lineTo(tx(HX - RW / 2), Z);
-    g.stroke();
-    g.beginPath();
-    g.moveTo(tx(HX + RW / 2), Z);
-    g.lineTo(tx(2 * HX - RAMP_X0 + 8), Z);
-    g.stroke();
     const ex = tx(HX - RW / 2 - 12);
     if (ex > 8 && ex < Wp - 8) {
       g.fillStyle = "rgba(120,255,190,.95)";

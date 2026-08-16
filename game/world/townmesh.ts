@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { clamp, rrand, type Rng, TAU } from "../util";
 import { makeTex, asphalt, neonTexF } from "../textures";
-import { CHUNK, SIDEWALK_W, CONNECT_Z, RAMP_X0, RAMP_W, HX } from "./const";
+import { CHUNK, SIDEWALK_W, RAMP_W, HX } from "./const";
+import { distToRamp } from "./ramps";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
@@ -201,14 +202,9 @@ export function buildTown(
     const cx = pose.x + rx * setback, cz = pose.z + rz * setback;
     if (Math.abs(cx) > 620 || Math.abs(cz) > 470) return;
     const rC0 = Math.hypot(w / 2, d / 2);
-    // keep the expressway ramp corridors (both sides) clear
-    for (const zr of CONNECT_Z) {
-      if (Math.abs(cz - zr) < RAMP_W / 2 + 4 + rC0) {
-        const inWest = cx > RAMP_X0 - 8 - rC0 && cx < HX;
-        const inEast = cx >= HX && cx < 2 * HX - RAMP_X0 + 8 + rC0;
-        if (inWest || inEast) return;
-      }
-    }
+    // keep the curved ramp corridors (both sides) clear
+    const clear = RAMP_W / 2 + 5 + rC0;
+    if (distToRamp(terrain.ramps, cx, cz, clear + 1) < clear) return;
     // never under the elevated deck itself
     if (Math.abs(cx - HX) < 16 + rC0) return;
     const yaw = Math.atan2(pose.tx, pose.tz);

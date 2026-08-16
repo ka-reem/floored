@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { rrand, type Rng } from "../util";
 import { makeTex, signTexF, exitSignTexF, warnTexF } from "../textures";
-import { HX, DECKY, HZ, RW, CONNECT_Z, RAMP_W, RAMP_X0, RAMP_X1, LANE_OFF } from "./const";
+import { HX, DECKY, HZ, RW, CONNECT_Z, RAMP_W } from "./const";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
@@ -72,14 +72,20 @@ export function buildHighway(
     scene.add(m);
   }
 
-  /* ---- parapets with exit gaps on BOTH sides + median with crossover gaps ---- */
+  /* ---- parapets with exit gaps on BOTH sides + median with crossover gaps ----
+     The gap has to span the whole divergence zone: the ramp runs alongside the
+     deck until it has cleared the edge, and only then can a parapet reappear. */
+  const gapHalf = new Map<number, number>();
+  for (const r of terrain.ramps)
+    gapHalf.set(r.zr, Math.max(gapHalf.get(r.zr) ?? 0, r.gapZ + 2));
   for (const side of [-1, 1]) {
     const xa = side < 0 ? HX - RW / 2 - 0.55 : HX + RW / 2 - 0.05;
     const xb = side < 0 ? HX - RW / 2 + 0.05 : HX + RW / 2 + 0.55;
     let zs = -HZ;
     for (const zr of CONNECT_Z) {
-      wall(xa, xb, zs, zr - RAMP_W / 2 - 1.6, 1.05, DECKY);
-      zs = zr + RAMP_W / 2 + 1.6;
+      const g = gapHalf.get(zr) ?? RAMP_W / 2 + 1.6;
+      wall(xa, xb, zs, zr - g, 1.05, DECKY);
+      zs = zr + g;
     }
     wall(xa, xb, zs, HZ, 1.05, DECKY);
   }
@@ -94,52 +100,152 @@ export function buildHighway(
   // sound walls, east side, kept clear of ramp gaps
   for (let z = -HZ + 60; z < HZ - 160; z += 340) {
     let ok = true;
-    for (const zr of CONNECT_Z) if (Math.abs(z + 75 - zr) < 110) ok = false;
+    for (const zr of CONNECT_Z) if (Math.abs(z + 75 - zr) < 150) ok = false;
     if (!ok) continue;
     const m = new THREE.Mesh(new THREE.BoxGeometry(0.3, 2.6, 150), soundwall);
     m.position.set(HX + RW / 2 + 0.3, DECKY + 1.05 + 1.3, z + 75);
     scene.add(m);
   }
 
-  /* ---- ramps (west MIR=1, east MIR=-1) ---- */
-  for (const MIR of [1, -1])
-    for (const zr of CONNECT_Z) {
-      const N = 14, step = (RAMP_X1 - RAMP_X0) / N;
-      const MX = (x: number) => (MIR > 0 ? x : 2 * HX - x);
-      for (let i = 0; i < N; i++) {
-        const xa = RAMP_X0 + i * step, xb = xa + step;
-        const ya = terrain.rampHeight(xa), yb = terrain.rampHeight(xb);
-        const len = Math.hypot(step, yb - ya);
-        const seg = new THREE.Mesh(new THREE.BoxGeometry(len + 0.4, 0.14, RAMP_W), ramp);
-        seg.rotation.z = MIR * Math.atan2(yb - ya, step);
-        seg.position.set(MX((xa + xb) / 2), (ya + yb) / 2 - 0.06, zr);
-        seg.layers.set(1);
-        scene.add(seg);
-        const w1 = new THREE.Mesh(new THREE.BoxGeometry(step + 0.3, 1, 0.35), barrier);
-        w1.position.set(MX((xa + xb) / 2), (ya + yb) / 2 + 0.5, zr - RAMP_W / 2 - 0.2);
-        scene.add(w1);
-        const w2 = w1.clone();
-        w2.position.z = zr + RAMP_W / 2 + 0.2;
-        scene.add(w2);
-        const bx0 = Math.min(MX(xa), MX(xb)), bx1 = Math.max(MX(xa), MX(xb));
-        add({ x0: bx0, x1: bx1, z0: zr - RAMP_W / 2 - 0.4, z1: zr - RAMP_W / 2,
-          y0: (ya + yb) / 2 - 1.2, y1: (ya + yb) / 2 + 2 });
-        add({ x0: bx0, x1: bx1, z0: zr + RAMP_W / 2, z1: zr + RAMP_W / 2 + 0.4,
-          y0: (ya + yb) / 2 - 1.2, y1: (ya + yb) / 2 + 2 });
-        if (ya > 1.4 && i % 3 === 0) {
-          const p = new THREE.Mesh(new THREE.BoxGeometry(1.2, ya, 1.2), concDark);
-          p.position.set(MX(xa), ya / 2 - 0.5, zr);
-          scene.add(p);
-          add({ x0: MX(xa) - 0.7, x1: MX(xa) + 0.7, z0: zr - 0.7, z1: zr + 0.7, y0: 0, y1: ya - 1 });
+  /* ---- ramps: one curved carriageway per exit, side and travel direction ----
+     Each ramp is a swept ribbon along its centreline (see ramps.ts): pavement,
+     a concrete apron/skirt underneath, parapets down both edges and support
+     columns wherever it is off the ground. All of it goes into three merged
+     buffers so the whole interchange set costs a handful of draw calls. */
+  const postPts: number[] = [];
+  {
+    const surfPos: number[] = [], surfUv: number[] = [], skirtPos: number[] = [],
+      wallPos: number[] = [];
+    const WALL_H = 1.0, WALL_T = 0.3, DECKTH = 0.62;
+    type P3 = [number, number, number];
+    const tri = (a: number[], p: P3, q: P3, r: P3) =>
+      a.push(p[0], p[1], p[2], q[0], q[1], q[2], r[0], r[1], r[2]);
+    // p0..p3 wind around the quad; `flip` reverses the facing
+    const quad = (a: number[], p0: P3, p1: P3, p2: P3, p3: P3, flip: boolean) => {
+      if (flip) {
+        tri(a, p0, p2, p1);
+        tri(a, p0, p3, p2);
+      } else {
+        tri(a, p0, p1, p2);
+        tri(a, p0, p2, p3);
+      }
+    };
+    const colG = new THREE.BoxGeometry(1.25, 1, 1.25);
+    const cols = new THREE.InstancedMesh(colG, concDark, 220);
+    const CM = new THREE.Matrix4(), CV = new THREE.Vector3(), CQ = new THREE.Quaternion(),
+      CS = new THREE.Vector3(), CE = new THREE.Euler();
+    let nCol = 0;
+
+    for (const r of terrain.ramps) {
+      const flip = r.mir * r.dir < 0;
+      const pts = r.pts;
+      // lateral offsets: +n is the deck side
+      const edge = (i: number, lat: number, dy = 0): P3 => {
+        const p = pts[i];
+        return [p.x + p.nx * lat, p.y + dy, p.z + p.nz * lat];
+      };
+      const wallEnd = r.len - 7; // leave the junction with the frontage road open
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const va = a.s / 14, vb = b.s / 14;
+        const oa = edge(i, -a.hOut), ob = edge(i + 1, -b.hOut);
+        const ia = edge(i, a.hIn), ib = edge(i + 1, b.hIn);
+        quad(surfPos, oa, ob, ib, ia, flip);
+        if (flip) surfUv.push(0, va, 1, vb, 0, vb, 0, va, 1, va, 1, vb);
+        else surfUv.push(0, va, 0, vb, 1, vb, 0, va, 1, vb, 1, va);
+        // skirt + underside, only where the ramp stands above the ground
+        const upA = a.y - a.gy, upB = b.y - b.gy;
+        if (upA > 0.25 || upB > 0.25) {
+          const da = Math.min(DECKTH, Math.max(0.12, upA));
+          const db = Math.min(DECKTH, Math.max(0.12, upB));
+          const oab = edge(i, -a.hOut, -da), obb = edge(i + 1, -b.hOut, -db);
+          const iab = edge(i, a.hIn, -da), ibb = edge(i + 1, b.hIn, -db);
+          quad(skirtPos, oa, ob, obb, oab, flip);
+          quad(skirtPos, ia, ib, ibb, iab, !flip);
+          quad(skirtPos, oab, obb, ibb, iab, !flip);
+        }
+        // Parapets. The outer one starts at the gore nose and follows the edge
+        // as it opens away from the deck, so the drop is guarded the whole way
+        // and the driver is always inboard of it. The inner one only appears
+        // once the ramp has separated — before that the deck itself is there.
+        for (const sgn of [-1, 1]) {
+          const la = sgn > 0 ? a.hIn : -a.hOut, lb = sgn > 0 ? b.hIn : -b.hOut;
+          if (a.s > wallEnd) continue;
+          if (sgn > 0 && a.s < r.sSep) continue;
+          const off = sgn * (WALL_T / 2 + 0.12);
+          const a0 = edge(i, la + off - sgn * WALL_T / 2), a1 = edge(i, la + off + sgn * WALL_T / 2);
+          const b0 = edge(i + 1, lb + off - sgn * WALL_T / 2),
+            b1 = edge(i + 1, lb + off + sgn * WALL_T / 2);
+          const top = (p: P3): P3 => [p[0], p[1] + WALL_H, p[2]];
+          const bot = (p: P3): P3 => [p[0], p[1] - 0.25, p[2]];
+          quad(wallPos, bot(a0), bot(b0), top(b0), top(a0), false);
+          quad(wallPos, bot(a1), bot(b1), top(b1), top(a1), false);
+          quad(wallPos, top(a0), top(b0), top(b1), top(a1), false);
+          // one collider per segment: the outer wall flares out of the gore
+          // nose quickly, so a box spanning several segments would cut the
+          // corner and sit on the pavement
+          const mx = (a0[0] + b0[0] + a1[0] + b1[0]) / 4;
+          const mz = (a0[2] + b0[2] + a1[2] + b1[2]) / 4;
+          const wdx = (b0[0] + b1[0] - a0[0] - a1[0]) / 2;
+          const wdz = (b0[2] + b1[2] - a0[2] - a1[2]) / 2;
+          const wl = Math.hypot(wdx, wdz) || 1;
+          world.colliders.addObb({
+            x: mx, z: mz, hw: WALL_T / 2 + 0.2, hd: wl / 2 + 0.1,
+            cos: wdz / wl, sin: wdx / wl, y0: a.y - 1.2, y1: a.y + WALL_H + 1.2,
+          });
+        }
+        // edge lighting down both sides
+        if (i % 8 === 0 && a.s < wallEnd) {
+          const lo = edge(i, -a.hOut - 0.5, 0.95), li = edge(i, a.hIn + 0.5, 0.95);
+          postPts.push(lo[0], lo[1], lo[2], li[0], li[1], li[2]);
+        }
+        // support columns
+        if (i % 7 === 0 && upA > 2.2 && nCol < 220) {
+          CE.set(0, Math.atan2(a.tx, a.tz), 0);
+          CQ.setFromEuler(CE);
+          CV.set(a.x, a.gy + (upA - 0.5) / 2, a.z);
+          CS.set(1, upA - 0.5, 1);
+          CM.compose(CV, CQ, CS);
+          cols.setMatrixAt(nCol++, CM);
+          add({ x0: a.x - 0.85, x1: a.x + 0.85, z0: a.z - 0.85, z1: a.z + 0.85,
+            y0: 0, y1: a.gy + upA - 1.2 });
         }
       }
-      // flat connector at the foot
-      const conn = new THREE.Mesh(new THREE.PlaneGeometry(26, RAMP_W), ramp);
-      conn.rotation.x = -Math.PI / 2;
-      conn.position.set(MX(RAMP_X0 - 12), 0.012, zr);
-      conn.layers.set(1);
-      scene.add(conn);
+      // flat apron where the ramp meets the frontage road
+      const apron = new THREE.Mesh(new THREE.PlaneGeometry(24, RAMP_W), ramp);
+      apron.rotation.x = -Math.PI / 2;
+      apron.position.set(r.footX - r.mir * 11, pts[pts.length - 1].gy + 0.012, r.footZ);
+      apron.layers.set(1);
+      scene.add(apron);
     }
+    cols.count = nCol;
+    cols.castShadow = true;
+    cols.computeBoundingSphere();
+    scene.add(cols);
+
+    const mkGeom = (pos: number[], uv?: number[]) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+      if (uv) g.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uv), 2));
+      g.computeVertexNormals();
+      g.computeBoundingSphere();
+      return g;
+    };
+    const surf = new THREE.Mesh(mkGeom(surfPos, surfUv), ramp);
+    surf.receiveShadow = true;
+    surf.layers.set(1);
+    scene.add(surf);
+    const skirtMat = concDark.clone();
+    skirtMat.side = THREE.DoubleSide;
+    const skirt = new THREE.Mesh(mkGeom(skirtPos), skirtMat);
+    skirt.castShadow = true;
+    scene.add(skirt);
+    const wallMat = barrier.clone();
+    wallMat.side = THREE.DoubleSide;
+    const walls = new THREE.Mesh(mkGeom(wallPos), wallMat);
+    walls.castShadow = true;
+    scene.add(walls);
+  }
 
   /* ---- U-turn loop ends ---- */
   const arcMat = new THREE.MeshStandardMaterial({
@@ -245,7 +351,6 @@ export function buildHighway(
     ctx.lineTo(w - 6, h);
     ctx.stroke();
   });
-  const postPts: number[] = [];
   const exitBoards: THREE.Mesh[] = [];
   CONNECT_Z.forEach((zr, gi) => {
     world.exits.push({ z: zr, no: gi + 1, name: EXIT_NAMES[gi] || "出口" });
@@ -322,23 +427,21 @@ export function buildHighway(
         eb.rotation.y = ry;
         scene.add(eb);
       }
-      // lit posts running down the ramp
-      for (let k = 1; k <= 8; k++) {
-        const xw = RAMP_X0 + (k * (RAMP_X1 - RAMP_X0)) / 9;
-        const y = terrain.rampHeight(xw) + 0.95, px = MIR > 0 ? xw : 2 * HX - xw;
-        postPts.push(px, y, zr - RAMP_W / 2 - 0.55, px, y, zr + RAMP_W / 2 + 0.55);
+      // ground-level entrance sign at each ramp foot on this side
+      for (const r of terrain.ramps) {
+        if (r.zr !== zr || r.mir !== MIR) continue;
+        const gx = r.footX - MIR * 6;
+        const gz = r.footZ + MIR * (RAMP_W / 2 + 2.4);
+        const gp = new THREE.Mesh(new THREE.BoxGeometry(0.24, 3.6, 0.24),
+          new THREE.MeshStandardMaterial({ color: 0x39404e, roughness: 0.6, metalness: 0.6 }));
+        gp.position.set(gx, 1.8, gz);
+        scene.add(gp);
+        const gb = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 1.8),
+          new THREE.MeshBasicMaterial({ map: signTexF("首都高", "IN ↑"), fog: false }));
+        gb.position.set(gx, 3.4, gz);
+        gb.rotation.y = MIR > 0 ? Math.PI / 2 : -Math.PI / 2;
+        scene.add(gb);
       }
-      // ground-level on-ramp entrance sign
-      const gx = MIR > 0 ? RAMP_X0 - 5 : 2 * HX - RAMP_X0 + 5;
-      const gp = new THREE.Mesh(new THREE.BoxGeometry(0.24, 3.6, 0.24),
-        new THREE.MeshStandardMaterial({ color: 0x39404e, roughness: 0.6, metalness: 0.6 }));
-      gp.position.set(gx, 1.8, zr + MIR * 7);
-      scene.add(gp);
-      const gb = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 1.8),
-        new THREE.MeshBasicMaterial({ map: signTexF("首都高", "IN ↑"), fog: false }));
-      gb.position.set(gx, 3.4, zr + MIR * 7);
-      gb.rotation.y = MIR > 0 ? Math.PI / 2 : -Math.PI / 2;
-      scene.add(gb);
     }
   });
   {

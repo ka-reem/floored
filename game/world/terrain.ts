@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { sstep, type Rng, rrand } from "../util";
-import { HX, RW, DECKY, HZ, RAMP_X0, RAMP_X1, RAMP_W, CONNECT_Z, FRONT_X, EFRONT_X } from "./const";
+import { HX, RW, DECKY, HZ } from "./const";
+import { buildRamps, rampAt, type Ramp } from "./ramps";
 
 /* Rolling terrain the whole town conforms to. Flattened along the expressway
    corridor (so the deck, ramps and frontage roads sit on level ground) and
@@ -9,9 +10,10 @@ import { HX, RW, DECKY, HZ, RAMP_X0, RAMP_X1, RAMP_W, CONNECT_Z, FRONT_X, EFRONT
 export interface Terrain {
   h(x: number, z: number): number;
   heightAt(x: number, z: number, refY: number): number;
-  onRampWest(x: number, z: number): boolean;
-  onRampEast(x: number, z: number): boolean;
-  rampHeight(x: number): number;
+  /** curved on/off ramp centrelines, shared by meshes, colliders and physics */
+  ramps: Ramp[];
+  /** ramp surface height under a point, or null when off the pavement */
+  onRamp(x: number, z: number): number | null;
 }
 
 export function makeTerrain(rng: Rng): Terrain {
@@ -38,15 +40,11 @@ export function makeTerrain(rng: Rng): Terrain {
     return hills(x, z) * k;
   }
 
-  const rampHeight = (x: number) =>
-    DECKY * sstep((x - RAMP_X0 - 3) / (RAMP_X1 - RAMP_X0 - 6));
-
-  const onRampWest = (x: number, z: number) => {
-    if (x < RAMP_X0 - 1 || x > HX - RW / 2 + 2) return false;
-    for (const zr of CONNECT_Z) if (Math.abs(z - zr) <= RAMP_W / 2 + 1.2) return true;
-    return false;
+  const ramps = buildRamps(h);
+  const onRamp = (x: number, z: number) => {
+    const r = rampAt(ramps, x, z, 1.0);
+    return r ? r.y : null;
   };
-  const onRampEast = (x: number, z: number) => onRampWest(2 * HX - x, z);
 
   function heightAt(x: number, z: number, refY: number) {
     let best = h(x, z);
@@ -61,20 +59,13 @@ export function makeTerrain(rng: Rng): Terrain {
         if (d >= 0.95 && d <= RW / 2 + 1) best = Math.max(best, DECKY);
       }
     }
-    // ramps (west + mirrored east)
-    if (onRampWest(x, z)) {
-      const rh = rampHeight(Math.min(x, RAMP_X1));
-      if (Math.abs(rh - refY) < 3.4) best = Math.max(best, rh);
-    }
-    const xm = 2 * HX - x;
-    if (onRampWest(xm, z)) {
-      const rh = rampHeight(Math.min(xm, RAMP_X1));
-      if (Math.abs(rh - refY) < 3.4) best = Math.max(best, rh);
-    }
+    // curved ramps (both sides)
+    const r = rampAt(ramps, x, z, 1.0);
+    if (r && Math.abs(r.y - refY) < 3.4) best = Math.max(best, r.y);
     return best;
   }
 
-  return { h, heightAt, onRampWest, onRampEast, rampHeight };
+  return { h, heightAt, ramps, onRamp };
 }
 
 /** Ground heightfield mesh matching terrain.h. */

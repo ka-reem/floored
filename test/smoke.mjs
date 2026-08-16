@@ -45,9 +45,17 @@ async function startDev() {
 const errors = [];
 const warnings = [];
 
+/* A SwiftShader frame can take seconds on a loaded machine, and a screenshot
+   waits on one. Never let that sink the whole run — the driving checks below
+   are the part that actually verifies the game. */
 async function shot(page, name) {
-  await page.screenshot({ path: path.join(ART, name + ".png") });
-  console.log("  📸", name);
+  try {
+    await page.screenshot({ path: path.join(ART, name + ".png") });
+    console.log("  📸", name);
+  } catch (e) {
+    warnings.push(`screenshot ${name} failed: ${e.message}`);
+    console.log("  ⚠️  screenshot", name, "skipped:", String(e.message).slice(0, 80));
+  }
 }
 
 async function main() {
@@ -64,6 +72,7 @@ async function main() {
       "--mute-audio",
     ],
     defaultViewport: { width: 1280, height: 800 },
+    protocolTimeout: 300000,
   });
   const page = await browser.newPage();
   page.on("console", (m) => {
@@ -129,39 +138,76 @@ async function main() {
   await sleep(4000);
   await shot(page, "04-exit-approach");
 
-  // NOTE: SwiftShader renders ~4 fps and physics substeps are frame-capped, so
-  // sim time runs slower than wall clock — poll for the condition instead of
-  // sleeping a fixed interval.
-  const waitState = async (cond, timeoutMs, label) => {
+  /* Ramp runs. SwiftShader renders ~4 fps and physics substeps are frame-capped,
+     so sim time runs far slower than wall clock — poll for the condition instead
+     of sleeping a fixed interval. The ramps are curved (see game/world/ramps.ts),
+     so a fixed heading drives straight off the pavement: drop the car on a ramp
+     centreline sample and steer toward a lookahead sample each poll. `way` +1
+     heads down toward the frontage road, -1 climbs back up to the deck. `off` is
+     how far the car has strayed from the centreline — the ramp is 10.5 m wide,
+     so anything past ~6 m means it has left the road. */
+  const driveRamp = async (sel, way, cond, timeoutMs, label) => {
+    await page.evaluate(
+      ({ sel, way }) => {
+        const t = window.__neonx.game.terrain;
+        const r = t.ramps.find(
+          (q) => q.zr === sel.zr && q.mir === sel.mir && q.dir === sel.dir
+        );
+        // start partway along so the run fits the timeout at SwiftShader speed
+        const i = Math.max(0, r.pts.findIndex((p) => p.y < (way > 0 ? 8.5 : 2.5)));
+        const p = r.pts[i];
+        window.__neonx.__ramp = { r, way, i };
+        window.__neonx.teleport(p.x, p.z, p.y + 0.2,
+          Math.atan2(p.tx * way, p.tz * way), 10);
+      },
+      { sel, way }
+    );
     const t0 = Date.now();
-    let st;
+    let st, offMax = 0;
     for (;;) {
-      st = await page.evaluate(() => window.__neonx.state());
-      if (cond(st)) return st;
+      st = await page.evaluate(() => {
+        const s = window.__neonx.state();
+        const { r, way } = window.__neonx.__ramp;
+        let bi = 0, bd = 1e9;
+        for (let k = 0; k < r.pts.length; k++) {
+          const d = Math.hypot(r.pts[k].x - s.x, r.pts[k].z - s.z);
+          if (d < bd) { bd = d; bi = k; }
+        }
+        const la = r.pts[Math.max(0, Math.min(r.pts.length - 1, bi + way * 6))];
+        let dh = Math.atan2(la.x - s.x, la.z - s.z) - s.h;
+        while (dh > Math.PI) dh -= 2 * Math.PI;
+        while (dh < -Math.PI) dh += 2 * Math.PI;
+        window.__neonx.setInput({
+          th: s.kmh < 42 ? 0.85 : 0.1,
+          st: Math.max(-1, Math.min(1, dh * 2.4)),
+        });
+        return { ...s, off: bd };
+      });
+      offMax = Math.max(offMax, st.off);
+      if (cond(st)) break;
       if (Date.now() - t0 > timeoutMs) {
-        errors.push(`${label} timed out: x=${st.x.toFixed(1)} y=${st.y.toFixed(2)} u=${st.u.toFixed(1)}`);
-        return st;
+        errors.push(`${label} timed out: x=${st.x.toFixed(1)} y=${st.y.toFixed(2)} off=${st.off.toFixed(1)}`);
+        break;
       }
-      await sleep(400);
+      await sleep(300);
     }
+    if (offMax > 6)
+      errors.push(`${label} left the ramp: max offset ${offMax.toFixed(1)} m`);
+    return { ...st, offMax };
   };
 
-  // off-ramp descent: start mid-ramp heading west (downhill), roll into town
-  await page.evaluate(() => {
-    window.__neonx.teleport(478, 260, 8.4, -Math.PI / 2, 11);
-    window.__neonx.setInput({ th: 0.4 });
-  });
-  const stRamp = await waitState((s) => s.y < 2.5, 30000, "ramp descent");
-  console.log("  after descent: y =", stRamp.y.toFixed(2), " x =", stRamp.x.toFixed(1));
+  // off-ramp descent: roll down a west-side ramp into town
+  const stRamp = await driveRamp({ zr: 260, mir: 1, dir: -1 }, 1,
+    (s) => s.y < 2.5, 45000, "ramp descent");
+  console.log("  after descent: y =", stRamp.y.toFixed(2), " x =", stRamp.x.toFixed(1),
+    " maxOff =", stRamp.offMax.toFixed(1));
   await shot(page, "04b-ramp-descent");
 
-  // on-ramp climb: from the west foot heading east up to the deck
-  await page.evaluate(() => {
-    window.__neonx.teleport(431, -260, 0.3, Math.PI / 2, 9);
-    window.__neonx.setInput({ th: 1 });
-  });
-  const stClimb = await waitState((s) => s.y > 8.4, 30000, "on-ramp climb");
-  console.log("  after climb: y =", stClimb.y.toFixed(2), " x =", stClimb.x.toFixed(1));
+  // on-ramp climb: from the foot of a west-side ramp back up to the deck
+  const stClimb = await driveRamp({ zr: -260, mir: 1, dir: 1 }, -1,
+    (s) => s.y > 8.4, 60000, "on-ramp climb");
+  console.log("  after climb: y =", stClimb.y.toFixed(2), " x =", stClimb.x.toFixed(1),
+    " maxOff =", stClimb.offMax.toFixed(1));
   await shot(page, "04c-ramp-climb");
 
   // town: teleport to origin, drive
