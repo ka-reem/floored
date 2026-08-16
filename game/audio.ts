@@ -921,7 +921,16 @@ export class GameAudio {
     this.sp(this.wG.gain, windLevel, 0.12);
     this.sp(this.windFlutterDepth.gain, windRise * 0.045, 0.15);
 
-    this.rG.gain.value = raining ? 0.05 : 0;
+    // Rain hiss: was a hard, instant, unsmoothed on/off with a flat level
+    // completely independent of speed — exactly "constant, doesn't react to
+    // anything" whenever raining=true, and the brightest/most broadband
+    // ("whitest") layer in the file (2600Hz+ highpass on raw noise), so it's
+    // the single most likely culprit if a user reports a constant white-
+    // noise bed. Now smoothed like every other layer, and mildly speed-
+    // reactive (tire spray/road hiss picking up with speed), so it's never
+    // a flat unchanging drone even while raining.
+    const rainLevel = raining ? 0.032 + Math.min(1, speed / 25) * 0.028 : 0;
+    this.sp(this.rG.gain, rainLevel, 0.2);
     this.hornSet(horn);
   }
 
