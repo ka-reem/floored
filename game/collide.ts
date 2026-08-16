@@ -1,9 +1,9 @@
 import type { CarState } from "./physics";
 import type { WorldData } from "./world/data";
-import { HX, HZ, RW, DECKY } from "./world/const";
 
-/* Player collision: deck edges/loops, static AABBs (parapets, pillars, ramp
-   walls), building OBBs, and NPC vehicles. NPC hits return impact info so
+/* Player collision: the corridor's parapets (analytic, from the same
+   half-width the walls are swept from), static AABBs (piers, toll islands,
+   ramp walls), building OBBs, and NPC vehicles. NPC hits return impact info so
    traffic can convert the victim into a free-sliding wreck. */
 
 export interface NpcHit {
@@ -116,33 +116,40 @@ export function collidePlayer(
   const npcHits: NpcHit[] = [];
   const preVx = car.wvx, preVz = car.wvz;
 
-  // deck end loops (curved barrier rings)
-  for (const e of [1, -1]) {
-    const dzc = car.z - e * HZ;
-    if (e * dzc > -0.2 && Math.abs(car.y - DECKY) < 2.6) {
-      const dxc = car.x - HX, r = Math.hypot(dxc, dzc) || 0.001;
-      const nx = dxc / r, nz = dzc / r, rOut = RW / 2 - 0.95, rIn = 2.05;
-      if (r > rOut) {
-        const pen = r - rOut;
-        car.x -= nx * pen;
-        car.z -= nz * pen;
-        const vn = car.wvx * nx + car.wvz * nz;
-        if (vn > 0) {
-          car.wvx -= nx * vn * 1.07;
-          car.wvz -= nz * vn * 1.07;
-        }
-        hit = true;
-      } else if (r < rIn) {
-        const pen = rIn - r;
-        car.x += nx * pen;
-        car.z += nz * pen;
-        const vn = car.wvx * nx + car.wvz * nz;
-        if (vn < 0) {
-          car.wvx -= nx * vn * 1.07;
-          car.wvz -= nz * vn * 1.07;
-        }
-        hit = true;
+  /* Deck parapets. The corridor's width changes along its length, so rather
+     than filling the collider grid with a few thousand wall boxes we clamp the
+     car's lateral offset against the analytic edge — cheaper, and it can never
+     disagree with the swept wall geometry, which is generated from the same
+     half-width. The exception is a gore: there the parapet is cut away so the
+     ramp can leave, and the ramp's own wall OBBs take over — so a car anywhere
+     on ramp pavement is exempt for as long as it is still up at deck height. */
+  const cor = world.terrain.corridor;
+  if (Math.abs(car.y - cor.centerY(car.z)) < 2.6 && car.z > cor.ZB0 && car.z < cor.ZB1) {
+    const zc = cor.zAt(car.x, car.z);
+    const lat = cor.latAt(car.x, car.z);
+    const lim = cor.halfWidth(zc) + 0.06 - halfW;
+    const side = lat >= 0 ? 1 : -1;
+    let guarded = true;
+    if (side < 0) {
+      // the parapet mesh is cut away across the divergence zone…
+      for (const r of world.terrain.ramps)
+        if (Math.abs(car.z - r.zr) < r.gapZ + 6) guarded = false;
+      // …and stays absent for as long as the car is on ramp pavement
+      const ry = world.terrain.onRamp(car.x, car.z);
+      if (ry !== null && Math.abs(ry - car.y) < 2.6) guarded = false;
+    }
+    if (guarded && Math.abs(lat) > lim) {
+      const pen = Math.abs(lat) - lim;
+      const m = cor.slopeX(zc), inv = 1 / Math.hypot(m, 1);
+      const nx = side * inv, nz = side * -m * inv; // outward wall normal
+      car.x -= nx * pen;
+      car.z -= nz * pen;
+      const vn = car.wvx * nx + car.wvz * nz;
+      if (vn > 0) {
+        car.wvx -= nx * vn * 1.07;
+        car.wvz -= nz * vn * 1.07;
       }
+      hit = true;
     }
   }
 

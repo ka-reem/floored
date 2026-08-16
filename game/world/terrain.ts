@@ -1,15 +1,16 @@
 import * as THREE from "three";
 import { sstep, type Rng, rrand } from "../util";
-import { HX, RW, DECKY, HZ } from "./const";
+import { getCorridor, type Corridor } from "./corridor";
 import { buildRamps, rampAt, type Ramp } from "./ramps";
 
 /* Rolling terrain the whole town conforms to. Flattened along the expressway
-   corridor (so the deck, ramps and frontage roads sit on level ground) and
+   corridor (so the piers, ramps and frontage roads sit on level ground) and
    faded out toward the world edge. */
 
 export interface Terrain {
   h(x: number, z: number): number;
   heightAt(x: number, z: number, refY: number): number;
+  corridor: Corridor;
   /** curved on/off ramp centrelines, shared by meshes, colliders and physics */
   ramps: Ramp[];
   /** ramp surface height under a point, or null when off the pavement */
@@ -17,6 +18,7 @@ export interface Terrain {
 }
 
 export function makeTerrain(rng: Rng): Terrain {
+  const corridor = getCorridor();
   // seeded hill field: 3 octaves of drifting sines
   const p1 = rrand(rng, 0, 6.28), p2 = rrand(rng, 0, 6.28), p3 = rrand(rng, 0, 6.28);
   const p4 = rrand(rng, 0, 6.28), p5 = rrand(rng, 0, 6.28);
@@ -32,10 +34,10 @@ export function makeTerrain(rng: Rng): Terrain {
 
   function h(x: number, z: number) {
     // flatten from ~x=336 eastward so the expressway corridor sits on level ground
-    const corridor = sstep((402 - x) / 66);
+    const corr = sstep((402 - x) / 66);
     const zFade = sstep((900 - Math.abs(z)) / 260);
     const xFade = sstep((x + 940) / 300);
-    const k = corridor * zFade * xFade;
+    const k = corr * zFade * xFade;
     if (k <= 0.0001) return 0;
     return hills(x, z) * k;
   }
@@ -48,36 +50,34 @@ export function makeTerrain(rng: Rng): Terrain {
 
   function heightAt(x: number, z: number, refY: number) {
     let best = h(x, z);
-    const up = refY > DECKY - 3.4;
-    // deck
-    if (up && Math.abs(x - HX) <= RW / 2 + 1 && Math.abs(z) <= HZ + 2) best = DECKY;
-    // U-turn loops at the ends
-    for (const e of [1, -1]) {
-      const dz = z - e * HZ;
-      if (e * dz > -0.5 && up) {
-        const d = Math.hypot(x - HX, dz);
-        if (d >= 0.95 && d <= RW / 2 + 1) best = Math.max(best, DECKY);
-      }
+    // the deck, but only when the query is already up near it — otherwise a car
+    // on the frontage road underneath would be yanked onto the expressway
+    if (refY > corridor.centerY(z) - 3.4) {
+      const dy = corridor.heightAt(x, z, 1.0);
+      if (dy !== null) best = Math.max(best, dy);
     }
-    // curved ramps (both sides)
+    // curved ramps
     const r = rampAt(ramps, x, z, 1.0);
     if (r && Math.abs(r.y - refY) < 3.4) best = Math.max(best, r.y);
     return best;
   }
 
-  return { h, heightAt, ramps, onRamp };
+  return { h, heightAt, corridor, ramps, onRamp };
 }
 
-/** Ground heightfield mesh matching terrain.h. */
+/** Ground heightfield mesh matching terrain.h. Wide enough in z to sit under
+    the whole corridor including its overrun, and centred between the town and
+    the expressway rather than on the origin. */
 export function buildGround(terrain: Terrain, mat: THREE.Material) {
-  const SZ = 2600, SEG = 110;
-  const g = new THREE.PlaneGeometry(SZ, SZ, SEG, SEG);
+  const CX = 40, SX = 3400, SZ = 5600, SEGX = 80, SEGZ = 132;
+  const g = new THREE.PlaneGeometry(SX, SZ, SEGX, SEGZ);
   g.rotateX(-Math.PI / 2);
   const pos = g.attributes.position as THREE.BufferAttribute;
   for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), z = pos.getZ(i);
+    const x = pos.getX(i) + CX, z = pos.getZ(i);
     pos.setY(i, terrain.h(x, z) - 0.09);
   }
+  g.translate(CX, 0, 0);
   g.computeVertexNormals();
   const m = new THREE.Mesh(g, mat);
   m.receiveShadow = true;

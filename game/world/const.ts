@@ -1,28 +1,49 @@
-/* World layout constants. The elevated expressway runs north–south on the
-   east side; the procedural town fills the west; a mirrored frontage strip
-   sits east of the deck. */
+/* World layout constants. The expressway is a single one-way corridor running
+   south→north (increasing z) on the east side of the map; the procedural town
+   fills the west; a mirrored frontage strip sits east of the deck.
 
-export const HX = 500; // expressway centerline x
-export const DECKY = 9; // deck surface height
-export const HZ = 1100; // deck half-length
-export const RW = 27.6; // deck width (6 lanes)
-export const CONNECT_Z = [-260, 0, 260]; // exit/on-ramp z positions
+   The corridor's *shape* is not described here — see corridor.ts. This file
+   only holds the scalars other systems need before the corridor is built. */
+
+export const HX = 500; // corridor reference x (centreline at zero lateral offset)
+export const DECKY = 10; // deck surface height at zero grade
+/** half-length of the canonical corridor; it spans z ∈ [-HZ, HZ] */
+export const HZ = 2000;
+/** loop length: crossing z = +HZ teleports the player back by this much */
+export const LOOP_LEN = 2 * HZ;
+/** extra deck built past each end so the splice is never visible */
+export const DECK_EXT = 380;
+
+export const LANE_W = 3.7;
+/** paved shoulder outside the outermost lane centres */
+export const SHOULDER = 1.55;
+export const MAX_LANES = 6;
+/** widest the pavement ever gets (toll plaza) */
+export const RW = MAX_LANES * LANE_W + 2 * SHOULDER;
+
 export const RAMP_W = 10.5;
-export const RAMP_X1 = HX - RW / 2 - 0.6; // ramp top (west side)
-export const RAMP_X0 = RAMP_X1 - 56; // ramp foot (west side)
-/** how far a ramp runs along the deck while it curves away from it */
-export const RAMP_RUN = 110;
+/** how far a ramp runs along the corridor while it curves away from it */
+export const RAMP_RUN = 112;
 /** length of the gore taper where the ramp pavement opens out of the deck edge */
 export const RAMP_NOSE = 13;
-export const FRONT_X = RAMP_X0 - 2; // west frontage road centerline
+
+export const FRONT_X = 435; // west frontage road centerline (ramp feet land here)
 export const EFRONT_X = 2 * HX - FRONT_X; // east frontage road centerline
 
-export const TOWN = { x0: -420, x1: 360, z0: -420, z1: 420 };
+export const TOWN = { x0: -420, x1: 340, z0: -420, z1: 420 };
 
 export const ROAD_W = 9.6; // town street width
 export const FRONT_W = 11; // frontage road width
 export const SIDEWALK_W = 2.2;
-export const LANE_LAT = 1.95; // NPC lane offset from centerline
+export const LANE_LAT = 1.95; // NPC lane offset from a street centerline
 
-export const LANE_OFF = [3.2, 6.9, 10.6]; // deck lane centers from median
+/** z of each gore on the corridor. Both sit in the corridor's straight,
+    zero-offset window beside the town, the only stretch where a ramp can
+    reach the frontage road. [0] is the exit, [1] the entrance. */
+export const CONNECT_Z = [-330, -70];
+
+/** @deprecated the corridor's lane count varies — use `corridor.laneOffset()`.
+    Kept as a 3-lane fallback so legacy call sites still compile and land on
+    the pavement. */
+export const LANE_OFF = [-LANE_W, 0, LANE_W];
 export const CHUNK = 96; // town chunk size

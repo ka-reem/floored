@@ -1,16 +1,105 @@
 import * as THREE from "three";
 import { rrand, type Rng } from "../util";
-import { makeTex, signTexF, exitSignTexF, warnTexF } from "../textures";
-import { HX, DECKY, HZ, RW, CONNECT_Z, RAMP_W } from "./const";
+import { makeTex, asphalt, signTexF, exitSignTexF, warnTexF } from "../textures";
+import { RAMP_W, CONNECT_Z } from "./const";
+import { getCorridor, TUNNEL, TOLL, type Station } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
 
-const EXIT_NAMES = ["中野 Nakano", "本町 Honchō", "港南 Kōnan"];
+const EXIT_NAMES = ["中野 Nakano", "本町 Honchō"];
+const LAYER_NOREF = 1;
 
-/* Elevated expressway: deck, pillars, parapets, U-turn loop ends, and the
-   v3 exit treatment — long decel taper, painted gore, countdown signage at
-   300/150 m, lit edge posts and flashing beacons. Ramps on both sides. */
+/* One-way elevated expressway.
+
+   Everything here is swept along the corridor stations (see corridor.ts) —
+   pavement, fascia, parapets, markings, tunnel tube and toll plaza — so the
+   deck's varying width, its sweeping bends and its grade changes are all
+   handled by the same code path and nothing can drift out of alignment with
+   what physics queries.
+
+   The deck is emitted in ~300 m chunks so frustum culling keeps only a few
+   metres of road in the draw list at a time, and it is built 420 m past each
+   canonical end (see DECK_EXT) so the loop splice is never in view. */
+
+const CHUNK_Z = 300;
+/** parapet geometry every N stations (stations are 4 m apart) */
+const WALL_EVERY = 2;
+
+type Vec3 = [number, number, number];
+
+/** growable triangle-soup builder; one per (chunk, material) pair */
+class Soup {
+  pos: number[] = [];
+  uv: number[] = [];
+  tri(a: Vec3, b: Vec3, c: Vec3) {
+    this.pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+  }
+  quad(a: Vec3, b: Vec3, c: Vec3, d: Vec3) {
+    this.tri(a, b, c);
+    this.tri(a, c, d);
+  }
+  quadUv(a: Vec3, b: Vec3, c: Vec3, d: Vec3, ua: number[], ub: number[], uc: number[], ud: number[]) {
+    this.quad(a, b, c, d);
+    this.uv.push(ua[0], ua[1], ub[0], ub[1], uc[0], uc[1]);
+    this.uv.push(ua[0], ua[1], uc[0], uc[1], ud[0], ud[1]);
+  }
+  get empty() {
+    return this.pos.length === 0;
+  }
+  geom(withUv: boolean) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(this.pos), 3));
+    if (withUv) g.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(this.uv), 2));
+    g.computeVertexNormals();
+    g.computeBoundingSphere();
+    return g;
+  }
+}
+
+/* Sign mounting.
+
+   The old signs were posted at a fixed lateral offset, which put their outer
+   post past the pavement edge and left it standing in mid-air — up to 2.2 m off
+   the deck on the narrow sections. That is what read as "signs on the road,
+   glitchy". Every overhead sign is now a cantilever: one post planted on the
+   outer shoulder, an arm reaching in over the lanes, and the panel hung from
+   the arm well above vehicle height. The post lateral offset is derived from
+   the corridor's half-width at that z, so it lands on pavement no matter how
+   wide the road is there. */
+function signFactory(scene: THREE.Scene, cor: ReturnType<typeof getCorridor>) {
+  const postMat = new THREE.MeshStandardMaterial({
+    color: 0x39404e, roughness: 0.6, metalness: 0.6,
+  });
+  /** clearance from the deck to the bottom of a panel that overhangs a lane */
+  const CLEAR = 5.15;
+  return function board(z: number, w: number, h: number, tex: THREE.Texture) {
+    // a mast this tall would spear the tunnel ceiling (6.4 m of clear height),
+    // so the tube gets its own signage and never one of these
+    if (cor.inTunnel(z)) return null;
+    const hw = cor.halfWidth(z);
+    const postLat = -(hw - 0.7); // on the shoulder, inboard of the parapet
+    const p = cor.worldOf(z, postLat);
+    const top = CLEAR + h;
+    const g = new THREE.Group();
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.3, top, 0.3), postMat);
+    post.position.y = top / 2;
+    post.castShadow = true;
+    g.add(post);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(w + 0.6, 0.26, 0.26), postMat);
+    arm.position.set(w / 2 + 0.3, top - 0.13, 0);
+    g.add(arm);
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({ map: tex, fog: false }));
+    panel.position.set(w / 2 + 0.3, CLEAR + h / 2, -0.2);
+    panel.rotation.y = Math.PI; // face oncoming traffic
+    g.add(panel);
+    g.position.set(p.x, p.y, p.z);
+    g.rotation.y = cor.pose(z).h;
+    scene.add(g);
+    return g;
+  };
+}
 
 export function buildHighway(
   scene: THREE.Scene,
@@ -19,307 +108,129 @@ export function buildHighway(
   terrain: Terrain,
   rng: Rng
 ) {
-  const { conc, concDark, barrier, soundwall, hwy, ramp } = mats;
+  const cor = getCorridor();
+  const { conc, concDark, barrier, soundwall, hwy } = mats;
   const add = (b: { x0: number; x1: number; z0: number; z1: number; y0: number; y1: number }) =>
     world.colliders.addAabb(b);
+  const ST = cor.stations;
 
-  /* ---- deck ---- */
-  {
-    const slab = new THREE.Mesh(new THREE.BoxGeometry(RW + 2.2, 1.25, HZ * 2), conc);
-    slab.position.set(HX, DECKY - 0.66, 0);
-    slab.castShadow = true;
-    slab.receiveShadow = true;
-    scene.add(slab);
-    const deckRoad = new THREE.Mesh(new THREE.PlaneGeometry(RW, HZ * 2), hwy);
-    deckRoad.rotation.x = -Math.PI / 2;
-    deckRoad.position.set(HX, DECKY + 0.005, 0);
-    (hwy.map as THREE.Texture).repeat.set(1, 86);
-    deckRoad.receiveShadow = true;
-    deckRoad.layers.set(1);
-    scene.add(deckRoad);
+  /* The stock highway texture has six lanes painted into it, which is no use
+     when the lane count changes every few hundred metres. Swap in bare asphalt
+     and lay the markings down as geometry instead; the material itself (and so
+     its wet-road reflection hookup) is untouched. */
+  const deckTex = makeTex(256, 256, (ctx, w, h) => asphalt(ctx, w, h, "#14161c"), true);
+  hwy.map = deckTex;
+  hwy.needsUpdate = true;
+  const TILE = 7; // metres per texture tile
 
-    const pg = new THREE.CylinderGeometry(1.15, 1.35, DECKY - 0.1, 10);
-    const pier = new THREE.InstancedMesh(pg, concDark, 92);
-    const bg = new THREE.BoxGeometry(RW + 3, 1.1, 2.4);
-    const beams = new THREE.InstancedMesh(bg, concDark, 92);
-    const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
-      SC = new THREE.Vector3(1, 1, 1);
-    let n = 0, m = 0;
-    for (let z = -HZ + 14; z <= HZ - 14; z += 26) {
-      V.set(HX, (DECKY - 0.1) / 2, z);
-      M.compose(V, Q, SC);
-      pier.setMatrixAt(n++, M);
-      add({ x0: HX - 1.35, x1: HX + 1.35, z0: z - 1.35, z1: z + 1.35, y0: 0, y1: DECKY - 1 });
-      V.set(HX, DECKY - 1.35, z);
-      M.compose(V, Q, SC);
-      beams.setMatrixAt(m++, M);
-    }
-    pier.count = n;
-    beams.count = m;
-    pier.castShadow = true;
-    pier.computeBoundingSphere();
-    beams.computeBoundingSphere();
-    scene.add(pier, beams);
-  }
+  /** world point at station i, `lat` metres to the right of the centreline */
+  const pt = (i: number, lat: number, dy = 0): Vec3 => {
+    const s = ST[i];
+    return [s.x + s.nx * lat, s.y + dy, s.z + s.nz * lat];
+  };
 
-  function wall(x0: number, x1: number, z0: number, z1: number, h: number, y0: number,
-    mat?: THREE.Material, noMesh?: boolean) {
-    add({ x0, x1, z0, z1, y0, y1: y0 + h + 2 });
-    if (noMesh) return;
-    const m = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, h, z1 - z0), mat || barrier);
-    m.position.set((x0 + x1) / 2, y0 + h / 2, (z0 + z1) / 2);
-    m.castShadow = true;
-    scene.add(m);
-  }
-
-  /* ---- parapets with exit gaps on BOTH sides + median with crossover gaps ----
-     The gap has to span the whole divergence zone: the ramp runs alongside the
-     deck until it has cleared the edge, and only then can a parapet reappear. */
-  const gapHalf = new Map<number, number>();
-  for (const r of terrain.ramps)
-    gapHalf.set(r.zr, Math.max(gapHalf.get(r.zr) ?? 0, r.gapZ + 2));
-  for (const side of [-1, 1]) {
-    const xa = side < 0 ? HX - RW / 2 - 0.55 : HX + RW / 2 - 0.05;
-    const xb = side < 0 ? HX - RW / 2 + 0.05 : HX + RW / 2 + 0.55;
-    let zs = -HZ;
-    for (const zr of CONNECT_Z) {
-      const g = gapHalf.get(zr) ?? RAMP_W / 2 + 1.6;
-      wall(xa, xb, zs, zr - g, 1.05, DECKY);
-      zs = zr + g;
-    }
-    wall(xa, xb, zs, HZ, 1.05, DECKY);
-  }
-  {
-    let z0 = -HZ;
-    for (const g of CONNECT_Z) {
-      wall(HX - 0.5, HX + 0.5, z0, g - 5, 1.0, DECKY);
-      z0 = g + 5;
-    }
-    wall(HX - 0.5, HX + 0.5, z0, HZ, 1.0, DECKY);
-  }
-  // sound walls, east side, kept clear of ramp gaps
-  for (let z = -HZ + 60; z < HZ - 160; z += 340) {
-    let ok = true;
-    for (const zr of CONNECT_Z) if (Math.abs(z + 75 - zr) < 150) ok = false;
-    if (!ok) continue;
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.3, 2.6, 150), soundwall);
-    m.position.set(HX + RW / 2 + 0.3, DECKY + 1.05 + 1.3, z + 75);
-    scene.add(m);
-  }
-
-  /* ---- ramps: one curved carriageway per exit, side and travel direction ----
-     Each ramp is a swept ribbon along its centreline (see ramps.ts): pavement,
-     a concrete apron/skirt underneath, parapets down both edges and support
-     columns wherever it is off the ground. All of it goes into three merged
-     buffers so the whole interchange set costs a handful of draw calls. */
-  const postPts: number[] = [];
-  {
-    const surfPos: number[] = [], surfUv: number[] = [], skirtPos: number[] = [],
-      wallPos: number[] = [];
-    const WALL_H = 1.0, WALL_T = 0.3, DECKTH = 0.62;
-    type P3 = [number, number, number];
-    const tri = (a: number[], p: P3, q: P3, r: P3) =>
-      a.push(p[0], p[1], p[2], q[0], q[1], q[2], r[0], r[1], r[2]);
-    // p0..p3 wind around the quad; `flip` reverses the facing
-    const quad = (a: number[], p0: P3, p1: P3, p2: P3, p3: P3, flip: boolean) => {
-      if (flip) {
-        tri(a, p0, p2, p1);
-        tri(a, p0, p3, p2);
-      } else {
-        tri(a, p0, p1, p2);
-        tri(a, p0, p2, p3);
-      }
-    };
-    const colG = new THREE.BoxGeometry(1.25, 1, 1.25);
-    const cols = new THREE.InstancedMesh(colG, concDark, 220);
-    const CM = new THREE.Matrix4(), CV = new THREE.Vector3(), CQ = new THREE.Quaternion(),
-      CS = new THREE.Vector3(), CE = new THREE.Euler();
-    let nCol = 0;
-
-    for (const r of terrain.ramps) {
-      const flip = r.mir * r.dir < 0;
-      const pts = r.pts;
-      // lateral offsets: +n is the deck side
-      const edge = (i: number, lat: number, dy = 0): P3 => {
-        const p = pts[i];
-        return [p.x + p.nx * lat, p.y + dy, p.z + p.nz * lat];
-      };
-      const wallEnd = r.len - 7; // leave the junction with the frontage road open
-      for (let i = 0; i < pts.length - 1; i++) {
-        const a = pts[i], b = pts[i + 1];
-        const va = a.s / 14, vb = b.s / 14;
-        const oa = edge(i, -a.hOut), ob = edge(i + 1, -b.hOut);
-        const ia = edge(i, a.hIn), ib = edge(i + 1, b.hIn);
-        quad(surfPos, oa, ob, ib, ia, flip);
-        if (flip) surfUv.push(0, va, 1, vb, 0, vb, 0, va, 1, va, 1, vb);
-        else surfUv.push(0, va, 0, vb, 1, vb, 0, va, 1, vb, 1, va);
-        // skirt + underside, only where the ramp stands above the ground
-        const upA = a.y - a.gy, upB = b.y - b.gy;
-        if (upA > 0.25 || upB > 0.25) {
-          const da = Math.min(DECKTH, Math.max(0.12, upA));
-          const db = Math.min(DECKTH, Math.max(0.12, upB));
-          const oab = edge(i, -a.hOut, -da), obb = edge(i + 1, -b.hOut, -db);
-          const iab = edge(i, a.hIn, -da), ibb = edge(i + 1, b.hIn, -db);
-          quad(skirtPos, oa, ob, obb, oab, flip);
-          quad(skirtPos, ia, ib, ibb, iab, !flip);
-          quad(skirtPos, oab, obb, ibb, iab, !flip);
-        }
-        // Parapets. The outer one starts at the gore nose and follows the edge
-        // as it opens away from the deck, so the drop is guarded the whole way
-        // and the driver is always inboard of it. The inner one only appears
-        // once the ramp has separated — before that the deck itself is there.
-        for (const sgn of [-1, 1]) {
-          const la = sgn > 0 ? a.hIn : -a.hOut, lb = sgn > 0 ? b.hIn : -b.hOut;
-          if (a.s > wallEnd) continue;
-          if (sgn > 0 && a.s < r.sSep) continue;
-          const off = sgn * (WALL_T / 2 + 0.12);
-          const a0 = edge(i, la + off - sgn * WALL_T / 2), a1 = edge(i, la + off + sgn * WALL_T / 2);
-          const b0 = edge(i + 1, lb + off - sgn * WALL_T / 2),
-            b1 = edge(i + 1, lb + off + sgn * WALL_T / 2);
-          const top = (p: P3): P3 => [p[0], p[1] + WALL_H, p[2]];
-          const bot = (p: P3): P3 => [p[0], p[1] - 0.25, p[2]];
-          quad(wallPos, bot(a0), bot(b0), top(b0), top(a0), false);
-          quad(wallPos, bot(a1), bot(b1), top(b1), top(a1), false);
-          quad(wallPos, top(a0), top(b0), top(b1), top(a1), false);
-          // one collider per segment: the outer wall flares out of the gore
-          // nose quickly, so a box spanning several segments would cut the
-          // corner and sit on the pavement
-          const mx = (a0[0] + b0[0] + a1[0] + b1[0]) / 4;
-          const mz = (a0[2] + b0[2] + a1[2] + b1[2]) / 4;
-          const wdx = (b0[0] + b1[0] - a0[0] - a1[0]) / 2;
-          const wdz = (b0[2] + b1[2] - a0[2] - a1[2]) / 2;
-          const wl = Math.hypot(wdx, wdz) || 1;
-          world.colliders.addObb({
-            x: mx, z: mz, hw: WALL_T / 2 + 0.2, hd: wl / 2 + 0.1,
-            cos: wdz / wl, sin: wdx / wl, y0: a.y - 1.2, y1: a.y + WALL_H + 1.2,
-          });
-        }
-        // edge lighting down both sides
-        if (i % 8 === 0 && a.s < wallEnd) {
-          const lo = edge(i, -a.hOut - 0.5, 0.95), li = edge(i, a.hIn + 0.5, 0.95);
-          postPts.push(lo[0], lo[1], lo[2], li[0], li[1], li[2]);
-        }
-        // support columns
-        if (i % 7 === 0 && upA > 2.2 && nCol < 220) {
-          CE.set(0, Math.atan2(a.tx, a.tz), 0);
-          CQ.setFromEuler(CE);
-          CV.set(a.x, a.gy + (upA - 0.5) / 2, a.z);
-          CS.set(1, upA - 0.5, 1);
-          CM.compose(CV, CQ, CS);
-          cols.setMatrixAt(nCol++, CM);
-          add({ x0: a.x - 0.85, x1: a.x + 0.85, z0: a.z - 0.85, z1: a.z + 0.85,
-            y0: 0, y1: a.gy + upA - 1.2 });
-        }
-      }
-      // flat apron where the ramp meets the frontage road
-      const apron = new THREE.Mesh(new THREE.PlaneGeometry(24, RAMP_W), ramp);
-      apron.rotation.x = -Math.PI / 2;
-      apron.position.set(r.footX - r.mir * 11, pts[pts.length - 1].gy + 0.012, r.footZ);
-      apron.layers.set(1);
-      scene.add(apron);
-    }
-    cols.count = nCol;
-    cols.castShadow = true;
-    cols.computeBoundingSphere();
-    scene.add(cols);
-
-    const mkGeom = (pos: number[], uv?: number[]) => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
-      if (uv) g.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uv), 2));
-      g.computeVertexNormals();
-      g.computeBoundingSphere();
-      return g;
-    };
-    const surf = new THREE.Mesh(mkGeom(surfPos, surfUv), ramp);
-    surf.receiveShadow = true;
-    surf.layers.set(1);
-    scene.add(surf);
-    const skirtMat = concDark.clone();
-    skirtMat.side = THREE.DoubleSide;
-    const skirt = new THREE.Mesh(mkGeom(skirtPos), skirtMat);
-    skirt.castShadow = true;
-    scene.add(skirt);
-    const wallMat = barrier.clone();
-    wallMat.side = THREE.DoubleSide;
-    const walls = new THREE.Mesh(mkGeom(wallPos), wallMat);
-    walls.castShadow = true;
-    scene.add(walls);
-  }
-
-  /* ---- U-turn loop ends ---- */
-  const arcMat = new THREE.MeshStandardMaterial({
-    color: 0x171921, roughness: 0.42, metalness: 0.1,
-    envMap: mats.envMap, envMapIntensity: 0.4,
+  /* ---------------- deck: pavement, fascia, parapets, markings ------------- */
+  const markMat = new THREE.MeshBasicMaterial({
+    color: 0xe9edf6, fog: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
-  for (const e of [1, -1]) {
-    const cz = e * HZ;
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(1.0, RW / 2, 44, 1, e > 0 ? Math.PI : 0, Math.PI), arcMat);
-    ring.rotateX(-Math.PI / 2);
-    ring.position.set(HX, DECKY + 0.004, cz);
-    ring.receiveShadow = true;
-    ring.layers.set(1);
-    scene.add(ring);
-    const slab = new THREE.Mesh(
-      new THREE.CylinderGeometry(RW / 2 + 1.1, RW / 2 + 1.1, 1.25, 26, 1, false,
-        e > 0 ? -Math.PI / 2 : Math.PI / 2, Math.PI), conc);
-    slab.position.set(HX, DECKY - 0.66, cz);
-    slab.castShadow = true;
-    scene.add(slab);
-    const Rp = RW / 2 + 0.18, Nseg = 20;
-    for (let k = 0; k < Nseg; k++) {
-      const f0 = ((k + 0.5) / Nseg) * Math.PI;
-      const px = HX + e * Math.cos(f0) * Rp, pz = cz + e * Math.sin(f0) * Rp;
-      const seg = new THREE.Mesh(
-        new THREE.BoxGeometry(0.55, 1.05, (Math.PI * Rp) / Nseg + 0.5), barrier);
-      seg.position.set(px, DECKY + 0.52, pz);
-      seg.rotation.y = Math.atan2(-Math.sin(f0), Math.cos(f0));
-      scene.add(seg);
-      add({ x0: px - 1.1, x1: px + 1.1, z0: pz - 1.1, z1: pz + 1.1, y0: DECKY - 1, y1: DECKY + 2 });
-      if (k % 3 === 1) {
-        const ch = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.95),
-          new THREE.MeshBasicMaterial({ map: mats.chevTex, fog: false }));
-        ch.position.set(px - e * Math.cos(f0) * 0.5, DECKY + 1.35, pz - e * Math.sin(f0) * 0.5);
-        ch.rotation.y = Math.atan2(HX - px, cz - pz);
-        scene.add(ch);
+  const fasciaMat = conc.clone();
+  fasciaMat.side = THREE.DoubleSide;
+  const wallMat = barrier.clone();
+  wallMat.side = THREE.DoubleSide;
+
+  const WALL_H = 1.05, WALL_T = 0.34, DECK_TH = 1.15;
+  /** stations where a parapet must not be drawn (the ramp divergence zones) */
+  const gapZ: { z0: number; z1: number }[] = [];
+  for (const r of terrain.ramps) {
+    const g = Math.max(r.gapZ + 4, RAMP_W / 2 + 3);
+    gapZ.push({ z0: r.zr - g, z1: r.zr + g });
+  }
+  const wallOk = (z: number, east: boolean) => {
+    if (east) return true; // ramps only ever leave on the west side
+    for (const g of gapZ) if (z > g.z0 && z < g.z1) return false;
+    return true;
+  };
+  /** the tunnel supplies its own walls, so skip the parapet through it */
+  const inTube = (z: number) => z > TUNNEL.z0 - 3 && z < TUNNEL.z1 + 3;
+
+  const chunkOf = (z: number) => Math.floor(z / CHUNK_Z);
+  const road = new Map<number, Soup>();
+  const fascia = new Map<number, Soup>();
+  const walls = new Map<number, Soup>();
+  const marks = new Map<number, Soup>();
+  const soup = (m: Map<number, Soup>, c: number) => {
+    let s = m.get(c);
+    if (!s) m.set(c, (s = new Soup()));
+    return s;
+  };
+
+  for (let i = 0; i < ST.length - 1; i++) {
+    const a = ST[i], b = ST[i + 1];
+    const c = chunkOf(a.z);
+    // pavement
+    const la = pt(i, -a.hw), ra = pt(i, a.hw);
+    const lb = pt(i + 1, -b.hw), rb = pt(i + 1, b.hw);
+    soup(road, c).quadUv(
+      la, lb, rb, ra,
+      [0, a.s / TILE], [0, b.s / TILE],
+      [(2 * b.hw) / TILE, b.s / TILE], [(2 * a.hw) / TILE, a.s / TILE]
+    );
+    // fascia: the box girder under the deck
+    const lad = pt(i, -a.hw - 0.5, -DECK_TH), rad = pt(i, a.hw + 0.5, -DECK_TH);
+    const lbd = pt(i + 1, -b.hw - 0.5, -DECK_TH), rbd = pt(i + 1, b.hw + 0.5, -DECK_TH);
+    const F = soup(fascia, c);
+    F.quad(la, lb, lbd, lad); // west side
+    F.quad(ra, rad, rbd, rb); // east side
+    F.quad(lad, lbd, rbd, rad); // soffit
+    // parapets
+    if (i % WALL_EVERY === 0 && i + WALL_EVERY < ST.length && !inTube(a.z)) {
+      const e = ST[i + WALL_EVERY];
+      for (const sgn of [-1, 1]) {
+        if (!wallOk(a.z, sgn > 0)) continue;
+        const W = soup(walls, c);
+        const lo = sgn * (a.hw + WALL_T / 2 + 0.06), hi = sgn * (e.hw + WALL_T / 2 + 0.06);
+        const a0 = pt(i, lo - sgn * WALL_T / 2), a1 = pt(i, lo + sgn * WALL_T / 2);
+        const b0 = pt(i + WALL_EVERY, hi - sgn * WALL_T / 2);
+        const b1 = pt(i + WALL_EVERY, hi + sgn * WALL_T / 2);
+        const up = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
+        const dn = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
+        W.quad(dn(a0), dn(b0), up(b0), up(a0));
+        W.quad(dn(a1), dn(b1), up(b1), up(a1));
+        W.quad(up(a0), up(b0), up(b1), up(a1));
       }
-    }
-    const pil = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.15, 1.3, 14), barrier);
-    pil.position.set(HX, DECKY + 0.55, cz);
-    scene.add(pil);
-    const col = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.7, DECKY, 12), concDark);
-    col.position.set(HX, DECKY / 2 - 0.6, cz);
-    col.castShadow = true;
-    scene.add(col);
-    add({ x0: HX - 1.25, x1: HX + 1.25, z0: cz - 1.25, z1: cz + 1.25, y0: 0, y1: DECKY + 1.6 });
-    for (const f of [Math.PI * 0.3, Math.PI * 0.7]) {
-      const px = HX + e * Math.cos(f) * (RW / 2 - 3), pz = cz + e * Math.sin(f) * (RW / 2 - 3);
-      const p = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.2, DECKY - 1, 10), concDark);
-      p.position.set(px, DECKY / 2 - 0.9, pz);
-      scene.add(p);
-    }
-    const wg = new THREE.Mesh(new THREE.PlaneGeometry(6.4, 2.4),
-      new THREE.MeshBasicMaterial({ map: warnTexF("この先 Uターン", "U-TURN 250 m"), fog: false }));
-    wg.position.set(HX + e * 7, DECKY + 5.2, cz - e * 250);
-    wg.rotation.y = e > 0 ? Math.PI : 0;
-    scene.add(wg);
-    for (const px2 of [HX + e * 7 - 4.4, HX + e * 7 + 4.4]) {
-      const p2 = new THREE.Mesh(new THREE.BoxGeometry(0.26, 6.2, 0.26),
-        new THREE.MeshStandardMaterial({ color: 0x39404e, roughness: 0.6, metalness: 0.6 }));
-      p2.position.set(px2, DECKY + 3.1, cz - e * 250);
-      scene.add(p2);
     }
   }
 
-  /* ---- exit clarity pack v3 ---- */
-  const goreMat = new THREE.MeshBasicMaterial({ map: mats.goreTex, transparent: true, depthWrite: false });
-  const edgeMat = new THREE.MeshBasicMaterial({ color: 0xf2f5fa });
-  world.goreBeaconMat = new THREE.SpriteMaterial({
-    map: mats.glowTex, color: 0xffb020, transparent: true,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  // painted decel-lane taper + curved exit arrows on the deck surface
+  /* ---- lane markings ---- */
+  {
+    const stripe = (z0: number, z1: number, lat0: number, lat1: number, w: number) => {
+      const M = soup(marks, chunkOf(z0));
+      const p0 = cor.worldOf(z0, lat0 - w / 2), p1 = cor.worldOf(z0, lat0 + w / 2);
+      const p2 = cor.worldOf(z1, lat1 + w / 2), p3 = cor.worldOf(z1, lat1 - w / 2);
+      const Y = 0.022;
+      M.quadUv(
+        [p0.x, p0.y + Y, p0.z], [p3.x, p3.y + Y, p3.z],
+        [p2.x, p2.y + Y, p2.z], [p1.x, p1.y + Y, p1.z],
+        [0, 0], [0, 1], [1, 1], [1, 0]
+      );
+    };
+    // solid edge lines down both shoulders
+    for (let z = cor.ZB0; z < cor.ZB1 - 6; z += 6) {
+      const h0 = cor.halfWidth(z) - 0.45, h1 = cor.halfWidth(z + 6) - 0.45;
+      stripe(z, z + 6, -h0, -h1, 0.2);
+      stripe(z, z + 6, h0, h1, 0.2);
+    }
+    // dashed lane boundaries; a boundary only exists once its lane is real
+    const DASH = 5, GAP = 9;
+    for (let z = cor.ZB0; z < cor.ZB1 - DASH; z += DASH + GAP) {
+      const nf = cor.laneCount(z);
+      for (let k = 1; k < Math.ceil(nf - 0.35); k++)
+        stripe(z, z + DASH, cor.laneEdge(k, z), cor.laneEdge(k, z + DASH), 0.16);
+    }
+  }
+
+  /* ---- lane-drop tapers: solid diagonal + hatching + merge arrows ---- */
   const arrowTex = makeTex(96, 192, (ctx, w, h) => {
     ctx.clearRect(0, 0, w, h);
     ctx.strokeStyle = "rgba(235,240,248,.92)";
@@ -337,113 +248,127 @@ export function buildHighway(
     ctx.closePath();
     ctx.fill();
   });
-  const taperTex = makeTex(128, 512, (ctx, w, h) => {
-    ctx.clearRect(0, 0, w, h);
-    ctx.strokeStyle = "rgba(240,244,250,.9)";
-    ctx.lineWidth = 8;
-    ctx.beginPath();
-    ctx.moveTo(w - 6, 0);
-    ctx.lineTo(6, h);
-    ctx.stroke();
-    ctx.setLineDash([18, 22]);
-    ctx.beginPath();
-    ctx.moveTo(w - 6, 0);
-    ctx.lineTo(w - 6, h);
-    ctx.stroke();
+  const arrowMat = new THREE.MeshBasicMaterial({
+    map: arrowTex, transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
-  const exitBoards: THREE.Mesh[] = [];
-  CONNECT_Z.forEach((zr, gi) => {
-    world.exits.push({ z: zr, no: gi + 1, name: EXIT_NAMES[gi] || "出口" });
-    for (const MIR of [1, -1]) {
-      const edgeX = HX - MIR * (RW / 2 - 1.9);
-      // gore chevrons on the surface
-      const gore = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 5.6), goreMat);
-      gore.rotation.x = -Math.PI / 2;
-      gore.rotation.z = MIR > 0 ? 0 : Math.PI;
-      gore.position.set(edgeX, DECKY + 0.02, zr);
-      gore.layers.set(1);
-      scene.add(gore);
-      // white gore edge strokes
-      for (const sgn of [-1, 1]) {
-        const st = new THREE.Mesh(new THREE.PlaneGeometry(0.26, 7.5), edgeMat);
-        st.rotation.x = -Math.PI / 2;
-        st.rotation.z = MIR * sgn * 0.42;
-        st.position.set(HX - MIR * (RW / 2 - 1.0), DECKY + 0.02, zr + sgn * (RAMP_W / 2 + 3.4));
-        st.layers.set(1);
-        scene.add(st);
+  const decal = (z: number, lat: number, w: number, l: number, mat: THREE.Material, mirror = false) => {
+    const p = cor.worldOf(z, lat);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, l), mat);
+    m.rotation.x = -Math.PI / 2;
+    m.rotation.z = -cor.pose(z).h;
+    if (mirror) m.scale.x = -1;
+    m.position.set(p.x, p.y + 0.024, p.z);
+    m.layers.set(LAYER_NOREF);
+    scene.add(m);
+    return m;
+  };
+  /** every stretch where the lane count falls, found by walking the schedule */
+  const drops: { z0: number; z1: number }[] = [];
+  {
+    let prev = cor.laneCount(cor.ZB0), start = -1;
+    for (let z = cor.ZB0; z <= cor.ZB1; z += 8) {
+      const n = cor.laneCount(z);
+      if (n < prev - 0.002 && start < 0) start = z;
+      if (start >= 0 && n >= prev - 0.002) {
+        drops.push({ z0: start, z1: z });
+        start = -1;
       }
-      // amber beacon at the gore nose
-      const bea = new THREE.Sprite(world.goreBeaconMat);
-      bea.scale.set(1.9, 1.9, 1);
-      bea.position.set(HX - MIR * (RW / 2 - 0.5), DECKY + 1.9, zr);
-      scene.add(bea);
-      // decel taper + arrows for both travel directions on this side
-      for (const dir of [1, -1]) {
-        const tp = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 46), new THREE.MeshBasicMaterial({
-          map: taperTex, transparent: true, depthWrite: false }));
-        tp.rotation.x = -Math.PI / 2;
-        tp.rotation.z = dir > 0 ? (MIR > 0 ? 0 : Math.PI) : MIR > 0 ? Math.PI : 0;
-        tp.position.set(HX - MIR * (RW / 2 - 2.1), DECKY + 0.018, zr - dir * 34);
-        tp.layers.set(1);
-        scene.add(tp);
-        for (let k = 0; k < 3; k++) {
-          const ar = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 3.2), new THREE.MeshBasicMaterial({
-            map: arrowTex, transparent: true, depthWrite: false }));
-          ar.rotation.x = -Math.PI / 2;
-          ar.rotation.z = dir > 0 ? 0 : Math.PI;
-          if (MIR < 0) ar.scale.x = -1;
-          ar.position.set(HX - MIR * (RW / 2 - 2.6), DECKY + 0.02, zr - dir * (58 + k * 26));
-          ar.layers.set(1);
-          scene.add(ar);
-        }
-        // countdown signage at 300 / 150 m
-        for (const dist of [300, 150]) {
-          const sx = HX - MIR * 7;
-          const szz = zr - dir * dist;
-          if (Math.abs(szz) > HZ - 30) continue;
-          const board = new THREE.Mesh(new THREE.PlaneGeometry(7.4, 2.8),
-            new THREE.MeshBasicMaterial({
-              map: exitSignTexF(gi + 1, dist + " m", (EXIT_NAMES[gi] || "").split(" ")[0]),
-              fog: false,
-            }));
-          board.position.set(sx, DECKY + 5.4, szz);
-          board.rotation.y = dir > 0 ? Math.PI : 0;
-          scene.add(board);
-          exitBoards.push(board);
-          for (const px of [sx - 4, sx + 4]) {
-            const p = new THREE.Mesh(new THREE.BoxGeometry(0.28, 6.8, 0.28),
-              new THREE.MeshStandardMaterial({ color: 0x39404e, roughness: 0.6, metalness: 0.6 }));
-            p.position.set(px, DECKY + 3.4, szz);
-            scene.add(p);
-          }
-        }
-      }
-      // sign right at the gore
-      for (const ry of [0, Math.PI]) {
-        const eb = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 1.9),
-          new THREE.MeshBasicMaterial({
-            map: exitSignTexF(gi + 1, "出口", (EXIT_NAMES[gi] || "").split(" ")[0]), fog: false }));
-        eb.position.set(HX - MIR * (RW / 2 + 0.35), DECKY + 3.1, zr + (ry === 0 ? -1 : 1) * 2.2);
-        eb.rotation.y = ry;
-        scene.add(eb);
-      }
-      // ground-level entrance sign at each ramp foot on this side
-      for (const r of terrain.ramps) {
-        if (r.zr !== zr || r.mir !== MIR) continue;
-        const gx = r.footX - MIR * 6;
-        const gz = r.footZ + MIR * (RAMP_W / 2 + 2.4);
-        const gp = new THREE.Mesh(new THREE.BoxGeometry(0.24, 3.6, 0.24),
-          new THREE.MeshStandardMaterial({ color: 0x39404e, roughness: 0.6, metalness: 0.6 }));
-        gp.position.set(gx, 1.8, gz);
-        scene.add(gp);
-        const gb = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 1.8),
-          new THREE.MeshBasicMaterial({ map: signTexF("首都高", "IN ↑"), fog: false }));
-        gb.position.set(gx, 3.4, gz);
-        gb.rotation.y = MIR > 0 ? Math.PI / 2 : -Math.PI / 2;
-        scene.add(gb);
-      }
+      prev = n;
     }
-  });
+  }
+  for (const d of drops) {
+    /* Because the lanes stay centred on the alignment, the roadway narrows from
+       both sides and the shoulder edge line already draws the converging taper.
+       What the driver still needs is the hatched gore filling the lane that is
+       running out, so that is what goes down here: chevron bars slanting from
+       the last surviving lane boundary out to the shoulder. */
+    const outer = (z: number) => cor.halfWidth(z) - 0.5;
+    const inner = (z: number) => cor.laneEdge(Math.ceil(cor.laneCount(z) - 0.35) - 1, z);
+    const BAR = 0.28, LEAN = 4.5;
+    for (let z = d.z0 + 6; z < d.z1 - LEAN; z += 7) {
+      const lo = inner(z), hi = outer(z + LEAN);
+      if (hi - lo < 0.9) continue;
+      const M = soup(marks, chunkOf(z));
+      const a0 = cor.worldOf(z, lo), a1 = cor.worldOf(z, lo + BAR);
+      const b1 = cor.worldOf(z + LEAN, hi + BAR), b0 = cor.worldOf(z + LEAN, hi);
+      const Y = 0.026;
+      M.quadUv(
+        [a0.x, a0.y + Y, a0.z], [b0.x, b0.y + Y, b0.z],
+        [b1.x, b1.y + Y, b1.z], [a1.x, a1.y + Y, a1.z],
+        [0, 0], [0, 1], [1, 1], [1, 0]
+      );
+    }
+    // "lane ends, merge" arrows in the closing lane, ahead of the taper
+    for (let k = 0; k < 3; k++) {
+      const z = d.z0 - 30 - k * 26;
+      if (z < cor.ZB0) break;
+      decal(z, cor.laneOffset(Math.round(cor.laneCount(z)) - 1, z), 1.6, 3.4, arrowMat);
+    }
+  }
+
+  /* ---- emit the chunked deck meshes ---- */
+  const emit = (
+    m: Map<number, Soup>, mat: THREE.Material, uv: boolean,
+    shadow: boolean, noRef: boolean
+  ) => {
+    for (const [, s] of m) {
+      if (s.empty) continue;
+      const mesh = new THREE.Mesh(s.geom(uv), mat);
+      mesh.castShadow = shadow;
+      mesh.receiveShadow = true;
+      if (noRef) mesh.layers.set(LAYER_NOREF);
+      scene.add(mesh);
+    }
+  };
+  emit(road, hwy, true, false, true);
+  emit(fascia, fasciaMat, false, true, false);
+  emit(walls, wallMat, false, true, false);
+  emit(marks, markMat, true, false, true);
+
+  /* ---------------- piers ---------------- */
+  {
+    const PITCH = 30;
+    const n = Math.ceil((cor.ZB1 - cor.ZB0) / PITCH);
+    const pier = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(1.15, 1.4, 1, 10), concDark, n);
+    const beams = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1.1, 2.4), concDark, n);
+    const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
+      E = new THREE.Euler(), S = new THREE.Vector3();
+    let k = 0;
+    for (let z = cor.ZB0 + 12; z < cor.ZB1 - 12 && k < n; z += PITCH) {
+      const p = cor.pose(z);
+      const gy = terrain.h(p.x, z);
+      const hgt = Math.max(1.5, p.y - 1.4 - gy);
+      E.set(0, p.h, 0);
+      Q.setFromEuler(E);
+      V.set(p.x, gy + hgt / 2, z);
+      S.set(1, hgt, 1);
+      M.compose(V, Q, S);
+      pier.setMatrixAt(k, M);
+      V.set(p.x, p.y - 1.75, z);
+      S.set(cor.halfWidth(z) * 2 + 3, 1, 1);
+      M.compose(V, Q, S);
+      beams.setMatrixAt(k, M);
+      add({ x0: p.x - 1.4, x1: p.x + 1.4, z0: z - 1.4, z1: z + 1.4, y0: gy, y1: gy + hgt - 1 });
+      k++;
+    }
+    pier.count = beams.count = k;
+    pier.castShadow = true;
+    pier.computeBoundingSphere();
+    beams.computeBoundingSphere();
+    scene.add(pier, beams);
+  }
+
+  /* ---------------- tunnel ---------------- */
+  buildTunnel(scene, mats, world, cor, pt);
+
+  /* ---------------- toll plaza ---------------- */
+  buildToll(scene, mats, world, cor);
+
+  /* ---------------- ramps ---------------- */
+  const postPts: number[] = [];
+  buildRampMeshes(scene, mats, world, terrain, postPts);
   {
     const pg = new THREE.BufferGeometry();
     pg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(postPts), 3));
@@ -457,11 +382,74 @@ export function buildHighway(
     world.rampPostMat = pm;
   }
 
-  /* ---- deck dressing: edge reflectors, gantries ---- */
+  /* ---------------- exit treatment ---------------- */
+  const goreMat = new THREE.MeshBasicMaterial({
+    map: mats.goreTex, transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+  });
+  world.goreBeaconMat = new THREE.SpriteMaterial({
+    map: mats.glowTex, color: 0xffb020, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const board = signFactory(scene, cor);
+  const postMat = new THREE.MeshStandardMaterial({
+    color: 0x39404e, roughness: 0.6, metalness: 0.6 });
+
+  terrain.ramps.forEach((r) => {
+    const isExit = r.kind === "exit";
+    const gi = CONNECT_Z.indexOf(r.zr);
+    const name = EXIT_NAMES[gi] || "出口";
+    const lat = -(cor.halfWidth(r.zr) - 1.9);
+    if (isExit) world.exits.push({ z: r.zr, no: gi + 1, name });
+    // painted gore chevrons at the nose
+    const gp = cor.worldOf(r.zr + (isExit ? 4 : -4), lat);
+    const gore = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 6.4), goreMat);
+    gore.rotation.x = -Math.PI / 2;
+    gore.rotation.z = -cor.pose(r.zr).h + (isExit ? 0 : Math.PI);
+    gore.position.set(gp.x, gp.y + 0.03, gp.z);
+    gore.layers.set(LAYER_NOREF);
+    scene.add(gore);
+    // amber beacon on the nose
+    const bp = cor.worldOf(r.zr, -(cor.halfWidth(r.zr) - 0.5));
+    const bea = new THREE.Sprite(world.goreBeaconMat!);
+    bea.scale.set(1.9, 1.9, 1);
+    bea.position.set(bp.x, bp.y + 1.9, bp.z);
+    scene.add(bea);
+
+    if (isExit) {
+      // decel-lane arrows and countdown signage
+      for (let k = 0; k < 3; k++)
+        decal(r.zr - 34 - k * 26, lat + 0.5, 1.6, 3.4, arrowMat);
+      for (const dist of [400, 200])
+        board(r.zr - dist, 7.4, 2.8, exitSignTexF(gi + 1, dist + " m", name.split(" ")[0]));
+      board(r.zr - 40, 7.4, 2.8, exitSignTexF(gi + 1, "出口", name.split(" ")[0]));
+    } else {
+      // 260 m back would put this on top of the exit gore at z = -330
+      board(r.zr - 200, 6.6, 2.5, warnTexF("合流注意", "MERGING TRAFFIC"));
+    }
+    // ground-level sign at the ramp foot
+    const gx = r.footX - 6, gz = r.footZ + (isExit ? -1 : 1) * (RAMP_W / 2 + 2.4);
+    const gpole = new THREE.Mesh(new THREE.BoxGeometry(0.24, 3.6, 0.24), postMat);
+    gpole.position.set(gx, terrain.h(gx, gz) + 1.8, gz);
+    scene.add(gpole);
+    const gb = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 1.8),
+      new THREE.MeshBasicMaterial({
+        map: signTexF("首都高", isExit ? "OUT ↓" : "IN ↑"), fog: false }));
+    gb.position.set(gx, terrain.h(gx, gz) + 3.4, gz);
+    gb.rotation.y = Math.PI / 2;
+    scene.add(gb);
+  });
+
+  /* ---------------- deck dressing ---------------- */
+  // edge reflectors
   {
     const pts: number[] = [];
-    for (let z = -HZ + 12; z <= HZ - 12; z += 24)
-      pts.push(HX - RW / 2 + 0.4, DECKY + 0.92, z, HX + RW / 2 - 0.4, DECKY + 0.92, z);
+    for (let z = cor.ZB0 + 12; z <= cor.ZB1 - 12; z += 24) {
+      if (cor.inTunnel(z)) continue;
+      const hw = cor.halfWidth(z) - 0.4;
+      const a = cor.worldOf(z, -hw), b = cor.worldOf(z, hw);
+      pts.push(a.x, a.y + 0.92, a.z, b.x, b.y + 0.92, b.z);
+    }
     const rg = new THREE.BufferGeometry();
     rg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
     const rm = new THREE.PointsMaterial({
@@ -474,59 +462,99 @@ export function buildHighway(
     scene.add(rp);
     world.reflMat = rm;
   }
+  // sign gantries
   {
     const gMat = new THREE.MeshStandardMaterial({ color: 0x3a404c, roughness: 0.6, metalness: 0.4 });
     const words = ["箱崎 Hakozaki", "新宿 Shinjuku", "渋谷 Shibuya", "湾岸線 Wangan"];
-    for (let z = -900; z <= 900; z += 450) {
-      let nearExit = false;
-      for (const zr of CONNECT_Z) if (Math.abs(z - zr) < 180) nearExit = true;
-      if (nearExit) continue; // keep gantries clear of exit signage
+    for (let z = cor.ZB0 + 200; z <= cor.ZB1 - 200; z += 520) {
+      if (cor.inTunnel(z) || cor.inToll(z)) continue;
+      if (CONNECT_Z.some((cz) => Math.abs(z - cz) < 220)) continue;
+      const p = cor.pose(z);
+      const hw = cor.halfWidth(z);
       const g = new THREE.Group();
+      // legs stand on the outer shoulder: outboard of every lane, but inboard
+      // of the parapet, so they are never left hanging off the deck edge
+      const legLat = hw - 0.62;
       for (const s of [-1, 1]) {
-        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.5, 6, 0.5), gMat);
-        leg.position.set(s * (RW / 2 + 0.6), 3, 0);
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.5, 7.2, 0.5), gMat);
+        leg.position.set(s * legLat, 3.6, 0);
+        leg.castShadow = true;
         g.add(leg);
       }
-      const beam = new THREE.Mesh(new THREE.BoxGeometry(RW + 2.5, 0.75, 0.6), gMat);
-      beam.position.y = 6;
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(legLat * 2 + 0.9, 0.75, 0.6), gMat);
+      beam.position.y = 7.2;
       g.add(beam);
       const w1 = words[Math.floor(rrand(rng, 0, words.length)) % words.length];
-      const w2 = words[Math.floor(rrand(rng, 0, words.length)) % words.length];
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.6),
-        new THREE.MeshBasicMaterial({ map: signTexF(w1, "首都高速 C1") }));
-      sign.position.set(-5, 4.7, -0.35);
+      // the deck is only 10.5 m wide where it drops to two lanes, so size the
+      // panel to the road rather than hanging it out over the drop
+      const sw = Math.min(9, legLat * 2 - 1.4);
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(sw, sw * 0.29),
+        new THREE.MeshBasicMaterial({ map: signTexF(w1, "首都高速 C1"), fog: false }));
+      sign.position.set(0, 5.5, -0.35);
       sign.rotation.y = Math.PI;
       g.add(sign);
-      const sign2 = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.6),
-        new THREE.MeshBasicMaterial({ map: signTexF(w2, "首都高速 C1") }));
-      sign2.position.set(5, 4.7, 0.35);
-      g.add(sign2);
-      g.position.set(HX, DECKY, z);
+      g.position.set(p.x, p.y, p.z);
+      g.rotation.y = p.h;
       scene.add(g);
     }
   }
+  /* Sound walls, on the shoulder away from the town. Swept along the corridor
+     stations like the rest of the furniture — a straight box drifts more than a
+     metre off a curving deck edge over its own length — and kept well away from
+     the gores, since a 2.6 m translucent slab standing over an exit reads as a
+     black panel across the sign line. */
+  {
+    const SEG = 92, PITCH = 330, H = 2.6;
+    const swMat = soundwall.clone();
+    swMat.side = THREE.DoubleSide;
+    const S = new Soup();
+    for (let z0 = cor.ZB0 + 90; z0 < cor.ZB1 - SEG - 60; z0 += PITCH) {
+      const mid = z0 + SEG / 2;
+      if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
+      if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
+      const i0 = Math.round((z0 - cor.ZB0) / 4);
+      const i1 = Math.min(ST.length - 1, Math.round((z0 + SEG - cor.ZB0) / 4));
+      for (let i = i0; i < i1; i++) {
+        const la = ST[i].hw + 0.3, lb = ST[i + 1].hw + 0.3;
+        const a0 = pt(i, la), b0 = pt(i + 1, lb);
+        const a1 = pt(i, la, H), b1 = pt(i + 1, lb, H);
+        S.quad(a0, b0, b1, a1);
+      }
+    }
+    if (!S.empty) {
+      const m = new THREE.Mesh(S.geom(false), swMat);
+      m.castShadow = true;
+      scene.add(m);
+    }
+  }
 
-  /* ---- streetlights on deck ---- */
+  /* ---------------- streetlights ---------------- */
   const lightPts: number[] = [];
   {
     const poleG = new THREE.CylinderGeometry(0.09, 0.12, 7.6, 6);
     const armG = new THREE.BoxGeometry(1.7, 0.09, 0.09);
-    const NP = 110;
+    const NP = Math.ceil((cor.ZB1 - cor.ZB0) / 46) + 4;
     const poles = new THREE.InstancedMesh(poleG, mats.pole, NP);
     const arms = new THREE.InstancedMesh(armG, mats.pole, NP);
     const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
-      SC = new THREE.Vector3(1, 1, 1);
-    let n = 0;
-    for (let z = -HZ + 30; z <= HZ - 30 && n < NP; z += 44) {
-      const side = (z / 44) % 2 ? 1 : -1;
-      const x = HX + side * (RW / 2 - 0.6);
-      V.set(x, DECKY + 3.8, z);
-      M.compose(V, Q, SC);
+      E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
+    let n = 0, flip = 1;
+    for (let z = cor.ZB0 + 30; z <= cor.ZB1 - 30 && n < NP; z += 46) {
+      if (cor.inTunnel(z) || cor.inToll(z)) continue;
+      flip = -flip;
+      const p = cor.pose(z);
+      const lat = flip * (cor.halfWidth(z) - 0.6);
+      E.set(0, p.h, 0);
+      Q.setFromEuler(E);
+      V.set(p.x + lat * p.nx, p.y + 3.8, p.z + lat * p.nz);
+      M.compose(V, Q, S);
       poles.setMatrixAt(n, M);
-      V.set(x - side * 0.8, DECKY + 7.5, z);
-      M.compose(V, Q, SC);
+      const armLat = lat - flip * 0.8;
+      V.set(p.x + armLat * p.nx, p.y + 7.5, p.z + armLat * p.nz);
+      M.compose(V, Q, S);
       arms.setMatrixAt(n, M);
-      lightPts.push(x - side * 1.55, DECKY + 7.45, z);
+      const lampLat = lat - flip * 1.55;
+      lightPts.push(p.x + lampLat * p.nx, p.y + 7.45, p.z + lampLat * p.nz);
       n++;
     }
     poles.count = arms.count = n;
@@ -537,14 +565,394 @@ export function buildHighway(
   return { deckLightPts: lightPts };
 }
 
-/** Exit HUD helper: nearest exit ahead when driving the deck. */
-export function nearestExitAhead(world: WorldData, z: number, headingZ: number) {
-  const dir = headingZ >= 0 ? 1 : -1;
+/* ============================ tunnel ==================================== */
+
+function buildTunnel(
+  scene: THREE.Scene,
+  mats: Mats,
+  world: WorldData,
+  cor: ReturnType<typeof getCorridor>,
+  pt: (i: number, lat: number, dy?: number) => Vec3
+) {
+  const H = 6.4; // clear height under the ceiling
+  /* Tiled walls. A little self-illumination stands in for the bounce light a
+     real tunnel gets off its own tiling — without it the tube goes pitch black
+     a few metres past the last batten, because the sun and moon are both
+     outside. */
+  const tileMat = new THREE.MeshStandardMaterial({
+    color: 0x9aa3b2, roughness: 0.35, metalness: 0.12,
+    emissive: 0x171b24, emissiveIntensity: 1,
+    envMap: mats.envMap, envMapIntensity: 0.25, side: THREE.DoubleSide,
+  });
+  const ceilMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2d36, roughness: 0.85, side: THREE.DoubleSide,
+  });
+  const wallS = new Soup(), ceilS = new Soup();
+  const i0 = Math.max(0, Math.floor((TUNNEL.z0 - cor.ZB0) / 4));
+  const i1 = Math.min(cor.stations.length - 2, Math.ceil((TUNNEL.z1 - cor.ZB0) / 4));
+  for (let i = i0; i < i1; i++) {
+    const a = cor.stations[i], b = cor.stations[i + 1];
+    const wa = a.hw + 0.55, wb = b.hw + 0.55;
+    for (const sgn of [-1, 1]) {
+      const lo0 = pt(i, sgn * wa), lo1 = pt(i + 1, sgn * wb);
+      const hi0 = pt(i, sgn * wa, H), hi1 = pt(i + 1, sgn * wb, H);
+      wallS.quad(lo0, lo1, hi1, hi0);
+    }
+    ceilS.quad(pt(i, -wa, H), pt(i + 1, -wb, H), pt(i + 1, wb, H), pt(i, wa, H));
+  }
+  const wm = new THREE.Mesh(wallS.geom(false), tileMat);
+  const cm = new THREE.Mesh(ceilS.geom(false), ceilMat);
+  wm.receiveShadow = true;
+  scene.add(wm, cm);
+
+  // portal frames: a thick collar at each mouth so the entry reads as a mouth
+  const portalMat = new THREE.MeshStandardMaterial({ color: 0x3b3f4a, roughness: 0.8 });
+  for (const z of [TUNNEL.z0, TUNNEL.z1]) {
+    const p = cor.pose(z);
+    const hw = cor.halfWidth(z) + 0.55;
+    const g = new THREE.Group();
+    const top = new THREE.Mesh(new THREE.BoxGeometry(hw * 2 + 3.4, 2.2, 1.6), portalMat);
+    top.position.y = H + 1.1;
+    g.add(top);
+    for (const s of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(1.7, H + 2.2, 1.6), portalMat);
+      leg.position.set(s * (hw + 0.85), (H + 2.2) / 2, 0);
+      g.add(leg);
+    }
+    /* Hazard chevrons across the header. This texture has an opaque near-black
+       background, so unlike the (bright) sign panels it must respect fog —
+       otherwise it stays jet black while the portal around it fades out, and
+       reads as a black polygon hanging in the air. */
+    const hz = new THREE.Mesh(new THREE.PlaneGeometry(hw * 2 + 3, 1.0),
+      new THREE.MeshBasicMaterial({ map: mats.chevTex }));
+    hz.position.set(0, H + 1.1, -0.85);
+    hz.rotation.y = Math.PI;
+    g.add(hz);
+    g.position.set(p.x, p.y, p.z);
+    g.rotation.y = p.h;
+    scene.add(g);
+  }
+
+  /* Ceiling lighting: a long emissive batten every 14 m plus an additive glow
+     sprite, which is what actually reads as light without adding real lights
+     to a scene that is already at its shadow-caster budget. */
+  const battenMat = new THREE.MeshBasicMaterial({ color: 0xfff0cf, fog: false });
+  const NL = Math.floor((TUNNEL.z1 - TUNNEL.z0) / 14);
+  const bat = new THREE.InstancedMesh(new THREE.BoxGeometry(1.4, 0.12, 4.6), battenMat, NL);
+  const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
+    E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
+  const glowPts: number[] = [];
+  let n = 0;
+  for (let k = 0; k < NL; k++) {
+    const z = TUNNEL.z0 + 7 + k * 14;
+    const p = cor.pose(z);
+    E.set(0, p.h, 0);
+    Q.setFromEuler(E);
+    V.set(p.x, p.y + H - 0.16, p.z);
+    M.compose(V, Q, S);
+    bat.setMatrixAt(n++, M);
+    glowPts.push(p.x, p.y + H - 0.3, p.z);
+    // wall-washer strips low down on both sides
+    for (const sgn of [-1, 1]) {
+      const lat = sgn * (cor.halfWidth(z) + 0.5);
+      glowPts.push(p.x + lat * p.nx, p.y + 2.6, p.z + lat * p.nz);
+    }
+  }
+  bat.count = n;
+  bat.computeBoundingSphere();
+  scene.add(bat);
+  const gg = new THREE.BufferGeometry();
+  gg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(glowPts), 3));
+  const gm = new THREE.PointsMaterial({
+    size: 5.5, sizeAttenuation: false, color: 0xffe0a8, map: mats.glowTex,
+    transparent: true, opacity: 0.9, fog: false, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const gp = new THREE.Points(gg, gm);
+  gp.frustumCulled = false;
+  scene.add(gp);
+  // deliberately not registered in world.neonMats: the engine dims those with
+  // daylight, and a tunnel's lights are exactly the ones that must stay on
+}
+
+/* ============================ toll plaza ================================ */
+
+function buildToll(
+  scene: THREE.Scene,
+  mats: Mats,
+  world: WorldData,
+  cor: ReturnType<typeof getCorridor>
+) {
+  const add = (b: { x0: number; x1: number; z0: number; z1: number; y0: number; y1: number }) =>
+    world.colliders.addAabb(b);
+  const zc = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
+  const p0 = cor.pose(zc);
+  const hw = cor.halfWidth(zc);
+  const lanes = cor.lanes(zc);
+  const kerbMat = new THREE.MeshStandardMaterial({ color: 0x6d7484, roughness: 0.75 });
+  const boothMat = new THREE.MeshStandardMaterial({
+    color: 0xd8dbe2, roughness: 0.5, metalness: 0.2,
+    envMap: mats.envMap, envMapIntensity: 0.3 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x1a2836, roughness: 0.15, metalness: 0.8, envMap: mats.envMap,
+    envMapIntensity: 0.9, transparent: true, opacity: 0.75,
+  });
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0x3f4653, roughness: 0.55, metalness: 0.6 });
+  const boomMat = new THREE.MeshStandardMaterial({
+    color: 0xf1f3f7, emissive: 0xff5a3c, emissiveIntensity: 0.35, roughness: 0.6 });
+
+  const plaza = new THREE.Group();
+  plaza.position.set(p0.x, p0.y, p0.z);
+  plaza.rotation.y = p0.h;
+  scene.add(plaza);
+  /** local → world for collider boxes (heading is ~0 here by construction) */
+  const wx = (lat: number) => p0.x + lat * p0.nx;
+  const wz = (lat: number, dz: number) => p0.z + lat * p0.nz + dz;
+
+  /* Islands between every pair of lanes. Everything here is kept narrow on
+     purpose: the lanes are 3.7 m apart, so a 1.7 m island would leave a 1.85 m
+     car about 7 cm of margin either side. At 1.0 m the gap is 2.5 m, which is
+     threadable at speed — which is the whole point of putting a toll plaza in
+     a weaving game. */
+  const IW = 1.0, IL = 15; // island width and length
+  for (let k = 1; k < lanes; k++) {
+    const lat = cor.laneEdge(k, zc);
+    const kerb = new THREE.Mesh(new THREE.BoxGeometry(IW, 0.32, IL), kerbMat);
+    kerb.position.set(lat, 0.16, 0);
+    kerb.castShadow = true;
+    plaza.add(kerb);
+    add({
+      x0: wx(lat) - 0.6, x1: wx(lat) + 0.6,
+      z0: wz(lat, -IL / 2), z1: wz(lat, IL / 2),
+      y0: p0.y - 0.5, y1: p0.y + 3.4,
+    });
+    // manned booths on the outer islands, bare gate posts on the inner ones
+    const manned = k === 1 || k === lanes - 1 || k === 3;
+    if (manned) {
+      const b = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.9, 3.4), boothMat);
+      b.position.set(lat, 1.77, -1.5);
+      b.castShadow = true;
+      plaza.add(b);
+      const gl = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 1.3), glassMat);
+      gl.position.set(lat - 0.62, 2.15, -1.5);
+      gl.rotation.y = -Math.PI / 2;
+      plaza.add(gl);
+    } else {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.6, 0.4), steel);
+      post.position.set(lat, 1.1, -2.2);
+      plaza.add(post);
+    }
+    // gate arm, swung up out of the way — every lane is open
+    const boom = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 3.4), boomMat);
+    boom.position.set(lat, 2.4, 1.6);
+    boom.rotation.x = -1.16;
+    plaza.add(boom);
+    const pivot = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 1.7, 8), steel);
+    pivot.position.set(lat, 0.85, 1.6);
+    plaza.add(pivot);
+  }
+
+  // canopy over the whole plaza
+  const CW = hw * 2 + 5, CL = 34;
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(CW, 0.9, CL),
+    new THREE.MeshStandardMaterial({ color: 0x2f333d, roughness: 0.8 }));
+  roof.position.y = 7.4;
+  roof.castShadow = true;
+  plaza.add(roof);
+  const soffit = new THREE.Mesh(new THREE.BoxGeometry(CW - 1.2, 0.16, CL - 1.2),
+    new THREE.MeshStandardMaterial({ color: 0xe6e9ef, roughness: 0.6 }));
+  soffit.position.y = 6.92;
+  plaza.add(soffit);
+  // canopy columns stand on the outer shoulder — outboard of the widest lane
+  // but still on the pavement, so they are not left hanging off the deck edge
+  const colLat = hw - 0.75;
+  for (const s of [-1, 1])
+    for (const dz of [-CL / 2 + 3, CL / 2 - 3]) {
+      const col = new THREE.Mesh(new THREE.BoxGeometry(0.9, 7.4, 0.9), steel);
+      col.position.set(s * colLat, 3.7, dz);
+      col.castShadow = true;
+      plaza.add(col);
+      add({
+        x0: wx(s * colLat) - 0.55, x1: wx(s * colLat) + 0.55,
+        z0: wz(s * colLat, dz) - 0.55, z1: wz(s * colLat, dz) + 0.55,
+        y0: p0.y, y1: p0.y + 7.4,
+      });
+    }
+
+  /* Per-lane overhead signs: green ETC lanes in the middle, purple cash lanes
+     on the outside — the colour is the whole read at 200 km/h. */
+  const laneSign = (etc: boolean) =>
+    makeTex(256, 160, (ctx, w, h) => {
+      ctx.fillStyle = etc ? "#0d5a34" : "#4a2069";
+      ctx.fillRect(0, 0, w, h);
+      ctx.strokeStyle = "#eef4f0";
+      ctx.lineWidth = 6;
+      ctx.strokeRect(5, 5, w - 10, h - 10);
+      ctx.fillStyle = "#f2f8f4";
+      ctx.textAlign = "center";
+      ctx.font = "800 54px sans-serif";
+      ctx.fillText(etc ? "ETC" : "一般", w / 2, 74);
+      ctx.font = "700 30px sans-serif";
+      ctx.fillText(etc ? "専用" : "CASH", w / 2, 120);
+    });
+  const etcTex = laneSign(true), cashTex = laneSign(false);
+  for (let k = 0; k < lanes; k++) {
+    const etc = k > 0 && k < lanes - 1;
+    const m = new THREE.MeshBasicMaterial({ map: etc ? etcTex : cashTex, fog: false });
+    const s = new THREE.Mesh(new THREE.PlaneGeometry(2.9, 1.8), m);
+    s.position.set(cor.laneOffset(k, zc), 5.3, -CL / 2 + 1.2);
+    s.rotation.y = Math.PI;
+    plaza.add(s);
+    // green "lane open" arrow under each sign
+    const a = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9),
+      new THREE.MeshBasicMaterial({ color: 0x4dffa0, map: mats.glowTex, fog: false,
+        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+    a.position.set(cor.laneOffset(k, zc), 4.0, -CL / 2 + 1.15);
+    a.rotation.y = Math.PI;
+    plaza.add(a);
+  }
+  // approach signage, on the same cantilever mount as the exit boards
+  const board = signFactory(scene, cor);
+  // 500 m out is clear of the tunnel mouth; the near board goes just past the
+  // exit portal rather than inside the tube
+  for (const d of [500, 115])
+    board(TOLL.plazaZ0 - d, 7.4, 2.8,
+      warnTexF("料金所 " + Math.round(d / 5) * 5 + " m", "TOLL"));
+}
+
+/* ============================ ramp meshes =============================== */
+
+function buildRampMeshes(
+  scene: THREE.Scene,
+  mats: Mats,
+  world: WorldData,
+  terrain: Terrain,
+  postPts: number[]
+) {
+  const { concDark, barrier, ramp } = mats;
+  const surf = new Soup(), skirt = new Soup(), wallS = new Soup();
+  const WALL_H = 1.0, WALL_T = 0.3, DECKTH = 0.62;
+  const colG = new THREE.BoxGeometry(1.25, 1, 1.25);
+  const cols = new THREE.InstancedMesh(colG, concDark, 96);
+  const CM = new THREE.Matrix4(), CV = new THREE.Vector3(), CQ = new THREE.Quaternion(),
+    CS = new THREE.Vector3(), CE = new THREE.Euler();
+  let nCol = 0;
+
+  for (const r of terrain.ramps) {
+    const pts = r.pts;
+    const edge = (i: number, lat: number, dy = 0): Vec3 => {
+      const p = pts[i];
+      return [p.x + p.nx * lat, p.y + dy, p.z + p.nz * lat];
+    };
+    const wallEnd = r.len - 7; // leave the junction with the frontage road open
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const oa = edge(i, -a.hOut), ob = edge(i + 1, -b.hOut);
+      const ia = edge(i, a.hIn), ib = edge(i + 1, b.hIn);
+      surf.quadUv(oa, ob, ib, ia,
+        [0, a.s / 14], [0, b.s / 14], [1, b.s / 14], [1, a.s / 14]);
+      // skirt + underside, only where the ramp stands above the ground
+      const upA = a.y - a.gy, upB = b.y - b.gy;
+      if (upA > 0.25 || upB > 0.25) {
+        const da = Math.min(DECKTH, Math.max(0.12, upA));
+        const db = Math.min(DECKTH, Math.max(0.12, upB));
+        const oab = edge(i, -a.hOut, -da), obb = edge(i + 1, -b.hOut, -db);
+        const iab = edge(i, a.hIn, -da), ibb = edge(i + 1, b.hIn, -db);
+        skirt.quad(oa, ob, obb, oab);
+        skirt.quad(ia, ib, ibb, iab);
+        skirt.quad(oab, obb, ibb, iab);
+      }
+      /* Parapets. The outer one starts at the gore nose and follows the edge as
+         it opens away from the deck, so the drop is guarded the whole way. The
+         inner one only appears once the ramp has separated — before that the
+         deck itself is there. */
+      for (const sgn of [-1, 1]) {
+        const la = sgn > 0 ? a.hIn : -a.hOut, lb = sgn > 0 ? b.hIn : -b.hOut;
+        if (a.s > wallEnd) continue;
+        if (sgn > 0 && a.s < r.sSep) continue;
+        const off = sgn * (WALL_T / 2 + 0.12);
+        const a0 = edge(i, la + off - (sgn * WALL_T) / 2), a1 = edge(i, la + off + (sgn * WALL_T) / 2);
+        const b0 = edge(i + 1, lb + off - (sgn * WALL_T) / 2);
+        const b1 = edge(i + 1, lb + off + (sgn * WALL_T) / 2);
+        const top = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
+        const bot = (p: Vec3): Vec3 => [p[0], p[1] - 0.25, p[2]];
+        wallS.quad(bot(a0), bot(b0), top(b0), top(a0));
+        wallS.quad(bot(a1), bot(b1), top(b1), top(a1));
+        wallS.quad(top(a0), top(b0), top(b1), top(a1));
+        // one collider per segment: the outer wall flares out of the gore nose
+        // quickly, so a box spanning several segments would cut the corner
+        const mx = (a0[0] + b0[0] + a1[0] + b1[0]) / 4;
+        const mz = (a0[2] + b0[2] + a1[2] + b1[2]) / 4;
+        const wdx = (b0[0] + b1[0] - a0[0] - a1[0]) / 2;
+        const wdz = (b0[2] + b1[2] - a0[2] - a1[2]) / 2;
+        const wl = Math.hypot(wdx, wdz) || 1;
+        world.colliders.addObb({
+          x: mx, z: mz, hw: WALL_T / 2 + 0.2, hd: wl / 2 + 0.1,
+          cos: wdz / wl, sin: wdx / wl, y0: a.y - 1.2, y1: a.y + WALL_H + 1.2,
+        });
+      }
+      // edge lighting down both sides
+      if (i % 8 === 0 && a.s < wallEnd) {
+        const lo = edge(i, -a.hOut - 0.5, 0.95), li = edge(i, a.hIn + 0.5, 0.95);
+        postPts.push(lo[0], lo[1], lo[2], li[0], li[1], li[2]);
+      }
+      // support columns
+      if (i % 7 === 0 && upA > 2.2 && nCol < 96) {
+        CE.set(0, Math.atan2(a.tx, a.tz), 0);
+        CQ.setFromEuler(CE);
+        CV.set(a.x, a.gy + (upA - 0.5) / 2, a.z);
+        CS.set(1, upA - 0.5, 1);
+        CM.compose(CV, CQ, CS);
+        cols.setMatrixAt(nCol++, CM);
+        world.colliders.addAabb({
+          x0: a.x - 0.85, x1: a.x + 0.85, z0: a.z - 0.85, z1: a.z + 0.85,
+          y0: 0, y1: a.gy + upA - 1.2,
+        });
+      }
+    }
+    // flat apron where the ramp meets the frontage road
+    const apron = new THREE.Mesh(new THREE.PlaneGeometry(24, RAMP_W), ramp);
+    apron.rotation.x = -Math.PI / 2;
+    apron.position.set(r.footX - 11, pts[pts.length - 1].gy + 0.012, r.footZ);
+    apron.layers.set(LAYER_NOREF);
+    scene.add(apron);
+  }
+  cols.count = nCol;
+  cols.castShadow = true;
+  cols.computeBoundingSphere();
+  scene.add(cols);
+
+  const sm = new THREE.Mesh(surf.geom(true), ramp);
+  sm.receiveShadow = true;
+  sm.layers.set(LAYER_NOREF);
+  scene.add(sm);
+  const skirtMat = concDark.clone();
+  skirtMat.side = THREE.DoubleSide;
+  const sk = new THREE.Mesh(skirt.geom(false), skirtMat);
+  sk.castShadow = true;
+  scene.add(sk);
+  const wallMat = barrier.clone();
+  wallMat.side = THREE.DoubleSide;
+  const wm = new THREE.Mesh(wallS.geom(false), wallMat);
+  wm.castShadow = true;
+  scene.add(wm);
+}
+
+/** Exit HUD helper: the nearest exit ahead, measured along the one-way
+    corridor and wrapping across the loop splice. */
+export function nearestExitAhead(world: WorldData, z: number, _headingZ?: number) {
+  const cor = getCorridor();
   let best: { no: number; name: string; dist: number; z: number } | null = null;
   for (const e of world.exits) {
-    const d = (e.z - z) * dir;
-    if (d > -10 && d < 420 && (!best || d < best.dist))
+    let d = cor.deltaZ(z, e.z);
+    if (d < -10) d += cor.LOOP;
+    if (d > -10 && d < 620 && (!best || d < best.dist))
       best = { no: e.no, name: e.name, dist: d, z: e.z };
   }
   return best;
 }
+
+/** Re-export so other systems can read the road without reaching into files. */
+export { getCorridor, TUNNEL, TOLL };
+export type { Station };

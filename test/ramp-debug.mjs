@@ -2,7 +2,8 @@
    colliders near the stall point. Requires a running dev server (--url). */
 import puppeteer from "puppeteer";
 
-const URL = process.argv[2] || "http://localhost:3111";
+const URL = process.argv[2] || "http://localhost:3000";
+const ZR = Number(process.argv[3] ?? -330); // which gore to probe
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const browser = await puppeteer.launch({
@@ -13,17 +14,21 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
-await page.goto(URL, { waitUntil: "networkidle2", timeout: 120000 });
-await page.waitForFunction(() => !!window.__neonx, { timeout: 60000 });
+// the dev server holds an HMR socket open, so the network never goes idle
+await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
 await page.evaluate(() => {
   const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));
   b?.click();
 });
 await sleep(2000);
-await page.evaluate(() => {
-  window.__neonx.teleport(478, 260, 8.4, -Math.PI / 2, 11);
+// drop the car partway down the ramp, pointing along its centreline
+await page.evaluate((zr) => {
+  const r = window.__neonx.game.terrain.ramps.find((q) => q.zr === zr);
+  const p = r.pts[Math.floor(r.pts.length * 0.45)];
+  window.__neonx.teleport(p.x, p.z, p.y + 0.2, Math.atan2(p.tx, p.tz), 11);
   window.__neonx.setInput({ th: 0.4 });
-});
+}, ZR);
 for (let i = 0; i < 10; i++) {
   await sleep(300);
   const s = await page.evaluate(() => {

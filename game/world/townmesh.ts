@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { clamp, rrand, type Rng, TAU } from "../util";
 import { makeTex, asphalt, neonTexF } from "../textures";
-import { CHUNK, SIDEWALK_W, RAMP_W, HX } from "./const";
+import { CHUNK, SIDEWALK_W, RAMP_W } from "./const";
 import { distToRamp } from "./ramps";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
@@ -205,8 +205,12 @@ export function buildTown(
     // keep the curved ramp corridors (both sides) clear
     const clear = RAMP_W / 2 + 5 + rC0;
     if (distToRamp(terrain.ramps, cx, cz, clear + 1) < clear) return;
-    // never under the elevated deck itself
-    if (Math.abs(cx - HX) < 16 + rC0) return;
+    /* Never under the elevated deck. The corridor bends by up to 62 m and its
+       width varies, so ask it where it actually is rather than measuring from
+       a fixed centreline x. */
+    const cor = terrain.corridor;
+    const zc = cor.zAt(cx, cz);
+    if (Math.abs(cor.latAt(cx, cz)) < cor.halfWidth(zc) + 7 + rC0) return;
     const yaw = Math.atan2(pose.tx, pose.tz);
     const cos = Math.cos(yaw), sin = Math.sin(yaw);
     // reject if the footprint clips any nearby road

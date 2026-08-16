@@ -93,8 +93,12 @@ async function main() {
   });
 
   console.log("→ loading", URL);
-  await page.goto(URL, { waitUntil: "networkidle2", timeout: 120000 });
-  await page.waitForFunction(() => !!window.__neonx, { timeout: 60000 });
+  /* `networkidle2` is the wrong thing to wait on here: the dev server holds an
+     HMR websocket open, so the network never goes idle, and under load the wait
+     ends with a detached frame instead of a loaded page. The game exposing
+     window.__neonx is the real "ready" signal — wait for that. */
+  await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
   await sleep(1200);
   await shot(page, "01-menu");
 
@@ -130,37 +134,116 @@ async function main() {
   const st0 = await page.evaluate(() => window.__neonx.state());
   console.log("  state on deck:", JSON.stringify({ ...st0, errors: undefined }));
 
-  // drive forward on the deck toward an exit
-  await page.evaluate(() => {
-    window.__neonx.teleport(500 + 6.9, -520, 9, 0, 26);
-    window.__neonx.setInput({ th: 1 });
+  /* ---- corridor tour: park the car at a series of z stations along the
+     one-way corridor and photograph what the road looks like there. The
+     corridor is a graph over z (see game/world/corridor.ts), so a station is
+     fully specified by z plus which lane to sit in. */
+  const tourShot = async (name, z, lane, label) => {
+    const info = await page.evaluate(
+      ({ z, lane }) => {
+        const c = window.__neonx.game.terrain.corridor;
+        const n = c.lanes(z);
+        const k = Math.min(n - 1, Math.max(0, lane < 0 ? n + lane : lane));
+        const p = c.worldOf(z, c.laneOffset(k, z));
+        window.__neonx.teleport(p.x, p.z, p.y + 0.2, c.pose(z).h, 30);
+        window.__neonx.setInput({ th: 0.55 });
+        return { lanes: n, hw: c.halfWidth(z), y: p.y, x: p.x };
+      },
+      { z, lane }
+    );
+    await sleep(1700);
+    const st = await page.evaluate(() => window.__neonx.state());
+    console.log(
+      `  ${label}: z=${z} lanes=${info.lanes} halfWidth=${info.hw.toFixed(2)}` +
+        ` deckY=${info.y.toFixed(2)} → car y=${st.y.toFixed(2)}`
+    );
+    if (Math.abs(st.y - info.y) > 1.2)
+      errors.push(`${label}: car fell off the deck (y ${st.y.toFixed(2)} vs deck ${info.y.toFixed(2)})`);
+    await shot(page, name);
+    return { ...info, carY: st.y };
+  };
+
+  await tourShot("10-two-lane", -1300, 0, "two-lane sweeper");
+  await tourShot("11-widen-taper", -460, -1, "3→4 widening taper");
+  await tourShot("04-exit-approach", -400, -1, "exit 1 approach");
+  await tourShot("12-four-lane", -180, 1, "four-lane straight");
+  await tourShot("13-curve", 120, 1, "right-hand sweeper");
+  await tourShot("14-lane-drop", 760, -1, "4→3 lane drop");
+  await tourShot("15-tunnel-mouth", 900, 1, "tunnel approach");
+  await tourShot("16-tunnel-interior", 1080, 1, "tunnel interior");
+  await tourShot("17-toll-approach", 1330, 2, "toll approach");
+  await tourShot("18-toll-plaza", 1385, 2, "toll plaza canopy");
+  await tourShot("19-splice-end", 1960, 1, "loop splice, end");
+  await tourShot("20-splice-start", -1990, 1, "loop splice, start");
+
+  /* ---- loop splice: the two ends must be geometrically identical, because
+     the endless loop is implemented as a pure translation in z. Compare the
+     corridor's own description at matching offsets rather than eyeballing the
+     screenshots. */
+  const splice = await page.evaluate(() => {
+    const c = window.__neonx.game.terrain.corridor;
+    let worst = 0, at = 0;
+    for (let d = 0; d <= 380; d += 5) {
+      const a = c.pose(c.Z0 + d), b = c.pose(c.Z1 + d);
+      const e = Math.max(
+        Math.abs(a.x - b.x), Math.abs(a.y - b.y), Math.abs(a.h - b.h),
+        Math.abs(c.laneCount(c.Z0 + d) - c.laneCount(c.Z1 + d))
+      );
+      if (e > worst) { worst = e; at = d; }
+    }
+    return { worst, at, loop: c.LOOP, ext: c.EXT, lap: c.lapLen };
   });
-  await sleep(4000);
-  await shot(page, "04-exit-approach");
+  console.log(`  splice mismatch: ${splice.worst.toExponential(2)} at +${splice.at} m` +
+    ` (loop ${splice.loop} m, overrun ${splice.ext} m, arclength ${splice.lap.toFixed(0)} m)`);
+  if (splice.worst > 1e-6)
+    errors.push(`loop splice is not seamless: ${splice.worst} at +${splice.at} m`);
+
+  /* ---- the wrap itself, applied by hand exactly as engine.ts will: subtract
+     LOOP_LEN from z and nothing else. The car must land on the pavement with
+     the same lateral offset and the same height. */
+  const wrap = await page.evaluate(() => {
+    const c = window.__neonx.game.terrain.corridor;
+    const p = c.worldOf(c.Z1 - 4, c.laneOffset(1, c.Z1 - 4));
+    window.__neonx.teleport(p.x, p.z, p.y, 0, 40);
+    const before = window.__neonx.state();
+    const latBefore = c.latAt(before.x, before.z);
+    window.__neonx.teleport(before.x, before.z - c.LOOP, before.y, before.h, 40);
+    const after = window.__neonx.state();
+    return {
+      latBefore, latAfter: c.latAt(after.x, after.z),
+      deckBefore: c.centerY(before.z), deckAfter: c.centerY(after.z),
+      z: after.z,
+    };
+  });
+  console.log(`  wrap: lat ${wrap.latBefore.toFixed(3)} → ${wrap.latAfter.toFixed(3)},` +
+    ` deck y ${wrap.deckBefore.toFixed(3)} → ${wrap.deckAfter.toFixed(3)}, z=${wrap.z.toFixed(0)}`);
+  if (Math.abs(wrap.latBefore - wrap.latAfter) > 0.01 ||
+      Math.abs(wrap.deckBefore - wrap.deckAfter) > 0.01)
+    errors.push("z-only wrap does not land the car in the same place on the road");
 
   /* Ramp runs. SwiftShader renders ~4 fps and physics substeps are frame-capped,
      so sim time runs far slower than wall clock — poll for the condition instead
      of sleeping a fixed interval. The ramps are curved (see game/world/ramps.ts),
      so a fixed heading drives straight off the pavement: drop the car on a ramp
      centreline sample and steer toward a lookahead sample each poll. `way` +1
-     heads down toward the frontage road, -1 climbs back up to the deck. `off` is
-     how far the car has strayed from the centreline — the ramp is 10.5 m wide,
-     so anything past ~6 m means it has left the road. */
-  const driveRamp = async (sel, way, cond, timeoutMs, label) => {
+     runs from the gore toward the frontage road, -1 climbs back up to the deck.
+     `off` is how far the car has strayed from the centreline — the ramp is
+     10.5 m wide, so anything past ~6 m means it has left the road. */
+  const driveRamp = async (zr, way, cond, timeoutMs, label) => {
     await page.evaluate(
-      ({ sel, way }) => {
+      ({ zr, way }) => {
         const t = window.__neonx.game.terrain;
-        const r = t.ramps.find(
-          (q) => q.zr === sel.zr && q.mir === sel.mir && q.dir === sel.dir
-        );
+        const r = t.ramps.find((q) => q.zr === zr);
         // start partway along so the run fits the timeout at SwiftShader speed
-        const i = Math.max(0, r.pts.findIndex((p) => p.y < (way > 0 ? 8.5 : 2.5)));
+        const top = r.pts[0].y;
+        const i = Math.max(0, r.pts.findIndex(
+          (p) => (way > 0 ? p.y < top - 1.5 : p.y < 2.5)));
         const p = r.pts[i];
         window.__neonx.__ramp = { r, way, i };
         window.__neonx.teleport(p.x, p.z, p.y + 0.2,
           Math.atan2(p.tx * way, p.tz * way), 10);
       },
-      { sel, way }
+      { zr, way }
     );
     const t0 = Date.now();
     let st, offMax = 0;
@@ -196,16 +279,14 @@ async function main() {
     return { ...st, offMax };
   };
 
-  // off-ramp descent: roll down a west-side ramp into town
-  const stRamp = await driveRamp({ zr: 260, mir: 1, dir: -1 }, 1,
-    (s) => s.y < 2.5, 45000, "ramp descent");
+  // off-ramp descent: roll down the exit ramp into town
+  const stRamp = await driveRamp(-330, 1, (s) => s.y < 2.5, 45000, "ramp descent");
   console.log("  after descent: y =", stRamp.y.toFixed(2), " x =", stRamp.x.toFixed(1),
     " maxOff =", stRamp.offMax.toFixed(1));
   await shot(page, "04b-ramp-descent");
 
-  // on-ramp climb: from the foot of a west-side ramp back up to the deck
-  const stClimb = await driveRamp({ zr: -260, mir: 1, dir: 1 }, -1,
-    (s) => s.y > 8.4, 60000, "on-ramp climb");
+  // on-ramp climb: from the foot of the entrance ramp back up to the deck
+  const stClimb = await driveRamp(-70, -1, (s) => s.y > 9.2, 60000, "on-ramp climb");
   console.log("  after climb: y =", stClimb.y.toFixed(2), " x =", stClimb.x.toFixed(1),
     " maxOff =", stClimb.offMax.toFixed(1));
   await shot(page, "04c-ramp-climb");
