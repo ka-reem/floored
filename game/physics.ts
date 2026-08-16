@@ -356,8 +356,7 @@ export function stepPhysics(
     car.x = clamp(car.x, -1700, 1700);
     car.u *= 0.98;
   }
-  if (Math.abs(car.z) > 1700) {
-    car.z = clamp(car.z, -1700, 1700);
-    car.u *= 0.98;
-  }
+  // no z bound: the corridor's loop splice folds z back into its band every
+  // frame — a clamp here would pin the car short of the splice threshold
+  // (test/corridor-drive.mjs guards against reintroducing one)
 }
