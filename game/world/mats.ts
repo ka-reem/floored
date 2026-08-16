@@ -565,13 +565,28 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      the shoulder line glows while the tarmac beside it is dark, which is the
      exact artifact the reference photo is about.
 
-     The studs stay deliberately much wider. A glass-bead reflector returns
-     light over a far broader angle than the beam's nominal cone, which is the
-     same property that lets them outlive the low-beam cut-off at range. Match
-     them to the spot and near-field shoulder studs die: at 9 m lateral they sit
-     42 deg off-centre when they are 10 m ahead, so a 0.90 gate blanks them
-     inside 20 m — the stretch where they are most useful and most obviously
-     wrong to lose. */
+     The studs stay deliberately much wider, and the honest reason is not the
+     one you would guess. Glass-bead reflectors do return light over a broader
+     angle than the beam's nominal cone — true, and it is why they outlive the
+     low-beam cut-off at range — but that is not what is doing the work here.
+     Match the studs to the spot and the near-field shoulder markers die: at 9 m
+     lateral they sit 42 deg off-centre when they are 10 m ahead, so a 0.90 gate
+     blanks them inside 20 m, the stretch where they matter most.
+
+     The catch, which matters if anyone revisits this: the headlight spot does
+     not reach that stud either (3.4 m half-width at 10 m, 6.3 m at 20 m, and it
+     only contains a 9 m offset by 30 m). So the wide gate is lighting studs the
+     beam misses — strictly the same artifact the paint was just tightened to
+     remove. It stays because it is standing in for light that is genuinely
+     absent: a real dipped beam throws a wide near-field wash sideways that a
+     single symmetric cone cannot reproduce, and narrowing the spot to a proper
+     cut-off threw that wash away.
+
+     So if a night frame ever shows near-field shoulder studs reading too bright
+     against dark tarmac, the fix is NOT to tighten this number — it is that the
+     foreground light is missing. If a second wide, short foreground cone is
+     ever added to the headlight rig, revisit: at that point these studs stop
+     compensating and should be re-matched to the light that actually exists. */
   addBeam(markMat, { near: 18, far: 62, spread: 0.95 });
   addBeam(studMat, { near: 40, far: 190, spread: 0.42 });
   addBeam(studMatTunnel, { near: 40, far: 190, spread: 0.3 });
