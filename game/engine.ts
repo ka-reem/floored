@@ -716,7 +716,31 @@ export class Game {
     }
   }
 
-  private updateCamera(dt: number, now: number) {
+  /** deterministic 1D hash in [0,1) — same input always gives the same
+      output, so road texture is a fixed property of a position, not a
+      per-frame random draw. */
+  private static hash1(n: number): number {
+    const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  }
+  /** smooth 1D value noise, one octave, range [-1, 1]. */
+  private static vnoise(x: number): number {
+    const i = Math.floor(x), f = x - i;
+    const a = Game.hash1(i), b = Game.hash1(i + 1);
+    const t = f * f * (3 - 2 * f); // smoothstep
+    return lerp(a, b, t) * 2 - 1;
+  }
+  /** three-octave road texture at position z, offset by seed so the x and y
+      jitter channels use independent (but still position-locked) noise. */
+  private static roadTexture(z: number, seed: number): number {
+    return (
+      Game.vnoise(z * 2.1 + seed) * 0.55 +
+      Game.vnoise(z * 5.3 + seed * 1.7 + 91.7) * 0.3 +
+      Game.vnoise(z * 11.7 + seed * 2.3 + 401.3) * 0.15
+    );
+  }
+
+  private updateCamera(dt: number) {
     const car = this.car;
     const fx = Math.sin(car.h), fz = Math.cos(car.h);
     /* Reverse chase cam: only once the car is genuinely rolling backwards, not
@@ -805,7 +829,14 @@ export class Game {
       this.head.vroll *= Math.exp(-8 * dt);
       this.head.roll += this.head.vroll * dt;
       this.head.roll = clamp(this.head.roll, -0.035, 0.035); // ~±2°
-      this.head.vz += (car.axS * 0.003 - this.head.z * 46) * dt;
+      /* brake dive is deliberately non-linear: light trail-braking dips barely
+         more than a gentle lift-off, but hard braking dives disproportionately
+         harder (matches how sim-racing head-physics mods read trail braking as
+         dramatic). Acceleration press-back stays linear — only the braking
+         side is curved. The curve and the linear accel term agree at |axS|=1
+         so there's no seam at zero-crossing. */
+      const axDrive = car.axS >= 0 ? car.axS * 0.003 : -Math.pow(-car.axS, 1.8) * 0.003;
+      this.head.vz += (axDrive - this.head.z * 46) * dt;
       this.head.vz *= Math.exp(-8 * dt);
       this.head.z += this.head.vz * dt;
       this.head.z = clamp(this.head.z, -0.025, 0.025);
@@ -837,17 +868,24 @@ export class Game {
             COCKPIT_EYE.z + this.head.z
           )
           : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5, P.L / 2 - 0.6);
-      /* speed shake: barely-perceptible high-frequency jitter that grows with
-         speed (near-zero below 100 km/h, noticeable past 180) plus a smaller
-         boost from tire slip for rough moments. Millimetre-scale — texture,
-         not a wobble — and two off-ratio sines stand in for noise cheaply. */
-      const shakeSp = clamp((Math.abs(car.u) - 27.8) / 22.2, 0, 1); // ~100→180 km/h
-      const shakeAmt = shakeSp * 0.75 + clamp(car.slipAmt, 0, 1) * 0.25;
-      if (shakeAmt > 0.001) {
-        const jx = Math.sin(now * 47.3) * 0.6 + Math.sin(now * 71.9 + 1.7) * 0.4;
-        const jy = Math.sin(now * 53.1 + 0.9) * 0.6 + Math.sin(now * 83.4 + 3.1) * 0.4;
-        local.x += jx * shakeAmt * 0.0025;
-        local.y += jy * shakeAmt * 0.0018;
+      /* road micro-vibration (cockpit only): multi-octave value noise keyed
+         off car.z, not time. Same stretch of road always buzzes the same
+         way — no randomness and nothing that drifts, so it can't build into
+         motion sickness the way an unbounded random walk could. Driving the
+         noise off position rather than a clock also means covering the same
+         bump faster at speed raises the buzz's frequency for free, which is
+         exactly how road texture reads through a real chassis. Amplitude
+         scales with speed^2 (capped ~180 km/h) so it's essentially silent
+         under 100 km/h and builds fast above it, plus a smaller boost from
+         tire slip on rough moments. Millimetre-scale, layered on top of the
+         G-force lean above rather than replacing it. */
+      if (this.camMode === 1) {
+        const spN = clamp(Math.abs(car.u) / 50, 0, 1); // 1.0 ≈ 180 km/h
+        const vibeAmt = spN * spN * 0.85 + clamp(car.slipAmt, 0, 1) * 0.15;
+        if (vibeAmt > 0.001) {
+          local.x += Game.roadTexture(car.z, 0) * vibeAmt * 0.003;
+          local.y += Game.roadTexture(car.z, 57.9) * vibeAmt * 0.002;
+        }
       }
       /* The eye rides the body shell, so the dash and mirrors hold still in
          frame the way they do in a real car; the world pitches instead. Body
@@ -1021,7 +1059,7 @@ export class Game {
       this.signalsUpdate(now);
       this.weather(dt, now);
       this.updateCarVisual(now, dt);
-      this.updateCamera(dt, now);
+      this.updateCamera(dt);
       this.audio.update(
         this.car.rpm, this.car.thrEff, this.car.slipAmt, Math.abs(this.car.u), now,
         this.car.cut > 0 || this.car.shiftT > 0.1, this.rain, this.input.horn > 0,
@@ -1039,7 +1077,7 @@ export class Game {
     } else {
       this.acc = 0;
       this.updateCarVisual(now, dt);
-      this.updateCamera(dt, now);
+      this.updateCamera(dt);
       this.weather(0, now);
     }
     this.frameN++;
@@ -1051,6 +1089,7 @@ export class Game {
     this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
     const f = this.dayFactor();
+    this.post.setSpeed(Math.abs(this.car.u) * 3.6);
     this.post.process({
       exposure: lerp(1.12, 0.9, f),
       grade: this.grade,
