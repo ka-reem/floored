@@ -543,6 +543,8 @@ export class Game {
     car.wvx = 0;
     car.wvz = 0;
     car.slope = 0;
+    car.pitchDyn = 0;
+    this.pitchVis = 0;
     this.chasePos.set(car.x - Math.sin(car.h) * 5, car.y + 1.85, car.z - Math.cos(car.h) * 5);
     this.lookPos.set(car.x, car.y + 0.95, car.z);
   }

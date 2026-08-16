@@ -15,6 +15,8 @@ export interface CarState {
   rpm: number; onLimiter: boolean; thrEff: number; brkEff: number; slipAmt: number;
   slope: number; pitchDyn: number; rollDyn: number;
   odo: number; shiftT: number; cut: number; absOn: boolean; tcOn: boolean;
+  /** Auto-hold: stopped and staying stopped until the driver asks to move. */
+  hold: boolean;
   sigL: boolean; sigR: boolean; lightsUser: boolean; lightsOn: boolean;
   damage: number;
 }
@@ -28,7 +30,7 @@ export function freshCarState(x: number, y: number, z: number, h: number, u = 0)
     x, y, z, h, u, v: 0, r: 0, delta: 0, gear: 1, rev: false, revT: 0,
     wvx: 0, wvz: 0, axS: 0, ayS: 0, rpm: 1200, onLimiter: false,
     thrEff: 0, brkEff: 0, slipAmt: 0,
-    slope: 0, pitchDyn: 0, rollDyn: 0, odo: 0, shiftT: 0, cut: 0, absOn: false,
+    slope: 0, pitchDyn: 0, rollDyn: 0, odo: 0, shiftT: 0, cut: 0, absOn: false, hold: true,
     tcOn: false, sigL: false, sigR: false, lightsUser: false, lightsOn: true,
     damage: 0,
   };
@@ -112,6 +114,16 @@ export function stepPhysics(
   }
   car.thrEff = car.rev ? 0 : thr;
   car.brkEff = brk;
+
+  /* Auto-hold, as a modern automatic has: once stopped, stay stopped until the
+     driver asks for something. Creep alone would crawl the car away at 8 km/h
+     the moment every input is released, so a parked car was never actually
+     parked — and because body pitch follows the terrain slope underneath it, a
+     car that wanders while "parked" shows a different resting pitch every time.
+     Releases on throttle, on reverse, or on being shoved (a collision). */
+  if (car.hold) {
+    if (thr > 0.05 || car.rev || Math.abs(car.u) > 0.3) car.hold = false;
+  } else if (Math.abs(car.u) < 0.25 && thr < 0.05 && !car.rev) car.hold = true;
 
   /* gearbox: -1 reverse, 1..RATIOS.length forward */
   if (car.rev) car.gear = -1;
@@ -242,10 +254,13 @@ export function stepPhysics(
   Fyr *= Math.sqrt(clamp(1 - Math.pow(FxR / (muR * Fzr), 2), 0.05, 1));
 
   /* creep + resistances */
-  const creep = !car.rev && thr < 0.05 && brk < 0.05 && Math.abs(car.u) < 2.2 ? 520 : 0;
+  const creep =
+    !car.hold && !car.rev && thr < 0.05 && brk < 0.05 && Math.abs(car.u) < 2.2 ? 520 : 0;
   const drag = spec.drag * car.u * Math.abs(car.u);
   const roll = (175 + 2.7 * Math.abs(car.u)) * sgn;
-  const slopeF = 9.81 * car.slope;
+  // held cars don't roll down hills either, so the parked pose is the same on
+  // any gradient rather than slowly sliding to somewhere with a different one
+  const slopeF = car.hold ? 0 : 9.81 * car.slope;
   /* ESC: a modern car answers a mid-corner yaw excursion by braking individual
      wheels, i.e. with a corrective yaw moment and a little drag. Without it the
      rear axle — unloaded by a 1g stop — hands over more yaw than the steering
