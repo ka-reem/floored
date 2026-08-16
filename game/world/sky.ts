@@ -63,7 +63,10 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
 
   // mountains
   {
-    const mMat = new THREE.MeshBasicMaterial({ color: 0x0a0e1c, fog: false });
+    /* Silhouette only. Once the night dome is taken down to black the old
+       value read as *lighter* than the sky behind it, which inverted the
+       ridgeline — it has to sit under the horizon glow band, not above it. */
+    const mMat = new THREE.MeshBasicMaterial({ color: 0x05070f, fog: false });
     for (let i = 0; i < 14; i++) {
       const a = rand(0, TAU), r = rand(2000, 2500);
       const m = new THREE.Mesh(

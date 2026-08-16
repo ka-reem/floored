@@ -82,6 +82,34 @@ export interface Mats {
   studMat: THREE.PointsMaterial;
   /** as studMat, for the tunnel span — never daylight-dimmed, see mats.ts */
   studMatTunnel: THREE.PointsMaterial;
+  /** lane paint: stripes, hatching, gore chevrons. Retroreflective. */
+  markMat: THREE.MeshBasicMaterial;
+  /** opt a material into headlight retroreflection (see setBeam) */
+  addBeam(mat: THREE.Material, opts?: { near?: number; far?: number; spread?: number }): void;
+  /**
+   * Point the headlight beam. Retroreflective paint returns light to its
+   * source, so markings are bright only where the beam actually lands —
+   * call this per frame with the car's head position and forward axis.
+   * `dayF` is the engine's 0..1 daylight factor; at noon the effect washes
+   * out to uniform brightness, because sunlight lights the paint anyway.
+   * Never calling it leaves every marking at today's flat brightness.
+   *
+   * `unlitFloor` is how bright paint sits at night *outside* the beam, 0..1.
+   * It belongs to whoever owns the night lighting: every material here is
+   * unlit, so scene ambient cannot reach them and this is the only knob that
+   * dims them. Raise it if the unlit dashes read as dead, lower it for a
+   * harder beam edge.
+   *
+   * `range` scales every material's authored near/far together — pass the
+   * ratio of the current headlight throw to the dipped-beam throw, so main
+   * beam lights the paint as far down the road as it lights the road itself.
+   * Derive it from the same constants that set the spotlight distance rather
+   * than hardcoding a number, or the two will drift apart.
+   */
+  setBeam(
+    on: boolean, pos: THREE.Vector3, dir: THREE.Vector3, dayF: number,
+    unlitFloor?: number, range?: number
+  ): void;
   winMats: THREE.MeshStandardMaterial[];
   sfMat: THREE.MeshStandardMaterial;
   vendMat: THREE.MeshStandardMaterial;
@@ -112,6 +140,10 @@ interface RoadUD {
   detRep: THREE.Vector2;
   detTex: THREE.Texture | null;
   roughMod: number;
+  /** longitudinal wheel-path streaking amplitude, 0 = off */
+  grooveAmt: number;
+  /** streak frequency, in radians per unit of the mesh's u axis */
+  grooveFreq: number;
   /** the scan's normal map, parked here so perf mode can pull and restore it */
   normalTex: THREE.Texture | null;
   /* three ships no bundled typings, so the shader-parameters object that
@@ -172,10 +204,13 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     d.detTex ??= null;
     d.normalTex ??= null;
     d.roughMod ??= 0;
+    d.grooveAmt ??= 0;
+    d.grooveFreq ??= 0;
 
     mat.onBeforeCompile = (sh) => {
       const hasDet = detailOn && !!d.detTex;
       const hasRough = !!mat.roughnessMap && d.roughMod > 0;
+      const hasGroove = detailOn && d.grooveAmt > 0;
       sh.uniforms.tRef = { value: pendingRefTex };
       sh.uniforms.uRefStr = { value: d.curStr };
       sh.uniforms.uScreen = { value: screen };
@@ -188,6 +223,8 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       // exactly 1 and the tuned reflection strength is left alone
       sh.uniforms.uRoughRef = { value: mat.roughness * (d.roughK > 0 ? 1 / d.roughK : 1) };
       sh.uniforms.uRoughMod = { value: hasRough ? d.roughMod : 0 };
+      sh.uniforms.uGrooveAmt = { value: d.grooveAmt };
+      sh.uniforms.uGrooveF = { value: d.grooveFreq };
       d.sh = sh;
 
       sh.fragmentShader = sh.fragmentShader.replace(
@@ -197,8 +234,33 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
           (hasDet
             ? "uniform sampler2D tDet; uniform vec2 uDetRep; uniform float uDetK; uniform float uDetMean;\n"
             : "") +
-          (hasRough ? "uniform float uRoughRef; uniform float uRoughMod;\n" : "")
+          (hasRough ? "uniform float uRoughRef; uniform float uRoughMod;\n" : "") +
+          (hasGroove ? "uniform float uGrooveAmt; uniform float uGrooveF;\n" : "")
       );
+
+      if (hasGroove) {
+        /* Longitudinal streaking in the headlight pool.
+           A real motorway surface is not isotropic: traffic polishes the wheel
+           paths into fine lines running with the direction of travel, and a
+           tined concrete deck is grooved the same way on purpose. Either way
+           the night read is identical — the beam picks out fine bright/dark
+           streaks running away from the car. This modulates roughness rather
+           than perturbing the normal, so it costs one sin() and also rides the
+           wet-reflection term, which is right: water sits in the low lines.
+
+           Faded out past ~26 m, and not only for cost. It is analytic detail
+           with no mip chain behind it, so at distance it would alias into
+           crawling moire at exactly the speeds this game runs at. Fading it to
+           nothing before it gets small is what keeps it stable — and it also
+           happens to be where the real effect stops being visible. */
+        sh.fragmentShader = sh.fragmentShader.replace(
+          "#include <roughnessmap_fragment>",
+          "#include <roughnessmap_fragment>\n" +
+            "float gFade = 1.0 - smoothstep(10.0, 26.0, length(vViewPosition));\n" +
+            "roughnessFactor *= 1.0 + sin(vMapUv.x * uGrooveF) * uGrooveAmt * gFade;\n" +
+            "roughnessFactor = clamp(roughnessFactor, 0.02, 1.0);"
+        );
+      }
 
       if (hasDet) {
         /* Detail albedo. Dividing by the scan's mean luminance makes this a
@@ -240,8 +302,92 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     // three keys its program cache partly on this; without it the detail and
     // puddle variants would collide with the plain one after a hot upgrade
     mat.customProgramCacheKey = () =>
-      `road|${detailOn && d.detTex ? 1 : 0}|${mat.roughnessMap && d.roughMod > 0 ? 1 : 0}`;
+      `road|${detailOn && d.detTex ? 1 : 0}|${mat.roughnessMap && d.roughMod > 0 ? 1 : 0}` +
+      `|${detailOn && d.grooveAmt > 0 ? 1 : 0}`;
     refMats.push(mat);
+  }
+
+  /* ---------------- headlight retroreflection ---------------- */
+
+  /* Shared per-frame uniforms. Every beam material is handed the *same*
+     uniform objects, so setBeam() mutates one value and all of them follow —
+     no per-material loop on the hot path. Only the static range/spread
+     uniforms are per material. */
+  const uBeamPos = { value: new THREE.Vector3() };
+  const uBeamDir = { value: new THREE.Vector3(0, 0, 1) };
+  const uBeamAmb = { value: 1 };
+  const uBeamK = { value: 0 };
+  /* Scales every material's authored near/far together. Main beam throws
+     roughly 1.7x further than dipped, and without this the paint's
+     retroreflective response would die at its dipped range in a stretch of
+     road the player can plainly see is lit — the beam disagreeing with the
+     light pool, the same failure as getting the origin wrong. A uniform and
+     not a per-material `far`, deliberately: `far` is in the program cache key,
+     so varying it would recompile, and flash-to-pass would hitch on every
+     flash. */
+  const uBeamRange = { value: 1 };
+
+  /**
+   * Modulate a material's brightness by whether the headlight beam lands on
+   * it. Retroreflective paint and cat's eyes bounce light straight back to
+   * the source rather than scattering it, which is why in a night photograph
+   * the lane line is blazing inside the beam and nearly gone just outside it —
+   * the single strongest night-road cue there is, and the one thing uniformly
+   * bright markings can never produce.
+   *
+   * Works on MeshBasicMaterial and PointsMaterial alike: both shaders carry
+   * <worldpos_vertex> and <color_fragment>, which is all this needs.
+   * Inert until setBeam() is called — uBeamK stays 0 and the mix collapses to
+   * the material's original colour, so nothing changes if it is never wired.
+   */
+  function addBeam(
+    mat: THREE.Material,
+    opts?: { near?: number; far?: number; spread?: number }
+  ) {
+    const near = opts?.near ?? 22;
+    const far = opts?.far ?? 70;
+    // cosine of the half-angle at which the beam has fallen off entirely
+    const spread = opts?.spread ?? 0.55;
+    mat.onBeforeCompile = (sh) => {
+      sh.uniforms.uBeamPos = uBeamPos;
+      sh.uniforms.uBeamDir = uBeamDir;
+      sh.uniforms.uBeamAmb = uBeamAmb;
+      sh.uniforms.uBeamK = uBeamK;
+      sh.uniforms.uBeamRange = uBeamRange;
+      sh.uniforms.uBeamNear = { value: near };
+      sh.uniforms.uBeamFar = { value: far };
+      sh.uniforms.uBeamCos = { value: spread };
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vRetroW;")
+        .replace(
+          "#include <worldpos_vertex>",
+          "#include <worldpos_vertex>\nvRetroW = (modelMatrix * vec4(transformed, 1.0)).xyz;"
+        );
+      sh.fragmentShader = sh.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec3 vRetroW;\n" +
+            "uniform vec3 uBeamPos; uniform vec3 uBeamDir;\n" +
+            "uniform float uBeamAmb; uniform float uBeamK; uniform float uBeamRange;\n" +
+            "uniform float uBeamNear; uniform float uBeamFar; uniform float uBeamCos;"
+        )
+        .replace(
+          "#include <color_fragment>",
+          `#include <color_fragment>
+{
+  vec3 bd = vRetroW - uBeamPos;
+  float bdist = length(bd);
+  float align = dot(bd / max(bdist, 1e-4), uBeamDir);
+  // inside the cone, and within range — the product is what gives the
+  // narrow bright wedge that widens with distance
+  float cone = smoothstep(uBeamCos, uBeamCos + 0.16, align);
+  float fall = 1.0 - smoothstep(uBeamNear * uBeamRange, uBeamFar * uBeamRange, bdist);
+  float lit = cone * fall;
+  diffuseColor.rgb *= mix(uBeamAmb, 1.0, lit * uBeamK);
+}`
+        );
+    };
+    mat.customProgramCacheKey = () => `beam|${near}|${far}|${spread}`;
   }
 
   /* ---------------- world-projected UVs ---------------- */
@@ -310,6 +456,15 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   reflectionUniforms(hwy, 0.34);
   reflectionUniforms(ramp, 0.22);
 
+  /* Wheel-path streaking, expressway deck only — it is a high-speed-surface
+     effect and would be wrong on town streets. The deck's u axis is in metres
+     over TILE (7 m per uv unit, see highway.ts), so 28 cycles per unit puts a
+     streak roughly every 25 cm, which is the scale the headlight pool picks
+     out. Amplitude is deliberately low; this is a texture cue, not a pattern
+     you should be able to count. Rides with detailOn, so perf mode drops it. */
+  ud(hwy).grooveAmt = 0.16;
+  ud(hwy).grooveFreq = 28 * Math.PI * 2;
+
   const conc = new THREE.MeshStandardMaterial({
     color: 0x33363f, roughness: 0.8, metalness: 0.08,
   });
@@ -367,6 +522,13 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     transparent: true, opacity: 0.95, depthWrite: false, fog: true,
     blending: THREE.AdditiveBlending,
   };
+  /* Lane paint. polygonOffset and depthWrite:false are load-bearing — with the
+     marking geometry sitting only ~22 mm above the deck, they are what keep it
+     off the z-fighting knife-edge at distance. Do not drop them. */
+  const markMat = new THREE.MeshBasicMaterial({
+    color: 0xe9edf6, fog: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
   const studMat = new THREE.PointsMaterial(studParams);
   /* The tunnel span gets its own material for one reason: studMat is
      registered in world.neonMats, which the engine fades out with daylight —
@@ -376,6 +538,15 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      of neonMats and burns at full strength around the clock, for the same
      reason the ceiling battens deliberately are not registered either. */
   const studMatTunnel = new THREE.PointsMaterial(studParams);
+
+  /* Paint fades out of the beam fastest; glass-bead cat's eyes are far more
+     efficient reflectors and stay legible much further down the road, which is
+     what makes a receding row of them read as a line long after the dashes
+     have gone dark. The tunnel studs keep the widest cone — in the tube the
+     walls bounce light back onto them from every angle. */
+  addBeam(markMat, { near: 18, far: 62, spread: 0.62 });
+  addBeam(studMat, { near: 40, far: 190, spread: 0.42 });
+  addBeam(studMatTunnel, { near: 40, far: 190, spread: 0.3 });
 
   const mats: Mats = {
     envMap, glowTex, streakTex, smokeTex, chevTex, goreTex, xingTex, studTex,
@@ -394,6 +565,32 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     tunnelCeil,
     studMat,
     studMatTunnel,
+    markMat,
+    addBeam,
+    setBeam(on, pos, dir, dayF, unlitFloor = 0.18, range = 1) {
+      uBeamPos.value.copy(pos);
+      uBeamDir.value.copy(dir).normalize();
+      uBeamRange.value = range > 0 ? range : 1;
+      /* Outside the beam the paint is not black — skyglow, streetlights and
+         the car's own spill still catch it. At noon the floor rises to 1 and
+         the effect vanishes, which is correct: sunlight lights the markings
+         from everywhere, so there is no beam to be outside of.
+
+         Note for anyone retuning this against a change in scene lighting:
+         every material this touches is UNLIT (MeshBasicMaterial and
+         PointsMaterial), so the ambient and hemi levels do not reach them.
+         Crushing the night ambient darkens the road but leaves the markings
+         where they were, which *raises* marking-to-road contrast rather than
+         lowering it. This floor is the only thing that dims unlit paint at
+         night, which is why it is a parameter — see setBeam's doc comment. */
+      const night = 1 - Math.min(Math.max(dayF, 0), 1);
+      // a brightness, so 0..1 by definition — clamped because `unlitFloor` and
+      // `range` are adjacent number parameters and transposing them would
+      // typecheck perfectly
+      const floor = Math.min(Math.max(unlitFloor, 0), 1);
+      uBeamAmb.value = 1 - (1 - floor) * night;
+      uBeamK.value = on ? night : 0;
+    },
     soundwall: new THREE.MeshStandardMaterial({
       color: 0x2c4438, roughness: 0.75, transparent: true, opacity: 0.85,
     }),

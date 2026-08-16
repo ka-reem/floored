@@ -30,7 +30,7 @@ for (const f of ["corridor.js", "ramps.js"]) {
   const p = path.join(dir, f);
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 }
-const { getCorridor, assertPitches, signPlan, SIGN, PITCH, PHASE, TUNNEL, TOLL } =
+const { getCorridor, assertPitches, signPlan, SIGN, PITCH, PHASE, TUNNEL, TOLL, TOLL_PLAZA } =
   await import(path.join(dir, "corridor.js"));
 const { buildRamps, parapetGap, spawnWindow, spawnZ, RAMP_PLAN } =
   await import(path.join(dir, "ramps.js"));
@@ -190,7 +190,8 @@ if (rt > 0.01) bad("the corridor's inverse mapping has drifted");
 }
 
 /* ---- lane schedule is drivable everywhere ---- */
-let minLanes = 99, maxLanes = 0, prevOff = null, maxSlide = 0;
+let minLanes = 99, maxLanes = 0, maxSlide = 0, slideAt = 0, slideK = 0;
+let prevOff = null, prevN = 0;
 for (let z = c.ZB0; z <= c.ZB1; z += 2) {
   const n = c.lanes(z);
   minLanes = Math.min(minLanes, n);
@@ -198,13 +199,28 @@ for (let z = c.ZB0; z <= c.ZB1; z += 2) {
   for (let k = 0; k < n; k++)
     if (Math.abs(c.laneOffset(k, z)) + 1.0 > c.halfWidth(z))
       bad(`lane ${k} at z=${z} runs off the pavement`);
-  // lane centres must slide, never jump: a jump would teleport traffic sideways
-  const off = c.laneOffset(1, z);
-  if (prevOff !== null) maxSlide = Math.max(maxSlide, Math.abs(off - prevOff));
+  /* Lane centres must slide, never jump. Measure EVERY lane, not just one:
+     when the count changes, the outermost lane moves furthest and is always
+     the binding case — checking only lane 1 (which sits near the middle and
+     barely moves) reports a taper as comfortable when its outside lane is
+     sliding twice as fast as traffic can follow. */
+  const off = [];
+  for (let k = 0; k < n; k++) off.push(c.laneOffset(k, z));
+  if (prevOff)
+    for (let k = 0; k < Math.min(n, prevN); k++) {
+      const d = Math.abs(off[k] - prevOff[k]);
+      if (d > maxSlide) {
+        maxSlide = d;
+        slideAt = z;
+        slideK = k;
+      }
+    }
   prevOff = off;
+  prevN = n;
 }
 console.log(`lanes: ${minLanes}–${maxLanes} across the lap,` +
-  ` lane centre slides at most ${f(maxSlide * 100)} cm per 2 m of road`);
+  ` lane pitch ${f(c.lanePitch(0))}–${f(c.lanePitch((TOLL.plazaZ0 + TOLL.plazaZ1) / 2))} m,` +
+  ` worst lane-centre slide ${f(maxSlide * 100)} cm per 2 m (lane ${slideK} at z=${slideAt})`);
 /* A car merely holding its lane follows the sliding centreline at
    LANE_FOLLOW_RATE (traffic.ts, 3.4 m/s) and runs at up to ~60 m/s, so a lane
    centre steeper than ~0.057 is one it visibly lags. Checked at 0.053 to keep
@@ -406,10 +422,21 @@ if (!signs.some((s) => s.kind === "exit-gore")) bad("no board at the exit gore")
 {
   const zc = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
   const lanes = c.lanes(zc), hw = c.halfWidth(zc);
-  const clear = c.LANE_W - HWY.tollIsleW - 0.2; // lane pitch minus island + kerb slop
-  console.log(`toll plaza: ${lanes} lanes, half-width ${f(hw)} m,` +
-    ` ${f(clear)} m clear through each gate`);
-  if (clear < 2.2) bad("a car cannot thread the toll gates");
+  /* The gate channel is the corridor's own lane pitch less the island either
+     side, both read from the shared constants rather than copied — this is the
+     number that decides whether the plaza is fun to drive, so it must be the
+     number that is actually built. The widest car in the garage is 1.98 m. */
+  const clear = c.gateClear(zc), WIDEST_CAR = 1.98;
+  console.log(`toll plaza: ${lanes} gates, pitch ${f(c.lanePitch(zc))} m,` +
+    ` half-width ${f(hw)} m, ${f(clear)} m clear through each gate` +
+    ` (${f((clear - WIDEST_CAR) / 2)} m either side of the widest car)`);
+  if (clear < TOLL_PLAZA.minClear)
+    bad(`gate channel ${f(clear)} m is under the ${f(TOLL_PLAZA.minClear)} m minimum —` +
+      ` too tight to thread at speed`);
+  if (TOLL_PLAZA.boothW > 2 * TOLL_PLAZA.colliderHw)
+    bad("the booth is wider than its collider, so it can be clipped without contact");
+  if (TOLL_PLAZA.kerbW > 2 * TOLL_PLAZA.colliderHw)
+    bad("the kerb is wider than its collider");
   const colLat = hw + HWY.tollColOut;
   if (colLat - HWY.tollColT / 2 < hw - 1.55)
     bad("canopy columns stand in a traffic lane");
@@ -420,6 +447,7 @@ if (!signs.some((s) => s.kind === "exit-gore")) bad("no board at the exit gore")
      signs and gate arms are placed from `zc`, and traffic threading the gates
      wants constant geometry a little either side of them too. */
   for (let z = TOLL.plazaZ0; z <= TOLL.plazaZ1; z += 2) {
+    if (Math.abs(c.lanePitch(z) - c.lanePitch(zc)) > 1e-6) bad(`plaza span z=${z} is mid-pitch-taper`);
     if (Math.abs(c.slopeX(z)) > 1e-6) bad(`plaza span z=${z} is not straight`);
     if (Math.abs(c.pose(z).grade) > 1e-6) bad(`plaza span z=${z} is not level`);
     if (Math.abs(c.halfWidth(z) - hw) > 1e-6) bad(`plaza span z=${z} is not full width`);

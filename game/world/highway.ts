@@ -4,7 +4,8 @@ import { makeTex, asphalt, signTexF, exitSignTexF, warnTexF } from "../textures"
 import { RAMP_W, CONNECT_Z } from "./const";
 import { parapetGap } from "./ramps";
 import {
-  getCorridor, assertPitches, signPlan, PITCH, PHASE, SIGN, TUNNEL, TOLL, type Station,
+  getCorridor, assertPitches, signPlan, PITCH, PHASE, SIGN, TUNNEL, TOLL, TOLL_PLAZA,
+  type Station,
 } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
@@ -162,10 +163,9 @@ export function buildHighway(
   };
 
   /* ---------------- deck: pavement, fascia, parapets, markings ------------- */
-  const markMat = new THREE.MeshBasicMaterial({
-    color: 0xe9edf6, fog: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-  });
+  // shared from mats: it carries the headlight-retroreflection shader, and the
+  // polygonOffset/depthWrite flags this geometry needs are set there
+  const markMat = mats.markMat;
   /* Shared double-sided variants rather than local clones: the photo-scan
      concrete arrives asynchronously and can only reach materials mats.ts still
      holds a reference to, so a clone made here would stay flat while the road
@@ -332,6 +332,7 @@ export function buildHighway(
     map: arrowTex, transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
+  mats.addBeam(arrowMat, { near: 18, far: 62, spread: 0.62 }); // same paint
   const decal = (z: number, lat: number, w: number, l: number, mat: THREE.Material) => {
     const p = cor.worldOf(z, lat);
     const m = new THREE.Mesh(flatQuad(w, l), mat);
@@ -469,6 +470,7 @@ export function buildHighway(
     map: mats.goreTex, transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
   });
+  mats.addBeam(goreMat, { near: 18, far: 62, spread: 0.62 }); // same paint
   world.goreBeaconMat = new THREE.SpriteMaterial({
     map: mats.glowTex, color: 0xffb020, transparent: true,
     blending: THREE.AdditiveBlending, depthWrite: false,
@@ -540,11 +542,17 @@ export function buildHighway(
     }
     const rg = new THREE.BufferGeometry();
     rg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+    /* studTex rather than glowTex: a delineator is a small hard reflector, and
+       the soft radial blob read as a hazy lamp rather than a point. The crisp
+       core is what makes a line of these recede as distinct dots instead of
+       smearing together. Retroreflective like the deck studs, and given the
+       same long range — these are the last thing still visible far ahead. */
     const rm = new THREE.PointsMaterial({
-      size: 2.6, sizeAttenuation: false, color: 0xffb055, map: mats.glowTex,
+      size: 2.2, sizeAttenuation: false, color: 0xffb055, map: mats.studTex,
       transparent: true, opacity: 0.85, fog: false, depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
+    mats.addBeam(rm, { near: 45, far: 210, spread: 0.4 });
     const rp = new THREE.Points(rg, rm);
     rp.frustumCulled = false;
     scene.add(rp);
@@ -812,32 +820,34 @@ function buildToll(
   const wx = (lat: number) => p0.x + lat * p0.nx;
   const wz = (lat: number, dz: number) => p0.z + lat * p0.nz + dz;
 
-  /* Islands between every pair of lanes. Everything here is kept narrow on
-     purpose: the lanes are 3.7 m apart, so a 1.7 m island would leave a 1.85 m
-     car about 7 cm of margin either side. At 1.0 m the gap is 2.5 m, which is
-     threadable at speed — which is the whole point of putting a toll plaza in
-     a weaving game. */
-  const IW = 1.0, IL = 15; // island width and length
+  /* Islands between every pair of lanes. The gate channel is the corridor's
+     lane pitch less the island either side of it, so the room to thread one
+     comes from the pitch widening in corridor.ts (lanePitch) rather than from
+     shaving the island down to nothing: an island thin enough to give a 4.5 m
+     gate on the open road's 3.7 m pitch would be too thin to stand a booth on.
+     Every dimension here is shared with the corridor check via TOLL_PLAZA, so
+     the clearance it asserts is the clearance actually built. */
+  const { kerbW, boothW, islandLen: IL, colliderHw } = TOLL_PLAZA;
   for (let k = 1; k < lanes; k++) {
     const lat = cor.laneEdge(k, zc);
-    const kerb = new THREE.Mesh(new THREE.BoxGeometry(IW, 0.32, IL), kerbMat);
+    const kerb = new THREE.Mesh(new THREE.BoxGeometry(kerbW, 0.32, IL), kerbMat);
     kerb.position.set(lat, 0.16, 0);
     kerb.castShadow = true;
     plaza.add(kerb);
     add({
-      x0: wx(lat) - 0.6, x1: wx(lat) + 0.6,
+      x0: wx(lat) - colliderHw, x1: wx(lat) + colliderHw,
       z0: wz(lat, -IL / 2), z1: wz(lat, IL / 2),
       y0: p0.y - 0.5, y1: p0.y + 3.4,
     });
     // manned booths on the outer islands, bare gate posts on the inner ones
     const manned = k === 1 || k === lanes - 1 || k === 3;
     if (manned) {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.9, 3.4), boothMat);
+      const b = new THREE.Mesh(new THREE.BoxGeometry(boothW, 2.9, 3.4), boothMat);
       b.position.set(lat, 1.77, -1.5);
       b.castShadow = true;
       plaza.add(b);
       const gl = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 1.3), glassMat);
-      gl.position.set(lat - 0.62, 2.15, -1.5);
+      gl.position.set(lat - boothW / 2 - 0.02, 2.15, -1.5);
       gl.rotation.y = -Math.PI / 2;
       plaza.add(gl);
     } else {
@@ -856,7 +866,7 @@ function buildToll(
   }
 
   // canopy over the whole plaza
-  const CW = hw * 2 + 5, CL = 34;
+  const CW = hw * 2 + 5, CL = TOLL_PLAZA.groupLen;
   const roof = new THREE.Mesh(new THREE.BoxGeometry(CW, 0.9, CL),
     new THREE.MeshStandardMaterial({ color: 0x2f333d, roughness: 0.8 }));
   roof.position.y = 7.4;

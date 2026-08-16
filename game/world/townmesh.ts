@@ -397,6 +397,9 @@ export function buildTown(
     g.setAttribute("position", new THREE.BufferAttribute(p, 3));
     world.glowPts = new THREE.Points(
       g,
+      /* Colour, size and blending here are overridden at startup by
+         Game.tintLampsSodium() in engine.ts, which owns the night look — edit
+         them there, not here, or the change will appear to do nothing. */
       new THREE.PointsMaterial({
         size: 7, map: mats.glowTex, color: 0xffd9a0, transparent: true,
         opacity: 1, sizeAttenuation: false, depthWrite: false,
@@ -438,6 +441,8 @@ export function buildTown(
     });
     world.pools = new THREE.Mesh(
       pg,
+      // colour likewise comes from tintLampsSodium(), and the opacity is
+      // rewritten every frame by the day/night pass in engine.ts
       new THREE.MeshBasicMaterial({
         map: poolTex, transparent: true, depthWrite: false,
         blending: THREE.AdditiveBlending, opacity: 0.3, side: THREE.DoubleSide,

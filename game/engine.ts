@@ -57,6 +57,26 @@ THREE.ColorManagement.enabled = false;
 
 const LAYER_NOREF = 1;
 
+/** Headlight throw, metres: dipped and main. These set the spotlight distance
+    and, as a ratio, how far down the road the retroreflective paint answers —
+    one pair of numbers so the light pool and the paint cannot disagree. */
+const HL_THROW = 90, HL_THROW_HI = 155;
+
+/** How bright lane paint sits at night *outside* the headlight beam, 0..1.
+    Lower than mats.ts's 0.18 default because the night deck underneath it is
+    now about six times darker while the paint, being unlit, did not change at
+    all: at the old floor the markings hold their full daytime punch against a
+    near-black road and the beam stops being the thing that reveals them. Not
+    taken further down because this single number also stands in for every
+    other light in the world — under a sodium pool real paint is plainly
+    visible, and the shader knows nothing about the streetlights. */
+const BEAM_FLOOR = 0.13;
+
+/** Seconds G must be held before it toggles the high-beam latch instead of
+    flashing. Long enough that no flash-to-pass reaches it — a pass flash is a
+    few hundred ms — and short enough to be a deliberate press, not a wait. */
+const HI_HOLD = 2;
+
 /* Camera modes, in cycle order. CAM_POV is the hard-mounted dashcam: it shares
    the cockpit's rendering (interior shell visible, mirror and gauges live) but
    none of its head physics — a bracket bolted over the dash does not lean into
@@ -116,13 +136,18 @@ export class Game {
   timeSpeed = 150;
   perfMode = false;
   lookBack = false;
-  /* High beams. G is momentary (flash-to-pass) and a quick double-tap latches,
-     which is as close to a column stalk as one key gets. Held here rather than
-     on CarState because physics.ts owns that type and none of this is physics —
-     nothing downstream of the lamps reads it. */
+  /* High beams. G is momentary (flash-to-pass) on a short press and toggles the
+     latch when held past HI_HOLD, which is as close to a column stalk as one
+     key gets — a real stalk separates the two the same way, by how far you push
+     it rather than by how fast you tap. Held here rather than on CarState
+     because physics.ts owns that type and none of this is physics — nothing
+     downstream of the lamps reads it. */
   private hiHeld = false;
   private hiLatch = false;
-  private hiTapAt = -1;
+  private hiDownAt = -1;
+  /** the current press already spent itself toggling the latch, so its release
+      must not also be read as the end of a flash */
+  private hiConsumed = false;
 
   private ui: UiBridge;
   private renderer: THREE.WebGLRenderer;
@@ -262,7 +287,12 @@ export class Game {
     this.scene.add(this.amb);
 
     this.post = new PostFX(this.renderer);
-    this.mats = buildMats();
+    /* On the low preset the photo scans are not fetched at all — some 60 MB of
+       texture memory and a 5 MB download, on exactly the device that asked for
+       less. The load is deferred rather than cancelled, so updatePbrDetail()
+       turning detail back on when the preset is raised is also what starts it,
+       and the world upgrades in place. */
+    this.mats = buildMats({ pbr: profile.settings.preset !== "low" });
     // async: swaps a real night-city HDRI under the car bodywork when one is
     // on disk, otherwise the painted cube env above stays
     primeCarEnv(this.renderer, this.mats.envMap);
@@ -290,6 +320,7 @@ export class Game {
     this.scene.add(ground);
     const hwyOut = buildHighway(this.scene, this.mats, this.world, this.terrain, rng);
     buildTown(this.scene, this.mats, this.world, this.terrain, rng, hwyOut.deckLightPts);
+    this.tintLampsSodium();
 
     this.traffic = new Traffic(this.scene, this.world, this.mats.envMap, this.mats.glowTex, 120);
     this.rainFX = new RainFX(this.scene, this.mats.streakTex);
@@ -408,8 +439,11 @@ export class Game {
   private onWindowBlur = () => {
     // don't let held keys latch across alt-tab
     for (const k in this.keydown) this.keydown[k] = 0;
-    // the keyup for a held G never arrives if the tab lost focus mid-flash
+    /* The keyup for a held G never arrives if the tab lost focus mid-flash.
+       Clearing hiHeld also disarms the hold timer, so a G held through an
+       alt-tab cannot come back two seconds later having toggled the latch. */
     this.hiHeld = false;
+    this.hiConsumed = false;
     this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
   };
 
@@ -489,28 +523,44 @@ export class Game {
     }
     if (k === "b") this.lookBack = true;
     if (k === "g") {
-      /* Momentary while held. A second press inside the double-tap window
-         latches instead; any single press while latched cancels it, so the way
-         out is the same key whichever way you turned them on. `e.repeat` is
-         already filtered above, so autorepeat can't machine-gun the latch. */
+      /* Momentary while held; a long hold toggles the latch instead. Nothing
+         is decided here beyond starting the clock — which of the two gestures
+         this turns out to be is only known at 2 s (hiBeamHold) or at release,
+         whichever comes first. `e.repeat` is already filtered above, so
+         autorepeat can't re-arm the timer under a held key. */
       this.hiHeld = true;
-      const t = performance.now() / 1000;
-      if (this.hiLatch) {
-        this.hiLatch = false;
-        this.ui.toast("HIGH BEAMS OFF");
-      } else if (t - this.hiTapAt < 0.3) {
-        this.hiLatch = true;
-        this.ui.toast("HIGH BEAMS ON");
-      }
-      this.hiTapAt = t;
+      this.hiConsumed = false;
+      this.hiDownAt = performance.now() / 1000;
     }
   };
   private onKeyUp = (e: KeyboardEvent) => {
     const k = e.key.toLowerCase();
     this.keydown[k] = 0;
     if (k === "b") this.lookBack = false;
-    if (k === "g") this.hiHeld = false;
+    if (k === "g") {
+      // A release that ends a latch toggle is not also a flash: the gesture was
+      // already spent at the 2 s mark, and without this the beams would blink
+      // back on for the instant between the toggle and letting go.
+      this.hiHeld = false;
+      this.hiConsumed = false;
+    }
   };
+
+  /** Resolve a held G once it passes the hold threshold. Runs off the frame
+      clock rather than a timer, so it cannot fire after the key is released or
+      after focus is lost — both of those clear hiHeld first.
+
+      Dropping hiHeld here as well as setting hiConsumed is what makes the
+      toggle its own feedback: latching off has to darken the road *now*, while
+      the key is still down, or the only confirmation until release is the
+      toast. */
+  private hiBeamHold(now: number) {
+    if (!this.hiHeld || this.hiConsumed || now - this.hiDownAt < HI_HOLD) return;
+    this.hiConsumed = true;
+    this.hiHeld = false;
+    this.hiLatch = !this.hiLatch;
+    this.ui.toast("HIGH BEAMS " + (this.hiLatch ? "ON" : "OFF"));
+  }
 
   private bindInput() {
     addEventListener("keydown", this.onKeyDown);
@@ -879,26 +929,81 @@ export class Game {
     }
   }
 
-  private fogN = new THREE.Color(0x0a0d1a);
+  /** Street and deck lamps are built as one pooled sprite cloud plus one
+      ground-quad batch. Both come out of the town builder as a generic warm
+      white; retint them once, here, to low-pressure sodium — the orange is
+      most of what says "road at night" in the reference, and a wider sprite
+      with additive blending gives each head the halation a real lamp has in
+      damp air instead of a flat dot. */
+  private tintLampsSodium() {
+    const g = this.world.glowPts?.material as THREE.PointsMaterial | undefined;
+    if (g) {
+      g.color.setHex(0xffa235);
+      g.size = 9;
+      g.blending = THREE.AdditiveBlending;
+      g.needsUpdate = true;
+    }
+    const p = this.world.pools?.material as THREE.MeshBasicMaterial | undefined;
+    if (p) p.color.setHex(0xff9c33);
+  }
+
+  /* Night fog sits almost on black. Anything lighter reads as a grey haze
+     hanging in front of a black sky, which is the single loudest tell that a
+     night scene is faked — the clear colour comes off this same value, so the
+     horizon has to go with it. */
+  private fogN = new THREE.Color(0x03040a);
   private fogD = new THREE.Color(0x9db6d8);
-  private fogRN = new THREE.Color(0x2c3340);
+  private fogRN = new THREE.Color(0x171b26);
   private fogRD = new THREE.Color(0x6a7480);
-  private sunN = new THREE.Color(0x9db4ff);
+  private sunN = new THREE.Color(0x8296d8);
   private sunD = new THREE.Color(0xffe8c8);
+  private hemiN = new THREE.Color(0x0d1526);
+  private hemiD = new THREE.Color(0x3948a8);
+  private beamPos = new THREE.Vector3();
+  private beamDir = new THREE.Vector3();
+  private ambBase = new THREE.Color(0x222233);
+  private ambTun = new THREE.Color(0x3a3128);
+  private hemiGN = new THREE.Color(0x04040a);
+  private hemiGD = new THREE.Color(0x0b0b14);
 
   private weather(dt: number, now: number) {
     const car = this.car, world = this.world, sky = this.sky;
     this.time = (this.time + (this.timeSpeed * dt) / 3600) % 24;
     const f = this.dayFactor();
     sky.skyMat.map = sky.skyCache[Math.round(f * 7)] as THREE.Texture;
+    /* The night dome already grades from near-black overhead to a warm city
+       glow at the horizon; deep night just needs it taken down so the zenith
+       is genuinely black and the glow is a faint band rather than a lit
+       backdrop. Recovers by early dusk, so nothing above f≈0.45 is touched. */
+    sky.skyMat.color.setScalar(lerp(0.45, 1, Math.min(1, f * 2.2)));
     this.fogC.copy(this.rain ? this.fogRN : this.fogN).lerp(this.rain ? this.fogRD : this.fogD, f);
     (this.scene.fog as THREE.FogExp2).color.copy(this.fogC);
     this.renderer.setClearColor(this.fogC);
     (this.scene.fog as THREE.FogExp2).density =
       (lerp(0.0021, 0.001, f) + (this.rain ? 0.0015 : 0)) * fogMultiplier(this.settings.fog);
-    this.hemi.intensity = 0.32 + f * 0.6;
-    this.amb.intensity = 0.34 + f * 0.28;
-    this.sun.intensity = 0.14 + f * 1.15;
+    /* Ambient is shaped, not lerped. A straight lerp on f leaves a floor of
+       fill light at midnight that lights every surface the lamps never reach,
+       and that even wash is what makes a night scene read as "day with a blue
+       filter". The floors here are ~6x lower, so an unlit wall goes to a
+       silhouette and its lit windows do all the work; the 0.7 power pulls the
+       curve back up through dusk so twilight keeps roughly its old shape and
+       full day lands on exactly the values it had before. */
+    const lit = Math.pow(f, 0.7);
+    this.hemi.intensity = 0.05 + lit * 0.87;
+    this.amb.intensity = 0.07 + lit * 0.55;
+    this.sun.intensity = 0.03 + lit * 1.26;
+    this.hemi.color.copy(this.hemiN).lerp(this.hemiD, lit);
+    this.hemi.groundColor.copy(this.hemiGN).lerp(this.hemiGD, lit);
+    /* A tiled tunnel bounces its own battens around the tube, so the deck in
+       there is *not* the black the open road now is. Put the fill back in
+       proportion to the blend, warm, so crushing the night sky doesn't drag
+       the tunnel floor down with it — this is the lighting half of the same
+       adaptation the exposure lift in render() does. */
+    if (this.tunT > 0.001) {
+      this.amb.intensity += this.tunT * 0.3;
+      this.hemi.intensity += this.tunT * 0.2;
+      this.amb.color.copy(this.ambBase).lerp(this.ambTun, this.tunT);
+    } else this.amb.color.copy(this.ambBase);
     this.sun.color.copy(this.sunN).lerp(this.sunD, f);
     const sa = ((this.time - 6) / 12) * Math.PI;
     this.sun.position.set(car.x - Math.cos(sa) * 520, Math.max(120, Math.sin(sa) * 640), car.z - 260);
@@ -917,8 +1022,12 @@ export class Game {
       (1 - f * 0.8) * clamp(1.9 - fogMultiplier(this.settings.fog), 0.12, 1);
     this.mats.sfMat.emissiveIntensity = lerp(0.78, 0.12, f);
     if (world.glowPts) (world.glowPts.material as THREE.PointsMaterial).opacity = 1 - f * 0.92;
+    /* The pools carry more of the road now that there is no ambient fill left
+       to light it — they are the only thing between the lamp heads and a black
+       deck. Wet tarmac spreads them further still. */
     if (world.pools)
-      (world.pools.material as THREE.MeshBasicMaterial).opacity = 0.3 * (1 - f) + (this.rain ? 0.12 : 0);
+      (world.pools.material as THREE.MeshBasicMaterial).opacity =
+        0.5 * (1 - f) + (this.rain ? 0.16 : 0);
     for (const m of world.neonMats) (m as THREE.MeshBasicMaterial).opacity = 1 - f * 0.72;
     if (world.beaconPts)
       (world.beaconPts.material as THREE.PointsMaterial).opacity =
@@ -933,16 +1042,45 @@ export class Game {
     const hi = this.highBeam;
     const lamps = car.lightsOn || hi;
     // modern three uses physical (candela) spot intensities
-    const si = lamps ? (this.rain ? 560 : 420) * (hi ? 2 : 1) : 0;
+    const si = lamps ? (this.rain ? 700 : 540) * (hi ? 1.9 : 1) : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
+    /* Halogen dipped beam is warm — around 3200 K — and reading it as warm is
+       most of why the pool on the tarmac looks like light rather than like a
+       grey texture that got brighter. Main beam runs whiter, the way a boosted
+       filament (or the HID/LED it is imitating) actually does. */
+    const beamC = hi ? 0xfff4e6 : 0xffeeda;
+    this.rig.spotL.color.setHex(beamC);
+    this.rig.spotR.color.setHex(beamC);
+    /* Point the retroreflection beam (mats.setBeam) at the same place the
+       lamps are pointing. Without this call every marking on the road stays
+       at one flat brightness, which is precisely the look the crushed ambient
+       is meant to kill: the paint has to be blazing inside the beam and gone
+       just outside it. Origin is the lamp line, not the car centre, so the
+       wedge starts at the nose; the dipped beam aims slightly down.
+
+       `range` comes off the same two throw constants the spotlights use a few
+       lines below, so main beam reaches the paint exactly as far as it reaches
+       the road — hardcoding the ratio here is how the light pool and the
+       retroreflection quietly drift out of agreement.
+
+       BEAM_FLOOR is how bright paint sits at night outside the beam. Every
+       material it reaches is unlit, so the ambient crush above never touches
+       them: this is the only lever that dims night paint, and it is set here
+       rather than in mats.ts because it is a night-look decision. */
+    this.beamPos.set(
+      car.x + Math.sin(car.h) * 2.05, car.y + 0.62, car.z + Math.cos(car.h) * 2.05);
+    this.beamDir.set(Math.sin(car.h), hi ? -0.012 : -0.05, Math.cos(car.h));
+    this.mats.setBeam(
+      lamps, this.beamPos, this.beamDir, f, BEAM_FLOOR,
+      hi ? HL_THROW_HI / HL_THROW : 1);
     /* Main beam is not simply brighter. The cone tightens and hardens, throws
        roughly 70% further, and the cut-off comes up from a dipped ~2 degrees
        to level — which is what actually reads as "high beam" down a dark road,
        and why oncoming traffic hates it. x on the targets is left alone: the
        two lamps toe out from each other and that spread is per-side. */
     for (const sp of [this.rig.spotL, this.rig.spotR]) {
-      sp.distance = hi ? 155 : 90;
+      sp.distance = hi ? HL_THROW_HI : HL_THROW;
       sp.angle = hi ? 0.4 : 0.46;
       sp.penumbra = hi ? 0.24 : 0.42;
       sp.target.position.y = hi ? 0.34 : -0.4;
@@ -956,6 +1094,58 @@ export class Game {
       : car.lightsOn ? 0.8 * (1 - f * 0.85) : 0;
     this.rig.plateGlowMat.opacity = car.lightsOn ? 0.3 * (1 - f * 0.85) : 0;
     this.rainFX.update(dt, car.x, car.y, car.z, car.wvx, car.wvz);
+  }
+
+  /** Sustained body-on-barrier contact, fed to the audio scrape bed every
+      frame. Distinct from `crash()`, which stays exactly as it was and keeps
+      firing on the delta-v spikes above its threshold: a scrape is what
+      happens for as long as you stay leaned on the wall after that bang.
+
+      `push` is the frame's depenetration vector — see the call site — so its
+      direction is the contact normal and its length is how far into the
+      barrier the car had got. Both parapets and NPC flanks produce one, which
+      is why this needs no separate NPC path; npcHits would miss a steady rub
+      alongside a car anyway, since it only records closing contacts.
+
+      Feeding the tangential speed honestly is the whole point of the split:
+      parked hard against a barrier at full lock is *contact*, sometimes deep
+      contact, but nothing is sliding over anything, and it has to stay silent.
+      Only the component of travel along the surface can make a noise. */
+  private scrapeAmt = 0;
+  private scrapeUpdate(dt: number, hit: boolean, pushX: number, pushZ: number) {
+    const car = this.car;
+    let target = 0, tanSpeed = 0;
+    if (hit) {
+      const pm = Math.hypot(pushX, pushZ);
+      if (pm > 1e-6) {
+        const nx = pushX / pm, nz = pushZ / pm;
+        // strip the into-the-wall component; what is left runs along the face
+        const vn = car.wvx * nx + car.wvz * nz;
+        tanSpeed = Math.hypot(car.wvx - nx * vn, car.wvz - nz * vn);
+      } else {
+        /* Touching with no measurable penetration — a graze that arrived
+           exactly parallel. There is no normal to project against, and the
+           velocity is by definition almost all tangential, so use it whole
+           rather than dropping a real scrape on the floor. */
+        tanSpeed = Math.hypot(car.wvx, car.wvz);
+      }
+      /* How hard the car is leaning in, as the speed at which it is burying
+         itself. In steady state that decays towards zero even while pressed —
+         the wall wins — hence the floor: any contact at all is worth a sound,
+         and it is the tangential speed, not this, that decides silence. */
+      const press = clamp(pm / Math.max(dt, 1e-3) / 2, 0, 1);
+      target = 0.35 + 0.65 * press;
+    }
+    /* Asymmetric smoothing: a scrape starts the instant metal touches, but
+       must not chatter off and on across frames where the depenetration
+       happens to land on zero. Leaving the barrier is quick but not
+       instant — that tail is the sound dying, not the contact persisting. */
+    const k = target > this.scrapeAmt ? 40 : 14;
+    this.scrapeAmt = lerp(this.scrapeAmt, target, 1 - Math.exp(-k * Math.max(dt, 1e-4)));
+    if (this.scrapeAmt < 0.01) this.scrapeAmt = 0;
+    // speed is what the audio side gates on, so a contact that has stopped
+    // sliding must report zero rather than a small residue
+    this.audio.setScrape(this.scrapeAmt, this.scrapeAmt > 0 ? tanSpeed : 0);
   }
 
   private signalsUpdate(now: number) {
@@ -1414,6 +1604,9 @@ export class Game {
     this.last = now;
     this.debug.frames++;
     this.readInput(dt);
+    // before weather(), which is where the lamps are actually set from the
+    // resulting beam state; runs while paused too, so a hold can't stall there
+    this.hiBeamHold(now);
     this.crashCooldown = Math.max(0, this.crashCooldown - dt);
     if (this.running) {
       this.acc += dt;
@@ -1432,7 +1625,16 @@ export class Game {
          traffic and the camera must all agree on which side of the seam we
          are on, or one of them spends a frame 4 km away. */
       this.loopSplice();
+      /* Snapshot the position across the collision call only. Whatever moves
+         between these two reads is depenetration — collidePlayer's only
+         positional write — and it is pushed straight along the contact normal,
+         which is the one thing the return value does not carry. The velocity
+         delta cannot stand in for it: collide also scales the whole velocity
+         by 0.965 on any hit, so at speed that term swamps the normal impulse
+         and points backwards along travel instead of out of the wall. */
+      const preCX = this.car.x, preCZ = this.car.z;
       const res = collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
+      this.scrapeUpdate(dt, res.hit, this.car.x - preCX, this.car.z - preCZ);
       for (const hitInfo of res.npcHits) {
         this.traffic.applyImpact(hitInfo);
         if (hitInfo.relSpeed > 2.5 && this.crashCooldown <= 0) {
@@ -1476,6 +1678,9 @@ export class Game {
         drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
     } else {
       this.acc = 0;
+      // paused: no collision runs, so nothing would ever clear a scrape that
+      // was sounding at the moment the pause landed
+      this.scrapeUpdate(dt, false, 0, 0);
       this.updateCarVisual(now, dt);
       this.updateCamera(dt);
       this.weather(0, now);
@@ -1506,7 +1711,10 @@ export class Game {
     this.post.process({
       // inside the tunnel the eye adapts to a much darker box: lift exposure
       // so the sodium strip and the walls read, instead of crushing to black
-      exposure: lerp(lerp(1.12, 0.9, f), 1.34, this.tunT),
+      // the night end is biased down so the crushed ambient survives the tone
+      // map: lifting it back here would simply undo the darkness. Only the
+      // lamps and lit windows are above the bloom knee once it is this low.
+      exposure: lerp(lerp(0.98, 0.9, f), 1.34, this.tunT),
       grade: this.grade,
       bloom: this.settings.bloom,
       fxaa: this.settings.fxaa,
