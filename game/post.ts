@@ -159,19 +159,30 @@ void main(){ vec2 px=1.0/uRes;
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv;
 uniform sampler2D tCur,tPrev; uniform float uMB,uPeriph;
+// approx vanishing point: the horizon sits a little above true screen
+// centre in both chase and cockpit cams (hood/dash eats the lower half),
+// so streaks converging here read as "receding into the road" rather than
+// a generic centre blur.
+const vec2 VP=vec2(.5,.54);
 void main(){
- vec2 d=vUv-.5; float r=length(d);
- // peripheral radial (fovea) blur: pulls samples toward centre, masked off
- // so the fovea (~15% radius) stays tack sharp and the pull ramps to full
- // strength by mid-frame — corners are fully streaked well before the edge.
- // uPeriph carries the 0..1 speed factor in, so at uPeriph=0 every tap
- // collapses onto vUv and this is a no-op read of tCur.
+ vec2 d=vUv-VP; float r=length(d);
+ // peripheral radial STREAK (fovea effect): a short directional pull along
+ // the edge-to-vanishing-point line, not an isotropic blur — each pixel
+ // samples along one ray toward VP, which is what reads as speed lines
+ // rather than defocus. Masked so the fovea (~15% radius) stays tack sharp
+ // and the streak ramps to full length by mid-frame; corners are fully
+ // streaked well before the edge. uPeriph carries the 0..1 speed factor in,
+ // so at uPeriph=0 every tap collapses onto vUv (a no-op read of tCur).
  float mask=smoothstep(.15,.6,r)*uPeriph;
  vec2 dir=r>1e-5?d/r:vec2(0.);
  vec3 c=vec3(0.); float wsum=0.;
- for(int i=0;i<4;i++){
-   float t=float(i)*mask*.045;
-   float w=1.0-float(i)*.15;
+ const int N=6;
+ for(int i=0;i<N;i++){
+   // a comet, not a smear: the near end (i=0, full weight) anchors the
+   // sharp source pixel, the tail stretches toward VP and fades out
+   float ti=float(i)/float(N-1);
+   float t=ti*mask*.11;
+   float w=1.0-ti*.6;
    c+=texture2D(tCur,vUv-dir*t).rgb*w; wsum+=w;
  }
  c/=wsum;
