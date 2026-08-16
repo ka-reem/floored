@@ -58,19 +58,35 @@ export interface CarSpec {
   cockpitAccent: number;
 }
 
+/** Paint system, in the automotive sense:
+ *  - solid: pigment under clear, no flake. Flat, deep, slightly "cheap".
+ *  - metallic: aluminium flake in the base coat. Sparkles, reads lighter at
+ *    grazing angles.
+ *  - pearl: mica flake with a tinted second coat — a coloured sheen that
+ *    shifts against the base. Rendered with sheen, not iridescence (an extra
+ *    BSDF layer is not worth it on a car that draws three times a frame). */
+export type PaintFinish = "solid" | "metallic" | "pearl";
+
 export interface Paint {
   name: string;
   hex: number;
+  finish: PaintFinish;
+  /** pearl only: the mica tint that flares at grazing angles. */
+  pearlHex?: number;
 }
 
 export const PAINTS: Paint[] = [
-  { name: "Midnight Indigo", hex: 0x2b4a8f },
-  { name: "Panda White", hex: 0xe8ecf2 },
-  { name: "Sunset Orange", hex: 0xc65a1e },
-  { name: "Gunmetal", hex: 0x3c4048 },
-  { name: "Cherry Red", hex: 0x8f1a22 },
-  { name: "Wasabi", hex: 0x5a7a3c },
+  { name: "Midnight Indigo", hex: 0x2b4a8f, finish: "metallic" },
+  { name: "Panda White", hex: 0xe8ecf2, finish: "pearl", pearlHex: 0x9fb6e6 },
+  { name: "Sunset Orange", hex: 0xc65a1e, finish: "metallic" },
+  { name: "Gunmetal", hex: 0x3c4048, finish: "metallic" },
+  { name: "Cherry Red", hex: 0x8f1a22, finish: "pearl", pearlHex: 0xe0603a },
+  { name: "Wasabi", hex: 0x5a7a3c, finish: "solid" },
 ];
+
+/** Look a paint up by its colour, which is all most call sites carry. */
+export const paintByHex = (hex: number): Paint =>
+  PAINTS.find((p) => p.hex === hex) || { name: "Custom", hex, finish: "metallic" };
 
 export const CARS: CarSpec[] = [
   {

@@ -25,6 +25,133 @@ export function makeTex(
   return t;
 }
 
+/* ------------------------------------------------------------------ *
+ * Photo-scanned PBR sets
+ *
+ * Real albedo/normal/roughness scans live under public/assets/pbr/<set>/
+ * as albedo.jpg / normal.jpg / rough.jpg / ao.jpg / metal.jpg. Only albedo
+ * is required; a set with no albedo is treated as absent and every caller
+ * silently keeps its procedural canvas texture. Nothing here throws and
+ * nothing blocks startup — the maps arrive asynchronously and materials
+ * upgrade themselves in place when they land.
+ *
+ * NOTE on colour space: the engine runs with THREE.ColorManagement disabled,
+ * which leaves the hand-authored canvas art in its original linear-ish space.
+ * That switch does NOT disable the hardware sRGB decode — three picks the
+ * SRGB8_ALPHA8 internal format straight off texture.colorSpace — so photo
+ * albedo still has to be tagged sRGB to linearise correctly, while the
+ * data maps (normal/rough/ao/metal) must stay untagged.
+ * ------------------------------------------------------------------ */
+
+const PBR_BASE = "/assets/pbr";
+
+export interface PbrSet {
+  albedo: THREE.Texture | null;
+  normal: THREE.Texture | null;
+  rough: THREE.Texture | null;
+  metal: THREE.Texture | null;
+  /** mean *linear* luminance of the albedo; 1 until measured */
+  albedoMean: number;
+  /** mean of the roughness map's green channel; 1 until measured */
+  roughMean: number;
+}
+
+const srgbToLinear = (c: number) =>
+  c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+
+/** Average an image down to a few texels and read the mean back.
+    Used to keep the detail layers mean-preserving, so dropping a photo set
+    on top of the procedural art changes its texture but not its brightness. */
+function measureMean(img: CanvasImageSource, srgb: boolean): number {
+  const N = 8;
+  try {
+    const c = document.createElement("canvas");
+    c.width = c.height = N;
+    const x = c.getContext("2d", { willReadFrequently: true });
+    if (!x) return 1;
+    x.drawImage(img, 0, 0, N, N);
+    const d = x.getImageData(0, 0, N, N).data;
+    let sum = 0;
+    for (let i = 0; i < N * N; i++) {
+      // luminance for albedo, plain green channel for the data maps (three
+      // samples roughness/metalness from .g)
+      const v = srgb
+        ? (srgbToLinear(d[i * 4] / 255) * 0.2126 +
+           srgbToLinear(d[i * 4 + 1] / 255) * 0.7152 +
+           srgbToLinear(d[i * 4 + 2] / 255) * 0.0722)
+        : d[i * 4 + 1] / 255;
+      sum += v;
+    }
+    const mean = sum / (N * N);
+    // a black or unreadable image would make every consumer divide by ~0
+    return mean > 0.004 ? mean : 1;
+  } catch {
+    // tainted canvas (asset served cross-origin) — neutral is always safe
+    return 1;
+  }
+}
+
+/** Load one map of a set. Missing files resolve to null rather than rejecting. */
+function loadMap(
+  loader: THREE.TextureLoader,
+  url: string,
+  srgb: boolean,
+  repeat: THREE.Vector2,
+  onMean?: (m: number) => void
+): Promise<THREE.Texture | null> {
+  return new Promise((resolve) => {
+    loader.load(
+      url,
+      (t) => {
+        t.wrapS = t.wrapT = THREE.RepeatWrapping;
+        t.repeat.copy(repeat);
+        t.anisotropy = 16;
+        if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+        if (onMean && t.image) onMean(measureMean(t.image as CanvasImageSource, srgb));
+        resolve(t);
+      },
+      undefined,
+      () => resolve(null)
+    );
+  });
+}
+
+/**
+ * Fetch a PBR set by directory name. Always resolves; an absent or partial
+ * set comes back with nulls in the slots that failed, and `albedo === null`
+ * is the caller's signal to stay on the procedural fallback.
+ */
+export async function loadPbrSet(
+  name: string,
+  repeat = new THREE.Vector2(1, 1),
+  wantMetal = false
+): Promise<PbrSet> {
+  const set: PbrSet = {
+    albedo: null, normal: null, rough: null, metal: null,
+    albedoMean: 1, roughMean: 1,
+  };
+  if (typeof document === "undefined") return set;
+  const loader = new THREE.TextureLoader();
+  const dir = `${PBR_BASE}/${name}`;
+  const [albedo, normal, rough, metal] = await Promise.all([
+    loadMap(loader, `${dir}/albedo.jpg`, true, repeat, (m) => (set.albedoMean = m)),
+    loadMap(loader, `${dir}/normal.jpg`, false, repeat),
+    loadMap(loader, `${dir}/rough.jpg`, false, repeat, (m) => (set.roughMean = m)),
+    wantMetal ? loadMap(loader, `${dir}/metal.jpg`, false, repeat) : Promise.resolve(null),
+  ]);
+  // an orphaned normal/rough with no albedo is not a usable set; drop the lot
+  // so a half-finished asset drop can never half-apply
+  if (!albedo) {
+    for (const t of [normal, rough, metal]) t?.dispose();
+    return set;
+  }
+  set.albedo = albedo;
+  set.normal = normal;
+  set.rough = rough;
+  set.metal = metal;
+  return set;
+}
+
 export function asphalt(ctx: CanvasRenderingContext2D, w: number, h: number, base: string) {
   ctx.fillStyle = base;
   ctx.fillRect(0, 0, w, h);
@@ -85,6 +212,64 @@ function paintLine(
   ctx.setLineDash([]);
 }
 
+/**
+ * Draw road paint on its own layer, chew the edges, then composite it down.
+ *
+ * Wear has to happen on an isolated layer: erasing straight into the road
+ * canvas with destination-out would punch holes through the asphalt as well,
+ * since both live in the same bitmap. Painting into a scratch canvas and
+ * erasing there means the damage lands only on the markings, and the asphalt
+ * shows through underneath exactly as a worn stripe does in life.
+ *
+ * All erase blobs are drawn at every tile offset so the wear pattern wraps
+ * with the texture, the same trick the asphalt patch blobs use.
+ */
+function wornPaint(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  draw: (c: CanvasRenderingContext2D) => void,
+  amount = 1
+) {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const x = c.getContext("2d");
+  if (!x) {
+    draw(ctx); // no 2d context for the scratch layer — paint it clean
+    return;
+  }
+  draw(x);
+  x.globalCompositeOperation = "destination-out";
+  const tile = (fn: (ox: number, oy: number) => void) => {
+    for (const ox of [-w, 0, w]) for (const oy of [-h, 0, h]) fn(ox, oy);
+  };
+  // broad polished patches: where tyres cross the line the paint thins out
+  for (let i = 0; i < Math.round(9 * amount); i++) {
+    const gx = rand(0, w), gy = rand(0, h), r = rand(h * 0.03, h * 0.11);
+    const a = rand(0.25, 0.75);
+    tile((ox, oy) => {
+      const px = gx + ox, py = gy + oy;
+      if (px + r < 0 || px - r > w || py + r < 0 || py - r > h) return;
+      const g = x.createRadialGradient(px, py, 0, px, py, r);
+      g.addColorStop(0, `rgba(0,0,0,${a})`);
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      x.fillStyle = g;
+      x.fillRect(px - r, py - r, r * 2, r * 2);
+    });
+  }
+  // fine chipping: speckle that frays the stripe edges and keeps them from
+  // reading as vector-crisp when the camera is right down on the surface
+  for (let i = 0; i < Math.round((w * h) / 260 * amount); i++) {
+    const gx = rand(0, w), gy = rand(0, h);
+    const sw = rand(0.8, 2.4), sh = rand(0.8, 3.2);
+    x.fillStyle = `rgba(0,0,0,${rand(0.3, 0.9)})`;
+    tile((ox, oy) => x.fillRect(gx + ox, gy + oy, sw, sh));
+  }
+  x.globalCompositeOperation = "source-over";
+  ctx.drawImage(c, 0, 0);
+}
+
 /** Town street: center dashed white + solid edge lines. v repeats along road length. */
 export const roadTex = () =>
   makeTex(
@@ -92,9 +277,11 @@ export const roadTex = () =>
     512,
     (ctx, w, h) => {
       asphalt(ctx, w, h, "#16181f");
-      paintLine(ctx, w * 0.5, 0, h, [26, 30], "rgba(228,230,238,.85)", 3.5);
-      paintLine(ctx, w * 0.07, 0, h, [], "rgba(225,228,238,.75)", 3);
-      paintLine(ctx, w * 0.93, 0, h, [], "rgba(225,228,238,.75)", 3);
+      wornPaint(ctx, w, h, (p) => {
+        paintLine(p, w * 0.5, 0, h, [26, 30], "rgba(228,230,238,.85)", 3.5);
+        paintLine(p, w * 0.07, 0, h, [], "rgba(225,228,238,.75)", 3);
+        paintLine(p, w * 0.93, 0, h, [], "rgba(225,228,238,.75)", 3);
+      });
     },
     true
   );
@@ -107,13 +294,15 @@ export const hwyTexF = () =>
     (ctx, w, h) => {
       asphalt(ctx, w, h, "#14161c");
       const lane = w / 8;
-      paintLine(ctx, w * 0.5 - 2, 0, h, [], "rgba(250,214,90,.9)", 3);
-      paintLine(ctx, w * 0.5 + 2, 0, h, [], "rgba(250,214,90,.9)", 3);
-      for (const s of [-1, 1])
-        for (let k = 1; k < 3; k++)
-          paintLine(ctx, w * 0.5 + s * lane * k, 0, h, [30, 34], "rgba(232,234,242,.8)", 3.2);
-      for (const s of [-1, 1])
-        paintLine(ctx, w * 0.5 + s * lane * 3.1, 0, h, [], "rgba(232,234,242,.85)", 3.6);
+      wornPaint(ctx, w, h, (p) => {
+        paintLine(p, w * 0.5 - 2, 0, h, [], "rgba(250,214,90,.9)", 3);
+        paintLine(p, w * 0.5 + 2, 0, h, [], "rgba(250,214,90,.9)", 3);
+        for (const s of [-1, 1])
+          for (let k = 1; k < 3; k++)
+            paintLine(p, w * 0.5 + s * lane * k, 0, h, [30, 34], "rgba(232,234,242,.8)", 3.2);
+        for (const s of [-1, 1])
+          paintLine(p, w * 0.5 + s * lane * 3.1, 0, h, [], "rgba(232,234,242,.85)", 3.6);
+      });
     },
     true
   );
@@ -124,9 +313,11 @@ export const rampTexF = () =>
     256,
     (ctx, w, h) => {
       asphalt(ctx, w, h, "#171920");
-      paintLine(ctx, w * 0.5, 0, h, [22, 26], "rgba(228,230,238,.85)", 4);
-      paintLine(ctx, w * 0.08, 0, h, [], "rgba(120,235,170,.8)", 5);
-      paintLine(ctx, w * 0.92, 0, h, [], "rgba(120,235,170,.8)", 5);
+      wornPaint(ctx, w, h, (p) => {
+        paintLine(p, w * 0.5, 0, h, [22, 26], "rgba(228,230,238,.85)", 4);
+        paintLine(p, w * 0.08, 0, h, [], "rgba(120,235,170,.8)", 5);
+        paintLine(p, w * 0.92, 0, h, [], "rgba(120,235,170,.8)", 5);
+      }, 0.7);
     },
     true
   );
@@ -238,6 +429,40 @@ export const glowTexF = () =>
     g.addColorStop(1, "rgba(255,255,255,0)");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
+  });
+
+/**
+ * Retroreflective raised pavement marker ("cat's eye") seen head-on.
+ *
+ * Deliberately not the same as glowTex: a stud is not a lamp. It has a hard
+ * little lens core that stays a distinct point right up until it passes under
+ * the bumper, wrapped in only a slight bloom — the tight core is what makes a
+ * line of them read as a receding row of markers rather than a smear of
+ * headlight haze. The faint horizontal bar is the lens cluster catching the
+ * beam, which is what your eye actually picks up at speed.
+ */
+export const studTexF = () =>
+  makeTex(64, 64, (ctx, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    const cx = w / 2, cy = h / 2;
+    const halo = ctx.createRadialGradient(cx, cy, 1, cx, cy, 30);
+    halo.addColorStop(0, "rgba(255,255,255,.95)");
+    halo.addColorStop(0.18, "rgba(255,252,240,.55)");
+    halo.addColorStop(0.55, "rgba(255,244,215,.14)");
+    halo.addColorStop(1, "rgba(255,240,205,0)");
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, w, h);
+    // lens cluster: a short bright bar, brighter than the halo it sits in
+    const bar = ctx.createLinearGradient(cx - 11, 0, cx + 11, 0);
+    bar.addColorStop(0, "rgba(255,255,255,0)");
+    bar.addColorStop(0.5, "rgba(255,255,255,.9)");
+    bar.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = bar;
+    ctx.fillRect(cx - 11, cy - 2, 22, 4);
+    ctx.fillStyle = "rgba(255,255,255,1)";
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2.6, 0, Math.PI * 2);
+    ctx.fill();
   });
 
 export const streakTexF = () =>

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { mergeGeometries, mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { clamp } from "./util";
 import type { ShellParams } from "./carspecs";
 
@@ -151,55 +151,241 @@ export function carShellGeos(P: ShellParams, hi = true) {
   };
 }
 
+/* ---------------- surface detail ----------------
+   Everything below rides on the shell built above rather than replacing any of
+   it, and each builder returns one merged geometry so a whole class of detail
+   costs a single draw call per car (and the car draws three times a frame:
+   main view, mirror, road reflection). */
+
+/** How far the extruded skin stands outside the profile in `hullShape`.
+ *  ExtrudeGeometry offsets the full-depth contour outward by `bevelSize`, so
+ *  the hood at the cowl sits at `belt + HULL_SKIN`, not at `belt`, and detail
+ *  placed on the raw profile height would sink into the bodywork. Measured
+ *  against the built geometry, not assumed. The flanks are the exception:
+ *  they land on |x| = W/2 exactly. */
+export const HULL_SKIN = 0.065;
+
+/** Height of the underside of the bodywork at longitudinal position z —
+ *  the sill, except where a wheel arch is cut into it. Detail placed on the
+ *  flanks has to start above this or it floats in the open arch. */
+export function sillY(P: ShellParams, z: number) {
+  const r = P.archR;
+  for (const wc of [P.wzF, -P.wzR]) {
+    if (wc < -P.L / 2 + r && wc < 0) continue; // truck-cab sentinel: no rear arch
+    const d = z - wc;
+    if (Math.abs(d) < r) return P.ride + Math.sqrt(r * r - d * d);
+  }
+  return P.ride;
+}
+
+const strip = (w: number, h: number, d: number, x: number, y: number, z: number) => {
+  const g = new THREE.BoxGeometry(w, h, d);
+  g.translate(x, y, z);
+  return g;
+};
+
+/* A door shut line runs down the body between the wheel arches, never across
+   one — so each is pushed clear of its arch when the cabin is long enough to
+   reach it (the sedan's windscreen base sits right over the front wheel). */
+
+/** Longitudinal z of the shut line between the front wing and the door. */
+const doorFrontZ = (P: ShellParams) =>
+  Math.min(P.L / 2 - P.hood + 0.05, P.wzF - P.archR - 0.06);
+/** Longitudinal z of the shut line behind the door. */
+const doorRearZ = (P: ShellParams) =>
+  Math.max(-P.L / 2 + P.trunk - 0.04, -P.wzR + P.archR + 0.06);
+
+/** Panel gaps: door shut lines on both flanks plus the cowl and decklid
+ *  seams. Thin dark inset strips — at any real viewing distance a shut line
+ *  is a shadow, not a groove, and a strip reads the same for far less. */
+export function panelLineGeo(P: ShellParams): THREE.BufferGeometry {
+  const L2 = P.L / 2, sx = P.W / 2 - 0.001, parts: THREE.BufferGeometry[] = [];
+  for (const s of [-1, 1]) {
+    for (const z of [doorFrontZ(P), doorRearZ(P)]) {
+      const yLo = sillY(P, z) + 0.03, yHi = P.belt + HULL_SKIN - 0.02;
+      if (yHi - yLo < 0.06) continue;
+      parts.push(strip(0.006, yHi - yLo, 0.014, s * sx, (yLo + yHi) / 2, z));
+    }
+    // crease running the length of the door, just above the rocker
+    const zc = (doorFrontZ(P) + doorRearZ(P)) / 2;
+    const len = doorFrontZ(P) - doorRearZ(P) - 0.08;
+    if (len > 0.2) parts.push(strip(0.006, 0.014, len, s * sx, P.ride + 0.08, zc));
+  }
+  // cowl and decklid seams: the beltline passes exactly through these two
+  // profile points, so a flat strip sits on the skin without floating
+  const tw = Math.max(P.W - 0.24, 0.4);
+  const ty = P.belt + HULL_SKIN + 0.001;
+  parts.push(strip(tw, 0.006, 0.014, 0, ty, L2 - P.hood));
+  parts.push(strip(tw, 0.006, 0.014, 0, ty, -L2 + P.trunk));
+  return mergeGeometries(parts, false)!;
+}
+
+/** Door pulls and the fuel filler — small, but their absence is what makes a
+ *  render read as a toy. Returned in two pieces so the recess can go matte
+ *  dark under a chromed handle. */
+export function doorFurnitureGeos(P: ShellParams) {
+  const sx = P.W / 2, hy = P.belt + HULL_SKIN - 0.11;
+  const hz = doorFrontZ(P) - 0.3;
+  const handles: THREE.BufferGeometry[] = [];
+  const recess: THREE.BufferGeometry[] = [];
+  for (const s of [-1, 1]) {
+    const h = roundedBoxGeo(0.026, 0.036, 0.145, 0.012, 1);
+    h.translate(s * (sx + 0.011), hy, hz);
+    handles.push(h);
+    recess.push(strip(0.008, 0.05, 0.17, s * (sx + 0.001), hy - 0.004, hz));
+    // filler flap on the rear quarter, on the driver's side only, lifted to
+    // whatever height clears the rear arch under it
+    if (s < 0) {
+      const fz = doorRearZ(P) - 0.17;
+      const f = new THREE.CylinderGeometry(0.075, 0.075, 0.008, 14);
+      f.rotateZ(Math.PI / 2);
+      f.translate(s * (sx + 0.001), Math.max(hy - 0.06, sillY(P, fz) + 0.1), fz);
+      recess.push(f);
+    }
+  }
+  return {
+    handles: mergeGeometries(handles, false)!,
+    recess: mergeGeometries(recess, false)!,
+  };
+}
+
+/** Grille, sitting on the front bumper trim — which stands proud of the hull
+ *  skin, out at L2 + 0.19 — rather than on the hull itself. Two pieces: a dark
+ *  recessed backing and the bright slat edges that catch oncoming headlights.
+ *
+ *  The bumper is a rounded box with a 0.1 corner radius, so its face is only
+ *  flat for a narrow band either side of its centre; the grille is centred on
+ *  that band and kept short, or its top edge would stand off in mid air. Width
+ *  clears the headlight boxes on every shell in carspecs. */
+export function grilleGeos(P: ShellParams) {
+  const L2 = P.L / 2, gy = P.nose * 0.72, gw = P.W * 0.34, gh = 0.09;
+  const back: THREE.BufferGeometry[] = [strip(gw, gh, 0.03, 0, gy, L2 + 0.175)];
+  const slats: THREE.BufferGeometry[] = [];
+  for (let i = -1; i <= 1; i++)
+    slats.push(strip(gw, 0.011, 0.022, 0, gy + i * gh * 0.34, L2 + 0.198));
+  // vertical fins break the opening up the way a real egg-crate does
+  for (let i = -3; i <= 3; i++)
+    slats.push(strip(0.01, gh * 0.86, 0.018, (i / 3) * gw * 0.42, gy, L2 + 0.194));
+  return {
+    back: mergeGeometries(back, false)!,
+    slats: mergeGeometries(slats, false)!,
+  };
+}
+
+/** Vented, drilled brake disc with its hub hat — visible through open spokes,
+ *  which is where a wheel stops looking like a black donut. */
+export function brakeDiscGeo(wheelR: number): THREE.BufferGeometry {
+  const R = wheelR * 0.5, parts: THREE.BufferGeometry[] = [];
+  const face = new THREE.CylinderGeometry(R, R, 0.032, 22);
+  face.rotateZ(Math.PI / 2);
+  parts.push(face);
+  const hat = new THREE.CylinderGeometry(R * 0.42, R * 0.42, 0.08, 16);
+  hat.rotateZ(Math.PI / 2);
+  parts.push(hat);
+  // drilled holes read as raised pips at this size, but the broken specular
+  // ring is the cue that matters and it survives the approximation
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const h = new THREE.CylinderGeometry(R * 0.055, R * 0.055, 0.036, 6);
+    h.rotateZ(Math.PI / 2);
+    h.translate(0, Math.cos(a) * R * 0.74, Math.sin(a) * R * 0.74);
+    parts.push(h);
+  }
+  return mergeGeometries(parts, false)!;
+}
+
 /* ---------------- wheels ---------------- */
 
+/** One wheel, spinning about its local x axis.
+ *
+ *  Every rigid part is baked into a single merged geometry with one group per
+ *  material, so a wheel is 3 draws instead of the 12 meshes it used to be —
+ *  the budget that buys the sidewall and the spoke faces below.
+ *
+ *  (The old spoke placement rotated a group about x and then about z; with the
+ *  default XYZ Euler order the z turn is applied first, so all the spokes
+ *  collapsed onto the axle instead of fanning around the rim.) */
 export function makeWheel(
   R: number,
   width: number,
   rimM: THREE.Material,
   rimDark: THREE.Material,
   tireM: THREE.Material,
-  hi = true
+  hi = true,
+  sidewallM?: THREE.Material
 ) {
-  const g = new THREE.Group();
-  const tubeR = R * 0.28;
   const seg = hi ? 14 : 8,
     rad = hi ? 30 : 18;
-  const tire = new THREE.Mesh(new THREE.TorusGeometry(R - tubeR * 0.9, tubeR, seg, rad), tireM);
-  tire.rotation.y = Math.PI / 2;
-  tire.castShadow = true;
-  g.add(tire);
-  const rimR = R * 0.62;
-  const barrel = new THREE.Mesh(
-    new THREE.CylinderGeometry(rimR, rimR, width * 0.8, rad, 1, true),
-    rimDark
-  );
-  barrel.rotation.z = Math.PI / 2;
-  g.add(barrel);
-  for (const lx of [-width * 0.4, width * 0.4]) {
-    const lip = new THREE.Mesh(new THREE.TorusGeometry(rimR, R * 0.05, 8, rad), rimM);
-    lip.rotation.y = Math.PI / 2;
-    lip.position.x = lx;
-    g.add(lip);
+  const tubeR = R * 0.28,
+    rimR = R * 0.62;
+  const halfW = width / 2;
+
+  const tire: THREE.BufferGeometry[] = [];
+  const side: THREE.BufferGeometry[] = [];
+  const bright: THREE.BufferGeometry[] = [];
+  const dark: THREE.BufferGeometry[] = [];
+
+  const t = new THREE.TorusGeometry(R - tubeR * 0.9, tubeR, seg, rad);
+  t.rotateY(Math.PI / 2);
+  tire.push(t);
+  // squared-off tread band: a tyre's contact face is flat, and the flat is
+  // what catches a headlight as a bright horizontal line
+  const tread = new THREE.CylinderGeometry(R, R, width * 0.82, rad, 1, true);
+  tread.rotateZ(Math.PI / 2);
+  tire.push(tread);
+  // sidewall shoulder rings — the raised lettering band, in a greyer rubber
+  for (const s of [-1, 1]) {
+    const sw = new THREE.TorusGeometry(R * 0.84, R * 0.035, 6, rad);
+    sw.rotateY(Math.PI / 2);
+    sw.translate(s * halfW * 0.72, 0, 0);
+    side.push(sw);
   }
-  const hub = new THREE.Mesh(
-    new THREE.CylinderGeometry(R * 0.17, R * 0.17, width * 0.9, 10),
-    rimM
-  );
-  hub.rotation.z = Math.PI / 2;
-  g.add(hub);
+
+  const barrel = new THREE.CylinderGeometry(rimR, rimR, width * 0.8, rad, 1, true);
+  barrel.rotateZ(Math.PI / 2);
+  dark.push(barrel);
+  for (const lx of [-width * 0.4, width * 0.4]) {
+    const lip = new THREE.TorusGeometry(rimR, R * 0.05, 8, rad);
+    lip.rotateY(Math.PI / 2);
+    lip.translate(lx, 0, 0);
+    bright.push(lip);
+  }
+  const cap = new THREE.CylinderGeometry(R * 0.17, R * 0.19, width * 0.92, 12);
+  cap.rotateZ(Math.PI / 2);
+  bright.push(cap);
+
   const spokes = hi ? 7 : 5;
   for (let i = 0; i < spokes; i++) {
-    const hold = new THREE.Group();
-    hold.rotation.x = (i / spokes) * Math.PI * 2;
-    const bar = new THREE.Mesh(
-      new THREE.BoxGeometry(width * 0.16, rimR * 0.95, R * 0.1),
-      rimM
-    );
-    bar.position.y = rimR * 0.52;
-    hold.add(bar);
-    hold.rotation.z = Math.PI / 2;
-    g.add(hold);
+    const a = (i / spokes) * Math.PI * 2;
+    // a tapered blade lying in the wheel plane, angled slightly so the faces
+    // catch light at different moments as the wheel turns
+    const bar = new THREE.BoxGeometry(width * 0.2, rimR * 0.92, R * 0.13);
+    bar.translate(0, rimR * 0.5, 0);
+    bar.rotateZ(0.1);
+    bar.rotateX(a);
+    bar.translate(halfW * 0.2, 0, 0);
+    bright.push(bar);
   }
+
+  const groups: THREE.BufferGeometry[] = [];
+  const mats: THREE.Material[] = [];
+  const push = (parts: THREE.BufferGeometry[], m: THREE.Material) => {
+    if (!parts.length) return;
+    groups.push(mergeGeometries(parts, false)!);
+    mats.push(m);
+  };
+  if (sidewallM) {
+    push(tire, tireM);
+    push(side, sidewallM);
+  } else push([...tire, ...side], tireM);
+  push(bright, rimM);
+  push(dark, rimDark);
+
+  const merged = mergeGeometries(groups, true)!;
+  for (const g of groups) g.dispose();
+  const mesh = new THREE.Mesh(merged, mats);
+  mesh.castShadow = true;
+  const g = new THREE.Group();
+  g.add(mesh);
   return g;
 }
