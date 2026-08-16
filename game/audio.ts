@@ -135,6 +135,8 @@ export class GameAudio {
   private windFlutterDepth!: GainNode;
   private roadRumbleF!: BiquadFilterNode; private roadRumbleG!: GainNode;
   private rF!: BiquadFilterNode; private rG!: GainNode;
+  private rainGustDepth!: GainNode;
+  private nextDroplet = 0;
   private hornOsc: { o1: OscillatorNode; o2: OscillatorNode; g: GainNode } | null = null;
   private crashGain: GainNode | null = null;
   private lastAbsTick = -10;
@@ -464,12 +466,34 @@ export class GameAudio {
       this.roadRumbleG.gain.value = 0;
       this.noiseNode().connect(this.roadRumbleF).connect(this.roadRumbleG).connect(this.master);
 
+      // Rain: was a flat 2600Hz+ highpass on raw noise, i.e. the single
+      // brightest, most literally "white noise" layer in the file — that's
+      // exactly what two separate bug reports keyed on ("constant white
+      // noise"). A car cabin doesn't hear rain as hiss: it's a muffled
+      // mid/low body (lowpassed hard, not highpassed at all) plus gusting
+      // and — the part that actually reads as "rain" to a listener rather
+      // than generic noise — a sparse random pattern of droplet impacts.
       this.rF = ctx.createBiquadFilter();
-      this.rF.type = "highpass";
-      this.rF.frequency.value = 2600;
+      this.rF.type = "lowpass";
+      this.rF.frequency.value = 950; // ceiling; update() only narrows this further with speed
+      this.rF.Q.value = 0.8;
       this.rG = ctx.createGain();
       this.rG.gain.value = 0;
       this.noiseNode().connect(this.rF).connect(this.rG).connect(this.master);
+      // Slow gusting, same additive-LFO-into-gain trick as windFlutterDepth
+      // but slower (gusts are longer-period than wind buffeting) — depth is
+      // itself scaled by the current rain body level in update(), so it's
+      // silent whenever rG's target is silent.
+      const rainGustA = ctx.createOscillator(); rainGustA.type = "sine"; rainGustA.frequency.value = 0.15;
+      const rainGustB = ctx.createOscillator(); rainGustB.type = "sine"; rainGustB.frequency.value = 0.37;
+      const rainGustMix = ctx.createGain();
+      const rainGustBTrim = ctx.createGain(); rainGustBTrim.gain.value = 0.5;
+      rainGustA.connect(rainGustMix);
+      rainGustB.connect(rainGustBTrim).connect(rainGustMix);
+      this.rainGustDepth = ctx.createGain();
+      this.rainGustDepth.gain.value = 0;
+      rainGustMix.connect(this.rainGustDepth).connect(this.rG.gain);
+      rainGustA.start(); rainGustB.start();
 
       /* ---- reverb bus ----
          A small feedback-delay network standing in for an impulse response:
@@ -569,9 +593,40 @@ export class GameAudio {
       }
 
       this.ok = true;
+      // Debug-only: makes getLevels() reachable from the browser console as
+      // __audioDebug.getLevels() without engine.ts needing to wire anything
+      // up — for identifying which layer a "mystery noise" report is coming
+      // from in one call instead of guessing (see getLevels() below).
+      try { (window as unknown as { __audioDebug?: GameAudio }).__audioDebug = this; } catch {}
     } catch {
       this.ok = false;
     }
+  }
+
+  /** Debug snapshot of every noise/tone layer's current live gain, for
+      diagnosing "mystery background sound" reports from the console:
+      `__audioDebug.getLevels()` (this instance is auto-exposed there by
+      init()). Returns null if audio isn't initialized. Read-only — reading
+      .value off existing nodes, no extra state, negligible cost, safe to
+      call from devtools at any time including mid-gameplay. */
+  getLevels() {
+    if (!this.ok) return null;
+    return {
+      engine: this.engG.gain.value,
+      intake: this.inG.gain.value,
+      exhaust: this.exG.gain.value,
+      turbo: this.turboG.gain.value,
+      gearWhine: this.whineG.gain.value,
+      tireRoll: this.tireRoadG.gain.value,
+      tireSing: this.singG.gain.value,
+      tireScreech: this.screechG.gain.value,
+      roadRumble: this.roadRumbleG.gain.value,
+      wind: this.wG.gain.value,
+      rain: this.rG.gain.value,
+      reverbWet: this.reverbWet.gain.value,
+      npcVoicesActive: this.npcVoices.filter((v) => v.active).length,
+      master: this.master.gain.value,
+    };
   }
 
   /** Smoothed param write — per-frame .value writes zipper badly on filters. */
@@ -684,6 +739,8 @@ export class GameAudio {
     this.wG.gain.value = 0;
     this.windFlutterDepth.gain.value = 0;
     this.roadRumbleG.gain.value = 0;
+    this.rG.gain.value = 0;
+    this.rainGustDepth.gain.value = 0;
     this.inG.gain.value = 0;
     this.exG.gain.value = 0;
     this.turboG.gain.value = 0;
@@ -712,11 +769,17 @@ export class GameAudio {
    * @param gear   optional: 1..top, -1 reverse. Drives the gearbox whine.
    * @param onLimiter optional: physics rev-limiter flag; without it the
    *                  limiter is inferred from rpm against the observed peak.
+   * @param rainIntensity optional 0..1; `raining` is boolean-only today, so
+   *                  this defaults to 1 whenever raining is true (i.e. rain
+   *                  is currently all-or-nothing) — it's accepted now so a
+   *                  future weather system can pass a real intensity
+   *                  without an API change. Has no effect when raining is
+   *                  false.
    */
   update(
     rpm: number, thr: number, slip: number, speed: number, now: number,
     cut: boolean, raining: boolean, horn: boolean,
-    gear?: number, onLimiter?: boolean
+    gear?: number, onLimiter?: boolean, rainIntensity?: number
   ) {
     if (!this.ok) return;
     const p = this.prof;
@@ -914,23 +977,50 @@ export class GameAudio {
        under the engine at low speed but past it by ~140 km/h (~39 m/s),
        matching a real cockpit where wind becomes the dominant sound well
        before the engine is at high load. The flutter depth scales with the
-       wind level itself so a stationary car has a dead-still cabin. */
+       wind level itself so a stationary car has a dead-still cabin. Cutoff
+       is capped at 1400Hz — uncapped it kept climbing with speed (2380Hz+
+       by 288km/h) into hissy-bright territory; real in-cabin wind noise at
+       any speed is a low rumble/mid whoosh, not a bright hiss, so the
+       lowpass ceiling keeps that true regardless of how fast the car goes. */
     const windRise = smoothstep(15, 60, speed);
     const windLevel = windRise * 0.32 + (raining ? 0.02 : 0);
-    this.sp(this.wF.frequency, 300 + speed * 26, 0.15);
+    this.sp(this.wF.frequency, Math.min(1400, 300 + speed * 26), 0.15);
     this.sp(this.wG.gain, windLevel, 0.12);
     this.sp(this.windFlutterDepth.gain, windRise * 0.045, 0.15);
 
-    // Rain hiss: was a hard, instant, unsmoothed on/off with a flat level
-    // completely independent of speed — exactly "constant, doesn't react to
-    // anything" whenever raining=true, and the brightest/most broadband
-    // ("whitest") layer in the file (2600Hz+ highpass on raw noise), so it's
-    // the single most likely culprit if a user reports a constant white-
-    // noise bed. Now smoothed like every other layer, and mildly speed-
-    // reactive (tire spray/road hiss picking up with speed), so it's never
-    // a flat unchanging drone even while raining.
-    const rainLevel = raining ? 0.032 + Math.min(1, speed / 25) * 0.028 : 0;
-    this.sp(this.rG.gain, rainLevel, 0.2);
+    /* Rain: reworked for character, not just level, after smoothing the old
+       flat highpass hiss alone wasn't enough — it still fundamentally read
+       as white noise (the smoothed-gain fix only addressed the earlier
+       "constant" complaint, not the "sounds horrible" one). Three parts:
+         - Body: hard-lowpassed (rF ceiling 950Hz, see init()) muffled cabin
+           rumble rather than bright hiss, ducked harder at low speed than
+           before (0.012 floor vs the old 0.032) so a parked, idling car in
+           the rain reads as quiet rather than a wall of noise.
+         - Gust: a slow (0.15/0.37Hz) LFO pair summed into rG.gain, same
+           additive trick as windFlutterDepth, so the body breathes instead
+           of sitting dead-static.
+         - Droplets: sparse, randomly-timed filtered ticks via the existing
+           burst() one-shot machinery — bright, short, discrete transients.
+           This is the part that actually reads as "rain" rather than
+           generic hiss; a listener's ear differentiates a patter of
+           discrete clicks from continuous broadband noise far more readily
+           than it responds to lowpass filtering alone.
+       `rI` (0..1) is a placeholder for a future rainIntensity signal — see
+       the update() doc comment; today it's just raining ? 1 : 0. */
+    const rI = raining ? clamp01(rainIntensity ?? 1) : 0;
+    const rainBody = rI * (0.012 + Math.min(1, speed / 20) * 0.033);
+    this.sp(this.rF.frequency, 700 + Math.min(1, speed / 30) * 250, 0.2);
+    this.sp(this.rG.gain, rainBody, 0.25);
+    this.sp(this.rainGustDepth.gain, rainBody * 0.5, 0.25);
+    if (rI > 0) {
+      if (now >= this.nextDroplet) {
+        this.nextDroplet = now + (0.05 + Math.random() * 0.25) / Math.max(0.3, rI);
+        this.burst(0.014 + Math.random() * 0.02, 1500 + Math.random() * 2600, 0.008, 2.5 + Math.random() * 2);
+      }
+    } else {
+      this.nextDroplet = now; // fire promptly next time it starts raining, not after a stale delay
+    }
+
     this.hornSet(horn);
   }
 
