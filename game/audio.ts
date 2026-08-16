@@ -821,11 +821,21 @@ export class GameAudio {
       0.03
     );
 
-    // Intake sits above the tone; exhaust noise fattens the bottom.
+    // Intake sits above the tone; exhaust noise fattens the bottom. Both
+    // scaled by p.level, same as the tonal engine body (bodyLevel above) —
+    // without this, these noise beds sit at an identical ABSOLUTE level on
+    // every car regardless of profile, while the tonal engine they're
+    // supposed to sit *under* varies with p.level (0.82-1.0 across the
+    // roster). A quieter-toned car (shirayuki, p.level=0.82 — the lowest)
+    // then has the same noise floor as the loudest-toned car (kaze,
+    // p.level=1.0) fighting a quieter signal, so the noise reads as
+    // relatively more exposed/prominent — a real per-car imbalance, not a
+    // leak, but one that plausibly explains "this car has more hiss than
+    // that one" reports: it's a masking-ratio problem, not an on/off bug.
     this.sp(this.inF.frequency, 900 + rn * 2700, 0.04);
-    this.sp(this.inG.gain, thr * (0.012 + rn * 0.05), 0.04);
+    this.sp(this.inG.gain, thr * (0.012 + rn * 0.05) * p.level, 0.04);
     this.sp(this.exF.frequency, 220 + rn * 900, 0.04);
-    this.sp(this.exG.gain, (0.008 + load * 0.03) * (0.3 + rn), 0.04);
+    this.sp(this.exG.gain, (0.008 + load * 0.03) * (0.3 + rn) * p.level, 0.04);
 
     // Turbo spool follows boost, i.e. throttle held at revs.
     this.sp(this.turboOsc.frequency, 2200 + rn * 4400, 0.08);
