@@ -119,24 +119,36 @@ function paintDialFace(
   g.fillText(opts.sub, cx, cy + R * 0.6);
 }
 
-export function buildInstrumentCluster(accent: number, defaultUnits: SpeedUnits): InstrumentCluster {
+/** `cheap` (kei car): flat plastic bezel instead of a chrome ring, no brow.
+    `chunky` (rally car): thicker needles, easier to read at a glance. */
+export function buildInstrumentCluster(
+  accent: number, defaultUnits: SpeedUnits, cheap = false, chunky = false
+): InstrumentCluster {
   const group = new THREE.Group();
   group.name = "cluster";
   const accentCss = "#" + new THREE.Color(accent).getHexString();
 
-  const shellMat = new THREE.MeshStandardMaterial({ color: 0x0a0b10, roughness: 0.88 });
-  const chrome = new THREE.MeshStandardMaterial({ color: 0xa8b2c4, metalness: 0.9, roughness: 0.28 });
+  const shellMat = new THREE.MeshStandardMaterial({
+    color: cheap ? 0x22242c : 0x0a0b10, roughness: cheap ? 0.7 : 0.88,
+  });
+  const chrome = new THREE.MeshStandardMaterial(
+    cheap ? { color: 0x3a3d46, metalness: 0.2, roughness: 0.6 }
+      : { color: 0xa8b2c4, metalness: 0.9, roughness: 0.28 }
+  );
   const needleMat = new THREE.MeshBasicMaterial({ color: 0xff5058 });
   const capMat = new THREE.MeshStandardMaterial({ color: 0x14161e, roughness: 0.45, metalness: 0.6 });
 
-  // housing: a shallow box the dials sit in, plus a brow above them
+  // housing: a shallow box the dials sit in, plus a brow above them (the kei
+  // car's cheap cluster skips the brow — a flat moulded face, no cowl)
   const shell = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.25, 0.05), shellMat);
   shell.position.z = -0.03;
   group.add(shell);
-  const brow = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.03, 0.1), shellMat);
-  brow.position.set(0, 0.14, 0.03);
-  brow.rotation.x = 0.34;
-  group.add(brow);
+  if (!cheap) {
+    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.03, 0.1), shellMat);
+    brow.position.set(0, 0.14, 0.03);
+    brow.rotation.x = 0.34;
+    group.add(brow);
+  }
 
   const S = 320;
   type Dial = {
@@ -162,7 +174,7 @@ export function buildInstrumentCluster(accent: number, defaultUnits: SpeedUnits)
     const pivot = new THREE.Group();
     pivot.position.set(x, 0, 0.012);
     group.add(pivot);
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(r * 0.055, r * 0.78, 0.004), needleMat);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(r * (chunky ? 0.08 : 0.055), r * 0.78, 0.004), needleMat);
     blade.position.y = r * 0.42;
     pivot.add(blade);
     const tail = new THREE.Mesh(new THREE.BoxGeometry(r * 0.075, r * 0.2, 0.004), needleMat);
