@@ -3,7 +3,7 @@ import { clamp, lerp, rand, pick, TAU, angDiff, mulberry32 } from "./util";
 import { roundedBoxGeo, hullShape, glassShape, roofShape, shellExtrude } from "./carshape";
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { ShellParams } from "./carspecs";
-import { HX, LANE_LAT } from "./world/const";
+import { HX, LANE_LAT, LANE_W } from "./world/const";
 import { getCorridor } from "./world/corridor";
 import { signalPhase, type WorldData } from "./world/data";
 import type { REdge, EdgePose } from "./world/roadnet";
@@ -434,6 +434,10 @@ export interface Npc {
   /** always +1 on the corridor; kept so the minimap/debug can read a heading */
   dir: number;
   laneK: number; offCur: number; offT: number;
+  /** target lane once the pre-signal delay elapses; -1 when not changing */
+  pendK: number;
+  /** lateral m/s this driver crosses a lane at, once committed (2-4s/lane) */
+  laneRate: number;
   /** corridor z for expressway cars, edge arclength for town cars */
   s: number;
   v: number; v0: number;
@@ -444,6 +448,9 @@ export interface Npc {
   hVis: number; x: number; y: number; z: number; spin: number; wob: number;
   wreck: { vx: number; vz: number; vr: number; age: number } | null;
   fade: number;
+  /** set the frame a close call with the player fires, else null; cooldown in ccCd */
+  ccKind: "horn" | "chirp" | null;
+  ccCd: number;
 }
 
 type Cloud = { arr: Float32Array; geo: THREE.BufferGeometry; pts: THREE.Points };
@@ -454,6 +461,15 @@ type Lod = {
   n: number;
 };
 type StyleMesh = { near: Lod; far: Lod };
+
+/** One slot of the doppler feed's reused result buffer — see Traffic.nearestNpcs. */
+export interface NpcAudioSample {
+  npc: Npc | null;
+  x: number; y: number; z: number;
+  vx: number; vz: number;
+  d2: number;
+  type: string;
+}
 
 export class Traffic {
   npcs: Npc[] = [];
@@ -478,6 +494,10 @@ export class Traffic {
   private _idleA: Npc[] = [];
   private _idleB: Npc[] = [];
   private _wrecks: Npc[] = [];
+  private _closeCalls: Npc[] = [];
+  private _nearBuf: NpcAudioSample[] = Array.from({ length: 12 }, () => ({
+    npc: null, x: 0, y: 0, z: 0, vx: 0, vz: 0, d2: 0, type: "",
+  }));
   /* Cars may only enter from beyond the fog wall, and they close on the player
      slowly, so a cold start would leave the road ahead empty for a minute or
      more. On the first frame — and after any teleport — the corridor ahead is
@@ -589,14 +609,14 @@ export class Traffic {
             ? [[d.wz, 0], [-d.wz, 0]]
             : [[d.wz, hw2], [d.wz, -hw2], [-d.wz, hw2], [-d.wz, -hw2]],
         hw: true, edge: null, eDir: 1, segHint: { i: 0 }, nextEdgeId: -1,
-        dir: 1, laneK: 1, offCur: 0, offT: 0, s: 0,
+        dir: 1, laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: LANE_W / 3, s: 0,
         v: 0, v0: 10,
         drv: { spd: 1, gap: 1, acc: 1, lane: 0.5, react: 0.3, corner: 1, timid: 0, weave: 0, jit: rand(0, TAU) },
         pT: 0, pLead: { ds: Infinity, v: 0 },
         brake: false,
         blink: 0, blinkT: 0, turnCd: rand(2, 8), nudgeT: 0,
         hVis: 0, x: 0, y: -999, z: 0, spin: 0, wob: 0,
-        wreck: null, fade: 1,
+        wreck: null, fade: 1, ccKind: null, ccCd: 0,
       });
     }
   }
@@ -608,6 +628,9 @@ export class Traffic {
     n.y = -999;
     n.wreck = null;
     n.fade = 1;
+    n.pendK = -1;
+    n.blink = 0;
+    n.ccKind = null;
   }
 
   /** Roll a persistent personality. Heavies never speed, police are always brisk. */
@@ -880,6 +903,71 @@ export class Traffic {
     out.length = 0;
     for (const n of this.npcs) if (n.active && n.wreck) out.push(n);
     return out;
+  }
+
+  /** NPCs that fired a close call this frame (near-miss pass, or forced hard
+      brake), personality-gated into horn vs. chirp. Read `n.ccKind` and
+      `n.x/y/z` on each; the caller routes these into npcHorn/npcChirp. Reuses
+      an array — read it before the next update(). */
+  closeCalls(): Npc[] {
+    const out = this._closeCalls;
+    out.length = 0;
+    for (const n of this.npcs) if (n.active && n.ccKind) out.push(n);
+    return out;
+  }
+
+  /** Cheap per-frame feed for an audio doppler pool: the `count` nearest
+      active NPCs to a listener point, nearest first, with world position and
+      velocity. Returns a reused, fixed-length array — entries past the
+      returned count-worth of live NPCs have `npc: null`. Nothing here
+      allocates once the pool is warmed up in the constructor. */
+  nearestNpcs(px: number, py: number, pz: number, count: number): NpcAudioSample[] {
+    const buf = this._nearBuf;
+    const cap = Math.min(count, buf.length);
+    let used = 0;
+    for (const n of this.npcs) {
+      if (!n.active) continue;
+      const dx = n.x - px, dy = n.y - py, dz = n.z - pz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (used < cap) {
+        let i = used++;
+        while (i > 0 && buf[i - 1].d2 > d2) {
+          this.copySample(buf[i], buf[i - 1]);
+          i--;
+        }
+        this.fillSample(buf[i], n, d2);
+      } else if (d2 < buf[cap - 1].d2) {
+        let i = cap - 1;
+        while (i > 0 && buf[i - 1].d2 > d2) {
+          this.copySample(buf[i], buf[i - 1]);
+          i--;
+        }
+        this.fillSample(buf[i], n, d2);
+      }
+    }
+    for (let i = used; i < cap; i++) buf[i].npc = null;
+    return buf;
+  }
+
+  private fillSample(s: NpcAudioSample, n: Npc, d2: number) {
+    s.npc = n;
+    s.x = n.x;
+    s.y = n.y;
+    s.z = n.z;
+    s.vx = Math.sin(n.hVis) * n.v;
+    s.vz = Math.cos(n.hVis) * n.v;
+    s.d2 = d2;
+    s.type = n.type;
+  }
+  private copySample(dst: NpcAudioSample, src: NpcAudioSample) {
+    dst.npc = src.npc;
+    dst.x = src.x;
+    dst.y = src.y;
+    dst.z = src.z;
+    dst.vx = src.vx;
+    dst.vz = src.vz;
+    dst.d2 = src.d2;
+    dst.type = src.type;
   }
 
   /** Debug/test helper: park an NPC ~24 m ahead of the player, in lane. */
@@ -1160,6 +1248,9 @@ export class Traffic {
       }
       /* player as obstacle */
       let panic = false;
+      let nearPass = false;
+      n.ccCd = Math.max(0, n.ccCd - dt);
+      n.ccKind = null;
       if (Math.abs(player.y - n.y) < 3) {
         const dx = player.x - n.x, dz = player.z - n.z;
         const ahead = dx * fx + dz * fz;
@@ -1174,10 +1265,22 @@ export class Traffic {
           }
         }
         if (ahead > 0 && ahead < 9 && side < 3) panic = true;
+        // near-miss: player passing close alongside at real closing speed, not
+        // just idling nose-to-tail
+        if (side > 1.0 && side < 2.4 && ahead > -5 && ahead < 11 && playerSpeed + n.v > 9) nearPass = true;
       }
 
       if (n.hw) this.updateHwy(n, dt, v0, lead, panic);
       else this.updateTown(n, dt, v0, lead, phase, panic);
+
+      /* Close-call event: a near-miss pass, or the player forcing this driver
+         into a hard brake. Personality-gated so it reads as different people
+         reacting differently — aggressive drivers lean on the horn, timid ones
+         just brake/chirp — and cooled down so one encounter doesn't spam. */
+      if (n.ccCd <= 0 && (nearPass || (panic && n.brake))) {
+        n.ccKind = n.drv.timid ? "chirp" : "horn";
+        n.ccCd = 2.2;
+      }
 
       /* smooth heading + place */
       if (n.hw) this.placeHwy(n);
@@ -1308,6 +1411,20 @@ export class Traffic {
   }
 
   /* corridor driving: one-way, variable lane count, wrapped */
+  /** True when no active NPC is within the danger box of lane offset `off2`
+      near corridor position `s` — shared by comfort lane changes and forced
+      taper merges. */
+  private laneClearAt(n: Npc, s: number, off2: number): boolean {
+    const cor = this.cor;
+    for (const m of this.npcs) {
+      if (m === n || !m.active || !m.hw || m.wreck) continue;
+      if (Math.abs(m.offCur - off2) > 2.2) continue;
+      const ds = cor.deltaZ(s, m.s);
+      if (ds > -18 && ds < 28) return false;
+    }
+    return true;
+  }
+
   private updateHwy(
     n: Npc, dt: number, v0: number,
     lead: { ds: number; v: number } | null, panic = false
@@ -1315,7 +1432,42 @@ export class Traffic {
     const drv = n.drv;
     const cor = this.cor;
     const nl = cor.lanes(n.s);
-    if (n.laneK > nl - 1) n.laneK = nl - 1; // a lane was dropped under them
+
+    /* Merge out of a lane that is about to end well before it does — a
+       lookahead many seconds up the road (a multi-lane fan-in, like the toll
+       plaza's 6-to-3 merge-back, needs to start several lane changes early
+       enough to chain them), signalled and gradual, same as any other lane
+       change, so a taper never reads as a sideways teleport. Re-triggers on
+       its own once each pendK clears, so a multi-lane drop chains through
+       consecutive single-lane merges rather than waiting for the whole taper. */
+    if (n.pendK < 0 && n.laneK <= nl - 1) {
+      const aheadZ = cor.wrapZ(n.s + clamp(n.v, 15, 32) * 9);
+      const nlAhead = cor.lanes(aheadZ);
+      if (n.laneK > nlAhead - 1) {
+        const k2 = Math.max(0, Math.min(n.laneK - 1, nlAhead - 1));
+        const off2 = cor.laneOffset(k2, n.s);
+        if (k2 !== n.laneK && this.laneClearAt(n, n.s, off2)) {
+          n.pendK = k2;
+          n.blink = off2 < n.offCur ? -1 : 1;
+          n.blinkT = rand(1, 2);
+          n.laneRate = LANE_W / lerp(3, 2, drv.lane); // merges run a touch brisker than a comfort change
+          n.turnCd = Math.max(n.turnCd, 2);
+        }
+      }
+    }
+    /* Hard safety net: the lane is physically gone right under them (blocked
+       merge, or a driver that never got a clear gap in time) — snap the lane
+       index so later math stays in range, but still signal it and still ease
+       the visible offset over via offCur/offT below, just at the brisker
+       emergency rate, rather than teleporting. */
+    if (n.laneK > nl - 1) {
+      const k2 = Math.max(0, nl - 1);
+      const off2 = cor.laneOffset(k2, n.s);
+      n.blink = off2 < n.offCur ? -1 : 1;
+      n.laneRate = Math.max(n.laneRate, LANE_W / 1.4);
+      n.laneK = k2;
+      n.pendK = -1;
+    }
 
     const aMax = 1.6 * drv.acc, bCom = 2.3, T = 1.25 * drv.gap, s0 = 2.2 + 1.4 * (drv.gap - 1);
     let acc: number;
@@ -1335,43 +1487,46 @@ export class Traffic {
        with it is their own business, and speeders weave for no reason at all. */
     const held = !!lead && lead.ds < 18 + 30 * drv.lane && lead.v < n.v0 * (0.8 + 0.12 * drv.lane);
     const restless = drv.weave > 0 && (!lead || lead.ds > 30) && this.rng() < 0.35 * dt;
-    if (n.blink === 0 && n.turnCd <= 0 && (held || restless)) {
+    if (n.pendK < 0 && n.blink === 0 && n.turnCd <= 0 && (held || restless)) {
       // pushy drivers reach for the outside lane first, patient ones move over
       const first = drv.lane > 0.55 ? 1 : -1;
       for (let pass = 0; pass < 2; pass++) {
         const k2 = n.laneK + (pass === 0 ? first : -first);
         if (k2 < 0 || k2 > nl - 1) continue;
         const off2 = cor.laneOffset(k2, n.s);
-        let clear = true;
-        for (const m of this.npcs) {
-          if (m === n || !m.active || !m.hw || m.wreck) continue;
-          if (Math.abs(m.offCur - off2) > 2.2) continue;
-          const ds = cor.deltaZ(n.s, m.s);
-          if (ds > -18 && ds < 28) {
-            clear = false;
-            break;
-          }
-        }
-        if (clear) {
-          n.laneK = k2;
+        if (this.laneClearAt(n, n.s, off2)) {
+          // signal first — the lane index (and offT/offCur) only move once the
+          // pre-signal delay below elapses, so the blinker is never simultaneous
+          // with the manoeuvre
+          n.pendK = k2;
           n.blink = off2 < n.offCur ? -1 : 1;
-          n.blinkT = 0;
+          n.blinkT = rand(1, 2);
+          n.laneRate = LANE_W / lerp(4, 2, drv.lane); // 2-4s to cross a lane, eager drivers quicker
           n.turnCd = lerp(12, 3.5, drv.lane);
           break;
         }
+      }
+    }
+    /* Pre-signal delay: the blinker runs for a beat before the car actually
+       starts drifting over. */
+    if (n.pendK >= 0) {
+      n.blinkT -= dt;
+      if (n.blinkT <= 0) {
+        n.laneK = n.pendK;
+        n.pendK = -1;
       }
     }
     /* Track the lane centre continuously: it slides as the corridor tapers, so
        a car that is not changing lane still has to follow its own lane over. */
     n.offT = cor.laneOffset(n.laneK, n.s);
     const dOff = n.offT - n.offCur;
+    const rate = n.laneRate || LANE_W / 3;
     if (Math.abs(dOff) > 0.02) {
-      n.offCur += clamp(dOff, -3.2 * dt, 3.2 * dt);
-      n.blinkT += dt;
-      if (n.blink !== 0 && Math.abs(dOff) < 0.35) n.blink = 0;
+      n.offCur += clamp(dOff, -rate * dt, rate * dt);
+      if (n.blink !== 0 && n.pendK < 0 && Math.abs(dOff) < 0.35) n.blink = 0;
     } else {
       n.offCur = n.offT;
-      if (n.blink !== 0) n.blink = 0;
+      if (n.blink !== 0 && n.pendK < 0) n.blink = 0;
     }
   }
 
