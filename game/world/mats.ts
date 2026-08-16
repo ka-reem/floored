@@ -1,11 +1,53 @@
 import * as THREE from "three";
 import {
   roadTex, hwyTexF, rampTexF, windowsTexF, storefrontTexF, vendingTexF, glowTexF,
-  streakTexF, smokeTexF, envFaceCanvas, chevTexF, goreTexF, xingTexF,
+  streakTexF, smokeTexF, envFaceCanvas, chevTexF, goreTexF, xingTexF, studTexF,
+  loadPbrSet, type PbrSet,
 } from "../textures";
 
 /* Shared materials + textures. Planar-reflection sampling is injected into the
-   road materials here (ported from v2, adapted to the linear HDR pipeline). */
+   road materials here (ported from v2, adapted to the linear HDR pipeline).
+
+   ---------------------------------------------------------------------------
+   Photo-scanned PBR
+   ---------------------------------------------------------------------------
+   Real scans under public/assets/pbr/<set>/{albedo,normal,rough,metal}.jpg are
+   loaded asynchronously and layered on top of the procedural canvas art. If
+   the files are absent every material stays exactly as it was, so the game is
+   fully playable with an empty assets directory — the procedural path is both
+   the fallback and the perf-mode path.
+
+   Two different upgrade strategies are used, because the road textures are not
+   interchangeable with a photo scan:
+
+   - ROAD SURFACES keep their procedural albedo, because the lane markings are
+     painted into it (town streets and ramps) and swapping in a photo would
+     erase them. Instead the scan is applied as a *detail* layer multiplied
+     over the procedural colour, normalised by the scan's own mean luminance so
+     it contributes grain and grit without shifting the tuned brightness. The
+     scan's normal and roughness maps are applied for real, on their own UV
+     repeat, which is where most of the realism actually comes from.
+
+   - CONCRETE AND METAL get the scan as a straight albedo replacement, since
+     none of that art carries markings.
+
+   The roughness map does double duty: it drives the wet-road reflection, so
+   the smooth patches of a scan mirror the world back harder than the coarse
+   aggregate around them. That is what reads as standing water. */
+
+/** Where a scan is applied and at what density. */
+interface PbrOpts {
+  /** texture repeats per 1 unit of the mesh's existing UV */
+  repeat: [number, number];
+  /** normal map strength. Highways are near-flat; keep this low. */
+  normalScale?: number;
+  /** strength of the detail-albedo multiply, 0..1 (road surfaces only) */
+  detail?: number;
+  /** dry-road target roughness, renormalised against the scan's own mean */
+  roughness?: number;
+  /** how strongly the roughness map modulates the wet reflection, 0..1 */
+  roughMod?: number;
+}
 
 export interface Mats {
   envMap: THREE.CubeTexture;
@@ -15,6 +57,7 @@ export interface Mats {
   chevTex: THREE.Texture;
   goreTex: THREE.Texture;
   xingTex: THREE.Texture;
+  studTex: THREE.Texture;
   road: THREE.MeshStandardMaterial;
   front: THREE.MeshStandardMaterial;
   hwy: THREE.MeshStandardMaterial;
@@ -26,6 +69,19 @@ export interface Mats {
   barrier: THREE.MeshStandardMaterial;
   soundwall: THREE.MeshStandardMaterial;
   pole: THREE.MeshStandardMaterial;
+  /** double-sided concrete, for the deck fascia (was a local conc.clone()) */
+  concDouble: THREE.MeshStandardMaterial;
+  /** double-sided dark concrete, for the ramp skirts (was a concDark.clone()) */
+  concDarkDouble: THREE.MeshStandardMaterial;
+  /** double-sided barrier concrete, for the parapets (was a barrier.clone()) */
+  barrierDouble: THREE.MeshStandardMaterial;
+  /** tunnel tube lining */
+  tunnelWall: THREE.MeshStandardMaterial;
+  tunnelCeil: THREE.MeshStandardMaterial;
+  /** additive sprite material for retroreflective raised pavement markers */
+  studMat: THREE.PointsMaterial;
+  /** as studMat, for the tunnel span — never daylight-dimmed, see mats.ts */
+  studMatTunnel: THREE.PointsMaterial;
   winMats: THREE.MeshStandardMaterial[];
   sfMat: THREE.MeshStandardMaterial;
   vendMat: THREE.MeshStandardMaterial;
@@ -35,9 +91,44 @@ export interface Mats {
   setReflectionTexture(tex: THREE.Texture): void;
   setReflectionScreen(w: number, h: number): void;
   setWet(on: boolean, reflectionsOn: boolean): void;
+  /** Drop the scanned normal/detail layers when the frame budget is blown.
+      Passing `true` also starts the scan load if `buildMats({ pbr: false })`
+      deferred it, so the low preset can skip the download entirely and still
+      be raised to high later. */
+  setPbrDetail(on: boolean): void;
 }
 
-export function buildMats(): Mats {
+/** Per-material PBR bookkeeping, hung off material.userData. */
+interface RoadUD {
+  refStr: number;
+  curStr: number;
+  /** dry-road target roughness before the scan's mean is divided out */
+  dryRough: number;
+  /** 1 / mean of the roughness map; 1 while procedural */
+  roughK: number;
+  /** mean linear luminance of the detail albedo */
+  detMean: number;
+  detK: number;
+  detRep: THREE.Vector2;
+  detTex: THREE.Texture | null;
+  roughMod: number;
+  /** the scan's normal map, parked here so perf mode can pull and restore it */
+  normalTex: THREE.Texture | null;
+  /* three ships no bundled typings, so the shader-parameters object that
+     onBeforeCompile hands back has no type to name here */
+  sh?: { uniforms: Record<string, { value: unknown }> };
+}
+
+/**
+ * @param opts.pbr Pass `false` to defer the photo-scan download rather than
+ *   cancel it — nothing is fetched until `setPbrDetail(true)` asks for it. That
+ *   is the honest binding for the low preset: a weak device pays neither the
+ *   ~5 MB transfer nor the texture memory, but raising the quality setting
+ *   later still upgrades the world, so the choice stays reversible.
+ */
+export function buildMats(opts?: { pbr?: boolean }): Mats {
+  const usePbr = opts?.pbr !== false;
+
   const envMap = new THREE.CubeTexture([
     envFaceCanvas(), envFaceCanvas(), envFaceCanvas(true),
     envFaceCanvas(false), envFaceCanvas(), envFaceCanvas(),
@@ -50,6 +141,7 @@ export function buildMats(): Mats {
   const chevTex = chevTexF();
   const goreTex = goreTexF();
   const xingTex = xingTexF();
+  const studTex = studTexF();
 
   const roadT = roadTex();
   roadT.repeat.set(1, 1);
@@ -61,34 +153,144 @@ export function buildMats(): Mats {
   const refMats: THREE.MeshStandardMaterial[] = [];
   let pendingRefTex: THREE.Texture | null = null;
   const screen = new THREE.Vector2(1, 1);
+  let detailOn = true;
+  let pbrStarted = false;
+
+  const ud = (m: THREE.MeshStandardMaterial) => m.userData as unknown as RoadUD;
+
+  /* ---------------- road surface shader ---------------- */
 
   function reflectionUniforms(mat: THREE.MeshStandardMaterial, strength: number) {
-    mat.userData.refStr = strength;
-    mat.userData.curStr = strength;
+    const d = ud(mat);
+    d.refStr = strength;
+    d.curStr = strength;
+    d.dryRough ??= mat.roughness;
+    d.roughK ??= 1;
+    d.detMean ??= 1;
+    d.detK ??= 0;
+    d.detRep ??= new THREE.Vector2(1, 1);
+    d.detTex ??= null;
+    d.normalTex ??= null;
+    d.roughMod ??= 0;
+
     mat.onBeforeCompile = (sh) => {
+      const hasDet = detailOn && !!d.detTex;
+      const hasRough = !!mat.roughnessMap && d.roughMod > 0;
       sh.uniforms.tRef = { value: pendingRefTex };
-      sh.uniforms.uRefStr = { value: mat.userData.curStr };
+      sh.uniforms.uRefStr = { value: d.curStr };
       sh.uniforms.uScreen = { value: screen };
-      mat.userData.sh = sh;
-      sh.fragmentShader = sh.fragmentShader
+      sh.uniforms.tDet = { value: hasDet ? d.detTex : null };
+      sh.uniforms.uDetRep = { value: d.detRep };
+      sh.uniforms.uDetK = { value: hasDet ? d.detK : 0 };
+      sh.uniforms.uDetMean = { value: d.detMean };
+      // the reference the roughness map is compared against: the dry/wet
+      // target itself, so a texel sitting at the map's mean gives a ratio of
+      // exactly 1 and the tuned reflection strength is left alone
+      sh.uniforms.uRoughRef = { value: mat.roughness * (d.roughK > 0 ? 1 / d.roughK : 1) };
+      sh.uniforms.uRoughMod = { value: hasRough ? d.roughMod : 0 };
+      d.sh = sh;
+
+      sh.fragmentShader = sh.fragmentShader.replace(
+        "#include <common>",
+        "#include <common>\n" +
+          "uniform sampler2D tRef; uniform float uRefStr; uniform vec2 uScreen;\n" +
+          (hasDet
+            ? "uniform sampler2D tDet; uniform vec2 uDetRep; uniform float uDetK; uniform float uDetMean;\n"
+            : "") +
+          (hasRough ? "uniform float uRoughRef; uniform float uRoughMod;\n" : "")
+      );
+
+      if (hasDet) {
+        /* Detail albedo. Dividing by the scan's mean luminance makes this a
+           unit-mean multiply: it adds the photograph's grain and blotching to
+           the procedural colour without darkening or lifting it, which is what
+           lets a scan drop in over art that was hand-tuned under a different
+           pipeline and still land at the same exposure. */
+        sh.fragmentShader = sh.fragmentShader.replace(
+          "#include <map_fragment>",
+          "#include <map_fragment>\n" +
+            "vec3 detC = texture2D(tDet, vMapUv * uDetRep).rgb;\n" +
+            "diffuseColor.rgb *= mix(vec3(1.0), detC / max(uDetMean, 1e-3), uDetK);"
+        );
+      }
+
+      sh.fragmentShader = sh.fragmentShader.replace(
+        "#include <dithering_fragment>",
+        "vec2 sUV=gl_FragCoord.xy/uScreen; sUV.x=1.0-sUV.x;" +
+          "vec3 refC=texture2D(tRef,sUV).rgb;" +
+          "float ndv=clamp(dot(normalize(vNormal),normalize(vViewPosition)),0.,1.);" +
+          "float fr=uRefStr*pow(1.0-ndv,2.0);" +
+          (hasRough
+            ? /* Puddle modulation. roughnessFactor is the scan's roughness at
+                 this texel; where it dips below the map's mean the surface is
+                 locally smoother — a worn-smooth patch or standing water — and
+                 mirrors the world back harder, while coarse aggregate scatters
+                 it away. Capped at 3x so a near-black texel cannot turn a patch
+                 into a perfect mirror. */
+              "fr*=mix(1.0, clamp(uRoughRef/max(roughnessFactor,0.02),0.0,3.0), uRoughMod);"
+            : "") +
+          "fr=clamp(fr,0.,1.);" +
+          // blend toward the reflection instead of stacking it on top —
+          // additive stacking let a bright reflected highlight (e.g. the
+          // car's own tail-lights) blow the pixel out to solid white,
+          // especially at grazing angles on wet roads where fr is near 1
+          "gl_FragColor.rgb=mix(gl_FragColor.rgb,refC,fr);\n#include <dithering_fragment>"
+      );
+    };
+    // three keys its program cache partly on this; without it the detail and
+    // puddle variants would collide with the plain one after a hot upgrade
+    mat.customProgramCacheKey = () =>
+      `road|${detailOn && d.detTex ? 1 : 0}|${mat.roughnessMap && d.roughMod > 0 ? 1 : 0}`;
+    refMats.push(mat);
+  }
+
+  /* ---------------- world-projected UVs ---------------- */
+
+  /**
+   * Make a material texture itself from world position instead of a uv
+   * attribute.
+   *
+   * The highway fascia, parapets and tunnel lining are emitted as raw triangle
+   * soups with no uv attribute at all — every vertex would sample the same
+   * texel. Rather than reach into that geometry (it is shared with the collider
+   * build), the UV is derived in the vertex shader by projecting world position
+   * down the face's dominant axis. Those soups get flat per-face normals from
+   * computeVertexNormals() on non-indexed triangles, so the axis choice is
+   * constant across each triangle and no face can seam down its middle.
+   */
+  function projectedUv(mat: THREE.MeshStandardMaterial, scale: number) {
+    mat.userData.projScale = scale;
+    mat.onBeforeCompile = (sh) => {
+      sh.uniforms.uProjScale = { value: mat.userData.projScale };
+      mat.userData.projSh = sh;
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", "#include <common>\nuniform float uProjScale;")
         .replace(
-          "#include <common>",
-          "#include <common>\nuniform sampler2D tRef; uniform float uRefStr; uniform vec2 uScreen;"
-        )
-        .replace(
-          "#include <dithering_fragment>",
-          "vec2 sUV=gl_FragCoord.xy/uScreen; sUV.x=1.0-sUV.x;" +
-            "vec3 refC=texture2D(tRef,sUV).rgb;" +
-            "float ndv=clamp(dot(normalize(vNormal),normalize(vViewPosition)),0.,1.);" +
-            "float fr=clamp(uRefStr*pow(1.0-ndv,2.0),0.,1.);" +
-            // blend toward the reflection instead of stacking it on top —
-            // additive stacking let a bright reflected highlight (e.g. the
-            // car's own tail-lights) blow the pixel out to solid white,
-            // especially at grazing angles on wet roads where fr is near 1
-            "gl_FragColor.rgb=mix(gl_FragColor.rgb,refC,fr);\n#include <dithering_fragment>"
+          "#include <uv_vertex>",
+          `#include <uv_vertex>
+{
+  vec3 wpP = (modelMatrix * vec4(position, 1.0)).xyz;
+  vec3 wnP = normalize(mat3(modelMatrix) * normal);
+  vec3 anP = abs(wnP);
+  vec2 pUV = anP.y > max(anP.x, anP.z) ? wpP.xz
+           : (anP.x > anP.z ? wpP.zy : wpP.xy);
+  pUV *= uProjScale;
+  #ifdef USE_MAP
+    vMapUv = pUV;
+  #endif
+  #ifdef USE_NORMALMAP
+    vNormalMapUv = pUV;
+  #endif
+  #ifdef USE_ROUGHNESSMAP
+    vRoughnessMapUv = pUV;
+  #endif
+  #ifdef USE_METALNESSMAP
+    vMetalnessMapUv = pUV;
+  #endif
+}`
         );
     };
-    refMats.push(mat);
+    mat.customProgramCacheKey = () => "projuv";
   }
 
   const road = new THREE.MeshStandardMaterial({
@@ -108,6 +310,45 @@ export function buildMats(): Mats {
   reflectionUniforms(hwy, 0.34);
   reflectionUniforms(ramp, 0.22);
 
+  const conc = new THREE.MeshStandardMaterial({
+    color: 0x33363f, roughness: 0.8, metalness: 0.08,
+  });
+  const concDark = new THREE.MeshStandardMaterial({ color: 0x24262e, roughness: 0.85 });
+  const barrier = new THREE.MeshStandardMaterial({
+    color: 0x8d939f, roughness: 0.55, metalness: 0.35, envMap, envMapIntensity: 0.3,
+  });
+  const concDouble = new THREE.MeshStandardMaterial({
+    color: 0x33363f, roughness: 0.8, metalness: 0.08, side: THREE.DoubleSide,
+  });
+  const concDarkDouble = new THREE.MeshStandardMaterial({
+    color: 0x24262e, roughness: 0.85, side: THREE.DoubleSide,
+  });
+  const barrierDouble = new THREE.MeshStandardMaterial({
+    color: 0x8d939f, roughness: 0.55, metalness: 0.35, envMap, envMapIntensity: 0.3,
+    side: THREE.DoubleSide,
+  });
+  /* Tunnel lining. The self-illumination stands in for the bounce light a real
+     tunnel gets off its own tiling — without it the tube goes pitch black a few
+     metres past the last batten, because the sun and moon are both outside. */
+  const tunnelWall = new THREE.MeshStandardMaterial({
+    color: 0x9aa3b2, roughness: 0.35, metalness: 0.12,
+    emissive: 0x171b24, emissiveIntensity: 1,
+    envMap, envMapIntensity: 0.25, side: THREE.DoubleSide,
+  });
+  const tunnelCeil = new THREE.MeshStandardMaterial({
+    color: 0x2a2d36, roughness: 0.85, side: THREE.DoubleSide,
+  });
+  /* Street furniture metal: lamp masts, signal poles, gantry legs. Real
+     galvanised steel is anisotropic — it streaks along the roll direction —
+     which MeshStandardMaterial cannot express. The scan's roughness map fakes
+     it well enough at the distance a pole is ever seen, so metalness stays
+     high and the base roughness low enough for the map to work in both
+     directions. The dark tint is kept as a multiplier so the poles do not
+     brighten into silver posts. */
+  const pole = new THREE.MeshStandardMaterial({
+    color: 0x2b2e36, roughness: 0.7, metalness: 0.5, envMap, envMapIntensity: 0.4,
+  });
+
   const winMats = [windowsTexF(true), windowsTexF(false), windowsTexF(true)].map(
     (t) =>
       new THREE.MeshStandardMaterial({
@@ -121,22 +362,42 @@ export function buildMats(): Mats {
   });
   const vendT = vendingTexF();
 
+  const studParams = {
+    size: 2.4, sizeAttenuation: false, map: studTex, color: 0xfff4dc,
+    transparent: true, opacity: 0.95, depthWrite: false, fog: true,
+    blending: THREE.AdditiveBlending,
+  };
+  const studMat = new THREE.PointsMaterial(studParams);
+  /* The tunnel span gets its own material for one reason: studMat is
+     registered in world.neonMats, which the engine fades out with daylight —
+     correct for an open road, where a cat's eye is a dull grey lump at noon.
+     Inside the tube it is dark at every hour, so daylight-dimming would erase
+     the studs exactly where they are doing the most work. This one stays out
+     of neonMats and burns at full strength around the clock, for the same
+     reason the ceiling battens deliberately are not registered either. */
+  const studMatTunnel = new THREE.PointsMaterial(studParams);
+
   const mats: Mats = {
-    envMap, glowTex, streakTex, smokeTex, chevTex, goreTex, xingTex,
+    envMap, glowTex, streakTex, smokeTex, chevTex, goreTex, xingTex, studTex,
     road, front, hwy, ramp,
     ground: new THREE.MeshStandardMaterial({ color: 0x0b0c12, roughness: 0.92, metalness: 0.05 }),
     sidewalk: new THREE.MeshStandardMaterial({
       color: 0x191b23, roughness: 0.85, side: THREE.DoubleSide,
     }),
-    conc: new THREE.MeshStandardMaterial({ color: 0x33363f, roughness: 0.8, metalness: 0.08 }),
-    concDark: new THREE.MeshStandardMaterial({ color: 0x24262e, roughness: 0.85 }),
-    barrier: new THREE.MeshStandardMaterial({
-      color: 0x8d939f, roughness: 0.55, metalness: 0.35, envMap, envMapIntensity: 0.3,
-    }),
+    conc,
+    concDark,
+    barrier,
+    concDouble,
+    concDarkDouble,
+    barrierDouble,
+    tunnelWall,
+    tunnelCeil,
+    studMat,
+    studMatTunnel,
     soundwall: new THREE.MeshStandardMaterial({
       color: 0x2c4438, roughness: 0.75, transparent: true, opacity: 0.85,
     }),
-    pole: new THREE.MeshStandardMaterial({ color: 0x2b2e36, roughness: 0.7, metalness: 0.5 }),
+    pole,
     winMats,
     sfMat,
     vendMat: new THREE.MeshStandardMaterial({
@@ -147,23 +408,182 @@ export function buildMats(): Mats {
     addReflection: reflectionUniforms,
     setReflectionTexture(tex) {
       pendingRefTex = tex;
-      for (const m of refMats) if (m.userData.sh) m.userData.sh.uniforms.tRef.value = tex;
+      for (const m of refMats) if (ud(m).sh) ud(m).sh!.uniforms.tRef.value = tex;
     },
     setReflectionScreen(w, h) {
       screen.set(w, h);
     },
     setWet(on, reflectionsOn) {
       const rough = on ? 0.13 : 0.4;
-      road.roughness = rough;
-      front.roughness = rough;
-      hwy.roughness = rough - 0.02;
-      ramp.roughness = rough;
+      setRough(road, rough);
+      setRough(front, rough);
+      setRough(hwy, rough - 0.02);
+      setRough(ramp, rough);
       for (const m of refMats) {
-        const str = reflectionsOn ? m.userData.refStr * (on ? 2.6 : 1) : 0;
-        m.userData.curStr = str;
-        if (m.userData.sh) m.userData.sh.uniforms.uRefStr.value = str;
+        const d = ud(m);
+        const str = reflectionsOn ? d.refStr * (on ? 2.6 : 1) : 0;
+        d.curStr = str;
+        if (d.sh) d.sh.uniforms.uRefStr.value = str;
+      }
+    },
+    setPbrDetail(on) {
+      /* Turning detail on is also what starts a deferred load, so a session
+         that booted on the low preset — and so never downloaded the scans —
+         picks them up the first time the player raises the quality setting.
+         Deliberately before the early-return: the very first call may be
+         setPbrDetail(true) with detail already nominally on. */
+      if (on) void ensurePbr();
+      if (detailOn === on) return;
+      detailOn = on;
+      /* Perf mode drops the two extra road texture fetches per pixel — the
+         detail albedo and the normal map — while keeping the roughness map,
+         which is the cheap one and the one carrying the wet-road look. */
+      for (const m of refMats) {
+        const d = ud(m);
+        if (!d.detTex && !d.normalTex) continue;
+        m.normalMap = on ? d.normalTex : null;
+        m.needsUpdate = true; // recompile: the detail sampler is compiled in or out
       }
     },
   };
+
+  /** Set a road's *effective* roughness, compensating for the scan's own mean. */
+  function setRough(mat: THREE.MeshStandardMaterial, target: number) {
+    const d = ud(mat);
+    d.dryRough = target;
+    // roughnessFactor = roughness * texel.g, and texel.g averages 1/roughK, so
+    // scaling the base by roughK lands the *average* roughness on `target`
+    // whether or not a scan is present
+    mat.roughness = target * d.roughK;
+    if (d.sh?.uniforms.uRoughRef) d.sh.uniforms.uRoughRef.value = target;
+  }
+
+  /* ---------------- async photo-scan upgrade ---------------- */
+
+  /** Layer a scan onto a road surface: detail albedo + real normal/roughness. */
+  function upgradeRoad(mat: THREE.MeshStandardMaterial, set: PbrSet, o: PbrOpts) {
+    if (!set.albedo) return;
+    const d = ud(mat);
+    const rep = new THREE.Vector2(o.repeat[0], o.repeat[1]);
+    d.detTex = retile(set.albedo, rep);
+    d.detMean = set.albedoMean;
+    d.detK = o.detail ?? 0.85;
+    d.detRep = rep;
+    d.roughMod = o.roughMod ?? 0.85;
+    if (set.normal) {
+      d.normalTex = retile(set.normal, rep);
+      if (detailOn) mat.normalMap = d.normalTex;
+      const ns = o.normalScale ?? 0.35;
+      mat.normalScale = new THREE.Vector2(ns, ns);
+    }
+    if (set.rough) {
+      mat.roughnessMap = retile(set.rough, rep);
+      d.roughK = 1 / Math.max(set.roughMean, 0.05);
+    }
+    setRough(mat, o.roughness ?? d.dryRough);
+    mat.needsUpdate = true;
+  }
+
+  /** Replace a non-road material's art outright. */
+  function upgradeSurface(mat: THREE.MeshStandardMaterial, set: PbrSet, o: PbrOpts) {
+    if (!set.albedo) return;
+    const rep = new THREE.Vector2(o.repeat[0], o.repeat[1]);
+    mat.map = retile(set.albedo, rep);
+    // the tuned tint stays as a multiplier over the scan, which is how the
+    // tunnel lining keeps reading as pale tile and the barriers as dirty grey
+    if (set.normal) {
+      mat.normalMap = retile(set.normal, rep);
+      mat.normalScale = new THREE.Vector2(o.normalScale ?? 0.7, o.normalScale ?? 0.7);
+    }
+    if (set.rough) {
+      mat.roughnessMap = retile(set.rough, rep);
+      mat.roughness = (o.roughness ?? mat.roughness) / Math.max(set.roughMean, 0.05);
+    }
+    if (set.metal) mat.metalnessMap = retile(set.metal, rep);
+    mat.needsUpdate = true;
+  }
+
+  /* A Texture clone shares its `source`, so the pixels are uploaded to the GPU
+     once no matter how many materials tile the same scan differently. */
+  function retile(t: THREE.Texture, rep: THREE.Vector2) {
+    if (t.repeat.x === rep.x && t.repeat.y === rep.y) return t;
+    const c = t.clone();
+    c.wrapS = c.wrapT = THREE.RepeatWrapping;
+    c.repeat.copy(rep);
+    c.needsUpdate = true;
+    return c;
+  }
+
+  if (usePbr) void ensurePbr();
+
+  /** Fetch and apply the photo scans. Idempotent — safe to call repeatedly. */
+  async function ensurePbr() {
+    if (pbrStarted) return;
+    pbrStarted = true;
+    /* Every await here is failure-tolerant by construction: loadPbrSet always
+       resolves, and an absent set has a null albedo which every upgrade path
+       returns early on. A missing assets directory costs four 404s and leaves
+       the procedural look untouched. */
+    const [asphaltSet, wornSet, concreteSet, metalSet] = await Promise.all([
+      loadPbrSet("asphalt"),
+      loadPbrSet("asphalt_worn"),
+      loadPbrSet("concrete"),
+      // the directory keeps ambientCG's "guardrail" name (see ATTRIBUTIONS.md);
+      // this world has no guardrails, so the metal goes on the street furniture
+      loadPbrSet("guardrail", undefined, true),
+    ]);
+
+    /* Repeats are expressed in the mesh's own UV space, which differs per
+       surface. The highway deck is laid out in 7 m tiles (see TILE in
+       highway.ts), so 2 repeats puts one scan tile every ~3.5 m — close to the
+       real-world size of the scanned patch. The town streets run u across the
+       full carriageway and v every 14 m, hence the larger numbers. */
+    // the worn scan is the better read for a motorway deck; fall back to the
+    // fresh one if only that half of the drop has landed
+    const deck = wornSet.albedo ? wornSet : asphaltSet;
+    upgradeRoad(hwy, deck, {
+      repeat: [2, 2], normalScale: 0.3, detail: 0.9, roughness: 0.38, roughMod: 0.9,
+    });
+    upgradeRoad(road, asphaltSet, {
+      repeat: [4, 4], normalScale: 0.32, detail: 0.85, roughness: 0.4, roughMod: 0.85,
+    });
+    upgradeRoad(front, asphaltSet, {
+      repeat: [4, 4], normalScale: 0.32, detail: 0.85, roughness: 0.4, roughMod: 0.85,
+    });
+    upgradeRoad(ramp, deck, {
+      repeat: [2, 3], normalScale: 0.3, detail: 0.8, roughness: 0.4, roughMod: 0.8,
+    });
+
+    /* Concrete and metal are world-projected, so their density is set by the
+       projection scale rather than a uv repeat: 0.45 puts one scan tile every
+       ~2.2 m of wall, which keeps the aggregate at life size on a 1 m parapet.
+       projectedUv() must be installed before the upgrade, because it replaces
+       onBeforeCompile and the upgrade is what flags the recompile. */
+    /* `soundwall` is deliberately absent from this list and must stay absent:
+       it is a translucent polycarbonate noise barrier, not concrete, and an
+       aggregate scan on it would look like a wall made of gravel. Note also
+       that highway.ts clones it (swMat, for DoubleSide), so adding it here
+       would silently do nothing anyway — if it ever does need a scan it needs
+       a shared double-sided variant first, the way the parapets got one. */
+    if (concreteSet.albedo)
+      for (const m of [
+        conc, concDouble, concDark, concDarkDouble,
+        barrier, barrierDouble, tunnelWall, tunnelCeil,
+      ]) {
+        projectedUv(m, 0.45);
+        upgradeSurface(m, concreteSet, {
+          repeat: [1, 1], normalScale: 0.65, roughness: m.roughness,
+        });
+      }
+    /* Poles are cylinders and boxes with real UVs, so no projection here — and
+       none is possible anyway, since an InstancedMesh's modelMatrix is the
+       batch's transform, not the per-instance one, and every pole would end up
+       sampling the identical patch. The repeat is tuned to the mast geometry
+       rather than to metres. */
+    upgradeSurface(pole, metalSet, {
+      repeat: [1, 4], normalScale: 0.45, roughness: 0.7,
+    });
+  }
+
   return mats;
 }

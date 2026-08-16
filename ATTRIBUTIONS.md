@@ -63,26 +63,35 @@ attribution legally required. Fetched via ambientCG's public JSON/CSV API at
 quality 82–90 for normals, normal maps additionally downsized to 768×768) to
 fit a web-delivery size budget. Source: https://ambientcg.com/
 
-| Directory | ambientCG asset | Item page | Maps kept |
-|---|---|---|---|
-| `asphalt/` | Asphalt031 (clean/fresh) | https://ambientcg.com/a/Asphalt031 | albedo, normal, rough, ao |
-| `asphalt_worn/` | Asphalt026C (cracked/damaged) | https://ambientcg.com/a/Asphalt026C | albedo, normal, rough, ao |
-| `concrete/` | Concrete033 | https://ambientcg.com/a/Concrete033 | albedo, normal, rough, ao |
-| `guardrail/` | Metal032 | https://ambientcg.com/a/Metal032 | albedo, normal, rough, metal |
-| `lanemarks/` | RoadLines001 | https://ambientcg.com/a/RoadLines001 | albedo, normal, rough |
+| Directory | ambientCG asset | Item page | Maps kept | Used for |
+|---|---|---|---|---|
+| `asphalt/` | Asphalt031 (clean/fresh) | https://ambientcg.com/a/Asphalt031 | albedo, normal, rough, ao | town streets |
+| `asphalt_worn/` | Asphalt026C (cracked/damaged) | https://ambientcg.com/a/Asphalt026C | albedo, normal, rough, ao | highway deck + ramps (falls back to `asphalt/` if missing) |
+| `concrete/` | Concrete033 | https://ambientcg.com/a/Concrete033 | albedo, normal, rough, ao | deck fascia, parapets, ramp skirts, tunnel walls/ceiling |
+| `guardrail/` | Metal032 | https://ambientcg.com/a/Metal032 | albedo, normal, rough, metal | **not guardrails** — this world has no guardrail/railing geometry (concrete parapets throughout). Retargeted to street furniture instead: lamp masts, signal poles, gantry legs (`mats.pole`). Directory kept as `guardrail/` for continuity with the download; see the load-site comment in the renderer for the mismatch. |
 
 Displacement maps were provided by ambientCG but intentionally dropped —
-`game/mats.ts`'s PBR loader has no parallax/displacement stage, so they'd be
-dead weight. Each set follows a fixed filename contract so the loader can
-`fetch()` blind and fall back to the existing procedural canvas textures if a
-file is missing:
+the PBR loader has no parallax/displacement stage, so they'd be dead weight.
+AO maps are on disk but not sampled (three.js reads `aoMap` from a second UV
+channel this geometry doesn't have; the effect would be near-invisible on
+these flat surfaces anyway, so it wasn't worth adding one).
+
+A sixth set, `lanemarks/` (ambientCG RoadLines001, a photo decal atlas of
+painted lane stripes), was downloaded but **not shipped**: this world builds
+lane markings as per-lane geometry (stripe quads from the highway corridor's
+lane schedule) with procedural paint-wear erosion, not as a texture, so a
+photo atlas had nowhere to map onto. Removed from `public/assets/pbr/`.
+
+Each set follows a fixed filename contract so the loader can `fetch()` blind
+and fall back to the existing procedural canvas textures if a file is
+missing:
 
 ```
 public/assets/pbr/<set>/albedo.jpg   (required)
 public/assets/pbr/<set>/normal.jpg   (OpenGL/+Y convention)
 public/assets/pbr/<set>/rough.jpg
-public/assets/pbr/<set>/ao.jpg       (optional)
-public/assets/pbr/<set>/metal.jpg    (optional — guardrail only)
+public/assets/pbr/<set>/ao.jpg       (optional, present but unused — see above)
+public/assets/pbr/<set>/metal.jpg    (optional — guardrail/ only)
 ```
 
 ## Night-city HDRI — `public/hdri/*`

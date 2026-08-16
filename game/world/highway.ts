@@ -141,7 +141,7 @@ export function buildHighway(
 ) {
   const cor = getCorridor();
   assertPitches();
-  const { conc, concDark, barrier, soundwall, hwy } = mats;
+  const { concDark, soundwall, hwy } = mats;
   const add = (b: { x0: number; x1: number; z0: number; z1: number; y0: number; y1: number }) =>
     world.colliders.addAabb(b);
   const ST = cor.stations;
@@ -166,10 +166,12 @@ export function buildHighway(
     color: 0xe9edf6, fog: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
-  const fasciaMat = conc.clone();
-  fasciaMat.side = THREE.DoubleSide;
-  const wallMat = barrier.clone();
-  wallMat.side = THREE.DoubleSide;
+  /* Shared double-sided variants rather than local clones: the photo-scan
+     concrete arrives asynchronously and can only reach materials mats.ts still
+     holds a reference to, so a clone made here would stay flat while the road
+     around it went photoreal. These carry the identical colour/roughness. */
+  const fasciaMat = mats.concDouble;
+  const wallMat = mats.barrierDouble;
 
   const WALL_H = 1.05, WALL_T = 0.34, DECK_TH = 1.15;
   /** stations where a parapet must not be drawn (the ramp divergence zones) */
@@ -259,6 +261,48 @@ export function buildHighway(
       for (let k = 1; k < Math.ceil(nf - 0.35); k++)
         stripe(z, z + DASH, cor.laneEdge(k, z), cor.laneEdge(k, z + DASH), 0.16);
     }
+
+    /* Raised retroreflective markers down every line.
+       These are what actually carry a night motorway: the painted dashes fall
+       off into the dark within a few car lengths, but a receding row of studs
+       stays readable all the way to the vanishing point and gives the lane a
+       shape to aim down.
+
+       They ride the dash lattice rather than a pitch of their own: any spacing
+       here must divide LOOP_LEN or the row falls out of phase across the
+       splice and the teleport shows up as a stutter in the markers. The phase
+       drops each stud into the gap between two dashes, which is where a real
+       one is set so tyres track over paint or stud but never both.
+
+       The run is split at the tunnel mouths into two clouds. Only the open-air
+       one is registered in neonMats for daylight dimming — a real cat's eye is
+       a dull grey lump at noon and only lights up when a headlight is pointed
+       into it. Inside the tube it is night at every hour, so dimming those
+       would blank the lane guidance exactly where the driver has least else to
+       steer by, which is why the ceiling battens are not registered either. */
+    const studPts: number[] = [], tubePts: number[] = [];
+    for (const z of cor.lattice(PITCH.dash, DASH + (PITCH.dash - DASH) / 2)) {
+      if (z > cor.ZB1) continue;
+      const into = cor.inTunnel(z) ? tubePts : studPts;
+      const lats = [cor.halfWidth(z) - 0.45, -(cor.halfWidth(z) - 0.45)];
+      for (let k = 1; k < Math.ceil(cor.laneCount(z) - 0.35); k++) lats.push(cor.laneEdge(k, z));
+      for (const lat of lats) {
+        const p = cor.worldOf(z, lat);
+        into.push(p.x, p.y + 0.05, p.z);
+      }
+    }
+    for (const [pts, mat] of [
+      [studPts, mats.studMat], [tubePts, mats.studMatTunnel],
+    ] as const) {
+      if (!pts.length) continue;
+      const sg = new THREE.BufferGeometry();
+      sg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+      const studs = new THREE.Points(sg, mat);
+      studs.layers.set(LAYER_NOREF);
+      studs.frustumCulled = false;
+      scene.add(studs);
+    }
+    world.neonMats.push(mats.studMat); // open-air only; the tube's stay lit
   }
 
   /* ---- lane-drop tapers: solid diagonal + hatching + merge arrows ---- */
@@ -637,18 +681,13 @@ function buildTunnel(
   pt: (i: number, lat: number, dy?: number) => Vec3
 ) {
   const H = 6.4; // clear height under the ceiling
-  /* Tiled walls. A little self-illumination stands in for the bounce light a
-     real tunnel gets off its own tiling — without it the tube goes pitch black
-     a few metres past the last batten, because the sun and moon are both
-     outside. */
-  const tileMat = new THREE.MeshStandardMaterial({
-    color: 0x9aa3b2, roughness: 0.35, metalness: 0.12,
-    emissive: 0x171b24, emissiveIntensity: 1,
-    envMap: mats.envMap, envMapIntensity: 0.25, side: THREE.DoubleSide,
-  });
-  const ceilMat = new THREE.MeshStandardMaterial({
-    color: 0x2a2d36, roughness: 0.85, side: THREE.DoubleSide,
-  });
+  /* Tiled walls, shared from mats so the scanned concrete can reach them (see
+     the fascia note above). The material's self-illumination stands in for the
+     bounce light a real tunnel gets off its own tiling — without it the tube
+     goes pitch black a few metres past the last batten, because the sun and
+     moon are both outside. */
+  const tileMat = mats.tunnelWall;
+  const ceilMat = mats.tunnelCeil;
   const wallS = new Soup(), ceilS = new Soup();
   const i0 = Math.max(0, Math.floor((TUNNEL.z0 - cor.ZB0) / 4));
   const i1 = Math.min(cor.stations.length - 2, Math.ceil((TUNNEL.z1 - cor.ZB0) / 4));
@@ -888,7 +927,7 @@ function buildRampMeshes(
   terrain: Terrain,
   postPts: number[]
 ) {
-  const { concDark, barrier, ramp } = mats;
+  const { concDark, ramp } = mats;
   const surf = new Soup(), skirt = new Soup(), wallS = new Soup();
   const WALL_H = 1.0, WALL_T = 0.3, DECKTH = 0.62;
   const colG = new THREE.BoxGeometry(1.25, 1, 1.25);
@@ -985,14 +1024,10 @@ function buildRampMeshes(
   sm.receiveShadow = true;
   sm.layers.set(LAYER_NOREF);
   scene.add(sm);
-  const skirtMat = concDark.clone();
-  skirtMat.side = THREE.DoubleSide;
-  const sk = new THREE.Mesh(skirt.geom(false), skirtMat);
+  const sk = new THREE.Mesh(skirt.geom(false), mats.concDarkDouble);
   sk.castShadow = true;
   scene.add(sk);
-  const wallMat = barrier.clone();
-  wallMat.side = THREE.DoubleSide;
-  const wm = new THREE.Mesh(wallS.geom(false), wallMat);
+  const wm = new THREE.Mesh(wallS.geom(false), mats.barrierDouble);
   wm.castShadow = true;
   scene.add(wm);
 }
