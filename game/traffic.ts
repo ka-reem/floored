@@ -4,7 +4,7 @@ import { roundedBoxGeo, hullShape, glassShape, roofShape, shellExtrude } from ".
 import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { ShellParams } from "./carspecs";
 import { loadNpcModels, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
-import { HX, LANE_LAT, LANE_W } from "./world/const";
+import { HX, LANE_LAT } from "./world/const";
 import { getCorridor } from "./world/corridor";
 import { signalPhase, type WorldData } from "./world/data";
 import type { REdge, EdgePose } from "./world/roadnet";
@@ -682,7 +682,7 @@ export class Traffic {
             ? [[d.wz, 0], [-d.wz, 0]]
             : [[d.wz, hw2], [d.wz, -hw2], [-d.wz, hw2], [-d.wz, -hw2]],
         hw: true, edge: null, eDir: 1, segHint: { i: 0 }, nextEdgeId: -1,
-        dir: 1, laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: LANE_W / 3, s: 0,
+        dir: 1, laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: this.cor.lanePitch(0) / 3, s: 0,
         v: 0, v0: 10,
         drv: { spd: 1, gap: 1, acc: 1, lane: 0.5, react: 0.3, corner: 1, timid: 0, weave: 0, jit: rand(0, TAU) },
         pT: 0, pLead: { ds: Infinity, v: 0 },
@@ -1706,7 +1706,7 @@ export class Traffic {
        laneRate so the manoeuvre itself reads as gradual. */
     n.offT = cor.laneOffset(n.laneK, n.s);
     const dOff = n.offT - n.offCur;
-    const rate = n.blink !== 0 ? n.laneRate || LANE_W / 3 : LANE_FOLLOW_RATE;
+    const rate = n.blink !== 0 ? n.laneRate || cor.lanePitch(n.s) / 3 : LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) {
       n.offCur += clamp(dOff, -rate * dt, rate * dt);
       if (n.blink !== 0 && n.pendK < 0 && Math.abs(dOff) < 0.35) n.blink = 0;
