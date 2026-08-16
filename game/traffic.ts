@@ -696,7 +696,11 @@ export class Traffic {
     /* Upgrade to the real bodyshells in the background. Everything above is
        already a working fleet; each model that lands swaps one style's near
        LOD in place, and any that never lands simply stays procedural. */
-    void loadNpcModels(Object.keys(this.styleOf), (m) => this.applyModel(m));
+    // bike ships no GLB (stays procedural) — requesting it just 404s every load
+    void loadNpcModels(
+      Object.keys(this.styleOf).filter((s) => s !== "bike"),
+      (m) => this.applyModel(m)
+    );
   }
 
   /** Swap one style's near LOD over to a loaded bodyshell. Instance state —
