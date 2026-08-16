@@ -12,7 +12,9 @@ import { buildHighway, nearestExitAhead } from "./world/highway";
 import { buildTown } from "./world/townmesh";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
-import { HX, DECKY, LANE_OFF } from "./world/const";
+import { DECKY } from "./world/const";
+import { getCorridor, TUNNEL } from "./world/corridor";
+import { spawnZ } from "./world/ramps";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
 import { buildPlayerCar, type PlayerRig } from "./player";
@@ -41,6 +43,11 @@ export interface UiBridge {
   pauseRequest(): void;
   helpRequest(): void;
 }
+
+/** How many NPCs are fed to the audio doppler pool each frame — its pool size.
+    The horn and chirp one-shots build their own nodes, so they are not in
+    contention with these and there is nothing to hold back for. */
+const NPC_VOICES = 8;
 
 /* The v2 art (procedural canvas textures + hex palettes) was tuned under
    r128's non-color-managed pipeline; keep that exact response and do the
@@ -129,6 +136,27 @@ export class Game {
   private fogC = new THREE.Color();
   private prevBlinkOn = false;
   private crashCooldown = 0;
+  private cor = getCorridor();
+  /** how many times the endless-highway splice has fired; odometer and lap
+      logic read this, the car's own z stays inside the canonical band */
+  private loops = 0;
+  /** smoothed tunnel blend (0 outside, 1 well inside), and the edge-triggered
+      "am I in the tunnel" flag that drives the entry/exit thumps */
+  private tunT = 0;
+  private tunIn = false;
+  /** refractory timer, so a car hovering at a mouth can't machine-gun thumps */
+  private tunThumpCd = 0;
+  /** pooled entries + the truncated view handed to the audio NPC pool each
+      frame, so the feed costs no allocation once it is warm */
+  private npcPool = Array.from({ length: NPC_VOICES }, () => ({
+    x: 0, z: 0, vx: 0, vz: 0, heavy: false,
+  }));
+  private npcFeed: { x: number; z: number; vx: number; vz: number; heavy: boolean }[] = [];
+  /** last value handed to setReverb, so the common no-op case stays free */
+  private lastReverb = -1;
+  /** camMode as of the last interior-EQ update — cheaper than calling
+      setInterior every frame and keeps the audio side edge-triggered */
+  private lastInteriorMode = -1;
   debug = {
     override: null as Partial<DriverInput> | null,
     errors: [] as string[],
@@ -211,9 +239,21 @@ export class Game {
     this.rainFX = new RainFX(this.scene, this.mats.streakTex);
     this.smokeFX = new SmokeFX(this.scene, this.mats.smokeTex);
 
-    this.car = freshCarState(HX + LANE_OFF[1], DECKY, -430, 0, 23);
+    /* Spawn on the corridor rather than at a fixed offset: the centreline
+       wanders by up to 62 m and the deck rises and falls by 5, so a hardcoded
+       (HX, DECKY) start would drop the car beside or under the road.
+
+       spawnZ() is the centre of the town-side window: the stretch beside the
+       town that is straight, level, clear of both ramps' parapet gaps (the z
+       range where the deck's barrier is cut away for a ramp to peel off), out
+       of the tunnel and off the toll plaza. It is derived from the ramp layout
+       rather than written down here on purpose — this used to be a literal, and
+       when the gores moved it silently ended up inside a gap, spawning the
+       player next to a hole in the wall. */
+    const spawn = this.cor.respawn(spawnZ(), 1);
+    this.car = freshCarState(spawn.x, spawn.y, spawn.z, spawn.h, 23);
     this.buildRig();
-    this.chasePos.set(this.car.x, DECKY + 2.15, this.car.z - 7);
+    this.chasePos.set(this.car.x, this.car.y + 2.15, this.car.z - 7);
     this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
 
     this.timeSpeed = this.settings.autoTime ? 150 : 0;
@@ -228,7 +268,12 @@ export class Game {
         this.car.x = x;
         this.car.z = z;
         if (y !== undefined) this.car.y = y;
-        else this.car.y = this.terrain.heightAt(x, z, this.car.y);
+        else {
+          // the deck is the surface that matters for most test placements, and
+          // it sits well above the terrain it flies over
+          const deck = this.cor.heightAt(x, z, 2);
+          this.car.y = deck ?? this.terrain.heightAt(x, z, this.car.y);
+        }
         if (h !== undefined) this.car.h = h;
         if (u !== undefined) this.car.u = u;
         this.car.v = 0;
@@ -240,12 +285,38 @@ export class Game {
       },
       setCam: (i: number) => (this.camMode = i % 3),
       setInput: (o: Partial<DriverInput> | null) => (this.debug.override = o),
+      /* Drop the car onto the corridor at a given z, in lane, at speed. The
+         two named spots are the ones worth eyeballing: the tunnel approach and
+         the run-up to the loop splice. */
+      toCorridor: (z: number, kmh = 110, lane?: number) => {
+        const p = this.cor.respawn(z, lane);
+        this.car.x = p.x;
+        this.car.y = p.y;
+        this.car.z = p.z;
+        this.car.h = p.h;
+        this.car.u = kmh / 3.6;
+        this.car.v = 0;
+        this.car.r = 0;
+        this.car.rev = false;
+        this.car.wvx = 0;
+        this.car.wvz = 0;
+        this.chasePos.set(p.x - Math.sin(p.h) * 4.4, p.y + 2.15, p.z - Math.cos(p.h) * 4.4);
+        this.lookPos.set(p.x, p.y + 0.95, p.z);
+      },
+      // derived from the tunnel itself, so it still lands on the approach if
+      // the mouth ever moves — 80 m out is clear of the fade but close enough
+      // to reach the thump within a second or two
+      toTunnel: (kmh = 110) => (window as any).__neonx.toCorridor(TUNNEL.z0 - 80, kmh),
+      toSeam: (kmh = 110) => (window as any).__neonx.toCorridor(this.cor.Z1 - 120, kmh),
       state: () => ({
         x: this.car.x, y: this.car.y, z: this.car.z, h: this.car.h,
         u: this.car.u, kmh: Math.abs(this.car.u) * 3.6,
         mph: Math.abs(this.car.u) * 2.236936,
         gear: this.car.gear, rpm: this.car.rpm,
         rev: this.car.rev, slope: this.car.slope, pitchDyn: this.car.pitchDyn,
+        odo: this.car.odo, loops: this.loops,
+        tunnel: this.tunT, inTunnel: this.tunIn,
+        corZ: this.cor.zAt(this.car.x, this.car.z),
         camMode: this.camMode, camPitch: this.camera.rotation.x,
         camYaw: this.camera.rotation.y, revCam: this.revCam,
         npcs: this.traffic.npcs.filter((n) => n.active).length,
@@ -483,6 +554,10 @@ export class Game {
     this.running = run;
     this.audio.setLevels(this.settings.vol, run ? 1 : 0.12);
     if (!run) this.audio.quiesce();
+    /* quiesce() zeroes the reverb send directly, so the cached value no longer
+       describes the graph — drop it, or unpausing inside the tunnel would come
+       back bone dry and stay that way until the blend happened to move. */
+    this.lastReverb = -1;
     if (run) this.acc = 0;
   }
 
@@ -517,12 +592,14 @@ export class Game {
   resetCar() {
     const car = this.car;
     if (car.y > 4) {
-      // snap to nearest deck lane, keep travel direction
-      const dir = Math.cos(car.h) >= 0 ? 1 : -1;
-      car.x = HX + dir * LANE_OFF[1];
-      car.z = clamp(car.z, -1080, 1080);
-      car.h = dir > 0 ? 0 : Math.PI;
-      car.y = DECKY;
+      /* Back onto the corridor. It is one-way now, so there is no travel
+         direction to preserve — the alignment supplies the lane centre, the
+         deck height and the heading, all at the z we are already at. */
+      const p = this.cor.respawn(car.z);
+      car.x = p.x;
+      car.y = p.y;
+      car.z = p.z;
+      car.h = p.h;
     } else {
       let near = this.world.net.nearest(car.x, car.z);
       if (!near) {
@@ -564,6 +641,138 @@ export class Game {
 
   private dayFactor() {
     return clamp(Math.sin(((this.time - 6) / 12) * Math.PI) * 1.4, 0, 1);
+  }
+
+  /* ---------------- endless highway ---------------- */
+  /** Splice the corridor back onto itself. The alignment is periodic in z —
+      the deck at z = −HZ is identical to the deck at z = +HZ — so a lap is a
+      pure translation: nothing rotates, nothing moves in x or y, and the car
+      keeps its heading and its momentum. What matters is that every cached
+      world-space z gets the same shift in the *same* frame; miss one of the
+      camera's smoothing states and the view visibly lurches at the seam.
+
+      The odometer is integrated from speed, not from position, so it carries
+      straight across; `loops` is here for anything that wants true distance. */
+  private loopSplice() {
+    const car = this.car;
+    // the corridor owns the condition, including the reverse case that
+    // shouldWrap() doesn't cover — don't re-derive the thresholds here
+    const dz = this.cor.spliceDelta(car.z);
+    if (!dz) return;
+    car.z += dz;
+    this.loops += dz < 0 ? 1 : -1;
+    this.chasePos.z += dz;
+    this.lookPos.z += dz;
+    this.camera.position.z += dz;
+    this.rearCam.position.z += dz;
+    /* Traffic needs no fix-up: its corridor cars track `s` in the canonical
+       band and derive their world position from it, so the relative geometry
+       across the seam is preserved for free.
+
+       The rig is re-posed from car.* before it is drawn again, the sun is
+       re-aimed at the car in weather(), and the rain field is player-relative,
+       so none of those need touching. Smoke puffs are left behind by design —
+       they are always astern and fade in under a second. */
+  }
+
+  /* ---------------- tunnel ---------------- */
+  /** 0..1 "how enclosed are we". Read off the corridor's own tunnel fade, but
+      only while we are actually on the deck: the alignment happily reports a
+      station for a point in town at the tunnel's z, and reverberating the
+      whole town would be badly wrong. */
+  private tunnelAmount() {
+    const car = this.car;
+    if (this.cor.heightAt(car.x, car.z, 14) === null) return 0;
+    return clamp(this.cor.tunnelBlend(this.cor.zAt(car.x, car.z)), 0, 1);
+  }
+
+  private tunnelUpdate(dt: number, now: number) {
+    const t = this.tunnelAmount();
+    // light smoothing so a bounce across the mouth can't strobe the exposure
+    this.tunT = dt > 0 ? lerp(this.tunT, t, 1 - Math.exp(-9 * dt)) : t;
+    /* setReverb schedules a pair of audio-param ramps, so it is only worth
+       calling when the value has actually moved — out on the open road that is
+       never, and this is the common case by a wide margin. */
+    if (Math.abs(this.tunT - this.lastReverb) > 0.004) {
+      this.lastReverb = this.tunT;
+      this.audio.setReverb(this.tunT);
+    }
+    /* Entry / exit thump, off the *raw* blend rather than the smoothed one:
+       the smoothing lags, and lags further the faster you are going, which
+       would put the thump tens of metres inside the tunnel at speed. Raw, the
+       mouth is always the mouth, at any speed.
+
+       The dead band alone is not enough to keep that honest, though. The fade
+       is 26 m and steep in the middle, so 0.25 and 0.55 are only about five
+       metres apart on the road — a car sitting at the mouth being nudged
+       around can cross both many times a second. Hence the refractory: a
+       genuine transit puts the two mouths 300 m apart, and even backing out of
+       one takes about a second, so nothing real is ever suppressed. */
+    const wasIn = this.tunIn;
+    if (!wasIn && t > 0.55) this.tunIn = true;
+    else if (wasIn && t < 0.25) this.tunIn = false;
+    this.tunThumpCd = Math.max(0, this.tunThumpCd - dt);
+    if (this.tunIn !== wasIn && this.running && this.tunThumpCd <= 0) {
+      this.tunThumpCd = 1.2;
+      // entry and exit share a character; speed sets how hard it lands
+      this.audio.tunnelThump(clamp(0.5 + Math.abs(this.car.u) / 62, 0.5, 1.6));
+    }
+    /* Headlight shimmer against the tunnel wall: two detuned sines beating
+       against each other, a few percent deep. Enough to make the light feel
+       like it is landing on something close, never enough to read as a fault.
+       Runs after weather() has set this frame's base intensity. */
+    if (this.tunT > 0.5 && this.car.lightsOn) {
+      const amt = clamp((this.tunT - 0.5) / 0.25, 0, 1);
+      const f =
+        1 + amt * (0.055 * Math.sin(now * 23.3) * Math.sin(now * 7.1) + 0.02 * Math.sin(now * 41.7));
+      this.rig.spotL.intensity *= f;
+      this.rig.spotR.intensity *= f;
+      this.rig.headMat.emissiveIntensity *= f;
+    }
+  }
+
+  /** Cabin EQ follows the camera, not the car: only the cockpit view is
+      actually inside the shell. Edge-triggered, since the call ramps filter
+      parameters over a quarter second — re-issuing that every frame would
+      keep restarting the ramp and it would never arrive. */
+  private interiorUpdate() {
+    if (this.camMode === this.lastInteriorMode) return;
+    this.lastInteriorMode = this.camMode;
+    this.audio.setInterior(this.camMode === 1);
+  }
+
+  /** Hand the audio side the traffic it should be able to hear, and turn
+      traffic's close calls into horns and chirps. */
+  private npcAudioFeed() {
+    const car = this.car;
+    /* The listener is the car, not the camera: doppler and pan want the thing
+       that is actually moving through the traffic, and in chase view the
+       camera trails it by a couple of metres with its own smoothing lag.
+       car.wvx/wvz is the same world velocity physics integrates position with,
+       so the doppler can never disagree with where the car actually went. */
+    /* traffic hands back a fixed-length reused buffer whose tail entries are
+       dead but still hold whatever coordinates they last held. Copy the live
+       prefix into our own pooled view rather than passing it straight on: the
+       audio pool treats every entry as a car, so a dead slot would sing away
+       at a position nothing is standing in. */
+    const samples = this.traffic.nearestNpcs(car.x, car.y, car.z, NPC_VOICES);
+    const feed = this.npcFeed;
+    feed.length = 0;
+    for (const s of samples) {
+      if (!s.npc || feed.length >= this.npcPool.length) continue;
+      const e = this.npcPool[feed.length];
+      e.x = s.x;
+      e.z = s.z;
+      e.vx = s.vx;
+      e.vz = s.vz;
+      e.heavy = s.heavy;
+      feed.push(e);
+    }
+    this.audio.updateNpcs(feed, car.x, car.z, car.wvx, car.wvz, car.h);
+    for (const n of this.traffic.closeCalls()) {
+      if (n.ccKind === "chirp") this.audio.npcChirp(n.x, n.z);
+      else this.audio.npcHorn(n.x, n.z);
+    }
   }
 
   private fogN = new THREE.Color(0x0a0d1a);
@@ -933,7 +1142,9 @@ export class Game {
 
   private renderReflection() {
     this.camera.updateMatrixWorld();
-    const h = clamp(this.car.y, 0, DECKY); // mirror plane at current road height
+    // mirror plane at the current road height — the deck itself rises and
+    // falls by several metres, so the clamp has to allow for the high points
+    const h = clamp(this.car.y, 0, DECKY + 6);
     this.mirM.makeScale(1, -1, 1);
     this.mirM.setPosition(0, 2 * h, 0);
     this.refCam.matrix.copy(this.camera.matrixWorld).premultiply(this.mirM);
@@ -1035,6 +1246,10 @@ export class Game {
       }
       // drop backlog on slow frames — no fast-forward burst when fps recovers
       if (this.acc > 1 / 120) this.acc = 0;
+      /* Splice before anything else reads the car this frame — collision,
+         traffic and the camera must all agree on which side of the seam we
+         are on, or one of them spends a frame 4 km away. */
+      this.loopSplice();
       const res = collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
       for (const hitInfo of res.npcHits) {
         this.traffic.applyImpact(hitInfo);
@@ -1060,11 +1275,14 @@ export class Game {
       this.weather(dt, now);
       this.updateCarVisual(now, dt);
       this.updateCamera(dt);
+      this.interiorUpdate();
+      this.tunnelUpdate(dt, now);
       this.audio.update(
         this.car.rpm, this.car.thrEff, this.car.slipAmt, Math.abs(this.car.u), now,
         this.car.cut > 0 || this.car.shiftT > 0.1, this.rain, this.input.horn > 0,
         this.car.gear, this.car.onLimiter
       );
+      this.npcAudioFeed();
       this.hud(now, dt);
       this.chunkT += dt;
       if (this.chunkT > 0.16) {
@@ -1079,6 +1297,10 @@ export class Game {
       this.updateCarVisual(now, dt);
       this.updateCamera(dt);
       this.weather(0, now);
+      // keep the tunnel look correct while paused; the thump stays gated on
+      // `running` so unpausing inside a tunnel can't fire one
+      this.interiorUpdate();
+      this.tunnelUpdate(0, now);
     }
     this.frameN++;
     if (this.mirror && this.camMode === 1 && this.frameN % 2 === 0) this.renderMirror();
@@ -1091,7 +1313,9 @@ export class Game {
     const f = this.dayFactor();
     this.post.setSpeed(Math.abs(this.car.u) * 3.6);
     this.post.process({
-      exposure: lerp(1.12, 0.9, f),
+      // inside the tunnel the eye adapts to a much darker box: lift exposure
+      // so the sodium strip and the walls read, instead of crushing to black
+      exposure: lerp(lerp(1.12, 0.9, f), 1.34, this.tunT),
       grade: this.grade,
       bloom: this.settings.bloom,
       fxaa: this.settings.fxaa,

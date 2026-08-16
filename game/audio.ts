@@ -620,7 +620,14 @@ export class GameAudio {
     if (this.ok) this.master.gain.value = 0.9 * vol * duck;
   }
 
-  /** Silence latched sources (horn, screech, engine) — used when pausing. */
+  /** Silence latched sources (horn, screech, engine) — used when pausing.
+      Writes gain.value directly rather than going through setReverb()/the
+      other setters, so it bypasses any caller-side "last value sent" cache
+      those setters' callers might keep to skip redundant param writes (e.g.
+      gating setReverb(t) on a change-threshold). If you keep such a cache
+      for anything this touches, invalidate it when unpausing — otherwise a
+      resume can come back silent/dry and stay that way until the driving
+      value happens to change on its own. */
   quiesce() {
     if (!this.ok) return;
     this.hornSet(false);
