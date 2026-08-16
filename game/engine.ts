@@ -6,6 +6,7 @@ import {
 } from "./settings";
 import { getCar, PAINTS, type CarSpec } from "./carspecs";
 import { buildMats, type Mats } from "./world/mats";
+import { primeCarEnv } from "./carenv";
 import { makeTerrain, buildGround, type Terrain } from "./world/terrain";
 import { buildRoadNet } from "./world/roadnet";
 import { buildHighway, nearestExitAhead } from "./world/highway";
@@ -18,7 +19,7 @@ import { spawnZ } from "./world/ramps";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
 import { buildPlayerCar, type PlayerRig } from "./player";
-import { COCKPIT_REF, EYE as COCKPIT_EYE } from "./cockpit";
+import { COCKPIT_REF, EYE as COCKPIT_EYE, type GaugeFlags } from "./cockpit";
 import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
 import { RainFX, SmokeFX } from "./fx";
@@ -57,34 +58,41 @@ THREE.ColorManagement.enabled = false;
 const LAYER_NOREF = 1;
 
 /* Camera modes, in cycle order. CAM_POV is the hard-mounted dashcam: it shares
-   the cockpit's rendering (interior shell visible, mirror live) but none of its
-   head physics — a camera bolted to the windshield does not lean into corners,
-   crane to look back, or breathe under braking. */
+   the cockpit's rendering (interior shell visible, mirror and gauges live) but
+   none of its head physics — a bracket bolted over the dash does not lean into
+   corners, crane to look back, or breathe under braking. */
 const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3;
 const CAM_COUNT = 4;
 const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM"];
 
-/* Dashcam mount, as an offset from the driver's eye (see cockpit.ts EYE): on
-   the centreline, sat on top of the dash pad hard against the windscreen base.
+/* Dashcam mount, as an offset from the driver's eye (see cockpit.ts EYE): high
+   over the dash, a little inboard of the driver, aimed down across the cluster.
+   In cockpit-local terms x 0.28, y 1.32, z 0.31 — 0.61 m forward of the eye and
+   3 cm below it. dx is scaled with the shell width for the same reason the eye
+   is, so it keeps its position relative to the binnacle on every car.
 
-   The constraint that sets this is the instrument binnacle, not the eye. The
-   pod is deliberately pinned just below the eye line (cockpit.ts puts its top
-   edge ~7 degrees under it), so ANY mount at or near eye height stares over the
-   gauges and they fill the middle of the frame — the further you raise it the
-   more of the mirror housing you pick up instead. The fix is to go *past* the
-   cluster rather than above it: at cockpit-local z = 0.64 the bezel (z ≤ 0.613)
-   and the mirror (z ≤ 0.649) are both behind the lens and can never appear,
-   whatever the body is doing, leaving only the pad ahead of us.
+   The framing is a three-way squeeze and the numbers are not free:
 
-   At y = 1.12 that clears the pad surface by 0.13 m — well past the 0.08 near
-   plane, and fixed, since the mount is rigid to the same group the trim is on. */
-const POV_MOUNT = { dy: -0.23, dz: 0.94 };
-/* 8 degrees of nose-down, on top of whatever the body is doing. With the
-   cluster behind the lens this is free to be much stronger than a cockpit view
-   could take: it drops the horizon to ~39% down the frame and lifts the far
-   edge of the pad to ~85%, so the shot is sky / road / a thin dash edge —
-   roughly 85% windscreen, which is the framing real dash-mounted cams give. */
-const POV_TILT = 0.14;
+   - The binnacle sets the height. Its hood lip is pinned ~7 degrees under the
+     eye line (cockpit.ts), so the lens has to sit above and behind it and tilt
+     down to catch the dial faces, which are raked back 26 degrees.
+   - The mirror housing sets the ceiling. It hangs at z 0.6 and, from anywhere
+     far enough back to frame the cluster, it is inside the field of view. It
+     costs the top ~15% of the frame; buying it back would mean dropping the
+     cluster to ~48% down, i.e. half the frame full of interior.
+   - The lateral offset is what makes the gauges readable. The cluster is
+     0.68 m wide at x 0.38 (RHD) and the lens is ~0.3 m from it, so a
+     centreline mount runs it off the right edge of the frame. x 0.28 keeps all
+     but the outer sliver of it in shot without reading as the driver's eye.
+
+   The steering wheel rim cannot be had as well: including it forces the cluster
+   up to ~40% down, which puts the interior over more than half the frame. */
+const POV_MOUNT = { dx: 0.28, dy: -0.03, dz: 0.61 };
+/* 13 degrees of nose-down, on top of whatever the body is doing. This is what
+   rakes the dial faces into the bottom of the frame instead of showing their
+   top edge side-on, and it settles the horizon at ~34% down. Raising it further
+   walks the whole interior up the frame and eats the road. */
+const POV_TILT = 0.227;
 /* Real dashcam lenses are quoted diagonally at 130-170; the useful figure is
    the horizontal one, and 105 is a typical mid-range unit. three's fov is
    vertical, so it is derived from the aspect each frame and clamped so a
@@ -108,6 +116,13 @@ export class Game {
   timeSpeed = 150;
   perfMode = false;
   lookBack = false;
+  /* High beams. G is momentary (flash-to-pass) and a quick double-tap latches,
+     which is as close to a column stalk as one key gets. Held here rather than
+     on CarState because physics.ts owns that type and none of this is physics —
+     nothing downstream of the lamps reads it. */
+  private hiHeld = false;
+  private hiLatch = false;
+  private hiTapAt = -1;
 
   private ui: UiBridge;
   private renderer: THREE.WebGLRenderer;
@@ -187,6 +202,9 @@ export class Game {
     x: 0, z: 0, vx: 0, vz: 0, heavy: false,
   }));
   private npcFeed: { x: number; z: number; vx: number; vz: number; heavy: boolean }[] = [];
+  /** last state pushed to mats.setPbrDetail; the call recompiles materials, so
+      it must only ever fire on a real transition */
+  private pbrDetail = true;
   /** last value handed to setReverb, so the common no-op case stays free */
   private lastReverb = -1;
   /** camMode as of the last interior-EQ update — cheaper than calling
@@ -245,6 +263,9 @@ export class Game {
 
     this.post = new PostFX(this.renderer);
     this.mats = buildMats();
+    // async: swaps a real night-city HDRI under the car bodywork when one is
+    // on disk, otherwise the painted cube env above stays
+    primeCarEnv(this.renderer, this.mats.envMap);
     this.mats.setReflectionTexture(this.post.reflectRT.texture);
     this.mats.setReflectionScreen(
       innerWidth * this.renderer.getPixelRatio(),
@@ -387,6 +408,8 @@ export class Game {
   private onWindowBlur = () => {
     // don't let held keys latch across alt-tab
     for (const k in this.keydown) this.keydown[k] = 0;
+    // the keyup for a held G never arrives if the tab lost focus mid-flash
+    this.hiHeld = false;
     this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
   };
 
@@ -465,10 +488,28 @@ export class Game {
       this.ui.toast("MAP " + (this.mmap ? "ON" : "OFF"));
     }
     if (k === "b") this.lookBack = true;
+    if (k === "g") {
+      /* Momentary while held. A second press inside the double-tap window
+         latches instead; any single press while latched cancels it, so the way
+         out is the same key whichever way you turned them on. `e.repeat` is
+         already filtered above, so autorepeat can't machine-gun the latch. */
+      this.hiHeld = true;
+      const t = performance.now() / 1000;
+      if (this.hiLatch) {
+        this.hiLatch = false;
+        this.ui.toast("HIGH BEAMS OFF");
+      } else if (t - this.hiTapAt < 0.3) {
+        this.hiLatch = true;
+        this.ui.toast("HIGH BEAMS ON");
+      }
+      this.hiTapAt = t;
+    }
   };
   private onKeyUp = (e: KeyboardEvent) => {
-    this.keydown[e.key.toLowerCase()] = 0;
-    if (e.key.toLowerCase() === "b") this.lookBack = false;
+    const k = e.key.toLowerCase();
+    this.keydown[k] = 0;
+    if (k === "b") this.lookBack = false;
+    if (k === "g") this.hiHeld = false;
   };
 
   private bindInput() {
@@ -565,8 +606,25 @@ export class Game {
       );
     }
     this.mats.setWet(this.rain, s.reflections);
+    this.updatePbrDetail();
     this.timeSpeed = s.autoTime ? (this.timeSpeed === 0 ? 150 : this.timeSpeed) : 0;
     this.audio.setLevels(s.vol, this.running ? 1 : 0.12);
+  }
+
+  /** The scanned road detail layers — the extra albedo and normal fetches, but
+      not the roughness map that carries the wet look — are the first thing to
+      go when we are short of frame time. Driven off both the automatic perf
+      drop and the "low" preset, so the two can't disagree.
+
+      setPbrDetail recompiles the affected materials, so this is gated on an
+      actual transition: applySettings() is hit on every slider tick. Toggling
+      the detail rather than building without the scans keeps them resident and
+      lets the setting come back if the preset is raised again. */
+  private updatePbrDetail() {
+    const want = !this.perfMode && this.settings.preset !== "low";
+    if (want === this.pbrDetail) return;
+    this.pbrDetail = want;
+    this.mats.setPbrDetail(want);
   }
 
   setRain(on: boolean) {
@@ -677,6 +735,13 @@ export class Game {
 
   private dayFactor() {
     return clamp(Math.sin(((this.time - 6) / 12) * Math.PI) * 1.4, 0, 1);
+  }
+
+  /** Are the mains lit this frame? A held flash always wins; the latch only
+   *  bites once the lights are actually on, the way a real stalk does — latch
+   *  them in daylight and they simply arrive when dusk switches the lights in. */
+  private get highBeam() {
+    return this.hiHeld || (this.hiLatch && this.car.lightsOn);
   }
 
   /* ---------------- endless highway ---------------- */
@@ -861,12 +926,34 @@ export class Game {
     sky.towersMat.opacity = (now % 1.6 < 0.8 ? 1 : 0.25) * (1 - f * 0.7);
     if (world.rampPostMat) world.rampPostMat.opacity = 0.6 + 0.35 * (Math.sin(now * 4) * 0.5 + 0.5);
     car.lightsOn = car.lightsUser || f < 0.35 || this.rain;
+    /* Flash-to-pass lights the lamps even with the headlights off — that is the
+       entire point of it in daylight — but it deliberately leaves car.lightsOn
+       alone, so the tail lights, the side-light tell-tale and anything else
+       reading that flag stay honest about what is actually switched on. */
+    const hi = this.highBeam;
+    const lamps = car.lightsOn || hi;
     // modern three uses physical (candela) spot intensities
-    const si = car.lightsOn ? (this.rain ? 560 : 420) : 0;
+    const si = lamps ? (this.rain ? 560 : 420) * (hi ? 2 : 1) : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
-    this.rig.headMat.emissiveIntensity = car.lightsOn ? 2.4 : 0.12;
-    this.rig.hlGlowMat.opacity = car.lightsOn ? 0.8 * (1 - f * 0.85) : 0;
+    /* Main beam is not simply brighter. The cone tightens and hardens, throws
+       roughly 70% further, and the cut-off comes up from a dipped ~2 degrees
+       to level — which is what actually reads as "high beam" down a dark road,
+       and why oncoming traffic hates it. x on the targets is left alone: the
+       two lamps toe out from each other and that spread is per-side. */
+    for (const sp of [this.rig.spotL, this.rig.spotR]) {
+      sp.distance = hi ? 155 : 90;
+      sp.angle = hi ? 0.4 : 0.46;
+      sp.penumbra = hi ? 0.24 : 0.42;
+      sp.target.position.y = hi ? 0.34 : -0.4;
+      sp.target.position.z = hi ? 46 : 26;
+    }
+    this.rig.headMat.emissiveIntensity = hi ? 4.2 : car.lightsOn ? 2.4 : 0.12;
+    // the glow sprite keeps most of its punch in daylight when flashing, or a
+    // daytime flash-to-pass would be invisible against a bright sky
+    this.rig.hlGlowMat.opacity = hi
+      ? Math.max(0.6, 1 - f * 0.45)
+      : car.lightsOn ? 0.8 * (1 - f * 0.85) : 0;
     this.rig.plateGlowMat.opacity = car.lightsOn ? 0.3 * (1 - f * 0.85) : 0;
     this.rainFX.update(dt, car.x, car.y, car.z, car.wvx, car.wvz);
   }
@@ -912,11 +999,10 @@ export class Game {
     rig.bodyG.rotation.z = car.rollDyn;
     rig.carGroup.updateMatrixWorld();
     /* The POV mount sits inside the cabin, so it needs the interior shell — the
-       far edge of the dash pad is the only interior geometry in its frame, and
-       it is what stops the shot reading as a floating camera. It must NOT have
-       the exterior body either, whose front faces all point away from a camera
-       sitting inside it, leaving the roof and flanks invisible and the far
-       bodywork showing through. */
+       cluster, dash pad, mirror and A-pillars are all in its frame. It must NOT
+       have the exterior body either, whose front faces all point away from a
+       camera sitting inside it, leaving the roof and flanks invisible and the
+       far bodywork showing through. */
     const inside = this.camMode === CAM_COCKPIT || this.camMode === CAM_POV;
     rig.cockpit.group.visible = inside;
     rig.exteriorG.visible = !inside;
@@ -955,17 +1041,22 @@ export class Game {
     }
     this.gaugeT += dt;
     this.dropT += dt;
-    // cockpit only: the POV mount sits forward of the cluster and the head
-    // unit, so neither is ever in its frame and repainting them is pure waste
-    if (this.gaugeT > 0.045 && this.camMode === CAM_COCKPIT) {
+    // POV needs these as much as the cockpit does: the dial faces sit across
+    // the bottom third of its frame, where a frozen cluster is unmissable
+    if (this.gaugeT > 0.045 && inside) {
       this.gaugeT = 0;
+      /* `highBeam` is fed forward for the blue main-beam tell-tale. GaugeFlags
+         does not declare it yet, so it is widened here rather than in
+         cockpit.ts — the value is live from today, and the cluster lights up
+         the moment its owner adds the field and draws the lamp. */
+      const flags: GaugeFlags & { highBeam?: boolean } = {
+        lightsOn: car.lightsOn, sigL: car.sigL, sigR: car.sigR, rain: this.rain,
+        tcOn: car.tcOn, odo: car.odo, revLimit: this.spec.phys.revLimit,
+        units: this.settings.units, onLimiter: car.onLimiter,
+        highBeam: this.highBeam,
+      };
       rig.cockpit.drawGauges(
-        car.rpm, Math.abs(car.u) * 3.6, car.rev ? "R" : "D" + car.gear, now,
-        {
-          lightsOn: car.lightsOn, sigL: car.sigL, sigR: car.sigR, rain: this.rain,
-          tcOn: car.tcOn, odo: car.odo, revLimit: this.spec.phys.revLimit,
-          units: this.settings.units, onLimiter: car.onLimiter,
-        }
+        car.rpm, Math.abs(car.u) * 3.6, car.rev ? "R" : "D" + car.gear, now, flags
       );
       rig.cockpit.drawScreen(car.x, car.z, car.h, this.time, this.world);
     }
@@ -1072,11 +1163,10 @@ export class Game {
       this.camera.lookAt(this.lookPos);
     } else if (this.camMode === CAM_POV) {
       /* Hard-mounted dashcam. No head springs, no lookahead, no lean, no
-         look-back: it is a bracket stuck to the dash top, ~0.15 m inboard of
-         the glass, so the only motion it has is the body's own. Entering the
-         mode also parks the cockpit head
-         state at neutral, so stepping back into the cockpit view starts from
-         centre instead of resuming a stale spring and dipping. */
+         look-back: it is a bracket over the dash, so the only motion it has is
+         the body's own. Entering the mode also parks the cockpit head state at
+         neutral, so stepping back into the cockpit view starts from centre
+         instead of resuming a stale spring and dipping. */
       if (this.lastCamMode !== CAM_POV) {
         this.head.x = this.head.y = this.head.z = this.head.roll = 0;
         this.head.vx = this.head.vy = this.head.vz = this.head.vroll = 0;
@@ -1087,7 +1177,9 @@ export class Game {
       this.camera.position.copy(
         this.rig.bodyG.localToWorld(
           this.tmpV.set(
-            0,
+            // scaled with the shell like the cockpit eye is, so the lens keeps
+            // its position relative to the binnacle on a narrower or wider car
+            POV_MOUNT.dx * (P.W / COCKPIT_REF.W),
             P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + POV_MOUNT.dy,
             COCKPIT_EYE.z + POV_MOUNT.dz
           )
@@ -1307,6 +1399,7 @@ export class Game {
           innerWidth * this.renderer.getPixelRatio(),
           innerHeight * this.renderer.getPixelRatio()
         );
+        this.updatePbrDetail();
         this.ui.toast("PERFORMANCE MODE");
       }
     } else this.slowT = Math.max(0, this.slowT - dt);
@@ -1392,9 +1485,12 @@ export class Game {
       this.tunnelUpdate(0, now);
     }
     this.frameN++;
-    // cockpit only: the POV mount sits forward of the mirror housing, so the
-    // glass is behind its lens and never needs rendering
-    if (this.mirror && this.camMode === CAM_COCKPIT && this.frameN % 2 === 0)
+    // POV sits behind the mirror housing too, and the glass hangs in the top
+    // ~15% of its frame, so it needs the rear view rendered as well
+    if (
+      this.mirror && this.frameN % 2 === 0 &&
+      (this.camMode === CAM_COCKPIT || this.camMode === CAM_POV)
+    )
       this.renderMirror();
     if (this.settings.reflections && (!this.perfMode || this.frameN % 2 === 0))
       this.renderReflection();

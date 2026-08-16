@@ -231,6 +231,7 @@ export default function GameApp() {
               <b>Q / E</b><span>turn signals</span>
               <b>F</b><span>horn (traffic speeds up)</span>
               <b>L</b><span>headlights on / auto</span>
+              <b>G</b><span>high beams: hold to flash, double-tap to latch</span>
               <b>M</b><span>cockpit mirrors</span>
               <b>R</b><span>rain</span>
               <b>T</b><span>time-lapse</span>
