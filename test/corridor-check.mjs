@@ -426,7 +426,8 @@ if (!signs.some((s) => s.kind === "exit-gore")) bad("no board at the exit gore")
      side, both read from the shared constants rather than copied — this is the
      number that decides whether the plaza is fun to drive, so it must be the
      number that is actually built. The widest car in the garage is 1.98 m. */
-  const clear = c.gateClear(zc), WIDEST_CAR = 1.98;
+  // widest car in game/carspecs.ts; revisit if a wider one ships
+  const clear = c.gateClear(zc), WIDEST_CAR = 1.86;
   console.log(`toll plaza: ${lanes} gates, pitch ${f(c.lanePitch(zc))} m,` +
     ` half-width ${f(hw)} m, ${f(clear)} m clear through each gate` +
     ` (${f((clear - WIDEST_CAR) / 2)} m either side of the widest car)`);

@@ -541,7 +541,9 @@ export function signPlan(): SignSpec[] {
   for (const z of [TUNNEL.z0 - 40, TUNNEL.z1 + 70])
     out.push({
       z, w: 7.4, h: 2.8, kind: "toll", gore: -1,
-      dist: Math.round((TOLL.plazaZ0 - z) / 10) * 10,
+      // to the gates themselves, which sit at the centre of the full-width
+      // window, not at its leading edge
+      dist: Math.round(((TOLL.plazaZ0 + TOLL.plazaZ1) / 2 - z) / 10) * 10,
     });
   return out.sort((a, b) => a.z - b.z);
 }

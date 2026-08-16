@@ -32,7 +32,7 @@ for (const f of ["corridor.js", "ramps.js"]) {
   const p = path.join(dir, f);
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 }
-const { getCorridor, TOLL } = await import(path.join(dir, "corridor.js"));
+const { getCorridor, TOLL, TOLL_PLAZA } = await import(path.join(dir, "corridor.js"));
 const { buildRamps, spawnZ } = await import(path.join(dir, "ramps.js"));
 const { RAMP_W } = await import(path.join(dir, "const.js"));
 
@@ -41,7 +41,9 @@ const c = getCorridor();
 // ground height under the deck and the ramps is 0 (terrain.ts: `corr` fades to
 // zero by x = 402 and the deck sits at x = 500)
 const ramps = buildRamps(() => 0);
-const HALF_W = 0.95, HALF_L = 2.35; // rig dimensions, engine.ts
+/* The widest car in game/carspecs.ts is 1.86 m, and player.ts derives
+   halfW = W / 2 + 0.02 — so 0.95 is the binding case, not an average one. */
+const HALF_W = 0.95, HALF_L = 2.35;
 const RR = HALF_W + 0.05; // collide.ts probe radius
 
 let fail = 0;
@@ -68,16 +70,16 @@ for (const z of c.lattice(32)) {
   const p0 = c.pose(zc), hw = c.halfWidth(zc), lanes = c.lanes(zc);
   const wx = (lat) => p0.x + lat * p0.nx;
   const wz = (lat, dz) => p0.z + lat * p0.nz + dz;
-  const IL = 15;
+  const IL = TOLL_PLAZA.islandLen, IHW = TOLL_PLAZA.colliderHw;
   for (let k = 1; k < lanes; k++) {
     const lat = c.laneEdge(k, zc);
     aabbs.push({
-      x0: wx(lat) - 0.6, x1: wx(lat) + 0.6,
+      x0: wx(lat) - IHW, x1: wx(lat) + IHW,
       z0: wz(lat, -IL / 2), z1: wz(lat, IL / 2),
       y0: p0.y - 0.5, y1: p0.y + 3.4, what: `toll island k=${k}`,
     });
   }
-  const colLat = hw - 0.75, CL = 34;
+  const colLat = hw - 0.75, CL = TOLL_PLAZA.groupLen;
   for (const s of [-1, 1])
     for (const dz of [-CL / 2 + 3, CL / 2 - 3])
       aabbs.push({
@@ -184,23 +186,49 @@ for (const [what, e] of blockers)
   if (!what.startsWith("toll island"))
     bad(`${what} stands in lane centre(s) {${[...e.lanes].join(",")}} at z ∈ [${f(e.z0)}, ${f(e.z1)}]`);
 
-/* ---- is there a clear line through the toll plaza at all? ---- */
+/* ---- thread every toll gate at speed -----------------------------------
+   The check asserts the gate's clear width arithmetically. This drives it:
+   a car aimed down each gate's lane centre, at speed, carrying the lateral
+   error a player actually arrives with. A gate that is wide enough on paper
+   but whose booth, kerb or canopy column intrudes will show up here and not
+   there. */
 {
   const zc = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
-  const y = c.centerY(zc);
-  let widest = 0, at = 0, open = 0;
-  for (let x = c.centerX(zc) - c.halfWidth(zc); x <= c.centerX(zc) + c.halfWidth(zc); x += 0.02) {
-    const blocked = aabbs.some((b) => hitAabb(x, zc, y, b));
-    if (!blocked) {
-      open += 0.02;
-      if (open > widest) {
-        widest = open;
-        at = x - open / 2;
+  const lanes = c.lanes(zc), V = 30, DT = 1 / 120, ERR = 0.5;
+  console.log(`threading all ${lanes} gates at ${V} m/s with ±${ERR} m lateral error:`);
+  let worstGap = 1e9, worstAt = "";
+  for (let k = 0; k < lanes; k++) {
+    let contact = null, gap = 1e9;
+    for (const err of [-ERR, -ERR / 2, 0, ERR / 2, ERR]) {
+      for (let z = TOLL.plazaZ0 - 40; z <= TOLL.plazaZ1 + 40; z += V * DT) {
+        const y = c.centerY(z);
+        const p = c.worldOf(z, c.laneOffset(k, z) + err);
+        for (const off of [HALF_L * 0.56, -HALF_L * 0.56]) {
+          const px = p.x, pz = p.z + off;
+          for (const b of aabbs) {
+            if (hitAabb(px, pz, y, b)) contact = `${b.what} at z=${f(z)}, err ${err}`;
+            // how close the car's disc came to this box, for the margin report
+            if (y + 1.4 >= b.y0 && y <= b.y1) {
+              const cx = Math.max(b.x0, Math.min(px, b.x1));
+              const cz = Math.max(b.z0, Math.min(pz, b.z1));
+              gap = Math.min(gap, Math.hypot(px - cx, pz - cz) - RR);
+            }
+          }
+        }
       }
-    } else open = 0;
+    }
+    console.log(`  gate ${k}: ${contact ? "CONTACT — " + contact : "clean"}` +
+      `, closest approach ${f(gap)} m`);
+    if (contact) bad(`gate ${k} cannot be threaded: ${contact}`);
+    if (gap < worstGap) {
+      worstGap = gap;
+      worstAt = `gate ${k}`;
+    }
   }
-  console.log(`toll plaza: widest clear channel for the car's centre is ${f(widest)} m at x=${f(at)}`);
-  if (widest < 0.4) bad("no threadable line through the toll plaza");
+  console.log(`  tightest gate is ${worstAt} with ${f(worstGap)} m of clearance` +
+    ` beyond the car's own half-width at ±${ERR} m error`);
+  if (worstGap < 0.25)
+    bad(`only ${f(worstGap)} m of margin through the tightest gate at ±${ERR} m error`);
 }
 
 /* ---- nothing outside the corridor may pin the car short of the seam ------
