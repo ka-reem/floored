@@ -338,8 +338,18 @@ function wheelGeo() {
    - Specular knee. The player's headlights are physical SpotLights (~420-560
      candela, decay 1.4), so up close the irradiance on a car body is enormous
      and the GGX lobe blows out to a white hotspot. A Reinhard knee passes normal
-     highlights through nearly unchanged and asymptotes extreme ones to SPEC_MAX. */
-const SPEC_MAX = 1.6;
+     highlights through nearly unchanged and asymptotes extreme ones to SPEC_MAX.
+   - Outgoing-radiance knee, on top of the specular one. The modelled bodyshells
+     are built from large flat panels where the old procedural shells were
+     curved, and a flat panel has one normal across the whole surface: instead
+     of a moving highlight band it lights up all at once, and a pale panel (the
+     box truck's cargo body is the worst case) saturates on *diffuse* alone,
+     which a specular-only knee cannot touch. This is the same knee the player's
+     own paint uses — see tameSpecular in player.ts — applied to the total
+     outgoing radiance so both terms are covered. Ordinary lighting never
+     reaches the threshold and passes through untouched. */
+const SPEC_MAX = 1.0;
+const KNEE = 1.3, KNEE_MAX = 4.0;
 function npcShader(mat: THREE.MeshStandardMaterial) {
   mat.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
@@ -389,9 +399,41 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
           reflectedLight.directSpecular = ds / (1.0 + ds / ${SPEC_MAX.toFixed(1)});
         }
         #include <aomap_fragment>`
+      )
+      .replace(
+        "#include <opaque_fragment>",
+        `{
+          float m = max(max(outgoingLight.r, outgoingLight.g), outgoingLight.b);
+          if (m > ${KNEE.toFixed(2)}) {
+            float e = m - ${KNEE.toFixed(2)};
+            float k = ${KNEE.toFixed(2)} + e / (1.0 + e / ${(KNEE_MAX - KNEE).toFixed(2)});
+            outgoingLight *= k / m;
+          }
+        }
+        #include <opaque_fragment>`
       );
   };
   mat.customProgramCacheKey = () => "npcInstanced";
+}
+
+/* Glow sprite size cap. PointsMaterial's size attenuation is pure 1/z, so a
+   lamp the player is right alongside draws a sprite hundreds of pixels across
+   — it stops reading as a lamp and becomes an orb floating over the car. Cap
+   it at a fraction of the viewport (three's `scale` uniform is half the
+   drawing-buffer height, so this is resolution-independent), which leaves
+   everything past a few car lengths pixel-identical. The modelled bodies carry
+   real lamp geometry now, so the sprite no longer has to sell the lamp on its
+   own up close. */
+const SPRITE_MAX = 0.09;
+function clampSprite(mat: THREE.PointsMaterial) {
+  mat.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader.replace(
+      "gl_PointSize *= ( scale / - mvPosition.z );",
+      `gl_PointSize *= ( scale / - mvPosition.z );
+       gl_PointSize = min( gl_PointSize, scale * ${SPRITE_MAX.toFixed(3)} );`
+    );
+  };
+  mat.customProgramCacheKey = () => "npcSprite";
 }
 
 /* Driver personalities. Each NPC rolls one at spawn and keeps it for its whole
@@ -538,9 +580,12 @@ export class Traffic {
     this.scene = scene;
     this.world = world;
     this.N = N;
+    /* Rougher and less metallic than the procedural shells wanted: those were
+       curved enough to hide a tight specular lobe, the modelled panels are
+       flat and concentrate it. Still well clear of a mirror finish. */
     this.npcMat = new THREE.MeshStandardMaterial({
-      vertexColors: true, roughness: 0.55, metalness: 0.32,
-      envMap, envMapIntensity: 0.55, side: THREE.DoubleSide,
+      vertexColors: true, roughness: 0.64, metalness: 0.24,
+      envMap, envMapIntensity: 0.45, side: THREE.DoubleSide,
     });
     npcShader(this.npcMat);
 
@@ -603,13 +648,12 @@ export class Traffic {
       arr.fill(-999);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
-      const pts = new THREE.Points(
-        geo,
-        new THREE.PointsMaterial({
-          size, map: glowTex, color, transparent: true, opacity: 0.95,
-          sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending,
-        })
-      );
+      const pmat = new THREE.PointsMaterial({
+        size, map: glowTex, color, transparent: true, opacity: 0.95,
+        sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+      clampSprite(pmat);
+      const pts = new THREE.Points(geo, pmat);
       pts.frustumCulled = false;
       scene.add(pts);
       return { arr, geo, pts };
@@ -1254,9 +1298,45 @@ export class Traffic {
         w.vx *= damp;
         w.vz *= damp;
         w.vr *= Math.exp(-1.9 * dt);
-        // a wreck sliding along the deck must stay on the deck, not drop to
-        // the ground under it
-        const dy = this.cor.heightAt(n.x, n.z, 2);
+        /* Keep a deck wreck on the deck. The impact impulse is mostly lateral,
+           and the only collision this solver runs is against building AABBs —
+           the expressway's parapets are not in that set, so nothing here used
+           to stop a wreck sliding straight off the side of the road. It did
+           not fall, either: heightAt's 2 m pad kept handing back deck height
+           for another two metres, which left it hanging in mid-air alongside
+           the pavement. Contain it at the barrier instead, the same way the
+           building response below does. A ~6 m/s lateral impulse is enough to
+           leave a wreck hanging; ~10 m/s carries it off the deck entirely.
+           Nothing about this is specific to the toll plaza, where it happened
+           to be caught — the overhang is the same mid-corridor. The plaza just
+           has the most lanes and the best lighting, so it is where a wreck is
+           most likely to end up beside the road and be seen there.
+
+           Corridor queries are periodic in LOOP but its bend sums are not
+           evaluated outside the built extent, and a wreck's z is anchored to
+           the player's lap rather than wrapped — so fold it in first and put
+           the lap back afterwards. */
+        const lap = n.z - this.cor.wrapZ(n.z);
+        const zw = n.z - lap;
+        const zc = this.cor.zAt(n.x, zw);
+        const lim = Math.max(0, this.cor.halfWidth(zc) - n.W / 2);
+        const lat = this.cor.latAt(n.x, zw);
+        if (n.hw && Math.abs(lat) > lim) {
+          const po = this.cor.pose(zc, this.cpose);
+          const hit = this.cor.worldOf(zc, lat < 0 ? -lim : lim, this._cw);
+          n.x = hit.x;
+          n.z = hit.z + lap;
+          // scrub the component still driving it into the barrier
+          const vn = w.vx * po.nx + w.vz * po.nz;
+          if (lat > 0 === vn > 0) {
+            w.vx -= po.nx * vn * 1.5;
+            w.vz -= po.nz * vn * 1.5;
+            w.vx *= 0.7;
+            w.vz *= 0.7;
+            w.vr *= 0.8;
+          }
+        }
+        const dy = this.cor.heightAt(n.x, n.z - lap, 2);
         n.y = dy !== null ? dy : this.world.terrain.heightAt(n.x, n.z, n.y);
         // crude wall response
         for (const bi of this.world.colliders.nearbyAabbs(n.x, n.z)) {

@@ -62,7 +62,11 @@ const STYLES = {
      z = +0.67, the chassis rails at y = 1.06). Left unpainted, like a real
      delivery box — the cab is what carries the per-instance colour. */
   truck:   { src: "Truck",        L: 6.30, W: 2.10, H: 3.10, paint: "body dark green",
-             cargo: { z0: -3.14, z1: 0.62, y0: 1.02, y1: 3.06, w: 2.06, c: 0xd6dae2 } },
+             /* Off-white rather than the near-white the procedural box used:
+                it is the largest flat panel in the fleet and it faces the
+                player's headlights square-on, so its albedo is the one that
+                decides how hard the knee in traffic.ts has to work. */
+             cargo: { z0: -3.14, z1: 0.62, y0: 1.02, y1: 3.06, w: 2.06, c: 0xb4bac6 } },
   bus:     { src: "Bus",          L: 9.40, W: 2.26, H: 3.00, paint: "body light blue" },
 };
 
