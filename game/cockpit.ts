@@ -4,7 +4,8 @@ import { rand, randi, TAU } from "./util";
 import { makeTex } from "./textures";
 import { buildInstrumentCluster } from "./dashboard";
 import { loadProfile, type SpeedUnits } from "./settings";
-import { HX, RW } from "./world/const";
+import { HX } from "./world/const";
+import { getCorridor, TUNNEL, TOLL } from "./world/corridor";
 
 /* RHD cockpit: dash, doors, console, seats, instrument cluster (dashboard.ts),
    nav screen, mirrors (RT-fed), steering wheel + hands, wipers and the rain
@@ -1039,6 +1040,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const NAV_R = 95; // metres of road drawn around the car
   const CX = 128, CY = 116; // car sits low on the screen so more road ahead is visible
   const NAV_SC = 1.55; // px per metre
+  const _navP = { x: 0, y: 0, z: 0 }; // scratch for corridor.worldOf, reused per drawScreen call
 
   function drawScreen(x: number, z: number, h: number, time: number, world?: NavWorld) {
     const g = scrCv.getContext("2d")!;
@@ -1095,19 +1097,79 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
         g.stroke();
         g.shadowBlur = 0;
       }
-      // expressway deck, drawn as a straight highlighted trunk road
+      /* Expressway corridor: swept pavement traced from the real alignment
+         (same idea as minimap.ts's pavePath/centrePath — the deck bends up
+         to 62 m off HX and is not a straight trunk road any more). Drawn in
+         place and a lap either side so the loop seam near z ≈ ±HZ does not
+         make the deck pop in/out as the player crosses it. */
       {
-        const cur = !bestEdge && !bestRamp && Math.abs(x - HX) < 20;
-        g.strokeStyle = cur ? "#eaf6ff" : "rgba(120,200,255,.85)";
-        g.lineWidth = cur ? 7 : 5.5;
-        if (cur) { g.shadowColor = "#7fd4ff"; g.shadowBlur = 8; }
-        const [X0, Y0] = toScreen(HX, z - NAV_R * 1.6);
-        const [X1, Y1] = toScreen(HX, z + NAV_R * 1.6);
-        g.beginPath();
-        g.moveTo(X0, Y0);
-        g.lineTo(X1, Y1);
-        g.stroke();
-        g.shadowBlur = 0;
+        const cor = getCorridor();
+        const st = cor.stations;
+        const step = (st.length > 1 ? st[1].z - st[0].z : 4) || 4;
+        const onDeck = cor.heightAt(x, z, 4) !== null;
+        const curDeck = !bestEdge && !bestRamp && onDeck;
+        const corNear = st.length > 1 && Math.abs(x - HX) < NAV_R + 90;
+        const paveAt = (lo: number, hi: number, dz: number): boolean => {
+          const i0 = Math.max(0, Math.ceil((lo - st[0].z) / step));
+          const i1 = Math.min(st.length - 1, Math.floor((hi - st[0].z) / step));
+          if (i1 - i0 < 1) return false;
+          g.beginPath();
+          for (let i = i0; i <= i1; i++) {
+            cor.worldOf(st[i].z, st[i].hw, _navP);
+            const [X, Y] = toScreen(_navP.x, _navP.z + dz);
+            if (i === i0) g.moveTo(X, Y); else g.lineTo(X, Y);
+          }
+          for (let i = i1; i >= i0; i--) {
+            cor.worldOf(st[i].z, -st[i].hw, _navP);
+            const [X, Y] = toScreen(_navP.x, _navP.z + dz);
+            g.lineTo(X, Y);
+          }
+          g.closePath();
+          return true;
+        };
+        const centreAt = (lo: number, hi: number, dz: number): boolean => {
+          const i0 = Math.max(0, Math.ceil((lo - st[0].z) / step));
+          const i1 = Math.min(st.length - 1, Math.floor((hi - st[0].z) / step));
+          if (i1 - i0 < 1) return false;
+          g.beginPath();
+          for (let i = i0; i <= i1; i++) {
+            const [X, Y] = toScreen(st[i].x, st[i].z + dz);
+            if (i === i0) g.moveTo(X, Y); else g.lineTo(X, Y);
+          }
+          return true;
+        };
+        for (const lap of corNear ? [0, -1, 1] : []) {
+          const dz = lap * cor.LOOP;
+          const lo = Math.max(cor.ZB0, z - NAV_R - dz);
+          const hi = Math.min(cor.ZB1, z + NAV_R - dz);
+          if (hi - lo < 8) continue;
+          if (paveAt(lo, hi, dz)) {
+            if (curDeck) { g.shadowColor = "#7fd4ff"; g.shadowBlur = 8; }
+            g.fillStyle = curDeck ? "rgba(90,150,190,.85)" : "rgba(46,86,120,.8)";
+            g.fill();
+            g.strokeStyle = curDeck ? "#eaf6ff" : "rgba(120,200,255,.85)";
+            g.lineWidth = curDeck ? 3 : 2;
+            g.stroke();
+            g.shadowBlur = 0;
+          }
+          // tunnel: the deck is roofed here, so grey it back out
+          const tLo = Math.max(lo, TUNNEL.z0), tHi = Math.min(hi, TUNNEL.z1);
+          if (tHi > tLo && paveAt(tLo, tHi, dz)) {
+            g.fillStyle = "rgba(8,10,16,.75)";
+            g.fill();
+          }
+          // toll plaza: the wide fan-out, tinted so it reads as deliberate
+          const kLo = Math.max(lo, TOLL.plazaZ0), kHi = Math.min(hi, TOLL.plazaZ1);
+          if (kHi > kLo && paveAt(kLo, kHi, dz)) {
+            g.fillStyle = "rgba(255,210,120,.3)";
+            g.fill();
+          }
+          if (centreAt(lo, hi, dz)) {
+            g.strokeStyle = "rgba(200,230,255,.55)";
+            g.lineWidth = 1;
+            g.stroke();
+          }
+        }
       }
       // ramps
       for (const r of world.terrain?.ramps ?? []) {
@@ -1130,9 +1192,11 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
       // exits, labelled with their real name where the deck passes closest
       g.font = "700 9px sans-serif";
       g.textAlign = "left";
+      const cor = getCorridor();
       for (const ex of world.exits ?? []) {
         if (Math.abs(ex.z - z) > NAV_R) continue;
-        const [X, Y] = toScreen(HX - RW / 2 - 14, ex.z);
+        cor.worldOf(ex.z, -(cor.halfWidth(ex.z) + 14), _navP);
+        const [X, Y] = toScreen(_navP.x, _navP.z);
         if (X < -10 || X > 266 || Y < 6 || Y > 154) continue;
         g.fillStyle = "rgba(120,255,190,.95)";
         g.beginPath();
@@ -1299,6 +1363,27 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const mirrorMat = new THREE.MeshBasicMaterial({ map: mirrorTexture, side: THREE.DoubleSide });
   mirrorMat.toneMapped = false;
   mirrorMat.color.setScalar(1.55);
+  /* All three mirrors sample the same wide (~99°, aspect 2.5) rearCam render
+     target — one shared RT, but each glass reads a different horizontal slice
+     of it rather than the whole frame stretched to fit. `cropUV` rewrites a
+     plane's own uv attribute (cheap: 4 verts), so the material and its
+     texture stay shared across all three meshes.
+
+     The rearCam looks *backward* (down -forward), so its local right (u=1
+     edge of the render) is the world side that is the DRIVER'S LEFT — the
+     same reason a car in a plain "look over your shoulder" backward shot
+     reads mirrored versus an actual mirror. `scale.x = -1` on every glass
+     corrects that once (so straight-behind traffic lands dead centre and
+     un-swapped); layered on top of that flip, the LEFT door glass wants the
+     part of the frame that is biased toward the world-left flank (u toward
+     1) and the RIGHT door glass the world-right flank (u toward 0), so each
+     one reads like it is looking down its own side of the car rather than
+     just a smaller copy of the rear-view mirror. */
+  function cropUV(g: THREE.PlaneGeometry, u0: number, u1: number) {
+    const uv = g.getAttribute("uv");
+    for (let i = 0; i < uv.count; i++) uv.setX(i, u0 + uv.getX(i) * (u1 - u0));
+    uv.needsUpdate = true;
+  }
   /* Sized and placed for the eye at ~0.65 m: a 0.5 m glass this close filled a
      quarter of the screen. */
   const MIR = { y: Math.min(EYE.y + 0.12, 1.58), z: 0.6 };
@@ -1314,12 +1399,16 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   put(cyl(0.014, 0.018, 0.16, 10), piano, [0, MIR.y + 0.08, MIR.z - 0.035], [-0.5, 0, 0]);
   put(rbox(0.06, 0.03, 0.05, 0.012), piano, [0, MIR.y + 0.152, MIR.z - 0.078], [-0.3, 0, 0]);
 
-  const sideMirL = new THREE.Mesh(new THREE.PlaneGeometry(0.19, 0.115), mirrorMat);
+  const sideMirLGeo = new THREE.PlaneGeometry(0.19, 0.115);
+  cropUV(sideMirLGeo, 0.58, 1.0);
+  const sideMirL = new THREE.Mesh(sideMirLGeo, mirrorMat);
   sideMirL.position.set(-0.88, 1.12, 0.52);
   sideMirL.rotation.y = 0.72;
   sideMirL.scale.x = -1;
   interiorG.add(sideMirL);
-  const sideMirR = new THREE.Mesh(new THREE.PlaneGeometry(0.19, 0.115), mirrorMat);
+  const sideMirRGeo = new THREE.PlaneGeometry(0.19, 0.115);
+  cropUV(sideMirRGeo, 0.0, 0.42);
+  const sideMirR = new THREE.Mesh(sideMirRGeo, mirrorMat);
   sideMirR.position.set(0.88, 1.12, 0.52);
   sideMirR.rotation.y = -0.72;
   sideMirR.scale.x = -1;
