@@ -332,7 +332,7 @@ export function buildHighway(
     map: arrowTex, transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
-  mats.addBeam(arrowMat, { near: 18, far: 62, spread: 0.62 }); // same paint
+  mats.addBeam(arrowMat, { near: 18, far: 62, spread: 0.95 }); // same paint
   const decal = (z: number, lat: number, w: number, l: number, mat: THREE.Material) => {
     const p = cor.worldOf(z, lat);
     const m = new THREE.Mesh(flatQuad(w, l), mat);
@@ -470,7 +470,7 @@ export function buildHighway(
     map: mats.goreTex, transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
   });
-  mats.addBeam(goreMat, { near: 18, far: 62, spread: 0.62 }); // same paint
+  mats.addBeam(goreMat, { near: 18, far: 62, spread: 0.95 }); // same paint
   world.goreBeaconMat = new THREE.SpriteMaterial({
     map: mats.glowTex, color: 0xffb020, transparent: true,
     blending: THREE.AdditiveBlending, depthWrite: false,

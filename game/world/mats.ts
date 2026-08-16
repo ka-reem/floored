@@ -346,8 +346,20 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   ) {
     const near = opts?.near ?? 22;
     const far = opts?.far ?? 70;
-    // cosine of the half-angle at which the beam has fallen off entirely
-    const spread = opts?.spread ?? 0.55;
+    /* Cosine of the half-angle at which the beam has fallen off entirely, and
+       the cosine at which it is fully lit.
+
+       The soft edge cannot be a fixed +0.16 on the threshold: `align` maxes out
+       at exactly 1.0 for a fragment dead ahead, so once the upper edge passes
+       1.0 the smoothstep can never reach full brightness and EVERY marking
+       dims, worst of all the one straight in front of the car. At the 0.95 this
+       now uses, a fixed band would have landed on-axis brightness at 0.232 —
+       the retroreflection would have looked switched off, and the lateral gate
+       is the last place anyone would have gone looking. Clamped just below 1.0
+       instead, which is a no-op for any threshold below 0.84 and so changes
+       nothing that shipped before it. */
+    const cos0 = Math.min(Math.max(opts?.spread ?? 0.55, -0.99), 0.99);
+    const cos1 = Math.min(cos0 + 0.16, 0.999);
     mat.onBeforeCompile = (sh) => {
       sh.uniforms.uBeamPos = uBeamPos;
       sh.uniforms.uBeamDir = uBeamDir;
@@ -356,7 +368,8 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       sh.uniforms.uBeamRange = uBeamRange;
       sh.uniforms.uBeamNear = { value: near };
       sh.uniforms.uBeamFar = { value: far };
-      sh.uniforms.uBeamCos = { value: spread };
+      sh.uniforms.uBeamCos = { value: cos0 };
+      sh.uniforms.uBeamCos1 = { value: cos1 };
       sh.vertexShader = sh.vertexShader
         .replace("#include <common>", "#include <common>\nvarying vec3 vRetroW;")
         .replace(
@@ -369,7 +382,8 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
           "#include <common>\nvarying vec3 vRetroW;\n" +
             "uniform vec3 uBeamPos; uniform vec3 uBeamDir;\n" +
             "uniform float uBeamAmb; uniform float uBeamK; uniform float uBeamRange;\n" +
-            "uniform float uBeamNear; uniform float uBeamFar; uniform float uBeamCos;"
+            "uniform float uBeamNear; uniform float uBeamFar;\n" +
+            "uniform float uBeamCos; uniform float uBeamCos1;"
         )
         .replace(
           "#include <color_fragment>",
@@ -380,14 +394,14 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   float align = dot(bd / max(bdist, 1e-4), uBeamDir);
   // inside the cone, and within range — the product is what gives the
   // narrow bright wedge that widens with distance
-  float cone = smoothstep(uBeamCos, uBeamCos + 0.16, align);
+  float cone = smoothstep(uBeamCos, uBeamCos1, align);
   float fall = 1.0 - smoothstep(uBeamNear * uBeamRange, uBeamFar * uBeamRange, bdist);
   float lit = cone * fall;
   diffuseColor.rgb *= mix(uBeamAmb, 1.0, lit * uBeamK);
 }`
         );
     };
-    mat.customProgramCacheKey = () => `beam|${near}|${far}|${spread}`;
+    mat.customProgramCacheKey = () => `beam|${near}|${far}|${cos0}|${cos1}`;
   }
 
   /* ---------------- world-projected UVs ---------------- */
@@ -544,7 +558,21 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      what makes a receding row of them read as a line long after the dashes
      have gone dark. The tunnel studs keep the widest cone — in the tube the
      walls bounce light back onto them from every angle. */
-  addBeam(markMat, { near: 18, far: 62, spread: 0.62 });
+  /* Paint is gated to the width of the light that actually falls on it: 0.95
+     is the measured match to the combined two-lamp spot coverage (including
+     toe-out and lamp offset), which holds near-constant at ~17 deg from centre
+     over 10-60 m, as two cones from the same origin should. Anything wider and
+     the shoulder line glows while the tarmac beside it is dark, which is the
+     exact artifact the reference photo is about.
+
+     The studs stay deliberately much wider. A glass-bead reflector returns
+     light over a far broader angle than the beam's nominal cone, which is the
+     same property that lets them outlive the low-beam cut-off at range. Match
+     them to the spot and near-field shoulder studs die: at 9 m lateral they sit
+     42 deg off-centre when they are 10 m ahead, so a 0.90 gate blanks them
+     inside 20 m — the stretch where they are most useful and most obviously
+     wrong to lose. */
+  addBeam(markMat, { near: 18, far: 62, spread: 0.95 });
   addBeam(studMat, { near: 40, far: 190, spread: 0.42 });
   addBeam(studMatTunnel, { near: 40, far: 190, spread: 0.3 });
 
