@@ -152,9 +152,26 @@ export class GameAudio {
   private reverbWet!: GainNode;
 
   /* NPC doppler pool */
+  private static readonly NPC_POOL = 8;
+  /** Upper bound on how many npcs updateNpcs() will scan in one call — a
+      cap, not an expectation; callers should already trim to ~6-8. Sizes
+      the preallocated scratch arrays below so the per-frame call is
+      allocation-free regardless of how many npcs are actually passed. */
+  private static readonly NPC_SCAN_MAX = 16;
   private npcVoices: NpcVoice[] = [];
   private lastPx = 0;
   private lastPz = 0;
+  private lastPh = 0;
+  // Scratch buffers for updateNpcs(), reused every frame instead of
+  // allocating: claims[voice] = npc index or null; taken[npc] = already
+  // claimed; dist[npc] = squared distance to player (Infinity = invalid,
+  // e.g. a stale/dead slot from a reused caller-side buffer); unclaimed =
+  // npc indices not yet claimed, filled and insertion-sorted by dist in
+  // place each call.
+  private npcClaims: (number | null)[] = new Array(GameAudio.NPC_POOL).fill(null);
+  private npcTaken: boolean[] = new Array(GameAudio.NPC_SCAN_MAX).fill(false);
+  private npcDist: number[] = new Array(GameAudio.NPC_SCAN_MAX).fill(0);
+  private npcUnclaimed: number[] = new Array(GameAudio.NPC_SCAN_MAX).fill(0);
 
   vol = 1;
   duck = 1;
@@ -481,8 +498,7 @@ export class GameAudio {
          full engine graph) assigned to the nearest active traffic cars each
          frame by updateNpcs(). All nodes are built once here; per-frame work
          is param moves only (frequency/gain/pan). */
-      const NPC_POOL = 8;
-      for (let i = 0; i < NPC_POOL; i++) {
+      for (let i = 0; i < GameAudio.NPC_POOL; i++) {
         const osc = ctx.createOscillator();
         osc.type = "sawtooth";
         osc.frequency.value = 110;
@@ -881,22 +897,32 @@ export class GameAudio {
   /** Low-frequency pressure whump for tunnel entry/exit — a sub-100Hz-
       emphasised one-shot built from the existing burst() machinery, layered
       (a sharper short thump over a longer soft one) for a felt "pressure"
-      character rather than a simple bass note. */
-  tunnelThump() {
+      character rather than a simple bass note. `intensity` (default 1)
+      scales level only, e.g. by speed at the threshold — entry vs exit use
+      the same character, just call it twice. */
+  tunnelThump(intensity = 1) {
     if (!this.ok) return;
-    this.burst(0.16, 62, 0.09, 0.85);
-    this.burst(0.07, 38, 0.17, 0.55);
+    const k = clampRange(intensity, 0, 2);
+    this.burst(0.16 * k, 62, 0.09, 0.85);
+    this.burst(0.07 * k, 38, 0.17, 0.55);
+  }
+
+  /** Rotate a world-space offset into the player's camera-relative right
+      axis. Heading follows the game's convention (radians, forward =
+      (sin h, cos h), h=0 facing +z) — the same field as CarState.h — so
+      this tracks the chase/cockpit camera through turns instead of using
+      raw world x, which would pan backwards mid-corner. */
+  private lateralOf(dx: number, dz: number, heading: number) {
+    return dx * Math.cos(heading) - dz * Math.sin(heading);
   }
 
   /** Cheap positional helper shared by the NPC one-shots: pans/attenuates
-      relative to the player position last reported to updateNpcs(). Lateral
-      position (world x) stands in for azimuth rather than a true heading-
-      relative angle — cheap, and good enough for a road-following game
-      where x is the lateral axis. */
+      relative to the player position/heading last reported to
+      updateNpcs(). */
   private npcSpatial(x: number, z: number, baseLevel: number) {
     const dx = x - this.lastPx, dz = z - this.lastPz;
     const dist = Math.max(0.5, Math.hypot(dx, dz));
-    const pan = clampRange(dx / 12, -1, 1);
+    const pan = clampRange(this.lateralOf(dx, dz, this.lastPh) / 12, -1, 1);
     const gain = baseLevel * clampRange(1 - dist / 50, 0, 1);
     return { pan, gain };
   }
@@ -917,60 +943,94 @@ export class GameAudio {
    * 0.7..1.5, where approachSpeed is the closing-speed component of the
    * npc's velocity relative to the player along the line between them
    * (positive = approaching).
+   *
+   * `ph` is the player's heading in radians (CarState.h's convention:
+   * forward = (sin h, cos h), h=0 facing +z) — pan is computed relative to
+   * it so left/right tracks the heading-following chase/cockpit camera
+   * through turns rather than raw world x.
+   *
+   * Allocation-free: `list` is only ever read, and all bookkeeping runs
+   * through preallocated scratch arrays (npcClaims/npcTaken/npcDist/
+   * npcUnclaimed) sized to NPC_SCAN_MAX, not `new Array`/`.map`/`.sort` per
+   * call — this runs every frame, so it stays off the GC. Entries with a
+   * non-finite x/z (e.g. a stale/dead slot from a reused caller-side
+   * buffer) are treated as invalid and never claimed; callers should still
+   * only pass live npcs, this is a defensive backstop, not a replacement
+   * for that.
    */
   updateNpcs(
     list: { x: number; z: number; vx: number; vz: number; heavy?: boolean }[],
-    px: number, pz: number, pvx: number, pvz: number
+    px: number, pz: number, pvx: number, pvz: number, ph: number
   ) {
     if (!this.ok) return;
     this.lastPx = px;
     this.lastPz = pz;
+    this.lastPh = ph;
     const voices = this.npcVoices;
     const n = voices.length;
-    const claims: (number | null)[] = new Array(n).fill(null);
-    const takenNpc: boolean[] = new Array(list.length).fill(false);
+    const m = Math.min(list.length, GameAudio.NPC_SCAN_MAX);
+    const claims = this.npcClaims;
+    const taken = this.npcTaken;
+    const dist = this.npcDist;
+    for (let i = 0; i < n; i++) claims[i] = null;
+    for (let i = 0; i < m; i++) taken[i] = false;
+
+    // Precompute squared distance-to-player once per npc; Infinity marks an
+    // invalid (non-finite coordinate) entry so it's never matched below.
+    for (let ni = 0; ni < m; ni++) {
+      const npc = list[ni];
+      if (!Number.isFinite(npc.x) || !Number.isFinite(npc.z)) { dist[ni] = Infinity; continue; }
+      const dx = npc.x - px, dz = npc.z - pz;
+      dist[ni] = dx * dx + dz * dz;
+    }
 
     // Track: keep each active voice on the npc nearest its last position.
     for (let vi = 0; vi < n; vi++) {
       const v = voices[vi];
       if (!v.active) continue;
       let best = -1, bestD = Infinity;
-      for (let ni = 0; ni < list.length; ni++) {
-        if (takenNpc[ni]) continue;
-        const dx = list[ni].x - v.lastX, dz = list[ni].z - v.lastZ;
+      for (let ni = 0; ni < m; ni++) {
+        if (taken[ni] || dist[ni] === Infinity) continue;
+        const npc = list[ni];
+        const dx = npc.x - v.lastX, dz = npc.z - v.lastZ;
         const d = dx * dx + dz * dz;
         if (d < bestD) { bestD = d; best = ni; }
       }
       if (best >= 0 && bestD < 400) { // within 20m of last position -> same car
         claims[vi] = best;
-        takenNpc[best] = true;
+        taken[best] = true;
       }
     }
 
-    // Fill free voices with the nearest unclaimed npcs; steal from the
-    // farthest-claimed voice if the pool is full and this npc is closer.
-    const distToPlayer = (i: number) => {
-      const dx = list[i].x - px, dz = list[i].z - pz;
-      return dx * dx + dz * dz;
-    };
-    const unclaimed = list.map((_, i) => i).filter((i) => !takenNpc[i]);
-    unclaimed.sort((a, b) => distToPlayer(a) - distToPlayer(b));
-    for (const ni of unclaimed) {
+    // Fill free voices with the nearest unclaimed npcs (insertion sort into
+    // the scratch buffer — m is small, at most NPC_SCAN_MAX); steal from
+    // the farthest-claimed voice if the pool is full and this npc is closer.
+    const unclaimed = this.npcUnclaimed;
+    let uCount = 0;
+    for (let ni = 0; ni < m; ni++) {
+      if (taken[ni] || dist[ni] === Infinity) continue;
+      let j = uCount - 1;
+      while (j >= 0 && dist[unclaimed[j]] > dist[ni]) { unclaimed[j + 1] = unclaimed[j]; j--; }
+      unclaimed[j + 1] = ni;
+      uCount++;
+    }
+    for (let k = 0; k < uCount; k++) {
+      const ni = unclaimed[k];
       let vi = -1;
       for (let i = 0; i < n; i++) if (claims[i] === null && !voices[i].active) { vi = i; break; }
       if (vi < 0) {
         let worstVi = -1, worstD = -1;
         for (let i = 0; i < n; i++) {
           if (claims[i] === null) continue;
-          const d = distToPlayer(claims[i]!);
+          const d = dist[claims[i]!];
           if (d > worstD) { worstD = d; worstVi = i; }
         }
-        if (worstVi >= 0 && distToPlayer(ni) < worstD) {
-          takenNpc[claims[worstVi]!] = false;
+        if (worstVi >= 0 && dist[ni] < worstD) {
+          taken[claims[worstVi]!] = false;
           vi = worstVi;
         }
       }
-      if (vi >= 0) { claims[vi] = ni; takenNpc[ni] = true; }
+      if (vi >= 0) { claims[vi] = ni; taken[ni] = true; }
     }
 
     for (let vi = 0; vi < n; vi++) {
@@ -998,7 +1058,7 @@ export class GameAudio {
 
       const level = clampRange(1 - dist / 70, 0, 1);
       const g = Math.pow(level, 1.5) * (npc.heavy ? 0.09 : 0.06);
-      const pan = clampRange(dx / 10, -1, 1);
+      const pan = clampRange(this.lateralOf(dx, dz, ph) / 10, -1, 1);
       const speedMag = Math.hypot(npc.vx, npc.vz);
 
       this.sp(v.osc.frequency, baseFreq * dopplerFactor, 0.05);

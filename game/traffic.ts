@@ -469,6 +469,8 @@ export interface NpcAudioSample {
   vx: number; vz: number;
   d2: number;
   type: string;
+  /** true for a truck/bus — heavy vehicles get a lower doppler drone pitch */
+  heavy: boolean;
 }
 
 export class Traffic {
@@ -496,7 +498,7 @@ export class Traffic {
   private _wrecks: Npc[] = [];
   private _closeCalls: Npc[] = [];
   private _nearBuf: NpcAudioSample[] = Array.from({ length: 12 }, () => ({
-    npc: null, x: 0, y: 0, z: 0, vx: 0, vz: 0, d2: 0, type: "",
+    npc: null, x: 0, y: 0, z: 0, vx: 0, vz: 0, d2: 0, type: "", heavy: false,
   }));
   /* Cars may only enter from beyond the fog wall, and they close on the player
      slowly, so a cold start would leave the road ahead empty for a minute or
@@ -925,8 +927,11 @@ export class Traffic {
 
   /** Cheap per-frame feed for an audio doppler pool: the `count` nearest
       active NPCs to a listener point, nearest first, with world position and
-      velocity. Returns a reused, fixed-length array — entries past the
-      returned count-worth of live NPCs have `npc: null`. Nothing here
+      velocity. Returns the reused backing array (fixed capacity, currently
+      12) — every slot from `count` onward, not just the ones this call
+      filled, is guaranteed `npc: null`, so a caller that scans the whole
+      array rather than stopping at `count` still can't see a stale sample
+      left over from an earlier call made with a larger count. Nothing here
       allocates once the pool is warmed up in the constructor. */
   nearestNpcs(px: number, py: number, pz: number, count: number): NpcAudioSample[] {
     const buf = this._nearBuf;
@@ -952,7 +957,10 @@ export class Traffic {
         this.fillSample(buf[i], n, d2);
       }
     }
-    for (let i = used; i < cap; i++) buf[i].npc = null;
+    // clear everything this call didn't touch, all the way to the buffer's
+    // full capacity — not just up to `cap` — so a stale sample from a call
+    // with a larger `count` can never leak through a later, smaller one
+    for (let i = used; i < buf.length; i++) buf[i].npc = null;
     return buf;
   }
 
@@ -965,6 +973,7 @@ export class Traffic {
     s.vz = Math.cos(n.hVis) * n.v;
     s.d2 = d2;
     s.type = n.type;
+    s.heavy = n.type === "truck" || n.type === "bus";
   }
   private copySample(dst: NpcAudioSample, src: NpcAudioSample) {
     dst.npc = src.npc;
@@ -975,6 +984,7 @@ export class Traffic {
     dst.vz = src.vz;
     dst.d2 = src.d2;
     dst.type = src.type;
+    dst.heavy = src.heavy;
   }
 
   /** Debug/test helper: park an NPC ~24 m ahead of the player, in lane. */
