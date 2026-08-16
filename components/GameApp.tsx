@@ -5,7 +5,7 @@ import { Game } from "@/game/engine";
 import { CARS, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
 import {
-  loadProfile, saveProfile, defaultSettings, applyPresetDefaults,
+  loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
   type Profile, type GameSettings,
 } from "@/game/settings";
 
@@ -115,7 +115,7 @@ export default function GameApp() {
         <span id="indR" className="ind">▶</span>
       </div>
       <div id="hud" style={{ display: playing ? "block" : "none" }}>
-        <div className="spd" id="spd">0<small>km/h</small></div>
+        <div className="spd" id="spd">0<small>{unitLabel(g ? g.settings.units : "mph")}</small></div>
         <div className="gear" id="gearTxt">D1</div>
       </div>
       <div id="toast" style={{ opacity: toast ? 1 : 0 }}>{toast}</div>
@@ -424,6 +424,17 @@ function SettingsPanel({
         <Check label="Day shadows" checked={s.shadows} onChange={(v) => upd((x) => (x.shadows = v))} />
         <Check label="FXAA anti-aliasing" checked={s.fxaa} onChange={(v) => upd((x) => (x.fxaa = v))} />
         <Check label="Motion blur" checked={s.mblur} onChange={(v) => upd((x) => (x.mblur = v))} />
+        {/* game.grade is the live truth — the in-game V key flips it too */}
+        <Check
+          label="Dashcam filter (V)"
+          checked={game.grade}
+          onChange={(v) =>
+            upd((x) => {
+              x.dashcam = v;
+              game.grade = v;
+            })
+          }
+        />
         <Check label="Traction control" checked={s.tc} onChange={(v) => upd((x) => (x.tc = v))} />
         <Row label="Touch steering">
           <select
@@ -440,11 +451,19 @@ function SettingsPanel({
             <option value="tilt">Tilt</option>
           </select>
         </Row>
-        <Row label={`Fog / haze — ${Math.round(s.fog * 100)}%`}>
-          <input
-            type="range" min={30} max={260} value={Math.round(s.fog * 100)}
-            onChange={(e) => upd((x) => (x.fog = +e.target.value / 100))}
-          />
+        <Row label="Speed units">
+          <select value={s.units} onChange={(e) => upd((x) => (x.units = e.target.value as any))}>
+            <option value="mph">mph</option>
+            <option value="kmh">km/h</option>
+          </select>
+        </Row>
+        <Row label="Fog / haze">
+          <select value={s.fog} onChange={(e) => upd((x) => (x.fog = e.target.value as any))}>
+            <option value="off">Off</option>
+            <option value="light">Light</option>
+            <option value="medium">Medium</option>
+            <option value="heavy">Heavy</option>
+          </select>
         </Row>
         <Row label={`Draw distance — ${s.drawDist} m`}>
           <input

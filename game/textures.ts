@@ -19,7 +19,9 @@ export function makeTex(
   fn(c.getContext("2d")!, w, h);
   const t = new THREE.CanvasTexture(c);
   if (wrap) t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.anisotropy = 8;
+  // three clamps this to the driver maximum; 16 keeps road markings from
+  // dissolving into mush a few metres ahead of the car
+  t.anisotropy = 16;
   return t;
 }
 
@@ -43,6 +45,24 @@ export function asphalt(ctx: CanvasRenderingContext2D, w: number, h: number, bas
   for (let i = 0; i < 3; i++) {
     ctx.fillStyle = `rgba(30,32,40,${rand(0.15, 0.35)})`;
     ctx.fillRect(rand(0, w), rand(0, h), rand(14, 40), rand(10, 26));
+  }
+  // soft patch repairs: large low-contrast blobs that break up the tile grid
+  // when the same texture repeats down a long straight
+  for (let i = 0; i < 5; i++) {
+    const r = rand(w * 0.2, w * 0.55);
+    const gx = rand(0, w), gy = rand(0, h);
+    const inner = Math.random() < 0.5 ? "rgba(6,7,10,.22)" : "rgba(58,60,70,.14)";
+    // repeat across the tile edges so the blob stays seamless when wrapped
+    for (const ox of [-w, 0, w])
+      for (const oy of [-h, 0, h]) {
+        const x = gx + ox, y = gy + oy;
+        if (x + r < 0 || x - r > w || y + r < 0 || y - r > h) continue;
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, inner);
+        g.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+      }
   }
 }
 
