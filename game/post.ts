@@ -26,6 +26,7 @@ export class PostFX {
   private softA!: THREE.WebGLRenderTarget;
   private softB!: THREE.WebGLRenderTarget;
   private perf = false;
+  private speedKmh = 0;
   private overCv: HTMLCanvasElement;
   private overTex: THREE.CanvasTexture;
   private overAt = -1;
@@ -80,10 +81,11 @@ void main(){ vec2 px=uDir/uRes; vec3 s=texture2D(tIn,vUv).rgb*.227;
         tScene: { value: null }, tBloom: { value: null }, uTime: { value: 0 },
         uGrade: { value: 1 }, uExp: { value: 1.12 },
         uRes: { value: new THREE.Vector2(1, 1) }, uBloomStr: { value: 1.0 },
+        uSpeedT: { value: 0 },
       },
       vertexShader: VSH,
       fragmentShader: `varying vec2 vUv; uniform sampler2D tScene,tBloom;
-uniform float uTime,uGrade,uBloomStr,uExp; uniform vec2 uRes;
+uniform float uTime,uGrade,uBloomStr,uExp,uSpeedT; uniform vec2 uRes;
 float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453+uTime); }
 /* Fitted ACES (Narkowicz's curve was hue-shifting saturated neon badly; the
    Hill fit keeps reds/magentas from turning orange in bloom cores). */
@@ -106,9 +108,12 @@ void main(){
  col+=vec3(-.010,-.002,.016)*(1.-smoothstep(0.,.45,l));
  col+=vec3(.014,.006,-.010)*smoothstep(.55,1.,l);
  float sat=mix(1.16,1.0,smoothstep(.25,.9,l));
+ // speed vignette: rising edge saturation reads as tunnel-vision colour
+ // punch without a hard mask, cheap since r2 is already computed above
+ sat+=uSpeedT*r2*.55;
  col=mix(vec3(dot(col,vec3(.2126,.7152,.0722))),col,sat);
  col+=(hash(uv*uRes*.5)-.5)*(uGrade>.5?.012:.018)*(1.-l*.7);
- col*=1.-r2*(uGrade>.5?.30:.42);
+ col*=1.-r2*(uGrade>.5?.30:.42)-r2*uSpeedT*.16;
  gl_FragColor=vec4(clamp(col,0.,1.),1.); }`,
     });
     this.fxaaMat = new THREE.ShaderMaterial({
@@ -147,14 +152,32 @@ void main(){ vec2 px=1.0/uRes;
  gl_FragColor=vec4(clamp(mix(aa,sharp,edge),0.,1.),1.0);}`,
     });
     this.mbMat = new THREE.ShaderMaterial({
-      uniforms: { tCur: { value: null }, tPrev: { value: null }, uMB: { value: 0 } },
+      uniforms: {
+        tCur: { value: null }, tPrev: { value: null }, uMB: { value: 0 },
+        uPeriph: { value: 0 },
+      },
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv;
-uniform sampler2D tCur,tPrev; uniform float uMB;
-void main(){ vec3 c=texture2D(tCur,vUv).rgb, p=texture2D(tPrev,vUv).rgb;
+uniform sampler2D tCur,tPrev; uniform float uMB,uPeriph;
+void main(){
+ vec2 d=vUv-.5; float r=length(d);
+ // peripheral radial (fovea) blur: pulls samples toward centre, masked off
+ // so the fovea (~15% radius) stays tack sharp and the pull ramps to full
+ // strength by mid-frame — corners are fully streaked well before the edge.
+ // uPeriph carries the 0..1 speed factor in, so at uPeriph=0 every tap
+ // collapses onto vUv and this is a no-op read of tCur.
+ float mask=smoothstep(.15,.6,r)*uPeriph;
+ vec2 dir=r>1e-5?d/r:vec2(0.);
+ vec3 c=vec3(0.); float wsum=0.;
+ for(int i=0;i<4;i++){
+   float t=float(i)*mask*.045;
+   float w=1.0-float(i)*.15;
+   c+=texture2D(tCur,vUv-dir*t).rgb*w; wsum+=w;
+ }
+ c/=wsum;
+ vec3 p=texture2D(tPrev,vUv).rgb;
  vec3 col=mix(c,p,uMB);
- float d=distance(vUv,vec2(.5));
- col*=1.0-uMB*.55*smoothstep(.42,.95,d);
+ col*=1.0-uMB*.55*smoothstep(.42,.95,r);
  gl_FragColor=vec4(col,1.0);}`,
     });
     this.overCv = document.createElement("canvas");
@@ -265,6 +288,15 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.dashMat.uniforms.uOverPos.value.set(0.022, 0.925);
   }
 
+  /** Per-frame speed feed for the speed-perception cues (peripheral radial
+   * blur, speed vignette, motion-blur strengthening) below. engine.ts should
+   * call this once per frame, before process(), e.g.:
+   *   this.post.setSpeed(Math.abs(this.car.u) * 3.6);
+   */
+  setSpeed(kmh: number) {
+    this.speedKmh = kmh;
+  }
+
   /** Repaint the burnt-in DVR strip (blinking REC dot + wall-clock stamp). */
   private updateOverlay(time: number) {
     const slot = Math.floor(time * 2);
@@ -336,17 +368,26 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
         this.runPass(this.blurMat, this.blurB);
       }
     }
+    // 0 below 80 km/h, ramps to 1 by 200 km/h — shared by the speed vignette
+    // (compMat) and the peripheral radial blur / motion-blur boost (mbMat).
+    const speedT = Math.max(0, Math.min(1, (this.speedKmh - 80) / 120));
     u.tScene.value = this.sceneRT.texture;
     u.tBloom.value = this.blurB.texture;
     u.uTime.value = opts.time % 10;
     u.uGrade.value = opts.grade ? 1 : 0;
     u.uExp.value = opts.exposure;
     u.uBloomStr.value = opts.bloom ? (opts.grade ? 1.15 : 0.85) : 0;
-    const doMb = opts.mblur > 0.001;
+    u.uSpeedT.value = speedT;
+    const doMbSetting = opts.mblur > 0.001;
     const dash = !!opts.grade;
+    // Peripheral (fovea) blur is the same trick the dashcam corners already
+    // sell via the soft/chroma-bleed mix, so skip it there to avoid stacking
+    // two corner-blur effects; also skip in perf mode (4 extra taps/px).
+    const doPeriph = !this.perf && !dash && speedT > 0.02;
+    const doFinal = doMbSetting || doPeriph;
     /* Each stage renders to screen only when nothing follows it. */
     const after = (stage: 0 | 1 | 2) =>
-      (stage < 1 && opts.fxaa) || (stage < 2 && dash) || doMb;
+      (stage < 1 && opts.fxaa) || (stage < 2 && dash) || doFinal;
     this.runPass(this.compMat, after(0) ? this.ldrRT : null);
     let cur = this.ldrRT;
     if (opts.fxaa) {
@@ -370,13 +411,20 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.dashMat.uniforms.tSharp.value = cur.texture;
       this.dashMat.uniforms.tSoft.value = this.softA.texture;
       this.dashMat.uniforms.uTime.value = opts.time;
-      this.runPass(this.dashMat, doMb ? this.dashRT : null);
+      this.runPass(this.dashMat, doFinal ? this.dashRT : null);
       cur = this.dashRT;
     }
-    if (doMb) {
+    if (doFinal) {
+      // strengthen the temporal streak a bit further at very high speed
+      // (200+ km/h) — the base curve from engine.ts caps out at 0.42, which
+      // reads a touch weak once you're well past that.
+      const mbBoost = doMbSetting
+        ? Math.max(0, Math.min(0.18, (this.speedKmh - 180) / 200))
+        : 0;
       this.mbMat.uniforms.tCur.value = cur.texture;
       this.mbMat.uniforms.tPrev.value = this.prevRT.texture;
-      this.mbMat.uniforms.uMB.value = opts.mblur;
+      this.mbMat.uniforms.uMB.value = doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
+      this.mbMat.uniforms.uPeriph.value = doPeriph ? speedT : 0;
       this.runPass(this.mbMat, this.mbRT);
       this.copyMat.uniforms.tIn.value = this.mbRT.texture;
       this.runPass(this.copyMat, this.prevRT);
