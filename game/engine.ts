@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { clamp, lerp, mulberry32 } from "./util";
-import type { GameSettings, Profile } from "./settings";
+import {
+  fogMultiplier, speedInUnits, unitLabel,
+  type GameSettings, type Profile,
+} from "./settings";
 import { getCar, PAINTS, type CarSpec } from "./carspecs";
 import { buildMats, type Mats } from "./world/mats";
 import { makeTerrain, buildGround, type Terrain } from "./world/terrain";
@@ -13,7 +16,7 @@ import { HX, DECKY, LANE_OFF } from "./world/const";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
 import { buildPlayerCar, type PlayerRig } from "./player";
-import { COCKPIT_REF } from "./cockpit";
+import { COCKPIT_REF, EYE as COCKPIT_EYE } from "./cockpit";
 import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
 import { RainFX, SmokeFX } from "./fx";
@@ -56,7 +59,7 @@ export class Game {
   started = false;
   running = false; // simulation advancing (menus closed)
   rain = false;
-  grade = true;
+  grade = false; // set from settings.dashcam in the constructor
   mirror = true;
   mmap = true;
   time = 21.4;
@@ -88,6 +91,11 @@ export class Game {
   private amb: THREE.AmbientLight;
   private chasePos = new THREE.Vector3();
   private lookPos = new THREE.Vector3();
+  /* 0 = chase cam sits behind the car, 1 = swung round in front looking back.
+     Eased so the swing only happens when the car is really reversing. */
+  private revCam = 0;
+  /* visual accel pitch, damped and speed-scaled off car.pitchDyn */
+  private pitchVis = 0;
   private head = { x: 0, y: 0, vx: 0, vy: 0 };
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
@@ -119,6 +127,7 @@ export class Game {
   constructor(container: HTMLElement, profile: Profile, ui: UiBridge) {
     this.ui = ui;
     this.settings = profile.settings;
+    this.grade = profile.settings.dashcam;
     this.carId = profile.carId;
     this.paintIx = profile.paintIx;
     this.seed = profile.seed;
@@ -222,7 +231,12 @@ export class Game {
       setInput: (o: Partial<DriverInput> | null) => (this.debug.override = o),
       state: () => ({
         x: this.car.x, y: this.car.y, z: this.car.z, h: this.car.h,
-        u: this.car.u, kmh: Math.abs(this.car.u) * 3.6, gear: this.car.gear,
+        u: this.car.u, kmh: Math.abs(this.car.u) * 3.6,
+        mph: Math.abs(this.car.u) * 2.236936,
+        gear: this.car.gear, rpm: this.car.rpm,
+        rev: this.car.rev, slope: this.car.slope, pitchDyn: this.car.pitchDyn,
+        camMode: this.camMode, camPitch: this.camera.rotation.x,
+        camYaw: this.camera.rotation.y, revCam: this.revCam,
         npcs: this.traffic.npcs.filter((n) => n.active).length,
         wrecks: this.traffic.activeWrecks().length,
         chunksVisible: this.world.chunks.filter((c) => c.group.visible).length,
@@ -274,6 +288,7 @@ export class Game {
     this.carId = carId;
     this.paintIx = paintIx;
     this.buildRig();
+    this.audio.setCar(carId);
   }
 
   get spec(): CarSpec {
@@ -314,7 +329,7 @@ export class Game {
     }
     if (k === "v") {
       this.grade = !this.grade;
-      this.ui.toast("DASHCAM GRADE " + (this.grade ? "ON" : "OFF"));
+      this.ui.toast("DASHCAM MODE " + (this.grade ? "ON" : "OFF"));
     }
     if (k === "m") {
       this.mirror = !this.mirror;
@@ -448,6 +463,7 @@ export class Game {
     if (this.started) return;
     this.started = true;
     this.audio.init();
+    this.audio.setCar(this.carId);
     this.last = performance.now() / 1000;
     this.loop();
   }
@@ -553,7 +569,7 @@ export class Game {
     (this.scene.fog as THREE.FogExp2).color.copy(this.fogC);
     this.renderer.setClearColor(this.fogC);
     (this.scene.fog as THREE.FogExp2).density =
-      (lerp(0.0021, 0.001, f) + (this.rain ? 0.0015 : 0)) * this.settings.fog;
+      (lerp(0.0021, 0.001, f) + (this.rain ? 0.0015 : 0)) * fogMultiplier(this.settings.fog);
     this.hemi.intensity = 0.32 + f * 0.6;
     this.amb.intensity = 0.34 + f * 0.28;
     this.sun.intensity = 0.14 + f * 1.15;
@@ -569,7 +585,10 @@ export class Game {
       m.color.setScalar(lerp(1, 3.6, f));
     }
     if (world.reflMat) world.reflMat.opacity = 0.85 * (1 - f);
-    sky.skylineMat.opacity = (1 - f * 0.8) * clamp(1.9 - this.settings.fog, 0.12, 1);
+    // heavier fog must also swallow the distant skyline ring, which renders
+    // unfogged behind everything
+    sky.skylineMat.opacity =
+      (1 - f * 0.8) * clamp(1.9 - fogMultiplier(this.settings.fog), 0.12, 1);
     this.mats.sfMat.emissiveIntensity = lerp(0.78, 0.12, f);
     if (world.glowPts) (world.glowPts.material as THREE.PointsMaterial).opacity = 1 - f * 0.92;
     if (world.pools)
@@ -619,7 +638,16 @@ export class Game {
     const car = this.car, rig = this.rig;
     rig.carGroup.position.set(car.x, car.y, car.z);
     rig.carGroup.rotation.y = car.h;
-    rig.bodyG.rotation.x = -Math.atan(car.slope) + car.pitchDyn;
+    /* Accel squat / brake dive. A road car lifts its nose noticeably only off
+       the line; past ~50 km/h the pitch change is barely visible, and in the
+       cockpit any lift pushes the dash up over the road. So fade the lift out
+       with speed and cap it hard, while leaving brake dive (positive pitchDyn)
+       mostly intact — dive shows more road, not less. */
+    const spAbs = Math.abs(car.u);
+    const liftScale = car.pitchDyn < 0 ? clamp(1.15 - spAbs / 14, 0.18, 1) : 1;
+    const pitchT = clamp(car.pitchDyn * liftScale, -0.022, 0.05);
+    this.pitchVis = lerp(this.pitchVis, pitchT, 1 - Math.exp(-7 * dt));
+    rig.bodyG.rotation.x = -Math.atan(car.slope) + this.pitchVis;
     rig.bodyG.rotation.z = car.rollDyn;
     rig.carGroup.updateMatrixWorld();
     rig.cockpit.group.visible = this.camMode === 1;
@@ -654,10 +682,11 @@ export class Game {
     if (this.gaugeT > 0.045 && this.camMode === 1) {
       this.gaugeT = 0;
       rig.cockpit.drawGauges(
-        car.rpm, Math.abs(car.u) * 3.6, car.rev ? "R" : "D" + (car.gear + 1), now,
+        car.rpm, Math.abs(car.u) * 3.6, car.rev ? "R" : "D" + car.gear, now,
         {
           lightsOn: car.lightsOn, sigL: car.sigL, sigR: car.sigR, rain: this.rain,
           tcOn: car.tcOn, odo: car.odo, revLimit: this.spec.phys.revLimit,
+          units: this.settings.units, onLimiter: car.onLimiter,
         }
       );
       rig.cockpit.drawScreen(car.x, car.z, car.h, this.time);
@@ -671,30 +700,45 @@ export class Game {
   private updateCamera(dt: number) {
     const car = this.car;
     const fx = Math.sin(car.h), fz = Math.cos(car.h);
+    /* Reverse chase cam: only once the car is genuinely rolling backwards, not
+       the instant the reverse key is tapped. Hysteresis on speed keeps it from
+       flickering around the threshold, and the ease takes ~0.7 s each way. */
+    const revWant = car.rev && car.u < (this.revCam > 0.5 ? -1.0 : -1.8) ? 1 : 0;
+    this.revCam = lerp(this.revCam, revWant, 1 - Math.exp(-3.2 * dt));
+    if (this.revCam < 0.002) this.revCam = 0;
     if (this.camMode === 0) {
       // chase
       const dist = (4.2 + this.spec.shell.L * 0.25) + clamp(Math.abs(car.u) * 0.03, 0, 0.9);
-      const back = this.lookBack ? -1 : 1;
-      this.tmpV.set(
-        car.x - fx * dist * back, car.y + 1.85, car.z - fz * dist * back);
+      // flip: 0 = camera behind the car, 1 = in front of it looking back. The
+      // swing is an arc around the car, not a lerp through it.
+      const flip = this.lookBack ? 1 - this.revCam : this.revCam;
+      const ang = car.h + Math.PI * (1 - flip);
+      const ax = Math.sin(ang), az = Math.cos(ang);
+      this.tmpV.set(car.x + ax * dist, car.y + 1.85, car.z + az * dist);
       this.chasePos.lerp(this.tmpV, 1 - Math.exp(-5.5 * dt));
       // smoothing lags a moving target by ~speed/5.5 m; cap the trail so the
-      // camera can't drift arbitrarily far behind at high speed
+      // camera can't drift arbitrarily far behind at high speed, and keep a
+      // minimum radius so the mid-swing shortcut never clips through the car
       const dxC = this.chasePos.x - car.x, dzC = this.chasePos.z - car.z;
-      const hd = Math.hypot(dxC, dzC), maxD = dist + 1.2;
+      const hd = Math.hypot(dxC, dzC), maxD = dist + 1.2, minD = dist * 0.6;
       if (hd > maxD) {
         this.chasePos.x = car.x + (dxC / hd) * maxD;
         this.chasePos.z = car.z + (dzC / hd) * maxD;
+      } else if (hd > 1e-4 && hd < minD) {
+        this.chasePos.x = car.x + (dxC / hd) * minD;
+        this.chasePos.z = car.z + (dzC / hd) * minD;
       }
       this.chasePos.y = Math.max(
         this.chasePos.y,
         this.terrain.heightAt(this.chasePos.x, this.chasePos.z, car.y) + 1.2
       );
       this.camera.position.copy(this.chasePos);
+      // aim past the car, away from wherever the camera currently sits
+      const lat = car.delta * 1.6 * (1 - 2 * flip);
       this.tmpV2.set(
-        car.x + fx * 2.8 * back + fz * car.delta * 1.6,
+        car.x - ax * 2.8 + fz * lat,
         car.y + 0.95,
-        car.z + fz * 2.8 * back - fx * car.delta * 1.6
+        car.z - az * 2.8 - fx * lat
       );
       // aim is smoothed too — the delta term above snaps with keyboard taps
       this.lookPos.lerp(this.tmpV2, 1 - Math.exp(-9 * dt));
@@ -712,14 +756,25 @@ export class Game {
       const P = this.spec.shell;
       const local =
         this.camMode === 1
-          ? this.tmpV.set(0.36 * (P.W / COCKPIT_REF.W) + this.head.x, P.belt + 0.47 + this.head.y, 0.1)
+          // seating position lives in cockpit.ts: the binnacle, wheel and mirror
+          // are all pinned to COCKPIT_EYE, so the eye must come from there too
+          ? this.tmpV.set(
+            COCKPIT_EYE.x * (P.W / COCKPIT_REF.W) + this.head.x,
+            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + this.head.y,
+            COCKPIT_EYE.z
+          )
           : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5, P.L / 2 - 0.6);
-      this.camera.position.copy(this.rig.carGroup.localToWorld(this.tmpV2.copy(local)));
+      /* The eye rides the body shell, so the dash and mirrors hold still in
+         frame the way they do in a real car; the world pitches instead. Body
+         pitch is nose-up-negative, camera pitch is look-up-positive, hence the
+         sign flip — getting that backwards made the view stare at the tarmac
+         uphill and at the sky downhill. */
+      this.camera.position.copy(this.rig.bodyG.localToWorld(this.tmpV2.copy(local)));
       this.camera.rotation.y = car.h + Math.PI + back;
-      this.camera.rotation.x =
-        (-Math.atan(car.slope) + car.pitchDyn) * (this.lookBack ? -1 : 1) +
-        clamp(car.axS * 0.003, -0.04, 0.04);
-      this.camera.rotation.z = car.rollDyn * 0.7 + clamp(car.u * car.r * 0.0035, -0.06, 0.06);
+      this.camera.rotation.x = -this.rig.bodyG.rotation.x * (this.lookBack ? -1 : 1);
+      // roll matches the shell for the same reason the pitch does
+      this.camera.rotation.z =
+        -this.rig.bodyG.rotation.z + clamp(car.u * car.r * 0.0035, -0.06, 0.06);
     }
     const kickM = this.camMode === 0 ? 0.18 : this.camMode === 2 ? 0.6 : 1;
     const fovT = this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
@@ -772,11 +827,14 @@ export class Game {
     if (this.hudT > 0.08) {
       this.hudT = 0;
       const el = document.getElementById("spd");
-      if (el) el.innerHTML = Math.round(Math.abs(car.u) * 3.6) + "<small>km/h</small>";
+      if (el)
+        el.innerHTML =
+          Math.round(speedInUnits(car.u, this.settings.units)) +
+          "<small>" + unitLabel(this.settings.units) + "</small>";
       const eg = document.getElementById("gearTxt");
       if (eg)
         eg.textContent =
-          (car.rev ? "R" : "D" + (car.gear + 1)) +
+          (car.rev ? "R" : "D" + car.gear) +
           (this.input.hb ? " ✋" : "") +
           (car.absOn ? " ABS" : "") +
           (car.y > 3 ? " 首都高" : "");
@@ -879,7 +937,8 @@ export class Game {
       this.updateCamera(dt);
       this.audio.update(
         this.car.rpm, this.car.thrEff, this.car.slipAmt, Math.abs(this.car.u), now,
-        this.car.cut > 0 || this.car.shiftT > 0.1, this.rain, this.input.horn > 0
+        this.car.cut > 0 || this.car.shiftT > 0.1, this.rain, this.input.horn > 0,
+        this.car.gear, this.car.onLimiter
       );
       this.hud(now, dt);
       this.chunkT += dt;
