@@ -226,15 +226,15 @@ export default function GameApp() {
               <b>W / S</b><span>throttle · brake &amp; reverse</span>
               <b>A / D</b><span>steer</span>
               <b>Space</b><span>handbrake (drift)</span>
-              <b>C</b><span>camera: chase → cockpit → hood</span>
-              <b>B</b><span>look back</span>
+              <b>C</b><span>camera: chase → cockpit → hood → dashcam</span>
+              <b>B</b><span>look back (chase &amp; cockpit)</span>
               <b>Q / E</b><span>turn signals</span>
               <b>F</b><span>horn (traffic speeds up)</span>
               <b>L</b><span>headlights on / auto</span>
               <b>M</b><span>cockpit mirrors</span>
               <b>R</b><span>rain</span>
               <b>T</b><span>time-lapse</span>
-              <b>V</b><span>dashcam grade</span>
+              <b>V</b><span>dashcam grade (the DASHCAM view forces its own, harder)</span>
               <b>X</b><span>minimap</span>
               <b>N</b><span>reset to nearest road</span>
               <b>Esc</b><span>pause menu</span>

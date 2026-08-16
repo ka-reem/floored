@@ -7,7 +7,14 @@ import * as THREE from "three";
 
    `grade` no longer means "slightly different colours": it swaps the clean
    look for the full dashcam pass (soft cheap lens, chroma bleed, sensor noise,
-   crushed highlights, rolling-shutter wobble, burnt-in timestamp). */
+   crushed highlights, rolling-shutter wobble, burnt-in timestamp).
+
+   `setDashcamPov(true)` is a separate, much harsher stage that the DASHCAM POV
+   camera forces on regardless of `grade`: it runs *after* the frame blend (the
+   smear is optical, the sensor noise and the codec artefacts come after it) and
+   re-encodes the frame as cheap night-time evidence footage — half-res source,
+   crushed/red-bled blacks, blown horizontal highlight streaks, coarse boiling
+   grain, bit-crush banding and torn interlace rows. */
 
 const VSH = "varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.,1.); }";
 
@@ -25,8 +32,14 @@ export class PostFX {
   private dashRT!: THREE.WebGLRenderTarget;
   private softA!: THREE.WebGLRenderTarget;
   private softB!: THREE.WebGLRenderTarget;
+  private povA!: THREE.WebGLRenderTarget;
+  private povB!: THREE.WebGLRenderTarget;
   private perf = false;
   private speedKmh = 0;
+  private pov = false;
+  /** false for one frame after a hard view change: the temporal blend is
+      skipped so a camera teleport cuts instead of dragging a ghost. */
+  private histValid = false;
   private overCv: HTMLCanvasElement;
   private overTex: THREE.CanvasTexture;
   private overAt = -1;
@@ -42,6 +55,8 @@ export class PostFX {
   private fxaaMat: THREE.ShaderMaterial;
   private mbMat: THREE.ShaderMaterial;
   private copyMat: THREE.ShaderMaterial;
+  private smearMat: THREE.ShaderMaterial;
+  private povMat: THREE.ShaderMaterial;
 
   constructor(private renderer: THREE.WebGLRenderer) {
     this.fsQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
@@ -247,6 +262,99 @@ void main(){
  col*=1.-r2*.48;
  gl_FragColor=vec4(clamp(col,0.,1.),1.); }`,
     });
+    /* Bright-pass + long horizontal smear, run on the half-res POV source.
+       Cheap sensors do not have a global shutter or a decent IR filter, so a
+       headlight does not bloom radially — it bleeds along the row it is read
+       out on. 17 taps three texels apart ≈ ±48 full-res pixels of streak. */
+    this.smearMat = new THREE.ShaderMaterial({
+      uniforms: { tIn: { value: null }, uRes: { value: new THREE.Vector2(1, 1) } },
+      vertexShader: VSH,
+      fragmentShader: `precision highp float; varying vec2 vUv;
+uniform sampler2D tIn; uniform vec2 uRes;
+void main(){ vec3 s=vec3(0.); float wsum=0.;
+ for(int i=-8;i<=8;i++){
+   float fi=float(i);
+   vec3 c=texture2D(tIn,vUv+vec2(fi*3./uRes.x,0.)).rgb;
+   float l=dot(c,vec3(.299,.587,.114));
+   float w=1.-abs(fi)/9.;
+   s+=c*smoothstep(.62,.92,l)*w; wsum+=w; }
+ gl_FragColor=vec4(s/wsum,1.); }`,
+    });
+    /* The POV degrade. Ordered like a real cheap camera's signal chain:
+       lens/readout geometry → sensor response → noise → codec, so the banding
+       and the block-ish grain land on top of everything else the way an
+       over-compressed 480p night clip does. uLow is the half-res grid the
+       source was box-downsampled onto; snapping to it is a nearest upscale. */
+    this.povMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tLow: { value: null }, tSmear: { value: null }, tOver: { value: this.overTex },
+        uLow: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 },
+        uOverPos: { value: new THREE.Vector2(0.022, 0.925) },
+        uOverSize: { value: new THREE.Vector2(0.3, 0.03) },
+        uOverAmt: { value: 1 },
+      },
+      vertexShader: VSH,
+      fragmentShader: `precision highp float; varying vec2 vUv;
+uniform sampler2D tLow,tSmear,tOver; uniform vec2 uLow,uOverPos,uOverSize;
+uniform float uTime,uOverAmt;
+float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+void main(){
+ vec2 d=vUv-.5; float r2=dot(d,d);
+ // noise clock: 15 Hz, so grain boils well below frame rate like real footage.
+ // Wrapped short because it is multiplied into the hash's sin argument, and a
+ // free-running one drives that into the range where mobile GPUs stop
+ // range-reducing accurately and the grain collapses into a fixed pattern.
+ float tq=mod(floor(uTime*15.),61.);
+ // (i) mild rolling wobble + (f) interlace tear: a few rows per frame get
+ // yanked sideways, the rest only wobble
+ vec2 uv=vUv;
+ uv.x+=sin(uv.y*19.+uTime*3.3)*.0011+sin(uv.y*103.+uTime*11.)*.00035;
+ float row=floor(uv.y*uLow.y);
+ uv.x+=step(.972,h21(vec2(row,tq)*.017))*(h21(vec2(row*1.7,tq*.31+7.))-.5)*.05;
+ uv=clamp(uv,vec2(.001),vec2(.999));
+ // (g) low internal resolution: snap onto the half-res grid, then let a
+ // little of the unsnapped bilinear tap back in so it is soft, not crunchy
+ vec2 uvs=(floor(uv*uLow)+.5)/uLow;
+ // (d) chromatic fringing, strongly radial so the frame edges separate
+ vec2 ca=d*(.0045+.032*r2)+vec2(.0016,0.);
+ vec3 col;
+ col.r=mix(texture2D(tLow,uvs+ca).r,texture2D(tLow,uv+ca).r,.22);
+ col.g=mix(texture2D(tLow,uvs).g,   texture2D(tLow,uv).g,   .22);
+ col.b=mix(texture2D(tLow,uvs-ca).b,texture2D(tLow,uv-ca).b,.22);
+ // (c) blown highlights: the smear layer goes in hot and then clips to flat
+ // white, so lamps read as hard streaks rather than pretty glow
+ col+=texture2D(tSmear,uv).rgb*1.15;
+ col=mix(col,vec3(1.),smoothstep(.72,1.02,dot(col,vec3(.299,.587,.114)))*.75);
+ // (b) crushed blacks, then sensor bleed: the edges of the frame clip into
+ // dark red/magenta (negative green) and the vignette carries a red cast
+ col=max(col-.06,vec3(0.))*1.22;
+ col=pow(max(col,vec3(0.)),vec3(1.18,1.24,1.22));
+ float le=dot(col,vec3(.299,.587,.114));
+ col+=vec3(.085,-.012,.045)*smoothstep(.06,.5,r2)*(1.-smoothstep(0.,.5,le));
+ col*=1.-r2*.55;
+ col.r*=1.+r2*.16;
+ // burnt-in DVR strip, ahead of the noise and the codec so it degrades with
+ // the rest of the frame. Suppressed when the V-key pass already drew one.
+ vec2 op=(vUv-uOverPos)/uOverSize;
+ vec4 ov=texture2D(tOver,clamp(op,0.,1.));
+ col=mix(col,ov.rgb*.9,ov.a*uOverAmt*.92*
+   step(0.,op.x)*step(op.x,1.)*step(0.,op.y)*step(op.y,1.));
+ // (a) heavy coarse grain, worst in the shadows: ~31/255 peak-to-peak in the
+ // blacks, a third of that in the highlights. Because the whole stage runs
+ // after the frame blend, none of it is smeared — it boils at 15 Hz over an
+ // image that is dragging, which is exactly the cheap-sensor tell.
+ vec2 np=floor(uv*uLow*.8);
+ float l=dot(col,vec3(.299,.587,.114));
+ float dark=mix(1.,.28,smoothstep(.03,.55,l));
+ float n1=h21(np+tq*13.7), n2=h21(np*.33+tq*7.1+41.3), n3=h21(np*.29+tq*3.9+91.7);
+ col+=(n1-.5)*.22*dark;
+ col+=vec3(n2-.5,(n2+n3)*.5-.5,n3-.5)*.10*dark;
+ // interlace comb, then (e) the bit-crush. Quantising last is what makes the
+ // banding survive; the uneven per-channel level counts tint the bands.
+ col*=1.-.085*step(.5,fract(vUv.y*uLow.y*.5));
+ vec3 lv=vec3(19.,23.,17.);
+ gl_FragColor=vec4(floor(clamp(col,0.,1.)*lv+.5)/lv,1.); }`,
+    });
     this.copyMat = new THREE.ShaderMaterial({
       uniforms: { tIn: { value: null } },
       vertexShader: VSH,
@@ -261,10 +369,13 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     const w = Math.floor(innerWidth * r.getPixelRatio());
     const h = Math.floor(innerHeight * r.getPixelRatio());
     this.perf = perfMode;
+    // prevRT is about to be reallocated, so whatever the blend would read on
+    // the next frame is undefined — skip it once rather than blend garbage
+    this.histValid = false;
     for (const rt of [
       this.sceneRT, this.brightRT, this.blurA, this.blurB,
       this.reflectRT, this.ldrRT, this.fxaaRT, this.mbRT, this.prevRT,
-      this.dashRT, this.softA, this.softB,
+      this.dashRT, this.softA, this.softB, this.povA, this.povB,
     ])
       rt?.dispose();
     this.sceneRT = new THREE.WebGLRenderTarget(w, h, {
@@ -290,6 +401,15 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     const sh = Math.max(36, h >> (perfMode ? 2 : 1));
     this.softA = new THREE.WebGLRenderTarget(sw, sh);
     this.softB = new THREE.WebGLRenderTarget(sw, sh);
+    /* The POV pass owns its own half-res pair rather than borrowing softA/B:
+       the V-key grade can be on at the same time, and it is still holding its
+       soft layer when the POV stage runs. Always half res (never quarter) —
+       the "upscaled 480p" read depends on the ratio being exactly 2. */
+    const pw = Math.max(64, w >> 1), ph = Math.max(36, h >> 1);
+    this.povA = new THREE.WebGLRenderTarget(pw, ph);
+    this.povB = new THREE.WebGLRenderTarget(pw, ph);
+    this.povMat.uniforms.uLow.value.set(pw, ph);
+    this.smearMat.uniforms.uRes.value.set(pw, ph);
     this.compMat.uniforms.uRes.value.set(w, h);
     this.dashMat.uniforms.uRes.value.set(w, h);
     // keep the timestamp strip a constant on-screen size
@@ -297,6 +417,10 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.dashMat.uniforms.uOverSize.value.set(strip, (strip * (64 / 512) * w) / h);
     // top-left: the HUD owns both bottom corners (speed / minimap)
     this.dashMat.uniforms.uOverPos.value.set(0.022, 0.925);
+    // the POV strip shares the mild pass's placement and on-screen size, so
+    // toggling V mid-drive never moves the timestamp
+    this.povMat.uniforms.uOverPos.value.copy(this.dashMat.uniforms.uOverPos.value);
+    this.povMat.uniforms.uOverSize.value.copy(this.dashMat.uniforms.uOverSize.value);
   }
 
   /** Per-frame speed feed for the speed-perception cues (peripheral radial
@@ -306,6 +430,18 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
    */
   setSpeed(kmh: number) {
     this.speedKmh = kmh;
+  }
+
+  /** Force (or release) the extreme evidence-footage degrade. engine.ts calls
+   * this every frame off camMode; it is independent of the `grade` flag, which
+   * keeps driving the milder V-key look for the other views. Toggling also
+   * invalidates the frame-blend history, so the camera jump in or out of the
+   * POV mount cuts cleanly instead of smearing across ~15 frames at the very
+   * high blend factor this mode runs. */
+  setDashcamPov(on: boolean) {
+    if (on === this.pov) return;
+    this.pov = on;
+    this.histValid = false;
   }
 
   /** Repaint the burnt-in DVR strip (blinking REC dot + wall-clock stamp). */
@@ -340,13 +476,13 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     for (const rt of [
       this.sceneRT, this.brightRT, this.blurA, this.blurB, this.reflectRT,
       this.ldrRT, this.fxaaRT, this.mbRT, this.prevRT, this.mirrorRT,
-      this.dashRT, this.softA, this.softB,
+      this.dashRT, this.softA, this.softB, this.povA, this.povB,
     ])
       rt?.dispose();
     this.overTex.dispose();
     for (const m of [
       this.brightMat, this.blurMat, this.compMat, this.fxaaMat, this.mbMat,
-      this.copyMat, this.dashMat,
+      this.copyMat, this.dashMat, this.smearMat, this.povMat,
     ])
       m.dispose();
   }
@@ -389,12 +525,16 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     u.uExp.value = opts.exposure;
     u.uBloomStr.value = opts.bloom ? (opts.grade ? 1.15 : 0.85) : 0;
     u.uSpeedT.value = speedT;
-    const doMbSetting = opts.mblur > 0.001;
+    const pov = this.pov;
+    // POV forces the frame blend on even with motion blur switched off in
+    // settings — the smear is part of the camera, not a quality option
+    const doMbSetting = opts.mblur > 0.001 || pov;
     const dash = !!opts.grade;
     // Peripheral (fovea) blur is the same trick the dashcam corners already
     // sell via the soft/chroma-bleed mix, so skip it there to avoid stacking
-    // two corner-blur effects; also skip in perf mode (4 extra taps/px).
-    const doPeriph = !this.perf && !dash && speedT > 0.02;
+    // two corner-blur effects; also skip in perf mode (4 extra taps/px), and
+    // in POV, where the degrade owns the entire edge treatment.
+    const doPeriph = !this.perf && !dash && !pov && speedT > 0.02;
     const doFinal = doMbSetting || doPeriph;
     /* Each stage renders to screen only when nothing follows it. */
     const after = (stage: 0 | 1 | 2) =>
@@ -432,14 +572,40 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       const mbBoost = doMbSetting
         ? Math.max(0, Math.min(0.18, (this.speedKmh - 180) / 200))
         : 0;
+      // POV pins the blend hard and ignores the settings curve: a cheap sensor
+      // at night runs a long exposure, so everything drags. The one-frame
+      // history invalidation after a view change wins over it.
+      const mb = pov ? 0.66 : doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
       this.mbMat.uniforms.tCur.value = cur.texture;
       this.mbMat.uniforms.tPrev.value = this.prevRT.texture;
-      this.mbMat.uniforms.uMB.value = doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
+      this.mbMat.uniforms.uMB.value = this.histValid ? mb : 0;
       this.mbMat.uniforms.uPeriph.value = doPeriph ? speedT : 0;
       this.runPass(this.mbMat, this.mbRT);
       this.copyMat.uniforms.tIn.value = this.mbRT.texture;
       this.runPass(this.copyMat, this.prevRT);
-      this.runPass(this.copyMat, null);
+      this.histValid = true;
+      cur = this.mbRT;
+      // in POV the blended frame is the *input* to the degrade, not the output:
+      // the smear is optical and happens at the lens, the noise and the codec
+      // artefacts come after it. Keeping grain out of the history also stops
+      // the blend from dragging comet trails of it across the frame.
+      if (!pov) this.runPass(this.copyMat, null);
+    }
+    if (pov) {
+      // box-downsample to half res (exact 2:1, so the bilinear tap averages a
+      // clean 2x2), build the highlight streak layer off it, then degrade
+      this.copyMat.uniforms.tIn.value = cur.texture;
+      this.runPass(this.copyMat, this.povA);
+      this.smearMat.uniforms.tIn.value = this.povA.texture;
+      this.runPass(this.smearMat, this.povB);
+      if (!dash) this.updateOverlay(opts.time);
+      this.povMat.uniforms.uOverAmt.value = dash ? 0 : 1;
+      this.povMat.uniforms.tLow.value = this.povA.texture;
+      this.povMat.uniforms.tSmear.value = this.povB.texture;
+      // wrapped: the noise clock is floor(t*15) and float precision in the
+      // hash falls apart once the session has been up for a few hours
+      this.povMat.uniforms.uTime.value = opts.time % 60;
+      this.runPass(this.povMat, null);
     }
     this.renderer.setRenderTarget(null);
   }

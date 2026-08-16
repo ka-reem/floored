@@ -56,6 +56,41 @@ THREE.ColorManagement.enabled = false;
 
 const LAYER_NOREF = 1;
 
+/* Camera modes, in cycle order. CAM_POV is the hard-mounted dashcam: it shares
+   the cockpit's rendering (interior shell visible, mirror live) but none of its
+   head physics — a camera bolted to the windshield does not lean into corners,
+   crane to look back, or breathe under braking. */
+const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3;
+const CAM_COUNT = 4;
+const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM"];
+
+/* Dashcam mount, as an offset from the driver's eye (see cockpit.ts EYE): on
+   the centreline, sat on top of the dash pad hard against the windscreen base.
+
+   The constraint that sets this is the instrument binnacle, not the eye. The
+   pod is deliberately pinned just below the eye line (cockpit.ts puts its top
+   edge ~7 degrees under it), so ANY mount at or near eye height stares over the
+   gauges and they fill the middle of the frame — the further you raise it the
+   more of the mirror housing you pick up instead. The fix is to go *past* the
+   cluster rather than above it: at cockpit-local z = 0.64 the bezel (z ≤ 0.613)
+   and the mirror (z ≤ 0.649) are both behind the lens and can never appear,
+   whatever the body is doing, leaving only the pad ahead of us.
+
+   At y = 1.12 that clears the pad surface by 0.13 m — well past the 0.08 near
+   plane, and fixed, since the mount is rigid to the same group the trim is on. */
+const POV_MOUNT = { dy: -0.23, dz: 0.94 };
+/* 8 degrees of nose-down, on top of whatever the body is doing. With the
+   cluster behind the lens this is free to be much stronger than a cockpit view
+   could take: it drops the horizon to ~39% down the frame and lifts the far
+   edge of the pad to ~85%, so the shot is sky / road / a thin dash edge —
+   roughly 85% windscreen, which is the framing real dash-mounted cams give. */
+const POV_TILT = 0.14;
+/* Real dashcam lenses are quoted diagonally at 130-170; the useful figure is
+   the horizontal one, and 105 is a typical mid-range unit. three's fov is
+   vertical, so it is derived from the aspect each frame and clamped so a
+   portrait phone does not end up with a fisheye. */
+const POV_HFOV = 105;
+
 export class Game {
   // public state the UI reads
   settings: GameSettings;
@@ -283,7 +318,7 @@ export class Game {
         this.chasePos.set(this.car.x - Math.sin(this.car.h) * 4.4, this.car.y + 2.15, this.car.z - Math.cos(this.car.h) * 4.4);
         this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
       },
-      setCam: (i: number) => (this.camMode = i % 3),
+      setCam: (i: number) => (this.camMode = i % CAM_COUNT),
       setInput: (o: Partial<DriverInput> | null) => (this.debug.override = o),
       /* Drop the car onto the corridor at a given z, in lane, at speed. The
          two named spots are the ones worth eyeballing: the tunnel approach and
@@ -389,8 +424,8 @@ export class Game {
     }
     if (!this.running) return;
     if (k === "c") {
-      this.camMode = (this.camMode + 1) % 3;
-      this.ui.toast(["CHASE", "COCKPIT", "HOOD"][this.camMode]);
+      this.camMode = (this.camMode + 1) % CAM_COUNT;
+      this.ui.toast(CAM_NAMES[this.camMode]);
     }
     if (k === "l") {
       this.car.lightsUser = !this.car.lightsUser;
@@ -457,7 +492,8 @@ export class Game {
     const camBtn = document.getElementById("tcC");
     if (camBtn)
       camBtn.addEventListener("pointerdown", () => {
-        this.camMode = (this.camMode + 1) % 3;
+        this.camMode = (this.camMode + 1) % CAM_COUNT;
+        this.ui.toast(CAM_NAMES[this.camMode]);
       });
   }
 
@@ -732,13 +768,16 @@ export class Game {
   }
 
   /** Cabin EQ follows the camera, not the car: only the cockpit view is
-      actually inside the shell. Edge-triggered, since the call ramps filter
+      actually inside the shell. The dashcam POV mount is geometrically inside
+      it but deliberately stays dry — a dashcam's mic is pressed against the
+      glass, so it hears the road and the wind, not a muffled cabin.
+      Edge-triggered, since the call ramps filter
       parameters over a quarter second — re-issuing that every frame would
       keep restarting the ramp and it would never arrive. */
   private interiorUpdate() {
     if (this.camMode === this.lastInteriorMode) return;
     this.lastInteriorMode = this.camMode;
-    this.audio.setInterior(this.camMode === 1);
+    this.audio.setInterior(this.camMode === CAM_COCKPIT);
   }
 
   /** Hand the audio side the traffic it should be able to hear, and turn
@@ -872,13 +911,22 @@ export class Game {
     rig.bodyG.rotation.x = -Math.atan(car.slope) + this.pitchVis;
     rig.bodyG.rotation.z = car.rollDyn;
     rig.carGroup.updateMatrixWorld();
-    rig.cockpit.group.visible = this.camMode === 1;
-    rig.exteriorG.visible = this.camMode !== 1;
+    /* The POV mount sits inside the cabin, so it needs the interior shell — the
+       far edge of the dash pad is the only interior geometry in its frame, and
+       it is what stops the shot reading as a floating camera. It must NOT have
+       the exterior body either, whose front faces all point away from a camera
+       sitting inside it, leaving the roof and flanks invisible and the far
+       bodywork showing through. */
+    const inside = this.camMode === CAM_COCKPIT || this.camMode === CAM_POV;
+    rig.cockpit.group.visible = inside;
+    rig.exteriorG.visible = !inside;
     // the cockpit now has its own nav screen (drawScreen above), so the
-    // external HUD minimap is redundant in that view — hide it
+    // external HUD minimap is redundant in that view — hide it. POV keeps the
+    // HUD: the head unit is a long way down-frame there, and the map is the
+    // one thing the player still needs to navigate with.
     if (this.mmap) {
       const mmapCv = document.getElementById("mmap");
-      if (mmapCv) mmapCv.style.display = this.camMode === 1 ? "none" : "block";
+      if (mmapCv) mmapCv.style.display = this.camMode === CAM_COCKPIT ? "none" : "block";
     }
     rig.pivFL.rotation.y = car.delta;
     rig.pivFR.rotation.y = car.delta;
@@ -907,7 +955,9 @@ export class Game {
     }
     this.gaugeT += dt;
     this.dropT += dt;
-    if (this.gaugeT > 0.045 && this.camMode === 1) {
+    // cockpit only: the POV mount sits forward of the cluster and the head
+    // unit, so neither is ever in its frame and repainting them is pure waste
+    if (this.gaugeT > 0.045 && this.camMode === CAM_COCKPIT) {
       this.gaugeT = 0;
       rig.cockpit.drawGauges(
         car.rpm, Math.abs(car.u) * 3.6, car.rev ? "R" : "D" + car.gear, now,
@@ -1020,6 +1070,34 @@ export class Game {
       if (freshEntry) this.lookPos.copy(this.tmpV2);
       else this.lookPos.lerp(this.tmpV2, 1 - Math.exp(-9 * dt));
       this.camera.lookAt(this.lookPos);
+    } else if (this.camMode === CAM_POV) {
+      /* Hard-mounted dashcam. No head springs, no lookahead, no lean, no
+         look-back: it is a bracket stuck to the dash top, ~0.15 m inboard of
+         the glass, so the only motion it has is the body's own. Entering the
+         mode also parks the cockpit head
+         state at neutral, so stepping back into the cockpit view starts from
+         centre instead of resuming a stale spring and dipping. */
+      if (this.lastCamMode !== CAM_POV) {
+        this.head.x = this.head.y = this.head.z = this.head.roll = 0;
+        this.head.vx = this.head.vy = this.head.vz = this.head.vroll = 0;
+        this.lookaheadYaw = 0;
+        this.lbLean = 0;
+      }
+      const P = this.spec.shell;
+      this.camera.position.copy(
+        this.rig.bodyG.localToWorld(
+          this.tmpV.set(
+            0,
+            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + POV_MOUNT.dy,
+            COCKPIT_EYE.z + POV_MOUNT.dz
+          )
+        )
+      );
+      this.camera.rotation.y = car.h + Math.PI;
+      // same sign flip as the cockpit (body pitch is nose-up-negative, camera
+      // pitch is look-up-positive), plus the fixed downward cant of the bracket
+      this.camera.rotation.x = -this.rig.bodyG.rotation.x - POV_TILT;
+      this.camera.rotation.z = -this.rig.bodyG.rotation.z;
     } else {
       const back = this.lookBack ? Math.PI : 0;
       this.head.vx += (-car.ayS * 0.006 - this.head.x * 46) * dt;
@@ -1109,8 +1187,19 @@ export class Game {
       this.camera.rotation.z =
         -this.rig.bodyG.rotation.z + clamp(car.u * car.r * 0.0035, -0.06, 0.06) + this.head.roll;
     }
-    const kickM = this.camMode === 0 ? 0.18 : this.camMode === 2 ? 0.6 : 1;
-    const fovT = this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
+    const kickM = this.camMode === CAM_CHASE ? 0.18 : this.camMode === CAM_HOOD ? 0.6 : 1;
+    /* The dashcam runs a fixed lens: no speed FOV kick (a bracket-mounted
+       camera has no zoom, and the kick is a driver-sensation cue, not an
+       optical one) and no user FOV preference either. 105 deg horizontal at
+       16:9 works out at ~72.5 vertical / ~112 diagonal. */
+    const fovT =
+      this.camMode === CAM_POV
+        ? clamp(
+          (2 * Math.atan(Math.tan((POV_HFOV * Math.PI) / 360) / this.camera.aspect) * 180) /
+          Math.PI,
+          62, 100
+        )
+        : this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
     if (Math.abs(this.camera.fov - fovT) > 0.25) {
       this.camera.fov = fovT;
       this.camera.updateProjectionMatrix();
@@ -1290,7 +1379,7 @@ export class Game {
         this.chunksUpdate();
       }
       const mmapCv = document.getElementById("mmap") as HTMLCanvasElement | null;
-      if (this.mmap && mmapCv && this.camMode !== 1 && this.frameN % 4 === 0)
+      if (this.mmap && mmapCv && this.camMode !== CAM_COCKPIT && this.frameN % 4 === 0)
         drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
     } else {
       this.acc = 0;
@@ -1303,7 +1392,10 @@ export class Game {
       this.tunnelUpdate(0, now);
     }
     this.frameN++;
-    if (this.mirror && this.camMode === 1 && this.frameN % 2 === 0) this.renderMirror();
+    // cockpit only: the POV mount sits forward of the mirror housing, so the
+    // glass is behind its lens and never needs rendering
+    if (this.mirror && this.camMode === CAM_COCKPIT && this.frameN % 2 === 0)
+      this.renderMirror();
     if (this.settings.reflections && (!this.perfMode || this.frameN % 2 === 0))
       this.renderReflection();
     this.camera.updateMatrixWorld();
@@ -1312,6 +1404,9 @@ export class Game {
     this.renderer.render(this.scene, this.camera);
     const f = this.dayFactor();
     this.post.setSpeed(Math.abs(this.car.u) * 3.6);
+    // the extreme degrade is a property of the camera, not a user filter — the
+    // V-key `grade` below stays independent and keeps driving the mild look
+    this.post.setDashcamPov(this.camMode === CAM_POV);
     this.post.process({
       // inside the tunnel the eye adapts to a much darker box: lift exposure
       // so the sodium strip and the walls read, instead of crushing to black
