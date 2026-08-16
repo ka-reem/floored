@@ -62,6 +62,22 @@ const LAYER_NOREF = 1;
     one pair of numbers so the light pool and the paint cannot disagree. */
 const HL_THROW = 90, HL_THROW_HI = 155;
 
+/** Headlight aim, as the slope of the beam's upper edge — the cut-off — not
+    of its axis. Positive is downward.
+
+    Dipped beam is aimed 1.0% below horizontal, which is where the real
+    regulation puts it (ECE allows 1.0–1.5% for a lamp at this height) and is
+    the shallowest setting inside that range, so the pool reaches as far as it
+    legally can: the cut-off meets the road at lampHeight/0.01, i.e. 50 m on
+    the lowest-nosed shell and 62 m on the highest.
+
+    Main beam is aimed 2.6% ABOVE horizontal instead. Level would be more
+    literal, but at 40 m a level cut-off tops out around 0.85 m and leaves the
+    greenhouse of the car in front dark, which loses the one contrast that
+    makes flashing worth anything. 2.6% clears a roof at 40 m and keeps
+    clearing it further out. */
+const LOW_DIP = 0.010, HI_RISE = 0.026;
+
 /** How bright lane paint sits at night *outside* the headlight beam, 0..1.
     Lower than mats.ts's 0.18 default because the night deck underneath it is
     now about six times darker while the paint, being unlit, did not change at
@@ -1075,16 +1091,40 @@ export class Game {
       lamps, this.beamPos, this.beamDir, f, BEAM_FLOOR,
       hi ? HL_THROW_HI / HL_THROW : 1);
     /* Main beam is not simply brighter. The cone tightens and hardens, throws
-       roughly 70% further, and the cut-off comes up from a dipped ~2 degrees
-       to level — which is what actually reads as "high beam" down a dark road,
-       and why oncoming traffic hates it. x on the targets is left alone: the
-       two lamps toe out from each other and that spread is per-side. */
+       roughly 70% further, and — the part that actually reads as "high beam"
+       down a dark road, and why oncoming traffic hates it — the cut-off comes
+       up from below horizontal to above it. x on the targets is left alone:
+       the two lamps toe out from each other and that spread is per-side.
+
+       What matters for a dipped beam is not where the cone points but where
+       its UPPER EDGE sits, because that edge is the cut-off: everything above
+       it is dark. A real low beam is aimed about 1% below horizontal, so the
+       tallest thing it can light at distance d is (lamp height − d/100) and
+       the lit band on a car ahead SHRINKS as you close on it, topping out
+       around plate height. Aim the cone by its edge and that falls out for
+       free; aim it by its axis, as this did, and the edge ends up pointing
+       skyward and washes whole vehicles.
+
+       Pitch is therefore derived from the cone's own half-angle and the lamp's
+       own mount height, per car, rather than from a fixed target height — the
+       four shells mount their lamps between 0.50 m and 0.62 m and a hardcoded
+       y would mean a different cut-off in each of them. */
     for (const sp of [this.rig.spotL, this.rig.spotR]) {
       sp.distance = hi ? HL_THROW_HI : HL_THROW;
-      sp.angle = hi ? 0.4 : 0.46;
+      /* The cut-off constraint pins the axis pitch to the half-angle, so a
+         wide cone is forced to point steeply down and its hot spot lands on
+         the bumper. These angles put the hot spot ~2.1 m ahead on dipped and
+         ~3.2 m on main, which is where the old beam already threw its
+         near-field brightness — the cone narrows so the foreground does not
+         get brighter than it is today while the cut-off is being fixed. */
+      sp.angle = hi ? 0.18 : 0.22;
       sp.penumbra = hi ? 0.24 : 0.42;
-      sp.target.position.y = hi ? 0.34 : -0.4;
       sp.target.position.z = hi ? 46 : 26;
+      const pitch = hi
+        ? sp.angle - Math.atan(HI_RISE)
+        : sp.angle + Math.atan(LOW_DIP);
+      sp.target.position.y =
+        sp.position.y - (sp.target.position.z - sp.position.z) * Math.tan(pitch);
     }
     this.rig.headMat.emissiveIntensity = hi ? 4.2 : car.lightsOn ? 2.4 : 0.12;
     // the glow sprite keeps most of its punch in daylight when flashing, or a
