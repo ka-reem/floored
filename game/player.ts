@@ -209,10 +209,11 @@ export function buildPlayerCar(
   box(P.W * 0.23, 0.1, 0.06, tailMat, hlX, tlY, -L2 - 0.16, false);
   const ledMat = new THREE.MeshStandardMaterial({ color: 0x220305, emissive: 0xff2030, emissiveIntensity: 1.4 });
   box(P.W * 0.78, 0.045, 0.03, ledMat, 0, tlY + 0.06, -L2 - 0.185, false);
-  box(0.12, 0.08, 0.06, sigMatL, -(P.W / 2 - 0.08), hlY - 0.01, L2 + 0.16, false);
-  box(0.12, 0.08, 0.06, sigMatL, -(P.W / 2 - 0.06), tlY - 0.02, -L2 - 0.15, false);
-  box(0.12, 0.08, 0.06, sigMatR, P.W / 2 - 0.08, hlY - 0.01, L2 + 0.16, false);
-  box(0.12, 0.08, 0.06, sigMatR, P.W / 2 - 0.06, tlY - 0.02, -L2 - 0.15, false);
+  // car-left is +x in this frame (facing +z, right side at -x)
+  box(0.12, 0.08, 0.06, sigMatL, P.W / 2 - 0.08, hlY - 0.01, L2 + 0.16, false);
+  box(0.12, 0.08, 0.06, sigMatL, P.W / 2 - 0.06, tlY - 0.02, -L2 - 0.15, false);
+  box(0.12, 0.08, 0.06, sigMatR, -(P.W / 2 - 0.08), hlY - 0.01, L2 + 0.16, false);
+  box(0.12, 0.08, 0.06, sigMatR, -(P.W / 2 - 0.06), tlY - 0.02, -L2 - 0.15, false);
   const mkrM = new THREE.MeshStandardMaterial({ color: 0x241204, emissive: 0xffa028, emissiveIntensity: 1.1 });
   const mkrR = new THREE.MeshStandardMaterial({ color: 0x240406, emissive: 0xff2233, emissiveIntensity: 1.0 });
   for (const s of [-1, 1]) {
