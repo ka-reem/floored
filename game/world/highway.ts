@@ -1,8 +1,11 @@
 import * as THREE from "three";
-import { rrand, type Rng } from "../util";
+import { type Rng } from "../util";
 import { makeTex, asphalt, signTexF, exitSignTexF, warnTexF } from "../textures";
 import { RAMP_W, CONNECT_Z } from "./const";
-import { getCorridor, TUNNEL, TOLL, type Station } from "./corridor";
+import { parapetGap } from "./ramps";
+import {
+  getCorridor, assertPitches, signPlan, PITCH, PHASE, SIGN, TUNNEL, TOLL, type Station,
+} from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
@@ -19,8 +22,9 @@ const LAYER_NOREF = 1;
    what physics queries.
 
    The deck is emitted in ~300 m chunks so frustum culling keeps only a few
-   metres of road in the draw list at a time, and it is built 420 m past each
-   canonical end (see DECK_EXT) so the loop splice is never in view. */
+   metres of road in the draw list at a time, and it is built DECK_EXT past
+   each canonical end so the loop splice is never in view — ahead of the player
+   after the wrap, and behind them in the mirrors before it. */
 
 const CHUNK_Z = 300;
 /** parapet geometry every N stations (stations are 4 m apart) */
@@ -62,43 +66,70 @@ class Soup {
    The old signs were posted at a fixed lateral offset, which put their outer
    post past the pavement edge and left it standing in mid-air — up to 2.2 m off
    the deck on the narrow sections. That is what read as "signs on the road,
-   glitchy". Every overhead sign is now a cantilever: one post planted on the
-   outer shoulder, an arm reaching in over the lanes, and the panel hung from
-   the arm well above vehicle height. The post lateral offset is derived from
-   the corridor's half-width at that z, so it lands on pavement no matter how
-   wide the road is there. */
+   glitchy". Every overhead sign is now a cantilever whose dimensions come from
+   corridor.SIGN, planted at cor.signPostLat(z):
+
+   - the post stands *outboard* of the parapet, where a real gantry leg goes.
+     Inboard of it the post is inside the band a car can still reach (the
+     parapet clamp in collide.ts stops the car at hw + 0.06), so it would be
+     something you drive straight through — a ghost post beside the lane reads
+     as "the sign is on the road" as surely as a misplaced panel does;
+   - the arm sits wholly *above* the panel rather than across its face, so no
+     two surfaces here are coplanar or near-coplanar;
+   - the panel gets a back skin BACK_GAP behind its face, so a sign seen in the
+     mirrors after you pass it is a sign, not a hole where one used to be;
+   - the panel respects fog. It is a MeshBasicMaterial (a retroreflective board
+     stays legible at night), but an unfogged dark-green panel hangs in the haze
+     as a hard-edged rectangle at 600 m — the same failure the tunnel portal's
+     chevrons had. */
 function signFactory(scene: THREE.Scene, cor: ReturnType<typeof getCorridor>) {
   const postMat = new THREE.MeshStandardMaterial({
     color: 0x39404e, roughness: 0.6, metalness: 0.6,
   });
-  /** clearance from the deck to the bottom of a panel that overhangs a lane */
-  const CLEAR = 5.15;
+  const backMat = new THREE.MeshStandardMaterial({ color: 0x555c68, roughness: 0.8 });
+  const { CLEAR, POST_T, ARM_X, ARM_T, BACK_GAP } = SIGN;
   return function board(z: number, w: number, h: number, tex: THREE.Texture) {
-    // a mast this tall would spear the tunnel ceiling (6.4 m of clear height),
-    // so the tube gets its own signage and never one of these
+    // a mast this tall would spear the tunnel ceiling, so the tube gets its own
+    // signage and never one of these
     if (cor.inTunnel(z)) return null;
-    const hw = cor.halfWidth(z);
-    const postLat = -(hw - 0.7); // on the shoulder, inboard of the parapet
-    const p = cor.worldOf(z, postLat);
-    const top = CLEAR + h;
+    const p = cor.worldOf(z, cor.signPostLat(z));
+    const top = CLEAR + h; // panel top; the arm sits on it, the post above that
+    const mastH = top + ARM_T + 0.12;
     const g = new THREE.Group();
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.3, top, 0.3), postMat);
-    post.position.y = top / 2;
+    const post = new THREE.Mesh(new THREE.BoxGeometry(POST_T, mastH, POST_T), postMat);
+    post.position.y = mastH / 2;
     post.castShadow = true;
     g.add(post);
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(w + 0.6, 0.26, 0.26), postMat);
-    arm.position.set(w / 2 + 0.3, top - 0.13, 0);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(w + ARM_X + 0.3, ARM_T, ARM_T), postMat);
+    arm.position.set(w / 2 + ARM_X, top + ARM_T / 2, 0);
     g.add(arm);
     const panel = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
-      new THREE.MeshBasicMaterial({ map: tex, fog: false }));
-    panel.position.set(w / 2 + 0.3, CLEAR + h / 2, -0.2);
+      new THREE.MeshBasicMaterial({ map: tex }));
+    panel.position.set(w / 2 + ARM_X, CLEAR + h / 2, -BACK_GAP / 2);
     panel.rotation.y = Math.PI; // face oncoming traffic
     g.add(panel);
+    const back = new THREE.Mesh(new THREE.PlaneGeometry(w, h), backMat);
+    back.position.set(w / 2 + ARM_X, CLEAR + h / 2, BACK_GAP / 2);
+    g.add(back);
     g.position.set(p.x, p.y, p.z);
     g.rotation.y = cor.pose(z).h;
     scene.add(g);
     return g;
   };
+}
+
+/** A flat, road-hugging quad whose texture reads "up the road".
+
+   Getting this wrong is subtle and very visible. Setting `rotation.x = -π/2`
+   and `rotation.z = -h` on a plane composes (XYZ order) to a frame whose
+   lateral axis is (cos h, 0, +sin h) — mirrored about the corridor normal, so
+   every road decal on a curve sat skewed by twice the heading. Baking the
+   plane flat in the geometry instead leaves one honest yaw to apply. */
+function flatQuad(w: number, l: number) {
+  const g = new THREE.PlaneGeometry(w, l);
+  g.rotateX(-Math.PI / 2); // face up
+  g.rotateY(Math.PI); // texture "up" now points along +z, i.e. down the road
+  return g;
 }
 
 export function buildHighway(
@@ -109,6 +140,7 @@ export function buildHighway(
   rng: Rng
 ) {
   const cor = getCorridor();
+  assertPitches();
   const { conc, concDark, barrier, soundwall, hwy } = mats;
   const add = (b: { x0: number; x1: number; z0: number; z1: number; y0: number; y1: number }) =>
     world.colliders.addAabb(b);
@@ -141,11 +173,7 @@ export function buildHighway(
 
   const WALL_H = 1.05, WALL_T = 0.34, DECK_TH = 1.15;
   /** stations where a parapet must not be drawn (the ramp divergence zones) */
-  const gapZ: { z0: number; z1: number }[] = [];
-  for (const r of terrain.ramps) {
-    const g = Math.max(r.gapZ + 4, RAMP_W / 2 + 3);
-    gapZ.push({ z0: r.zr - g, z1: r.zr + g });
-  }
+  const gapZ = terrain.ramps.map(parapetGap);
   const wallOk = (z: number, east: boolean) => {
     if (east) return true; // ramps only ever leave on the west side
     for (const g of gapZ) if (z > g.z0 && z < g.z1) return false;
@@ -216,14 +244,17 @@ export function buildHighway(
       );
     };
     // solid edge lines down both shoulders
-    for (let z = cor.ZB0; z < cor.ZB1 - 6; z += 6) {
-      const h0 = cor.halfWidth(z) - 0.45, h1 = cor.halfWidth(z + 6) - 0.45;
-      stripe(z, z + 6, -h0, -h1, 0.2);
-      stripe(z, z + 6, h0, h1, 0.2);
+    const E = PITCH.edge;
+    for (const z of cor.lattice(E)) {
+      if (z + E > cor.ZB1) continue;
+      const h0 = cor.halfWidth(z) - 0.45, h1 = cor.halfWidth(z + E) - 0.45;
+      stripe(z, z + E, -h0, -h1, 0.2);
+      stripe(z, z + E, h0, h1, 0.2);
     }
     // dashed lane boundaries; a boundary only exists once its lane is real
-    const DASH = 5, GAP = 9;
-    for (let z = cor.ZB0; z < cor.ZB1 - DASH; z += DASH + GAP) {
+    const DASH = 6;
+    for (const z of cor.lattice(PITCH.dash)) {
+      if (z + DASH > cor.ZB1) continue;
       const nf = cor.laneCount(z);
       for (let k = 1; k < Math.ceil(nf - 0.35); k++)
         stripe(z, z + DASH, cor.laneEdge(k, z), cor.laneEdge(k, z + DASH), 0.16);
@@ -231,6 +262,11 @@ export function buildHighway(
   }
 
   /* ---- lane-drop tapers: solid diagonal + hatching + merge arrows ---- */
+  /* Merge arrow. It bends to the *driver's right*, which is the only direction
+     it is ever wanted: lanes stay centred on the alignment, so the lane that
+     runs out at a taper is always the outermost one on the left, and the exit
+     gore is always on the right too. Canvas +x is the driver's right once the
+     quad is laid down by flatQuad(). */
   const arrowTex = makeTex(96, 192, (ctx, w, h) => {
     ctx.clearRect(0, 0, w, h);
     ctx.strokeStyle = "rgba(235,240,248,.92)";
@@ -238,13 +274,13 @@ export function buildHighway(
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(w / 2, h - 14);
-    ctx.quadraticCurveTo(w / 2, h * 0.4, w * 0.24, h * 0.2);
+    ctx.quadraticCurveTo(w / 2, h * 0.4, w * 0.76, h * 0.2);
     ctx.stroke();
     ctx.fillStyle = "rgba(235,240,248,.92)";
     ctx.beginPath();
-    ctx.moveTo(w * 0.06, h * 0.22);
-    ctx.lineTo(w * 0.42, h * 0.05);
-    ctx.lineTo(w * 0.38, h * 0.36);
+    ctx.moveTo(w * 0.94, h * 0.22);
+    ctx.lineTo(w * 0.58, h * 0.05);
+    ctx.lineTo(w * 0.62, h * 0.36);
     ctx.closePath();
     ctx.fill();
   });
@@ -252,12 +288,10 @@ export function buildHighway(
     map: arrowTex, transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
-  const decal = (z: number, lat: number, w: number, l: number, mat: THREE.Material, mirror = false) => {
+  const decal = (z: number, lat: number, w: number, l: number, mat: THREE.Material) => {
     const p = cor.worldOf(z, lat);
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, l), mat);
-    m.rotation.x = -Math.PI / 2;
-    m.rotation.z = -cor.pose(z).h;
-    if (mirror) m.scale.x = -1;
+    const m = new THREE.Mesh(flatQuad(w, l), mat);
+    m.rotation.y = cor.pose(z).h;
     m.position.set(p.x, p.y + 0.024, p.z);
     m.layers.set(LAYER_NOREF);
     scene.add(m);
@@ -299,10 +333,14 @@ export function buildHighway(
         [0, 0], [0, 1], [1, 1], [1, 0]
       );
     }
-    // "lane ends, merge" arrows in the closing lane, ahead of the taper
+    /* "Lane ends, merge" arrows in the closing lane, ahead of the taper. The
+       taper out of the toll plaza starts only a few metres past it, so without
+       the guard these three land on the plaza deck, painted across the gate
+       islands and under the canopy. */
     for (let k = 0; k < 3; k++) {
       const z = d.z0 - 30 - k * 26;
       if (z < cor.ZB0) break;
+      if (cor.inTunnel(z) || (z > TOLL.plazaZ0 - 6 && z < TOLL.plazaZ1 + 6)) continue;
       decal(z, cor.laneOffset(Math.round(cor.laneCount(z)) - 1, z), 1.6, 3.4, arrowMat);
     }
   }
@@ -328,15 +366,15 @@ export function buildHighway(
 
   /* ---------------- piers ---------------- */
   {
-    const PITCH = 30;
-    const n = Math.ceil((cor.ZB1 - cor.ZB0) / PITCH);
+    const zs = cor.lattice(PITCH.pier);
+    const n = zs.length;
     const pier = new THREE.InstancedMesh(
       new THREE.CylinderGeometry(1.15, 1.4, 1, 10), concDark, n);
     const beams = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1.1, 2.4), concDark, n);
     const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
       E = new THREE.Euler(), S = new THREE.Vector3();
     let k = 0;
-    for (let z = cor.ZB0 + 12; z < cor.ZB1 - 12 && k < n; z += PITCH) {
+    for (const z of zs) {
       const p = cor.pose(z);
       const gy = terrain.h(p.x, z);
       const hgt = Math.max(1.5, p.y - 1.4 - gy);
@@ -403,9 +441,8 @@ export function buildHighway(
     if (isExit) world.exits.push({ z: r.zr, no: gi + 1, name });
     // painted gore chevrons at the nose
     const gp = cor.worldOf(r.zr + (isExit ? 4 : -4), lat);
-    const gore = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 6.4), goreMat);
-    gore.rotation.x = -Math.PI / 2;
-    gore.rotation.z = -cor.pose(r.zr).h + (isExit ? 0 : Math.PI);
+    const gore = new THREE.Mesh(flatQuad(3.2, 6.4), goreMat);
+    gore.rotation.y = cor.pose(r.zr).h + (isExit ? 0 : Math.PI);
     gore.position.set(gp.x, gp.y + 0.03, gp.z);
     gore.layers.set(LAYER_NOREF);
     scene.add(gore);
@@ -416,17 +453,9 @@ export function buildHighway(
     bea.position.set(bp.x, bp.y + 1.9, bp.z);
     scene.add(bea);
 
-    if (isExit) {
-      // decel-lane arrows and countdown signage
-      for (let k = 0; k < 3; k++)
-        decal(r.zr - 34 - k * 26, lat + 0.5, 1.6, 3.4, arrowMat);
-      for (const dist of [400, 200])
-        board(r.zr - dist, 7.4, 2.8, exitSignTexF(gi + 1, dist + " m", name.split(" ")[0]));
-      board(r.zr - 40, 7.4, 2.8, exitSignTexF(gi + 1, "出口", name.split(" ")[0]));
-    } else {
-      // 260 m back would put this on top of the exit gore at z = -330
-      board(r.zr - 200, 6.6, 2.5, warnTexF("合流注意", "MERGING TRAFFIC"));
-    }
+    // decel-lane arrows leading into the exit
+    if (isExit)
+      for (let k = 0; k < 3; k++) decal(r.zr - 34 - k * 26, lat + 0.5, 1.6, 3.4, arrowMat);
     // ground-level sign at the ramp foot
     const gx = r.footX - 6, gz = r.footZ + (isExit ? -1 : 1) * (RAMP_W / 2 + 2.4);
     const gpole = new THREE.Mesh(new THREE.BoxGeometry(0.24, 3.6, 0.24), postMat);
@@ -434,21 +463,36 @@ export function buildHighway(
     scene.add(gpole);
     const gb = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 1.8),
       new THREE.MeshBasicMaterial({
-        map: signTexF("首都高", isExit ? "OUT ↓" : "IN ↑"), fog: false }));
+        map: signTexF("首都高", isExit ? "OUT ↓" : "IN ↑") }));
     gb.position.set(gx, terrain.h(gx, gz) + 3.4, gz);
     gb.rotation.y = Math.PI / 2;
     scene.add(gb);
   });
 
+  /* Cantilever boards. The plan — which board, where, how big — lives in
+     corridor.signPlan() so the browser-free checks can assert the real
+     placement rather than a copy of it. */
+  for (const s of signPlan()) {
+    const nm = (EXIT_NAMES[s.gore] || "出口").split(" ")[0];
+    const tex =
+      s.kind === "exit-count" ? exitSignTexF(s.gore + 1, s.dist + " m", nm)
+        : s.kind === "exit-gore" ? exitSignTexF(s.gore + 1, "出口", nm)
+          : s.kind === "merge" ? warnTexF("合流注意", "MERGING TRAFFIC")
+            : warnTexF("料金所 " + s.dist + " m", "TOLL");
+    board(s.z, s.w, s.h, tex);
+  }
+
   /* ---------------- deck dressing ---------------- */
-  // edge reflectors
+  /* Edge reflectors, on top of the parapet rather than 40 cm inside the
+     pavement edge — where they were, they were below the barrier's top and so
+     buried in it from most angles. */
   {
     const pts: number[] = [];
-    for (let z = cor.ZB0 + 12; z <= cor.ZB1 - 12; z += 24) {
+    for (const z of cor.lattice(PITCH.reflector)) {
       if (cor.inTunnel(z)) continue;
-      const hw = cor.halfWidth(z) - 0.4;
+      const hw = cor.halfWidth(z) + 0.23;
       const a = cor.worldOf(z, -hw), b = cor.worldOf(z, hw);
-      pts.push(a.x, a.y + 0.92, a.z, b.x, b.y + 0.92, b.z);
+      pts.push(a.x, a.y + 1.02, a.z, b.x, b.y + 1.02, b.z);
     }
     const rg = new THREE.BufferGeometry();
     rg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
@@ -466,15 +510,15 @@ export function buildHighway(
   {
     const gMat = new THREE.MeshStandardMaterial({ color: 0x3a404c, roughness: 0.6, metalness: 0.4 });
     const words = ["箱崎 Hakozaki", "新宿 Shinjuku", "渋谷 Shibuya", "湾岸線 Wangan"];
-    for (let z = cor.ZB0 + 200; z <= cor.ZB1 - 200; z += 520) {
+    for (const z of cor.lattice(PITCH.gantry)) {
       if (cor.inTunnel(z) || cor.inToll(z)) continue;
       if (CONNECT_Z.some((cz) => Math.abs(z - cz) < 220)) continue;
       const p = cor.pose(z);
       const hw = cor.halfWidth(z);
       const g = new THREE.Group();
-      // legs stand on the outer shoulder: outboard of every lane, but inboard
-      // of the parapet, so they are never left hanging off the deck edge
-      const legLat = hw - 0.62;
+      // legs straddle the parapet: clear of every lane, and clear of the band a
+      // car can still reach when it is scraping the barrier
+      const legLat = hw + 0.32;
       for (const s of [-1, 1]) {
         const leg = new THREE.Mesh(new THREE.BoxGeometry(0.5, 7.2, 0.5), gMat);
         leg.position.set(s * legLat, 3.6, 0);
@@ -484,15 +528,23 @@ export function buildHighway(
       const beam = new THREE.Mesh(new THREE.BoxGeometry(legLat * 2 + 0.9, 0.75, 0.6), gMat);
       beam.position.y = 7.2;
       g.add(beam);
-      const w1 = words[Math.floor(rrand(rng, 0, words.length)) % words.length];
+      /* Pick the wording from the *wrapped* lattice index. A random draw here
+         would give the gantry 380 m past the splice different text from the
+         one 380 m before it — the same structure, relabelled mid-teleport. */
+      const w1 = words[cor.latticeIndex(z, PITCH.gantry) % words.length];
       // the deck is only 10.5 m wide where it drops to two lanes, so size the
       // panel to the road rather than hanging it out over the drop
       const sw = Math.min(9, legLat * 2 - 1.4);
+      // fogged, and backed, for the same reasons as the cantilever boards
       const sign = new THREE.Mesh(new THREE.PlaneGeometry(sw, sw * 0.29),
-        new THREE.MeshBasicMaterial({ map: signTexF(w1, "首都高速 C1"), fog: false }));
+        new THREE.MeshBasicMaterial({ map: signTexF(w1, "首都高速 C1") }));
       sign.position.set(0, 5.5, -0.35);
       sign.rotation.y = Math.PI;
       g.add(sign);
+      const sBack = new THREE.Mesh(new THREE.PlaneGeometry(sw, sw * 0.29),
+        new THREE.MeshStandardMaterial({ color: 0x555c68, roughness: 0.8 }));
+      sBack.position.set(0, 5.5, -0.35 + SIGN.BACK_GAP);
+      g.add(sBack);
       g.position.set(p.x, p.y, p.z);
       g.rotation.y = p.h;
       scene.add(g);
@@ -504,11 +556,12 @@ export function buildHighway(
      the gores, since a 2.6 m translucent slab standing over an exit reads as a
      black panel across the sign line. */
   {
-    const SEG = 92, PITCH = 330, H = 2.6;
+    const SEG = 92, H = 2.6;
     const swMat = soundwall.clone();
     swMat.side = THREE.DoubleSide;
     const S = new Soup();
-    for (let z0 = cor.ZB0 + 90; z0 < cor.ZB1 - SEG - 60; z0 += PITCH) {
+    for (const z0 of cor.lattice(PITCH.soundwall)) {
+      if (z0 + SEG > cor.ZB1) continue;
       const mid = z0 + SEG / 2;
       if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
       if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
@@ -533,17 +586,26 @@ export function buildHighway(
   {
     const poleG = new THREE.CylinderGeometry(0.09, 0.12, 7.6, 6);
     const armG = new THREE.BoxGeometry(1.7, 0.09, 0.09);
-    const NP = Math.ceil((cor.ZB1 - cor.ZB0) / 46) + 4;
+    // half a pitch off the lattice origin: the gantry pitch is a multiple of
+    // this one, so on phase 0 every gantry would have a light pole inside its leg
+    const zs = cor.lattice(PITCH.light, PHASE.light);
+    const NP = zs.length;
     const poles = new THREE.InstancedMesh(poleG, mats.pole, NP);
     const arms = new THREE.InstancedMesh(armG, mats.pole, NP);
     const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
       E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
-    let n = 0, flip = 1;
-    for (let z = cor.ZB0 + 30; z <= cor.ZB1 - 30 && n < NP; z += 46) {
+    let n = 0;
+    for (const z of zs) {
       if (cor.inTunnel(z) || cor.inToll(z)) continue;
-      flip = -flip;
+      /* Which side a pole stands on has to be a function of *where* it is, not
+         of how many poles have been emitted so far: skipping the tunnel would
+         otherwise flip the phase of everything downstream of it, and the two
+         sides of the splice would alternate out of step. */
+      const flip = cor.latticeIndex(z, PITCH.light, PHASE.light) % 2 ? 1 : -1;
       const p = cor.pose(z);
-      const lat = flip * (cor.halfWidth(z) - 0.6);
+      // mounted on the parapet, not inside the shoulder where a car scraping
+      // the barrier would drive through the pole
+      const lat = flip * (cor.halfWidth(z) + 0.23);
       E.set(0, p.h, 0);
       Q.setFromEuler(E);
       V.set(p.x + lat * p.nx, p.y + 3.8, p.z + lat * p.nz);
@@ -625,7 +687,8 @@ function buildTunnel(
        reads as a black polygon hanging in the air. */
     const hz = new THREE.Mesh(new THREE.PlaneGeometry(hw * 2 + 3, 1.0),
       new THREE.MeshBasicMaterial({ map: mats.chevTex }));
-    hz.position.set(0, H + 1.1, -0.85);
+    // 5 cm off the collar face was close enough to z-fight at distance
+    hz.position.set(0, H + 1.1, -0.95);
     hz.rotation.y = Math.PI;
     g.add(hz);
     g.position.set(p.x, p.y, p.z);
@@ -812,13 +875,8 @@ function buildToll(
     a.rotation.y = Math.PI;
     plaza.add(a);
   }
-  // approach signage, on the same cantilever mount as the exit boards
-  const board = signFactory(scene, cor);
-  // 500 m out is clear of the tunnel mouth; the near board goes just past the
-  // exit portal rather than inside the tube
-  for (const d of [500, 115])
-    board(TOLL.plazaZ0 - d, 7.4, 2.8,
-      warnTexF("料金所 " + Math.round(d / 5) * 5 + " m", "TOLL"));
+  // the approach boards are cantilevers like the exit ones, so they are placed
+  // with the rest of the signage from corridor.signPlan()
 }
 
 /* ============================ ramp meshes =============================== */

@@ -22,8 +22,11 @@ export const MAX_LANES = 6;
 export const RW = MAX_LANES * LANE_W + 2 * SHOULDER;
 
 export const RAMP_W = 10.5;
-/** how far a ramp runs along the corridor while it curves away from it */
-export const RAMP_RUN = 112;
+/** How far a ramp runs along the corridor while it curves away from it. The
+    deck is 10 m up, so this is really a grade budget: at 112 m the descent
+    peaked at 17%, which is a cliff, not a ramp. This is as long as the two
+    ramps can be without overlapping inside the corridor's straight window. */
+export const RAMP_RUN = 190;
 /** length of the gore taper where the ramp pavement opens out of the deck edge */
 export const RAMP_NOSE = 13;
 
@@ -38,9 +41,12 @@ export const SIDEWALK_W = 2.2;
 export const LANE_LAT = 1.95; // NPC lane offset from a street centerline
 
 /** z of each gore on the corridor. Both sit in the corridor's straight,
-    zero-offset window beside the town, the only stretch where a ramp can
-    reach the frontage road. [0] is the exit, [1] the entrance. */
-export const CONNECT_Z = [-330, -70];
+    zero-offset window beside the town (z ∈ [-520, 40]), the only stretch
+    where a ramp can reach the frontage road. [0] is the exit, [1] the
+    entrance. They sit at the two ends of that window because each ramp needs
+    RAMP_RUN of it — the exit runs forward from its gore, the entrance back
+    from its own, and they must not cross. */
+export const CONNECT_Z = [-500, 20];
 
 /** @deprecated the corridor's lane count varies — use `corridor.laneOffset()`.
     Kept as a 3-lane fallback so legacy call sites still compile and land on

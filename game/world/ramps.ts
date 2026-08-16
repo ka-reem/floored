@@ -2,7 +2,7 @@ import { sstep } from "../util";
 import {
   RAMP_W, RAMP_RUN, RAMP_NOSE, CONNECT_Z, FRONT_X,
 } from "./const";
-import { getCorridor } from "./corridor";
+import { getCorridor, TOLL } from "./corridor";
 
 /* Ramp centrelines.
 
@@ -173,6 +173,96 @@ export function buildRamps(gh: (x: number, z: number) => number): Ramp[] {
     });
   }
   return out;
+}
+
+/** The z window where the deck's west parapet has to be cut away for this ramp.
+
+    It is one-sided: an exit's pavement diverges *forward* of its gore and an
+    entrance's converges from *behind* it, so removing the barrier symmetrically
+    (as this used to) left ~50 m of unguarded deck edge on the approach, where
+    nothing is leaving the road at all — and left the gore's own sign post with
+    no parapet to stand on. */
+export function parapetGap(r: Ramp): { z0: number; z1: number } {
+  const g = Math.max(r.gapZ + 4, HALF + 3);
+  const lead = 8; // a short opening either side of the nose itself
+  return r.dir > 0
+    ? { z0: r.zr - lead, z1: r.zr + g }
+    : { z0: r.zr - g, z1: r.zr + lead };
+}
+
+/* ---- where a car may legally be placed ---------------------------------- */
+
+/** clearance a placed car wants from the end of a parapet gap */
+export const SPAWN_MARGIN = 10;
+
+/** Is `z` somewhere a car can simply appear?
+
+    Straight and level is not enough, and every one of these has drawn blood:
+    - clear of both parapet gaps, or the car materialises at a gore nose beside
+      a deliberately missing barrier. The player spawn sat inside the exit gap
+      for exactly this reason, after the gores moved to buy the ramps their
+      grade budget — nothing threw and tsc stayed clean;
+    - not in the tunnel and not on the toll plaza. Both are dead straight and
+      dead level, so both sail through a naive predicate; one is pitch dark and
+      the other is full of gate islands with colliders;
+    - inside [Z0, Z1). The built overrun is straight and level too, but a car
+      placed there is outside the canonical band, so spliceDelta() teleports it
+      a full lap on the first frame. */
+export function placeable(z: number, gaps: { z0: number; z1: number }[]) {
+  const cor = getCorridor();
+  const plazaC = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
+  return (
+    z >= cor.Z0 && z < cor.Z1 &&
+    Math.abs(cor.slopeX(z)) < 1e-6 && Math.abs(cor.pose(z).grade) < 1e-6 &&
+    !gaps.some((g) => z > g.z0 - SPAWN_MARGIN && z < g.z1 + SPAWN_MARGIN) &&
+    !cor.inTunnel(z) && Math.abs(z - plazaC) > PLAZA_LEN / 2 + SPAWN_MARGIN
+  );
+}
+/** length of the rigid toll plaza group, from highway.ts buildToll */
+const PLAZA_LEN = 34;
+
+let _spawn: { z0: number; z1: number } | null = null;
+
+/** The spawnable window beside the town — the stretch between the two gores,
+    which is the one we want because it opens next to the town with a clean run
+    down to the entrance gore.
+
+    Derived, not written down, because an assertion that the window stays *wide
+    enough* does not catch it *moving*: a window that slid 500 m down the road
+    would still be long enough to pass, while a hardcoded spawn z inside the
+    old one would be back in a parapet gap, silently, with a green suite.
+
+    The ramp geometry this reads (zr, dir, gapZ) is independent of the terrain
+    height field, so building a throwaway ramp set on flat ground gives the
+    same answer as the real one and this needs no caller to thread it through. */
+export function spawnWindow(): { z0: number; z1: number } {
+  if (_spawn) return _spawn;
+  const cor = getCorridor();
+  const gaps = buildRamps(() => 0).map(parapetGap);
+  let best: { z0: number; z1: number } | null = null, start: number | null = null;
+  const close = (z1: number) => {
+    if (start === null) return;
+    // the window we want is the one that spans the gap between the gores
+    const mid = (start + z1) / 2;
+    if (mid > CONNECT_Z[0] && mid < CONNECT_Z[1] && (!best || z1 - start > best.z1 - best.z0))
+      best = { z0: start, z1 };
+    start = null;
+  };
+  for (let z = cor.Z0; z < cor.Z1; z += 1) {
+    if (placeable(z, gaps)) {
+      if (start === null) start = z;
+    } else close(z - 1);
+  }
+  close(cor.Z1 - 1);
+  if (!best) throw new Error("corridor: no spawnable window between the gores");
+  return (_spawn = best);
+}
+
+/** Centre of the spawn window — what the player spawn and resetCar() want.
+    Pair it with `corridor.respawn(spawnZ(), lane)` for a full pose. */
+export function spawnZ(): number {
+  const w = spawnWindow();
+  return (w.z0 + w.z1) / 2;
 }
 
 export interface RampHit {

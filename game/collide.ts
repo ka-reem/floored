@@ -1,5 +1,6 @@
 import type { CarState } from "./physics";
 import type { WorldData } from "./world/data";
+import { parapetGap } from "./world/ramps";
 
 /* Player collision: the corridor's parapets (analytic, from the same
    half-width the walls are swept from), static AABBs (piers, toll islands,
@@ -132,8 +133,10 @@ export function collidePlayer(
     let guarded = true;
     if (side < 0) {
       // the parapet mesh is cut away across the divergence zone…
-      for (const r of world.terrain.ramps)
-        if (Math.abs(car.z - r.zr) < r.gapZ + 6) guarded = false;
+      for (const r of world.terrain.ramps) {
+        const g = parapetGap(r);
+        if (car.z > g.z0 && car.z < g.z1) guarded = false;
+      }
       // …and stays absent for as long as the car is on ramp pavement
       const ry = world.terrain.onRamp(car.x, car.z);
       if (ry !== null && Math.abs(ry - car.y) < 2.6) guarded = false;

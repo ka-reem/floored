@@ -25,15 +25,17 @@ const VW = Number(process.env.SHOT_W || 1280), VH = Number(process.env.SHOT_H ||
 
 const TOUR = [
   [-1300, 0, "10-two-lane"],
-  [-460, -1, "11-widen-taper"],
-  [-400, -1, "04-exit-approach"],
-  [-180, 1, "12-four-lane"],
-  [120, 1, "13-curve"],
+  [-640, -1, "11-widen-taper"],
+  [-560, -1, "04-exit-signs"],
+  [-500, -1, "05-exit-gore"],
+  [-300, 1, "12-four-lane"],
+  [150, 1, "13-curve"],
   [760, -1, "14-lane-drop"],
   [900, 1, "15-tunnel-mouth"],
   [1080, 1, "16-tunnel-interior"],
   [1330, 2, "17-toll-approach"],
-  [1385, 2, "18-toll-plaza"],
+  [1445, 2, "18-toll-plaza"],
+  [1560, 1, "21-toll-merge"],
   [1960, 1, "19-splice-end"],
   [-1990, 1, "20-splice-start"],
 ];

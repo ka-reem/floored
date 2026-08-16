@@ -3,7 +3,7 @@
 import puppeteer from "puppeteer";
 
 const URL = process.argv[2] || "http://localhost:3000";
-const ZR = Number(process.argv[3] ?? -330); // which gore to probe
+const ZR = Number(process.argv[3] ?? -500); // which gore to probe (CONNECT_Z[0])
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const browser = await puppeteer.launch({
