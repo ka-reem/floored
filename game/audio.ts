@@ -5,8 +5,21 @@
    for growl, blended with intake and exhaust noise beds, then shaped by a
    throttle-opening lowpass and two fixed body resonances. On top of that:
    idle wobble, overrun crackle, a rev-limiter stutter LFO, shift chuffs and a
-   gearbox whine. Everything else (tire screech, wind/road, rain, horn, crash,
-   indicator ticks) is unchanged from before.
+   gearbox whine.
+
+   Tires are a second layered model, driven by an exponentially-smoothed
+   slip envelope (see slipEnv in update()) rather than raw per-frame slip, so
+   ABS/ESC pulsing at the tyre reads as sustained sliding rather than a
+   chattering on/off screech. Three noise layers crossfade continuously with
+   that envelope: a subtle speed-only rolling/contact-patch hum, a narrowband
+   "singing" squeal that rises in pitch with slip, and a broadband,
+   amplitude-modulated full screech for hard sustained sliding. A separate
+   one-shot bark (reusing the crackle burst()) fires on sudden slip spikes —
+   launch wheelspin, a harsh downshift, clipping the edge of the friction
+   circle — independent of the sustained layers. Rain quiets the screech and
+   shifts it broader/brighter (hissier) without changing pitch behaviour.
+   Wind/road ambience, rain hiss, horn, crash and indicator ticks are
+   unchanged from before.
 
    The whole graph is built once in init(); update() only moves AudioParams. */
 
@@ -38,6 +51,10 @@ const PROFILES: Record<string, EngineProfile> = {
 };
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const smoothstep = (e0: number, e1: number, x: number) => {
+  const t = clamp01((x - e0) / (e1 - e0));
+  return t * t * (3 - 2 * t);
+};
 
 export class GameAudio {
   ok = false;
@@ -66,8 +83,16 @@ export class GameAudio {
   private lastCrackle = 0;
   private peakRpm = 6800;
 
+  /* tires */
+  private tireRoadF!: BiquadFilterNode; private tireRoadG!: GainNode;
+  private singF!: BiquadFilterNode; private singG!: GainNode; private singLfoDepth!: GainNode;
+  private screechF!: BiquadFilterNode; private screechG!: GainNode; private screechAmDepth!: GainNode;
+  private slipEnv = 0;
+  private lastTireT = 0;
+  private prevSlipRaw = 0;
+  private lastChirp = -1;
+
   /* environment */
-  private scrF!: BiquadFilterNode; private scrG!: GainNode;
   private wF!: BiquadFilterNode; private wG!: GainNode;
   private rF!: BiquadFilterNode; private rG!: GainNode;
   private hornOsc: { o1: OscillatorNode; o2: OscillatorNode; g: GainNode } | null = null;
@@ -250,14 +275,56 @@ export class GameAudio {
       this.whineOsc.connect(this.whineG).connect(whineF).connect(this.master);
       this.whineOsc.start();
 
+      /* ---- tires ---- */
+      // Layer 1: rolling contact-patch hum. Subtle, purely speed-driven, no
+      // slip dependence — this is what tires sound like even when gripping.
+      this.tireRoadF = ctx.createBiquadFilter();
+      this.tireRoadF.type = "bandpass";
+      this.tireRoadF.frequency.value = 220;
+      this.tireRoadF.Q.value = 0.6;
+      this.tireRoadG = ctx.createGain();
+      this.tireRoadG.gain.value = 0;
+      this.noiseNode().connect(this.tireRoadF).connect(this.tireRoadG).connect(this.master);
+
+      // Layer 2: grip "singing" — narrowband squeal, pitch rises with slip.
+      // A little chaotic vibrato keeps it from sounding like a pure test tone.
+      this.singF = ctx.createBiquadFilter();
+      this.singF.type = "bandpass";
+      this.singF.frequency.value = 1400;
+      this.singF.Q.value = 10;
+      this.singG = ctx.createGain();
+      this.singG.gain.value = 0;
+      this.noiseNode().connect(this.singF).connect(this.singG).connect(this.master);
+      const singLfo = ctx.createOscillator();
+      singLfo.type = "sine";
+      singLfo.frequency.value = 5.3;
+      this.singLfoDepth = ctx.createGain();
+      this.singLfoDepth.gain.value = 0;
+      singLfo.connect(this.singLfoDepth).connect(this.singF.frequency);
+      singLfo.start();
+
+      // Layer 3: full screech — broadband noise, amplitude-modulated by two
+      // detuned LFOs (same beating trick as the engine wobble) for a chaotic,
+      // never-quite-periodic edge instead of a clean tremolo.
+      this.screechF = ctx.createBiquadFilter();
+      this.screechF.type = "bandpass";
+      this.screechF.frequency.value = 1100;
+      this.screechF.Q.value = 1.8;
+      this.screechG = ctx.createGain();
+      this.screechG.gain.value = 0;
+      this.noiseNode().connect(this.screechF).connect(this.screechG).connect(this.master);
+      const amA = ctx.createOscillator(); amA.type = "sine"; amA.frequency.value = 6.5;
+      const amB = ctx.createOscillator(); amB.type = "sine"; amB.frequency.value = 11.3;
+      const amMix = ctx.createGain();
+      const amBTrim = ctx.createGain(); amBTrim.gain.value = 0.6;
+      amA.connect(amMix);
+      amB.connect(amBTrim).connect(amMix);
+      this.screechAmDepth = ctx.createGain();
+      this.screechAmDepth.gain.value = 0;
+      amMix.connect(this.screechAmDepth).connect(this.screechG.gain);
+      amA.start(); amB.start();
+
       /* ---- environment ---- */
-      this.scrF = ctx.createBiquadFilter();
-      this.scrF.type = "bandpass";
-      this.scrF.frequency.value = 980;
-      this.scrF.Q.value = 7;
-      this.scrG = ctx.createGain();
-      this.scrG.gain.value = 0;
-      this.noiseNode().connect(this.scrF).connect(this.scrG).connect(this.master);
       this.wF = ctx.createBiquadFilter();
       this.wF.type = "lowpass";
       this.wF.frequency.value = 350;
@@ -372,7 +439,10 @@ export class GameAudio {
   quiesce() {
     if (!this.ok) return;
     this.hornSet(false);
-    this.scrG.gain.value = 0;
+    this.tireRoadG.gain.value = 0;
+    this.singG.gain.value = 0;
+    this.screechG.gain.value = 0;
+    this.screechAmDepth.gain.value = 0;
     this.wG.gain.value = 0;
     this.inG.gain.value = 0;
     this.exG.gain.value = 0;
@@ -481,9 +551,62 @@ export class GameAudio {
       }
     }
 
+    /* ---- tires ----
+       Smooth raw slip into an envelope with a ~140ms time constant. ABS/ESC
+       modulate wheel lockup at well above that rate, so a pulsing lockup
+       averages down into a moderate sustained value instead of re-triggering
+       full screech every pulse; a genuinely sustained slide (mid-corner
+       drift, a long ABS stop) still rides the envelope up to its true level. */
+    const dt = this.lastTireT ? Math.min(0.1, Math.max(0, now - this.lastTireT)) : 0.016;
+    this.lastTireT = now;
+    const envK = 1 - Math.exp(-dt / 0.14);
+    this.slipEnv += (clamp01(slip) - this.slipEnv) * envK;
+
+    // Wheelspin off the line happens at near-zero car speed, so the sustained
+    // layers only fade partway with speed rather than muting entirely.
+    const speedGate = 0.3 + 0.7 * Math.min(1, speed / 6);
+    const wetLevel = raining ? 0.55 : 1;
+    const wetQ = raining ? 0.6 : 1; // lower Q = broader/hissier, not just quieter
+
+    // Layer 1: rolling hum, speed only, gently damped while sliding hard.
+    this.sp(this.tireRoadF.frequency, 150 + Math.min(1, speed / 50) * 220, 0.06);
+    this.sp(
+      this.tireRoadG.gain,
+      Math.min(1, speed / 45) * 0.045 * (1 - this.slipEnv * 0.3) + (raining ? 0.015 : 0),
+      0.06
+    );
+
+    // Layer 2: grip singing crossfades in first, and partially back out as
+    // the screech takes over so the two never just sum linearly.
+    const singMix =
+      smoothstep(0.12, 0.45, this.slipEnv) * (1 - smoothstep(0.55, 0.92, this.slipEnv) * 0.7);
+    this.sp(this.singF.frequency, 1200 + this.slipEnv * 1500, 0.05);
+    this.sp(this.singF.Q, (9 + this.slipEnv * 4) * wetQ, 0.08);
+    this.sp(this.singLfoDepth.gain, 15 + this.slipEnv * 40, 0.1);
+    this.sp(this.singG.gain, singMix * 0.09 * speedGate * wetLevel, 0.05);
+
+    // Layer 3: full screech, broadband and amplitude-modulated, only once
+    // slip is sustained and severe.
+    const screechMix = smoothstep(0.4, 0.85, this.slipEnv);
+    const screechBase = screechMix * 0.15 * speedGate * wetLevel;
+    this.sp(this.screechF.frequency, 900 + this.slipEnv * 500, 0.06);
+    this.sp(this.screechF.Q, 2.2 * (raining ? 0.5 : 1), 0.08);
+    this.sp(this.screechG.gain, screechBase, 0.04);
+    this.sp(this.screechAmDepth.gain, screechBase * 0.5, 0.06);
+
+    // Skid chirp: a short bark on a sudden slip spike out of low sustained
+    // slip — launch wheelspin, a harsh downshift, clipping the grip limit —
+    // rather than the sustained slide itself.
+    const dSlip = slip - this.prevSlipRaw;
+    if (dSlip > 0.32 && this.slipEnv < 0.35 && now - this.lastChirp > 0.15) {
+      this.lastChirp = now;
+      const freq = raining ? 2600 + Math.random() * 800 : 1700 + Math.random() * 900;
+      const lvl = (raining ? 0.05 : 0.09) * speedGate;
+      this.burst(lvl, freq, 0.045, raining ? 2.2 : 1.4);
+    }
+    this.prevSlipRaw = slip;
+
     /* ---- environment ---- */
-    this.scrG.gain.value = Math.max(0, Math.min(1, slip - 0.28)) * 0.16 * Math.min(1, speed / 8);
-    this.scrF.frequency.value = 880 + Math.sin(now * 23) * 140 + slip * 180;
     this.wG.gain.value = Math.min(1, speed / 58) * 0.16 + (raining ? 0.02 : 0);
     this.wF.frequency.value = 280 + speed * 16;
     this.rG.gain.value = raining ? 0.05 : 0;
