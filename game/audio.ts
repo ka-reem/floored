@@ -211,6 +211,23 @@ export class GameAudio {
     return c;
   }
 
+  /** Gentle unity-gain-at-origin soft clip — a safety net for the reverb
+      feedback loop, not a growl/drive shaper like shaperCurve() (which has
+      ~2.6x gain baked in by design and would defeat the loop's gain
+      staging). tanh(x) has slope 1 at the origin, so normal-level signal
+      passes through essentially unchanged; only amplitude approaching ±1
+      gets compressed, which is exactly the "can't ever scream" ceiling a
+      feedback loop should have regardless of how carefully its gain
+      staging was reasoned about elsewhere. */
+  private limiterCurve() {
+    const n = 1024, c = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;
+      c[i] = Math.tanh(x);
+    }
+    return c;
+  }
+
   /** Pick the per-car engine character. Safe to call before or after init(). */
   setCar(id: string) {
     const p = PROFILES[id] || PROFILES.generic;
@@ -457,31 +474,60 @@ export class GameAudio {
       /* ---- reverb bus ----
          A small feedback-delay network standing in for an impulse response:
          four short, non-harmonically-related delay taps feed a shared sum,
-         which runs through a lowpass (so the tail darkens rather than
-         ringing metallic) and a feedback gain back into the input. The wet
-         output taps off that same sum in parallel with the dry master path.
-         Fixed-ratio sends from the engine and tire buses feed the network at
-         all times; setReverb(t) only moves wet level, feedback (tail
-         length) and lowpass cutoff, so t=0 (wet gain 0) is silent and the
-         dry path is untouched — bit-identical to before this feature. */
+         then a feedback gain back into the input; the wet output taps off
+         that same sum in parallel with the dry master path. Fixed-ratio
+         sends from the engine and tire buses feed the network at all times;
+         setReverb(t) only moves wet level, feedback (tail length) and
+         lowpass cutoff, so t=0 (wet gain 0) is silent and the dry path is
+         untouched — bit-identical to before this feature.
+
+         Two things here fix a real crash (four unity-gain delay branches
+         summed into one plain GainNode, multiplying the round-trip loop
+         gain by the tap count — at t=1's old feedback of 0.5 that's a
+         worst-case loop gain of 4*0.5=2.0, unconditionally unstable, which
+         blew the lowpass's internal state into NaN and got the node
+         disabled by the browser, i.e. exactly the reported screech-then-
+         silence):
+           1. reverbTap's own gain is set to 1/N (N=4 taps), so a fully
+              constructive sum of all four branches is bounded to unity by
+              the triangle inequality — the mixing stage itself can never
+              amplify, only average. Round-trip loop gain is then bounded by
+              reverbFeedback.gain alone, and that's capped well under 1 (see
+              setReverb()), so the loop is provably convergent regardless of
+              frequency content or delay-time alignment.
+           2. The darkening lowpass no longer sits inside the feedback path
+              at all — recomputing a resonant biquad's coefficients while it
+              carries loop energy is itself a destabilizing move, so it's
+              moved to a single-pass position on the (non-looping) wet
+              output only. A per-bounce darkening quality is lost, but loop
+              stability no longer depends on the filter's parameters at all.
+         A gentle unity-gain-at-origin soft clip (limiterCurve(), NOT
+         shaperCurve() — that one adds ~2.6x drive gain by design and would
+         undo the tap normalization above) sits in the loop too, as a
+         backstop against any transient this reasoning missed. */
       this.reverbIn = ctx.createGain();
       this.reverbIn.gain.value = 1;
       const reverbTap = ctx.createGain();
+      reverbTap.gain.value = 0.25;
       for (const dt of [0.017, 0.023, 0.029, 0.037]) {
         const d = ctx.createDelay(0.5);
         d.delayTime.value = dt;
         this.reverbIn.connect(d);
         d.connect(reverbTap);
       }
+      this.reverbFeedback = ctx.createGain();
+      this.reverbFeedback.gain.value = 0.15;
+      const reverbLoopLimiter = ctx.createWaveShaper();
+      reverbLoopLimiter.curve = this.limiterCurve();
+      reverbLoopLimiter.oversample = "none";
+      reverbTap.connect(this.reverbFeedback).connect(reverbLoopLimiter).connect(this.reverbIn);
+
       this.reverbLP = ctx.createBiquadFilter();
       this.reverbLP.type = "lowpass";
       this.reverbLP.frequency.value = 6000;
-      this.reverbFeedback = ctx.createGain();
-      this.reverbFeedback.gain.value = 0.25;
-      reverbTap.connect(this.reverbLP).connect(this.reverbFeedback).connect(this.reverbIn);
       this.reverbWet = ctx.createGain();
       this.reverbWet.gain.value = 0;
-      reverbTap.connect(this.reverbWet).connect(this.master);
+      reverbTap.connect(this.reverbLP).connect(this.reverbWet).connect(this.master);
 
       const engSend = ctx.createGain();
       engSend.gain.value = 0.18;
@@ -881,14 +927,33 @@ export class GameAudio {
 
   /** Reverb bus wet amount, 0..1. t=0 leaves the wet gain at literal 0, so
       the master output is bit-identical to the dry-only path from before
-      this feature. t also darkens (lowers the feedback-loop lowpass) and
-      lengthens the tail (raises feedback) as it rises. */
+      this feature. t also darkens the (now non-looping, output-only)
+      lowpass and lengthens the tail (raises feedback) as it rises; feedback
+      is capped at 0.4 — with reverbTap's 1/N normalization (see init()),
+      round-trip loop gain is bounded by this value alone, so 0.4 leaves
+      ample margin under the instability threshold of 1.0.
+
+      t at/near 0 is a hard kill rather than an asymptotic setTargetAtTime
+      approach to 0: it cancels any in-flight ramp and snaps both wet gain
+      and feedback gain to their floor immediately, so returning to t=0
+      always fully stops new energy from re-entering the loop rather than
+      just trending toward it — belt-and-suspenders alongside the gain-
+      staging fix, not a substitute for it. */
   setReverb(t: number) {
     if (!this.ok) return;
     const tt = clamp01(t);
+    if (tt < 1e-4) {
+      const now = this.ctx.currentTime;
+      this.reverbWet.gain.cancelScheduledValues(now);
+      this.reverbWet.gain.value = 0;
+      this.reverbFeedback.gain.cancelScheduledValues(now);
+      this.reverbFeedback.gain.value = 0;
+      this.sp(this.reverbLP.frequency, 6000, 0.15);
+      return;
+    }
     this.sp(this.reverbWet.gain, tt * 0.35, 0.15);
     this.sp(this.reverbLP.frequency, 6000 - tt * 4300, 0.15);
-    this.sp(this.reverbFeedback.gain, 0.22 + tt * 0.28, 0.15);
+    this.sp(this.reverbFeedback.gain, 0.15 + tt * 0.25, 0.15);
   }
 
   /** Interior/exterior EQ switch. Cockpit (b=true) is slightly lowpassed
