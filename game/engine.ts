@@ -96,6 +96,8 @@ export class Game {
   private revCam = 0;
   /* visual accel pitch, damped and speed-scaled off car.pitchDyn */
   private pitchVis = 0;
+  /* 0..1 lean toward the car's centreline while looking back in the cockpit */
+  private lbLean = 0;
   private head = { x: 0, y: 0, vx: 0, vy: 0 };
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
@@ -756,13 +758,21 @@ export class Game {
       this.head.x = clamp(this.head.x, -0.05, 0.05);
       this.head.y = clamp(this.head.y, -0.04, 0.04);
       const P = this.spec.shell;
+      /* Looking back, a driver leans in toward the centre of the car and cranes
+         up — pivoting the eye in place instead just stares into their own
+         headrest. Eased so tapping B doesn't snap the head sideways. */
+      this.lbLean = lerp(
+        this.lbLean, this.lookBack && this.camMode === 1 ? 1 : 0,
+        1 - Math.exp(-9 * dt)
+      );
+      const eyeX = COCKPIT_EYE.x * (P.W / COCKPIT_REF.W);
       const local =
         this.camMode === 1
           // seating position lives in cockpit.ts: the binnacle, wheel and mirror
           // are all pinned to COCKPIT_EYE, so the eye must come from there too
           ? this.tmpV.set(
-            COCKPIT_EYE.x * (P.W / COCKPIT_REF.W) + this.head.x,
-            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + this.head.y,
+            eyeX * (1 - 0.8 * this.lbLean) + this.head.x,
+            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + 0.06 * this.lbLean + this.head.y,
             COCKPIT_EYE.z
           )
           : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5, P.L / 2 - 0.6);
