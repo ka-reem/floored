@@ -102,7 +102,12 @@ export class Game {
   private pitchVis = 0;
   /* 0..1 lean toward the car's centreline while looking back in the cockpit */
   private lbLean = 0;
-  private head = { x: 0, y: 0, vx: 0, vy: 0 };
+  private head = { x: 0, y: 0, vx: 0, vy: 0, z: 0, vz: 0, roll: 0, vroll: 0 };
+  /* cockpit corner lookahead: eased yaw offset toward the steering direction */
+  private lookaheadYaw = 0;
+  /* chase cam lateral lag: trails the yaw-driven offset then eases to it,
+     giving the classic GT "camera catches up out of the corner" feel */
+  private chaseLag = { x: 0, vx: 0 };
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private mirM = new THREE.Matrix4();
@@ -711,7 +716,7 @@ export class Game {
     }
   }
 
-  private updateCamera(dt: number) {
+  private updateCamera(dt: number, now: number) {
     const car = this.car;
     const fx = Math.sin(car.h), fz = Math.cos(car.h);
     /* Reverse chase cam: only once the car is genuinely rolling backwards, not
@@ -752,7 +757,25 @@ export class Game {
         this.chasePos.y,
         this.terrain.heightAt(this.chasePos.x, this.chasePos.z, car.y) + 1.2
       );
+      /* mild lateral lag: the camera drifts a beat behind the car's yaw rate,
+         then eases back to centre — a trailing lean rather than an instant
+         follow. Purely a position offset so it can't disturb the trail-length
+         clamps above or the raise/snap-on-switch logic. */
+      const rgX = fz, rgZ = -fx; // world-space "right" of the car's heading
+      const lagTarget = freshEntry
+        ? 0
+        : clamp(-car.r * Math.abs(car.u) * 0.028, -0.35, 0.35);
+      if (freshEntry) {
+        this.chaseLag.x = 0;
+        this.chaseLag.vx = 0;
+      } else {
+        this.chaseLag.vx += (lagTarget - this.chaseLag.x) * 24 * dt;
+        this.chaseLag.vx *= Math.exp(-6 * dt);
+        this.chaseLag.x += this.chaseLag.vx * dt;
+      }
       this.camera.position.copy(this.chasePos);
+      this.camera.position.x += rgX * this.chaseLag.x;
+      this.camera.position.z += rgZ * this.chaseLag.x;
       // aim past the car, away from wherever the camera currently sits
       const lat = car.delta * 1.6 * (1 - 2 * flip);
       this.tmpV2.set(
@@ -774,6 +797,27 @@ export class Game {
       this.head.y += this.head.vy * dt;
       this.head.x = clamp(this.head.x, -0.05, 0.05);
       this.head.y = clamp(this.head.y, -0.04, 0.04);
+      /* G-force lean: a couple of degrees of roll into the corner (paired with
+         the head.x lateral shift above) and a couple cm of fore/aft dip under
+         braking vs acceleration (paired with head.y). Same spring shape, kept
+         well inside motion-sickness-safe territory. */
+      this.head.vroll += (-car.ayS * 0.09 - this.head.roll * 40) * dt;
+      this.head.vroll *= Math.exp(-8 * dt);
+      this.head.roll += this.head.vroll * dt;
+      this.head.roll = clamp(this.head.roll, -0.035, 0.035); // ~±2°
+      this.head.vz += (car.axS * 0.003 - this.head.z * 46) * dt;
+      this.head.vz *= Math.exp(-8 * dt);
+      this.head.z += this.head.vz * dt;
+      this.head.z = clamp(this.head.z, -0.025, 0.025);
+      /* corner lookahead: cockpit-only, eases the view a few degrees toward
+         the steering direction, scaled by speed so it's zero at a standstill
+         and fades out when looking back. */
+      const lookSp = clamp(Math.abs(car.u) / 20, 0, 1);
+      const lookTarget =
+        this.camMode === 1 && !this.lookBack
+          ? clamp((car.delta * 2.2 + car.r * 0.35) * lookSp, -0.13, 0.13) // ~±7.5°
+          : 0;
+      this.lookaheadYaw = lerp(this.lookaheadYaw, lookTarget, 1 - Math.exp(-4 * dt));
       const P = this.spec.shell;
       /* Looking back, a driver leans in toward the centre of the car and cranes
          up — pivoting the eye in place instead just stares into their own
@@ -790,20 +834,33 @@ export class Game {
           ? this.tmpV.set(
             eyeX * (1 - 0.8 * this.lbLean) + this.head.x,
             P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + 0.06 * this.lbLean + this.head.y,
-            COCKPIT_EYE.z
+            COCKPIT_EYE.z + this.head.z
           )
           : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5, P.L / 2 - 0.6);
+      /* speed shake: barely-perceptible high-frequency jitter that grows with
+         speed (near-zero below 100 km/h, noticeable past 180) plus a smaller
+         boost from tire slip for rough moments. Millimetre-scale — texture,
+         not a wobble — and two off-ratio sines stand in for noise cheaply. */
+      const shakeSp = clamp((Math.abs(car.u) - 27.8) / 22.2, 0, 1); // ~100→180 km/h
+      const shakeAmt = shakeSp * 0.75 + clamp(car.slipAmt, 0, 1) * 0.25;
+      if (shakeAmt > 0.001) {
+        const jx = Math.sin(now * 47.3) * 0.6 + Math.sin(now * 71.9 + 1.7) * 0.4;
+        const jy = Math.sin(now * 53.1 + 0.9) * 0.6 + Math.sin(now * 83.4 + 3.1) * 0.4;
+        local.x += jx * shakeAmt * 0.0025;
+        local.y += jy * shakeAmt * 0.0018;
+      }
       /* The eye rides the body shell, so the dash and mirrors hold still in
          frame the way they do in a real car; the world pitches instead. Body
          pitch is nose-up-negative, camera pitch is look-up-positive, hence the
          sign flip — getting that backwards made the view stare at the tarmac
          uphill and at the sky downhill. */
       this.camera.position.copy(this.rig.bodyG.localToWorld(this.tmpV2.copy(local)));
-      this.camera.rotation.y = car.h + Math.PI + back;
+      this.camera.rotation.y = car.h + Math.PI + back + this.lookaheadYaw;
       this.camera.rotation.x = -this.rig.bodyG.rotation.x * (this.lookBack ? -1 : 1);
-      // roll matches the shell for the same reason the pitch does
+      // roll matches the shell for the same reason the pitch does, plus the
+      // G-lean roll from above
       this.camera.rotation.z =
-        -this.rig.bodyG.rotation.z + clamp(car.u * car.r * 0.0035, -0.06, 0.06);
+        -this.rig.bodyG.rotation.z + clamp(car.u * car.r * 0.0035, -0.06, 0.06) + this.head.roll;
     }
     const kickM = this.camMode === 0 ? 0.18 : this.camMode === 2 ? 0.6 : 1;
     const fovT = this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
@@ -964,7 +1021,7 @@ export class Game {
       this.signalsUpdate(now);
       this.weather(dt, now);
       this.updateCarVisual(now, dt);
-      this.updateCamera(dt);
+      this.updateCamera(dt, now);
       this.audio.update(
         this.car.rpm, this.car.thrEff, this.car.slipAmt, Math.abs(this.car.u), now,
         this.car.cut > 0 || this.car.shiftT > 0.1, this.rain, this.input.horn > 0,
@@ -982,7 +1039,7 @@ export class Game {
     } else {
       this.acc = 0;
       this.updateCarVisual(now, dt);
-      this.updateCamera(dt);
+      this.updateCamera(dt, now);
       this.weather(0, now);
     }
     this.frameN++;
