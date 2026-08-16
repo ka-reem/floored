@@ -280,13 +280,13 @@ async function main() {
   };
 
   // off-ramp descent: roll down the exit ramp into town
-  const stRamp = await driveRamp(-330, 1, (s) => s.y < 2.5, 45000, "ramp descent");
+  const stRamp = await driveRamp(-500, 1, (s) => s.y < 2.5, 45000, "ramp descent");
   console.log("  after descent: y =", stRamp.y.toFixed(2), " x =", stRamp.x.toFixed(1),
     " maxOff =", stRamp.offMax.toFixed(1));
   await shot(page, "04b-ramp-descent");
 
   // on-ramp climb: from the foot of the entrance ramp back up to the deck
-  const stClimb = await driveRamp(-70, -1, (s) => s.y > 9.2, 60000, "on-ramp climb");
+  const stClimb = await driveRamp(20, -1, (s) => s.y > 9.2, 60000, "on-ramp climb");
   console.log("  after climb: y =", stClimb.y.toFixed(2), " x =", stClimb.x.toFixed(1),
     " maxOff =", stClimb.offMax.toFixed(1));
   await shot(page, "04c-ramp-climb");
