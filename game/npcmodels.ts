@@ -126,20 +126,29 @@ export function loadNpcModels(
     styles.map(
       (style) =>
         new Promise<void>((resolve) => {
-          loader.load(
-            `${BASE}${style}.glb`,
-            (gltf) => {
-              try {
-                const m = extract(style, gltf as unknown as { scene: THREE.Object3D });
-                if (m) onModel(m);
-              } catch {
-                /* a bad model must never take the fleet down */
-              }
-              resolve();
-            },
-            undefined,
-            () => resolve()
-          );
+          try {
+            loader.load(
+              `${BASE}${style}.glb`,
+              (gltf) => {
+                try {
+                  const m = extract(style, gltf as unknown as { scene: THREE.Object3D });
+                  if (m) onModel(m);
+                } catch {
+                  /* a bad model must never take the fleet down */
+                }
+                resolve();
+              },
+              undefined,
+              () => resolve()
+            );
+          } catch {
+            // loader.load() itself can throw synchronously (e.g. a relative
+            // URL with no resolvable base) rather than routing through the
+            // onError callback — catch that too, or this promise (and the
+            // Promise.all() above it) rejects, breaking the "never rejects"
+            // contract this function documents.
+            resolve();
+          }
         })
     )
   ).then(() => undefined);

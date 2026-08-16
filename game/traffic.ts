@@ -1629,7 +1629,10 @@ export class Traffic {
           n.pendK = k2;
           n.blink = off2 < n.offCur ? -1 : 1;
           n.blinkT = rand(1, 2);
-          n.laneRate = LANE_W / lerp(3, 2, drv.lane); // merges run a touch brisker than a comfort change
+          // the local lane pitch, not the nominal LANE_W — the toll plaza
+          // spreads lanes to ~6m, and a lane change there still needs to
+          // take 2-4s rather than crossing the wider gap at the same speed
+          n.laneRate = cor.lanePitch(n.s) / lerp(3, 2, drv.lane); // merges run a touch brisker than a comfort change
           n.turnCd = Math.max(n.turnCd, 2);
         }
       }
@@ -1643,7 +1646,7 @@ export class Traffic {
       const k2 = Math.max(0, nl - 1);
       const off2 = cor.laneOffset(k2, n.s);
       n.blink = off2 < n.offCur ? -1 : 1;
-      n.laneRate = Math.max(n.laneRate, LANE_W / 1.4);
+      n.laneRate = Math.max(n.laneRate, cor.lanePitch(n.s) / 1.4);
       n.laneK = k2;
       n.pendK = -1;
     }
@@ -1680,7 +1683,7 @@ export class Traffic {
           n.pendK = k2;
           n.blink = off2 < n.offCur ? -1 : 1;
           n.blinkT = rand(1, 2);
-          n.laneRate = LANE_W / lerp(4, 2, drv.lane); // 2-4s to cross a lane, eager drivers quicker
+          n.laneRate = cor.lanePitch(n.s) / lerp(4, 2, drv.lane); // 2-4s to cross a lane, eager drivers quicker
           n.turnCd = lerp(12, 3.5, drv.lane);
           break;
         }
