@@ -76,7 +76,7 @@ const HL_THROW = 90, HL_THROW_HI = 155;
     greenhouse of the car in front dark, which loses the one contrast that
     makes flashing worth anything. 2.6% clears a roof at 40 m and keeps
     clearing it further out. */
-const LOW_DIP = 0.010, HI_RISE = 0.026;
+const LOW_DIP = 0.006, HI_RISE = 0.026;
 
 /** How bright lane paint sits at night *outside* the headlight beam, 0..1.
     Lower than mats.ts's 0.18 default because the night deck underneath it is
@@ -1117,7 +1117,7 @@ export class Game {
          ~3.2 m on main, which is where the old beam already threw its
          near-field brightness — the cone narrows so the foreground does not
          get brighter than it is today while the cut-off is being fixed. */
-      sp.angle = hi ? 0.18 : 0.22;
+      sp.angle = hi ? 0.20 : 0.26;
       sp.penumbra = hi ? 0.24 : 0.42;
       sp.target.position.z = hi ? 46 : 26;
       const pitch = hi
