@@ -29,13 +29,19 @@ export interface PhysicsSpec {
   TRACK: number;
   WR: number; // wheel radius (drivetrain)
   FINAL: number;
+  /** Forward gear ratios, 1st..top. Gear numbers are 1-based indices into this. */
   RATIOS: number[];
+  /** Reverse gear ratio; defaults to a little taller than 1st when omitted. */
+  REV?: number;
   TQ_R: number[];
   TQ_T: number[];
   gripF: number; // Pacejka D multiplier front
   gripR: number;
-  steerMax: number; // low-speed max steer rad
-  steerHi: number; // high-speed max steer rad
+  steerMax: number; // max steer rad at parking speed
+  steerHi: number; // floor on steer travel at very high speed, rad
+  /** Lateral accel (m/s²) full lock asks for; sets the speed-sensitive steering
+   *  schedule dmax = steerAy*wheelbase/u². Higher = sharper, twitchier car. */
+  steerAy?: number;
   revLimit: number;
   drag: number;
   awd?: boolean;
@@ -79,10 +85,10 @@ export const CARS: CarSpec[] = [
     },
     phys: {
       M: 1390, IZ: 2210, LA: 1.16, LB: 1.48, HCG: 0.5, TRACK: 1.56, WR: 0.325,
-      FINAL: 3.7, RATIOS: [3.54, 2.13, 1.48, 1.15, 0.92, 0.76],
+      FINAL: 3.7, RATIOS: [3.54, 2.13, 1.48, 1.15, 0.92, 0.76], REV: 3.82,
       TQ_R: [1000, 2000, 3000, 4000, 4600, 5400, 6200, 7200],
       TQ_T: [165, 235, 285, 320, 335, 330, 300, 248],
-      gripF: 1.0, gripR: 1.04, steerMax: 0.62, steerHi: 0.078, revLimit: 7400, drag: 0.4,
+      gripF: 1.0, gripR: 1.04, steerMax: 0.62, steerHi: 0.026, steerAy: 20.5, revLimit: 7400, drag: 0.4,
     },
     stats: { speed: 0.92, accel: 0.88, grip: 0.78, handling: 0.85 },
     cockpitAccent: 0x8f1a22,
@@ -99,10 +105,10 @@ export const CARS: CarSpec[] = [
     },
     phys: {
       M: 1580, IZ: 2660, LA: 1.24, LB: 1.5, HCG: 0.54, TRACK: 1.57, WR: 0.33,
-      FINAL: 3.45, RATIOS: [3.3, 1.98, 1.42, 1.08, 0.86, 0.72],
+      FINAL: 3.45, RATIOS: [3.3, 1.98, 1.42, 1.08, 0.86, 0.72], REV: 3.55,
       TQ_R: [1000, 1800, 2600, 3400, 4200, 5000, 5800, 6600],
       TQ_T: [190, 260, 300, 315, 310, 295, 268, 225],
-      gripF: 0.97, gripR: 1.06, steerMax: 0.56, steerHi: 0.07, revLimit: 6700, drag: 0.44,
+      gripF: 0.97, gripR: 1.06, steerMax: 0.56, steerHi: 0.023, steerAy: 17.5, revLimit: 6700, drag: 0.44,
     },
     stats: { speed: 0.78, accel: 0.68, grip: 0.74, handling: 0.62 },
     cockpitAccent: 0x3a5a8f,
@@ -119,10 +125,10 @@ export const CARS: CarSpec[] = [
     },
     phys: {
       M: 850, IZ: 1050, LA: 1.02, LB: 1.1, HCG: 0.52, TRACK: 1.3, WR: 0.27,
-      FINAL: 4.4, RATIOS: [3.9, 2.3, 1.6, 1.2, 0.97, 0.82],
+      FINAL: 4.4, RATIOS: [3.9, 2.3, 1.6, 1.2, 0.97, 0.82], REV: 4.15,
       TQ_R: [1000, 2200, 3400, 4600, 5400, 6200, 7000, 7800],
       TQ_T: [62, 88, 104, 112, 110, 104, 92, 74],
-      gripF: 1.02, gripR: 1.0, steerMax: 0.72, steerHi: 0.095, revLimit: 8000, drag: 0.42,
+      gripF: 1.02, gripR: 1.0, steerMax: 0.72, steerHi: 0.032, steerAy: 20, revLimit: 8000, drag: 0.42,
     },
     stats: { speed: 0.42, accel: 0.5, grip: 0.7, handling: 0.95 },
     cockpitAccent: 0xc98f10,
@@ -139,10 +145,10 @@ export const CARS: CarSpec[] = [
     },
     phys: {
       M: 1650, IZ: 2840, LA: 1.28, LB: 1.44, HCG: 0.55, TRACK: 1.58, WR: 0.33,
-      FINAL: 3.9, RATIOS: [3.6, 2.2, 1.54, 1.18, 0.94, 0.78],
+      FINAL: 3.9, RATIOS: [3.6, 2.2, 1.54, 1.18, 0.94, 0.78], REV: 3.88,
       TQ_R: [1000, 2000, 2800, 3600, 4400, 5200, 6000, 6800],
       TQ_T: [210, 300, 350, 370, 360, 340, 305, 255],
-      gripF: 1.04, gripR: 1.1, steerMax: 0.58, steerHi: 0.072, revLimit: 6900,
+      gripF: 1.04, gripR: 1.1, steerMax: 0.58, steerHi: 0.024, steerAy: 18.5, revLimit: 6900,
       drag: 0.46, awd: true,
     },
     stats: { speed: 0.82, accel: 0.8, grip: 0.92, handling: 0.7 },
