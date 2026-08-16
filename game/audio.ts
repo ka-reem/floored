@@ -68,10 +68,27 @@ const PROFILES: Record<string, EngineProfile> = {
 };
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const clampRange = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x);
 const smoothstep = (e0: number, e1: number, x: number) => {
   const t = clamp01((x - e0) / (e1 - e0));
   return t * t * (3 - 2 * t);
 };
+
+/** One voice in the NPC doppler pool: a cheap oscillator + filtered-noise
+    pair (not the full player engine graph) routed through a StereoPanner.
+    Assigned to nearby traffic cars by updateNpcs() with simple
+    position-tracked voice stealing. */
+interface NpcVoice {
+  osc: OscillatorNode;
+  oscG: GainNode;
+  noiseF: BiquadFilterNode;
+  noiseG: GainNode;
+  mixG: GainNode;
+  panner: StereoPannerNode;
+  active: boolean;
+  lastX: number;
+  lastZ: number;
+}
 
 export class GameAudio {
   ok = false;
@@ -120,6 +137,25 @@ export class GameAudio {
   private rF!: BiquadFilterNode; private rG!: GainNode;
   private hornOsc: { o1: OscillatorNode; o2: OscillatorNode; g: GainNode } | null = null;
   private crashGain: GainNode | null = null;
+  private lastAbsTick = -10;
+
+  /* cabin EQ (interior/exterior switch) */
+  private cabinLP!: BiquadFilterNode;
+  private cabinPeak!: BiquadFilterNode;
+
+  /* reverb bus: feedback-delay network, no IR assets. Fed by fixed-ratio
+     sends from the engine and tire buses; overall wet level + darkening
+     driven by setReverb(t). */
+  private reverbIn!: GainNode;
+  private reverbLP!: BiquadFilterNode;
+  private reverbFeedback!: GainNode;
+  private reverbWet!: GainNode;
+
+  /* NPC doppler pool */
+  private npcVoices: NpcVoice[] = [];
+  private lastPx = 0;
+  private lastPz = 0;
+
   vol = 1;
   duck = 1;
 
@@ -176,7 +212,19 @@ export class GameAudio {
       this.ctx = ctx;
       this.master = ctx.createGain();
       this.master.gain.value = 0.9;
-      this.master.connect(ctx.destination);
+      // Cabin EQ: everything (dry layers + reverb wet) sums into master, then
+      // through this pair before the speakers. Both are unity at their
+      // default values (LP at ~Nyquist, 0dB peak), so leaving setInterior()
+      // uncalled reproduces the old direct-to-destination signal exactly.
+      this.cabinLP = ctx.createBiquadFilter();
+      this.cabinLP.type = "lowpass";
+      this.cabinLP.frequency.value = 20000;
+      this.cabinPeak = ctx.createBiquadFilter();
+      this.cabinPeak.type = "peaking";
+      this.cabinPeak.frequency.value = 210;
+      this.cabinPeak.Q.value = 1.1;
+      this.cabinPeak.gain.value = 0;
+      this.master.connect(this.cabinLP).connect(this.cabinPeak).connect(ctx.destination);
       const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
       const d = buf.getChannelData(0);
       for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -388,6 +436,76 @@ export class GameAudio {
       this.rG = ctx.createGain();
       this.rG.gain.value = 0;
       this.noiseNode().connect(this.rF).connect(this.rG).connect(this.master);
+
+      /* ---- reverb bus ----
+         A small feedback-delay network standing in for an impulse response:
+         four short, non-harmonically-related delay taps feed a shared sum,
+         which runs through a lowpass (so the tail darkens rather than
+         ringing metallic) and a feedback gain back into the input. The wet
+         output taps off that same sum in parallel with the dry master path.
+         Fixed-ratio sends from the engine and tire buses feed the network at
+         all times; setReverb(t) only moves wet level, feedback (tail
+         length) and lowpass cutoff, so t=0 (wet gain 0) is silent and the
+         dry path is untouched — bit-identical to before this feature. */
+      this.reverbIn = ctx.createGain();
+      this.reverbIn.gain.value = 1;
+      const reverbTap = ctx.createGain();
+      for (const dt of [0.017, 0.023, 0.029, 0.037]) {
+        const d = ctx.createDelay(0.5);
+        d.delayTime.value = dt;
+        this.reverbIn.connect(d);
+        d.connect(reverbTap);
+      }
+      this.reverbLP = ctx.createBiquadFilter();
+      this.reverbLP.type = "lowpass";
+      this.reverbLP.frequency.value = 6000;
+      this.reverbFeedback = ctx.createGain();
+      this.reverbFeedback.gain.value = 0.25;
+      reverbTap.connect(this.reverbLP).connect(this.reverbFeedback).connect(this.reverbIn);
+      this.reverbWet = ctx.createGain();
+      this.reverbWet.gain.value = 0;
+      reverbTap.connect(this.reverbWet).connect(this.master);
+
+      const engSend = ctx.createGain();
+      engSend.gain.value = 0.18;
+      this.engG.connect(engSend).connect(this.reverbIn);
+      const tireSend = ctx.createGain();
+      tireSend.gain.value = 0.22;
+      this.tireRoadG.connect(tireSend);
+      this.singG.connect(tireSend);
+      this.screechG.connect(tireSend);
+      tireSend.connect(this.reverbIn);
+
+      /* ---- NPC doppler pool ----
+         Fixed pool of cheap voices (one osc + filtered noise each, not the
+         full engine graph) assigned to the nearest active traffic cars each
+         frame by updateNpcs(). All nodes are built once here; per-frame work
+         is param moves only (frequency/gain/pan). */
+      const NPC_POOL = 8;
+      for (let i = 0; i < NPC_POOL; i++) {
+        const osc = ctx.createOscillator();
+        osc.type = "sawtooth";
+        osc.frequency.value = 110;
+        const oscG = ctx.createGain();
+        oscG.gain.value = 0;
+        osc.connect(oscG);
+        osc.start();
+        const noiseF = ctx.createBiquadFilter();
+        noiseF.type = "bandpass";
+        noiseF.frequency.value = 700;
+        noiseF.Q.value = 0.7;
+        const noiseG = ctx.createGain();
+        noiseG.gain.value = 0;
+        this.noiseNode().connect(noiseF).connect(noiseG);
+        const mixG = ctx.createGain();
+        mixG.gain.value = 0;
+        oscG.connect(mixG);
+        noiseG.connect(mixG);
+        const panner = ctx.createStereoPanner();
+        mixG.connect(panner).connect(this.master);
+        this.npcVoices.push({ osc, oscG, noiseF, noiseG, mixG, panner, active: false, lastX: 0, lastZ: 0 });
+      }
+
       this.ok = true;
     } catch {
       this.ok = false;
@@ -504,6 +622,11 @@ export class GameAudio {
     this.limDepth.gain.value = 0;
     this.engG.gain.cancelScheduledValues(this.ctx.currentTime);
     this.engG.gain.value = 0;
+    this.reverbWet.gain.value = 0;
+    for (const v of this.npcVoices) {
+      v.mixG.gain.value = 0;
+      v.active = false;
+    }
   }
 
   dispose() {
@@ -693,6 +816,23 @@ export class GameAudio {
     }
     this.prevSlipRaw = slip;
 
+    /* ABS tick: a soft mechanical tick while the raw slip signal is pulsing
+       against its own smoothed envelope — the same divergence the skid-chirp
+       bark above watches, but gated to moderate *sustained* slip (a held
+       brake, not a single spike) and rate-limited to a plausible modulation
+       rate rather than a screech. This infers ABS activity from slip alone;
+       an explicit absActive flag from the physics side would be a cleaner,
+       less guessy hook than this if one becomes available. */
+    const absDivergence = Math.abs(slip - this.slipEnv);
+    if (
+      this.slipEnv > 0.18 && this.slipEnv < 0.75 &&
+      absDivergence > 0.22 &&
+      now - this.lastAbsTick > 0.055
+    ) {
+      this.lastAbsTick = now;
+      this.burst(0.018 + speedGate * 0.014, 340 + Math.random() * 120, 0.011, 3.5);
+    }
+
     // Road texture bed: low rumble tied to speed, distinct from wind/tyre-hum.
     // Ducked while the tyre screech layer is active so the two low-mid
     // layers don't stack into mud.
@@ -714,5 +854,211 @@ export class GameAudio {
 
     this.rG.gain.value = raining ? 0.05 : 0;
     this.hornSet(horn);
+  }
+
+  /** Reverb bus wet amount, 0..1. t=0 leaves the wet gain at literal 0, so
+      the master output is bit-identical to the dry-only path from before
+      this feature. t also darkens (lowers the feedback-loop lowpass) and
+      lengthens the tail (raises feedback) as it rises. */
+  setReverb(t: number) {
+    if (!this.ok) return;
+    const tt = clamp01(t);
+    this.sp(this.reverbWet.gain, tt * 0.35, 0.15);
+    this.sp(this.reverbLP.frequency, 6000 - tt * 4300, 0.15);
+    this.sp(this.reverbFeedback.gain, 0.22 + tt * 0.28, 0.15);
+  }
+
+  /** Interior/exterior EQ switch. Cockpit (b=true) is slightly lowpassed
+      with a cabin resonance bump; exterior (b=false, the default) is the
+      open, brighter response used before this feature existed. Two
+      pre-built biquads in the master chain — cheap to toggle. */
+  setInterior(b: boolean) {
+    if (!this.ok) return;
+    this.sp(this.cabinLP.frequency, b ? 5200 : 20000, 0.25);
+    this.sp(this.cabinPeak.gain, b ? 4.5 : 0, 0.25);
+  }
+
+  /** Low-frequency pressure whump for tunnel entry/exit — a sub-100Hz-
+      emphasised one-shot built from the existing burst() machinery, layered
+      (a sharper short thump over a longer soft one) for a felt "pressure"
+      character rather than a simple bass note. */
+  tunnelThump() {
+    if (!this.ok) return;
+    this.burst(0.16, 62, 0.09, 0.85);
+    this.burst(0.07, 38, 0.17, 0.55);
+  }
+
+  /** Cheap positional helper shared by the NPC one-shots: pans/attenuates
+      relative to the player position last reported to updateNpcs(). Lateral
+      position (world x) stands in for azimuth rather than a true heading-
+      relative angle — cheap, and good enough for a road-following game
+      where x is the lateral axis. */
+  private npcSpatial(x: number, z: number, baseLevel: number) {
+    const dx = x - this.lastPx, dz = z - this.lastPz;
+    const dist = Math.max(0.5, Math.hypot(dx, dz));
+    const pan = clampRange(dx / 12, -1, 1);
+    const gain = baseLevel * clampRange(1 - dist / 50, 0, 1);
+    return { pan, gain };
+  }
+
+  /**
+   * Per-frame update for the NPC doppler pool. `list` should already be
+   * trimmed by the caller to the ~6-8 nearest active traffic cars — this
+   * only assigns pool voices to them and moves params, it does no distance
+   * culling of its own beyond the pool size.
+   *
+   * Voices are matched to npcs by nearest-to-last-known-position (cheap
+   * tracking) so a car keeps its voice frame to frame instead of the pool
+   * reindexing on ranking churn; unmatched npcs fill free voices, and if
+   * none are free the currently-farthest claimed voice is stolen when the
+   * new npc is closer to the player.
+   *
+   * Doppler pitch is manual: factor = 343/(343 - approachSpeed), clamped to
+   * 0.7..1.5, where approachSpeed is the closing-speed component of the
+   * npc's velocity relative to the player along the line between them
+   * (positive = approaching).
+   */
+  updateNpcs(
+    list: { x: number; z: number; vx: number; vz: number; heavy?: boolean }[],
+    px: number, pz: number, pvx: number, pvz: number
+  ) {
+    if (!this.ok) return;
+    this.lastPx = px;
+    this.lastPz = pz;
+    const voices = this.npcVoices;
+    const n = voices.length;
+    const claims: (number | null)[] = new Array(n).fill(null);
+    const takenNpc: boolean[] = new Array(list.length).fill(false);
+
+    // Track: keep each active voice on the npc nearest its last position.
+    for (let vi = 0; vi < n; vi++) {
+      const v = voices[vi];
+      if (!v.active) continue;
+      let best = -1, bestD = Infinity;
+      for (let ni = 0; ni < list.length; ni++) {
+        if (takenNpc[ni]) continue;
+        const dx = list[ni].x - v.lastX, dz = list[ni].z - v.lastZ;
+        const d = dx * dx + dz * dz;
+        if (d < bestD) { bestD = d; best = ni; }
+      }
+      if (best >= 0 && bestD < 400) { // within 20m of last position -> same car
+        claims[vi] = best;
+        takenNpc[best] = true;
+      }
+    }
+
+    // Fill free voices with the nearest unclaimed npcs; steal from the
+    // farthest-claimed voice if the pool is full and this npc is closer.
+    const distToPlayer = (i: number) => {
+      const dx = list[i].x - px, dz = list[i].z - pz;
+      return dx * dx + dz * dz;
+    };
+    const unclaimed = list.map((_, i) => i).filter((i) => !takenNpc[i]);
+    unclaimed.sort((a, b) => distToPlayer(a) - distToPlayer(b));
+    for (const ni of unclaimed) {
+      let vi = -1;
+      for (let i = 0; i < n; i++) if (claims[i] === null && !voices[i].active) { vi = i; break; }
+      if (vi < 0) {
+        let worstVi = -1, worstD = -1;
+        for (let i = 0; i < n; i++) {
+          if (claims[i] === null) continue;
+          const d = distToPlayer(claims[i]!);
+          if (d > worstD) { worstD = d; worstVi = i; }
+        }
+        if (worstVi >= 0 && distToPlayer(ni) < worstD) {
+          takenNpc[claims[worstVi]!] = false;
+          vi = worstVi;
+        }
+      }
+      if (vi >= 0) { claims[vi] = ni; takenNpc[ni] = true; }
+    }
+
+    for (let vi = 0; vi < n; vi++) {
+      const v = voices[vi];
+      const ni = claims[vi];
+      if (ni === null) {
+        if (v.active) {
+          v.active = false;
+          this.sp(v.mixG.gain, 0, 0.12);
+        }
+        continue;
+      }
+      const npc = list[ni];
+      v.active = true;
+      v.lastX = npc.x;
+      v.lastZ = npc.z;
+
+      const dx = npc.x - px, dz = npc.z - pz;
+      const dist = Math.max(1, Math.hypot(dx, dz));
+      const ux = dx / dist, uz = dz / dist;
+      const relVx = npc.vx - pvx, relVz = npc.vz - pvz;
+      const approachSpeed = -(relVx * ux + relVz * uz);
+      const dopplerFactor = clampRange(343 / (343 - approachSpeed), 0.7, 1.5);
+      const baseFreq = npc.heavy ? 62 : 132;
+
+      const level = clampRange(1 - dist / 70, 0, 1);
+      const g = Math.pow(level, 1.5) * (npc.heavy ? 0.09 : 0.06);
+      const pan = clampRange(dx / 10, -1, 1);
+      const speedMag = Math.hypot(npc.vx, npc.vz);
+
+      this.sp(v.osc.frequency, baseFreq * dopplerFactor, 0.05);
+      this.sp(v.oscG.gain, g * 0.55, 0.08);
+      this.sp(v.noiseF.frequency, 550 + Math.min(1, speedMag / 30) * 900, 0.08);
+      this.sp(v.noiseG.gain, g * 0.5, 0.08);
+      this.sp(v.mixG.gain, 1, 0.08); // mix already carries falloff via oscG/noiseG
+      this.sp(v.panner.pan, pan, 0.08);
+    }
+  }
+
+  /** One-shot horn honk positioned like a doppler-pool voice, for the
+      traffic agent's close-call events. */
+  npcHorn(x: number, z: number) {
+    if (!this.ok) return;
+    const { pan, gain } = this.npcSpatial(x, z, 0.09);
+    if (gain <= 0) return;
+    const c = this.ctx, t = c.currentTime;
+    const o1 = c.createOscillator(), o2 = c.createOscillator(), g = c.createGain(), pn = c.createStereoPanner();
+    o1.type = "square";
+    o2.type = "square";
+    o1.frequency.value = 400;
+    o2.frequency.value = 500;
+    pn.pan.value = pan;
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    o1.connect(g);
+    o2.connect(g);
+    g.connect(pn).connect(this.master);
+    o1.start(t);
+    o2.start(t);
+    o1.stop(t + 0.32);
+    o2.stop(t + 0.32);
+  }
+
+  /** One-shot tire chirp positioned like a doppler-pool voice, for the
+      traffic agent's close-call events. */
+  npcChirp(x: number, z: number) {
+    if (!this.ok) return;
+    const { pan, gain } = this.npcSpatial(x, z, 0.11);
+    if (gain <= 0) return;
+    const c = this.ctx, t = c.currentTime;
+    const decay = 0.05;
+    const nSamp = Math.max(64, Math.floor(c.sampleRate * decay * 3));
+    const buf = c.createBuffer(1, nSamp, c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < nSamp; i++)
+      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * decay));
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    const f = c.createBiquadFilter();
+    f.type = "bandpass";
+    f.frequency.value = 1900 + Math.random() * 700;
+    f.Q.value = 1.6;
+    const g = c.createGain();
+    g.gain.value = gain;
+    const pn = c.createStereoPanner();
+    pn.pan.value = pan;
+    src.connect(f).connect(g).connect(pn).connect(this.master);
+    src.start(t);
+    src.stop(t + decay * 3 + 0.02);
   }
 }
