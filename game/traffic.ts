@@ -407,6 +407,18 @@ type Arch = {
   timid: number; weave: number;
 };
 
+/* How fast a driver's rendered offset can chase its lane's true centre while
+   just holding a lane, as opposed to deliberately changing one. corridor.ts
+   sizes every taper's steepness so a car tracking at this rate never falls
+   behind the pavement even at the fastest NPCs run (see corridor-finish's
+   slope budget: max trackable slope ≈ LANE_FOLLOW_RATE / topSpeed) — if this
+   changes, the corridor geometry needs to change with it. It is deliberately
+   much quicker than a driver's own laneRate (2-4 s to cross a lane, set on
+   commit below), which governs the voluntary, signalled part of a lane
+   change; LANE_FOLLOW_RATE only ever applies to the involuntary drift of
+   staying put while the lane itself narrows or slides under a taper. */
+const LANE_FOLLOW_RATE = 3.4;
+
 /* dawdler · cautious · average · brisk · speeder */
 const ARCH: Arch[] = [
   { spd: [0.72, 0.83], gap: [1.35, 1.62], acc: [0.72, 0.85], lane: [0, 0.12], react: [0.42, 0.6], corner: [0.72, 0.83], timid: 1, weave: 0 },
@@ -1459,8 +1471,8 @@ export class Traffic {
 
     /* Merge out of a lane that is about to end well before it does — a
        lookahead many seconds up the road (a multi-lane fan-in, like the toll
-       plaza's 6-to-3 merge-back, needs to start several lane changes early
-       enough to chain them), signalled and gradual, same as any other lane
+       plaza's merge-back, needs to start several lane changes early enough
+       to chain them), signalled and gradual, same as any other lane
        change, so a taper never reads as a sideways teleport. Re-triggers on
        its own once each pendK clears, so a multi-lane drop chains through
        consecutive single-lane merges rather than waiting for the whole taper. */
@@ -1541,10 +1553,14 @@ export class Traffic {
       }
     }
     /* Track the lane centre continuously: it slides as the corridor tapers, so
-       a car that is not changing lane still has to follow its own lane over. */
+       a car that is not changing lane still has to follow its own lane over.
+       That passive drift always gets the brisk LANE_FOLLOW_RATE — the corridor
+       geometry is sized against it — while an active, signalled lane change
+       (blink is on) is deliberately throttled to the slower, driver-specific
+       laneRate so the manoeuvre itself reads as gradual. */
     n.offT = cor.laneOffset(n.laneK, n.s);
     const dOff = n.offT - n.offCur;
-    const rate = n.laneRate || LANE_W / 3;
+    const rate = n.blink !== 0 ? n.laneRate || LANE_W / 3 : LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) {
       n.offCur += clamp(dOff, -rate * dt, rate * dt);
       if (n.blink !== 0 && n.pendK < 0 && Math.abs(dOff) < 0.35) n.blink = 0;
