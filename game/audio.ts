@@ -175,6 +175,14 @@ export class GameAudio {
   private npcDist: number[] = new Array(GameAudio.NPC_SCAN_MAX).fill(0);
   private npcUnclaimed: number[] = new Array(GameAudio.NPC_SCAN_MAX).fill(0);
 
+  /* scrape/grind */
+  private scrapeG!: GainNode;
+  private scrapeFilters: { f: BiquadFilterNode; baseFreq: number }[] = [];
+  private lastScrapeTarget = 0;
+  private scrapeWasActive = false;
+  private scrapeActiveSince = 0;
+  private lastSqueal = -10;
+
   vol = 1;
   duck = 1;
 
@@ -592,6 +600,31 @@ export class GameAudio {
         this.npcVoices.push({ osc, oscG, noiseF, noiseG, mixG, panner, active: false, lastX: 0, lastZ: 0 });
       }
 
+      /* ---- scrape/grind voice ----
+         Sustained contact voice: one noise source through three resonant
+         bandpass peaks (metal-on-concrete character, not a flat hiss), all
+         prebuilt here and summed into scrapeG, which setScrape() drives
+         per-frame. Squeal transients reuse the existing burst() one-shot
+         machinery rather than a dedicated node. */
+      this.scrapeG = ctx.createGain();
+      this.scrapeG.gain.value = 0;
+      const scrapeSrc = this.noiseNode();
+      for (const b of [
+        { f: 750, q: 3.5, mix: 0.4 },
+        { f: 2100, q: 4, mix: 0.35 },
+        { f: 4200, q: 3, mix: 0.25 },
+      ]) {
+        const f = ctx.createBiquadFilter();
+        f.type = "bandpass";
+        f.frequency.value = b.f;
+        f.Q.value = b.q;
+        const g = ctx.createGain();
+        g.gain.value = b.mix;
+        scrapeSrc.connect(f).connect(g).connect(this.scrapeG);
+        this.scrapeFilters.push({ f, baseFreq: b.f });
+      }
+      this.scrapeG.connect(this.master);
+
       this.ok = true;
       // Debug-only: makes getLevels() reachable from the browser console as
       // __audioDebug.getLevels() without engine.ts needing to wire anything
@@ -623,6 +656,7 @@ export class GameAudio {
       roadRumble: this.roadRumbleG.gain.value,
       wind: this.wG.gain.value,
       rain: this.rG.gain.value,
+      scrape: this.scrapeG.gain.value,
       reverbWet: this.reverbWet.gain.value,
       npcVoicesActive: this.npcVoices.filter((v) => v.active).length,
       master: this.master.gain.value,
@@ -749,6 +783,9 @@ export class GameAudio {
     this.engG.gain.cancelScheduledValues(this.ctx.currentTime);
     this.engG.gain.value = 0;
     this.reverbWet.gain.value = 0;
+    this.scrapeG.gain.value = 0;
+    this.lastScrapeTarget = 0;
+    this.scrapeWasActive = false;
     for (const v of this.npcVoices) {
       v.mixG.gain.value = 0;
       v.active = false;
@@ -1301,5 +1338,73 @@ export class GameAudio {
     src.connect(f).connect(g).connect(pn).connect(this.master);
     src.start(t);
     src.stop(t + decay * 3 + 0.02);
+  }
+
+  /**
+   * Sustained metallic scrape/grind — call every frame while the player is
+   * in contact with a wall/guardrail/NPC flank; `intensity` 0 means no
+   * contact and fully silences the voice.
+   *
+   * @param intensity 0..1, how hard the car is pressing into the surface.
+   * @param speed     m/s, the TANGENTIAL (along-surface) component of
+   *                  velocity at the contact — this, not intensity, is what
+   *                  the voice is gated on. A car pressed hard into a wall
+   *                  with near-zero tangential speed (stuck, not sliding)
+   *                  reads as intensity>0 but speed~0, and must come out
+   *                  nearly silent — real metal-on-concrete only sings when
+   *                  something is actually moving across it.
+   *
+   * Level is capped well under the engine's full-song level, has an
+   * asymmetric ~80ms attack / ~150ms release (so a brief tap reads as a
+   * short scuff, not a blast that also lingers), and a slow fatigue duck if
+   * contact stays continuously active beyond ~3.5s (a long grind should
+   * recede, not sit at full volume indefinitely). Brightness rises with
+   * speed; occasional squeal transients (via the existing burst()
+   * machinery) fire only at high intensity AND real speed, never on a bare
+   * stuck-against-the-wall touch.
+   */
+  setScrape(intensity: number, speed: number) {
+    if (!this.ok) return;
+    const now = this.ctx.currentTime;
+    const it = clamp01(intensity);
+    const spd = Math.max(0, speed);
+
+    // The critical "not obnoxious" gate: near-zero below ~0.3 m/s, full by
+    // ~6 m/s, regardless of how hard intensity is pressing — this is what
+    // keeps a car stuck against a wall (contact, ~no tangential motion)
+    // nearly silent rather than a sustained drone.
+    const speedGate = smoothstep(0.3, 6, spd);
+    let target = it * speedGate * 0.07; // ceiling well under engine's ~0.16-0.18 at full song
+
+    // Fatigue: contact continuously active beyond ~3.5s slowly ducks toward
+    // a lower bed over the next ~3.5s, flooring at 55% of what it would
+    // otherwise be. Resets the moment contact actually breaks (target back
+    // near 0), not merely dips.
+    const active = target > 0.004;
+    if (active) {
+      if (!this.scrapeWasActive) this.scrapeActiveSince = now;
+      const dur = now - this.scrapeActiveSince;
+      target *= 1 - smoothstep(3.5, 7, dur) * 0.45;
+    }
+    this.scrapeWasActive = active;
+
+    // Asymmetric attack/release: setTargetAtTime reaches ~95% by ~3*tau, so
+    // tau=~0.027 gives an ~80ms attack and tau=~0.05 an ~150ms release.
+    const rising = target > this.lastScrapeTarget;
+    this.lastScrapeTarget = target;
+    this.sp(this.scrapeG.gain, target, rising ? 0.027 : 0.05);
+
+    // Brightness rises with tangential speed — a slow scuff is duller than
+    // a fast grind.
+    const brightness = 1 + Math.min(1, spd / 25) * 0.4;
+    for (const b of this.scrapeFilters) this.sp(b.f.frequency, b.baseFreq * brightness, 0.1);
+
+    // Squeal transients: only when it's both hard AND actually sliding —
+    // never on a bare stuck touch, same gating principle as the sustained
+    // bed above.
+    if (it > 0.6 && speedGate > 0.5 && now - this.lastSqueal > 0.4 + Math.random() * 0.6) {
+      this.lastSqueal = now;
+      this.burst(0.02 + it * 0.025, 3200 + Math.random() * 2600, 0.02, 4 + Math.random() * 3);
+    }
   }
 }
