@@ -18,8 +18,22 @@
    launch wheelspin, a harsh downshift, clipping the edge of the friction
    circle — independent of the sustained layers. Rain quiets the screech and
    shifts it broader/brighter (hissier) without changing pitch behaviour.
-   Wind/road ambience, rain hiss, horn, crash and indicator ticks are
-   unchanged from before.
+   Wind, road rumble, transmission whine and overrun burble are a fourth
+   layer group, all tied to speed/load rather than rpm alone:
+   wind is lowpassed noise whose cutoff and level open with speed (plus a
+   slow two-LFO "flutter" depth so it doesn't sit dead-static), becoming the
+   dominant sound at high speed the way a real cockpit does above ~140 km/h;
+   road rumble is a separate, lower (~55-125Hz) noise bed tied to speed that
+   reads as tyres-on-concrete rather than wind, and ducks slightly under the
+   tyre screech layer so the two don't stack into mud; gearbox whine now
+   tracks vehicle speed (i.e. output-shaft speed, which — for a fixed final
+   drive — is the same at a given road speed no matter which gear is
+   selected) rather than rpm, and is boosted on overrun/lift-off and damped
+   under load, the classic sim-modder cue; overrun burble/backfire fires a
+   short rate-limited volley of filtered bursts (reusing burst()) on a sudden
+   throttle lift at high rpm, sharper single pops on sportier profiles
+   (kaze/okami) and only a rare soft thump on the sedan/kei. Horn/crash duck
+   and rain hiss are unchanged from before.
 
    The whole graph is built once in init(); update() only moves AudioParams. */
 
@@ -36,18 +50,21 @@ export interface EngineProfile {
   /** Overall engine loudness trim. */
   level: number;
   revLimit: number;
+  /** 0..1 overrun burble/backfire character: how often and how sharply it
+      pops on a sudden high-rpm throttle lift. Low = rare soft thump. */
+  burble: number;
 }
 
 const PROFILES: Record<string, EngineProfile> = {
   // Turbo straight-six coupe: smooth firing, strong spool.
-  kaze: { cyl: 6, odd: 0.16, bright: 0.95, turbo: 1.0, level: 1.0, revLimit: 7400 },
+  kaze: { cyl: 6, odd: 0.16, bright: 0.95, turbo: 1.0, level: 1.0, revLimit: 7400, burble: 0.85 },
   // Executive sedan: even, refined, muted.
-  shirayuki: { cyl: 6, odd: 0.1, bright: 1.25, turbo: 0.15, level: 0.82, revLimit: 6700 },
+  shirayuki: { cyl: 6, odd: 0.1, bright: 1.25, turbo: 0.15, level: 0.82, revLimit: 6700, burble: 0.08 },
   // 660cc kei triple: buzzy, uneven, screams at the top.
-  tanuki: { cyl: 3, odd: 0.55, bright: 0.75, turbo: 0.35, level: 0.95, revLimit: 8000 },
+  tanuki: { cyl: 3, odd: 0.55, bright: 0.75, turbo: 0.35, level: 0.95, revLimit: 8000, burble: 0.2 },
   // AWD boxer four: the classic unequal-length-header warble.
-  okami: { cyl: 4, odd: 0.62, bright: 0.9, turbo: 0.5, level: 1.0, revLimit: 6900 },
-  generic: { cyl: 4, odd: 0.3, bright: 1.0, turbo: 0.4, level: 0.95, revLimit: 7200 },
+  okami: { cyl: 4, odd: 0.62, bright: 0.9, turbo: 0.5, level: 1.0, revLimit: 6900, burble: 0.9 },
+  generic: { cyl: 4, odd: 0.3, bright: 1.0, turbo: 0.4, level: 0.95, revLimit: 7200, burble: 0.4 },
 };
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
@@ -82,6 +99,10 @@ export class GameAudio {
   private prevGear = 1;
   private lastCrackle = 0;
   private peakRpm = 6800;
+  private prevThr = 0;
+  private lastBurbleTrigger = -10;
+  private burbleCount = 0;
+  private burbleNext = 0;
 
   /* tires */
   private tireRoadF!: BiquadFilterNode; private tireRoadG!: GainNode;
@@ -94,6 +115,8 @@ export class GameAudio {
 
   /* environment */
   private wF!: BiquadFilterNode; private wG!: GainNode;
+  private windFlutterDepth!: GainNode;
+  private roadRumbleF!: BiquadFilterNode; private roadRumbleG!: GainNode;
   private rF!: BiquadFilterNode; private rG!: GainNode;
   private hornOsc: { o1: OscillatorNode; o2: OscillatorNode; g: GainNode } | null = null;
   private crashGain: GainNode | null = null;
@@ -325,12 +348,40 @@ export class GameAudio {
       amA.start(); amB.start();
 
       /* ---- environment ---- */
+      // Wind roar: lowpassed noise whose cutoff and level open with speed,
+      // becoming the dominant sound at high speed. A slow two-LFO "flutter"
+      // is summed additively into the gain param (same trick as limDepth on
+      // engG.gain) so the roar breathes with a bit of turbulence instead of
+      // sitting dead-static.
       this.wF = ctx.createBiquadFilter();
       this.wF.type = "lowpass";
       this.wF.frequency.value = 350;
       this.wG = ctx.createGain();
       this.wG.gain.value = 0;
       this.noiseNode().connect(this.wF).connect(this.wG).connect(this.master);
+      const windFlutA = ctx.createOscillator(); windFlutA.type = "sine"; windFlutA.frequency.value = 0.6;
+      const windFlutB = ctx.createOscillator(); windFlutB.type = "sine"; windFlutB.frequency.value = 1.7;
+      const windFlutMix = ctx.createGain();
+      const windFlutBTrim = ctx.createGain(); windFlutBTrim.gain.value = 0.55;
+      windFlutA.connect(windFlutMix);
+      windFlutB.connect(windFlutBTrim).connect(windFlutMix);
+      this.windFlutterDepth = ctx.createGain();
+      this.windFlutterDepth.gain.value = 0;
+      windFlutMix.connect(this.windFlutterDepth).connect(this.wG.gain);
+      windFlutA.start(); windFlutB.start();
+
+      // Road texture bed: low (~55-125Hz) rumble tied to speed, distinct
+      // from the (higher, broadband) wind and from the tyre contact-patch
+      // hum — this is the tyres-on-concrete layer. Ducked slightly under the
+      // tyre screech so the two don't stack into mud (see update()).
+      this.roadRumbleF = ctx.createBiquadFilter();
+      this.roadRumbleF.type = "lowpass";
+      this.roadRumbleF.frequency.value = 90;
+      this.roadRumbleF.Q.value = 0.7;
+      this.roadRumbleG = ctx.createGain();
+      this.roadRumbleG.gain.value = 0;
+      this.noiseNode().connect(this.roadRumbleF).connect(this.roadRumbleG).connect(this.master);
+
       this.rF = ctx.createBiquadFilter();
       this.rF.type = "highpass";
       this.rF.frequency.value = 2600;
@@ -444,6 +495,8 @@ export class GameAudio {
     this.screechG.gain.value = 0;
     this.screechAmDepth.gain.value = 0;
     this.wG.gain.value = 0;
+    this.windFlutterDepth.gain.value = 0;
+    this.roadRumbleG.gain.value = 0;
     this.inG.gain.value = 0;
     this.exG.gain.value = 0;
     this.turboG.gain.value = 0;
@@ -523,11 +576,19 @@ export class GameAudio {
     this.sp(this.turboOsc.frequency, 2200 + rn * 4400, 0.08);
     this.sp(this.turboG.gain, p.turbo * thr * rn * rn * 0.01, 0.12);
 
-    // Gearbox whine: loud in reverse, faint in 1st, absent above that.
+    // Gearbox whine: constant-mesh gears spin at output-shaft speed, which
+    // for a fixed final drive is set by road speed alone — the same at a
+    // given speed no matter which gear is selected — so pitch tracks speed,
+    // not rpm/gear. Level is quiet under load (loaded gear teeth are damped
+    // by torque) and boosted on overrun/lift-off, the classic immersion cue;
+    // reverse/1st still carry a bit more base whine (shorter, whinier gearsets).
     const g = gear ?? 2;
-    const whine = g < 0 ? 0.02 : g === 1 ? 0.006 : 0;
-    this.sp(this.whineOsc.frequency, 320 + rn * 1500, 0.03);
-    this.sp(this.whineG.gain, whine * (0.25 + rn), 0.06);
+    const whineBase = g < 0 ? 0.026 : g === 1 ? 0.013 : 0.009;
+    const whineLoad = 1 - thr * 0.65;
+    const whineOverrun = 1 + overrun * 2.4;
+    const whineSpeedGate = clamp01(speed / 3);
+    this.sp(this.whineOsc.frequency, 260 + Math.min(1, speed / 55) * 1900, 0.04);
+    this.sp(this.whineG.gain, whineBase * whineLoad * whineOverrun * whineSpeedGate, 0.06);
 
     /* Transients. A shift is the rising edge of the fuel cut: a gain dip (via
        cutMul above) plus a chuff out of the pipe. Reverse/1st engagement gets
@@ -548,6 +609,32 @@ export class GameAudio {
       } else if (overrun > 0.3 && Math.random() < 0.25 * overrun) {
         this.lastCrackle = now;
         this.burst(0.02 + Math.random() * 0.03, 1200 + Math.random() * 2200, 0.012, 1.6);
+      }
+    }
+
+    /* Overrun burble/backfire: a sudden throttle lift at high rpm queues a
+       short volley of 1-4 rate-limited bursts (spread across the next few
+       frames, not all in one tick) — soft low thumps for a burble, or a
+       sharp high-Q crack for a backfire pop. p.burble sets both how often a
+       lift queues a volley at all and how many/how sharp the pops are, so
+       kaze/okami crackle readily while shirayuki/tanuki stay mostly quiet. */
+    const dThr = thr - this.prevThr;
+    if (
+      dThr < -0.35 && rn > 0.35 && now - this.lastBurbleTrigger > 0.5 &&
+      Math.random() < 0.25 + p.burble * 0.75
+    ) {
+      this.lastBurbleTrigger = now;
+      this.burbleCount = 1 + Math.round(Math.random() * (1 + p.burble * 3));
+      this.burbleNext = now;
+    }
+    this.prevThr = thr;
+    if (this.burbleCount > 0 && now >= this.burbleNext) {
+      this.burbleCount--;
+      this.burbleNext = now + 0.05 + Math.random() * 0.09;
+      if (Math.random() < p.burble * 0.55) {
+        this.burst(0.045 + p.burble * 0.05, 1300 + Math.random() * 1900, 0.013, 2.4); // sharp pop
+      } else {
+        this.burst(0.035 + p.burble * 0.03, 200 + Math.random() * 180, 0.05, 0.9); // soft burble
       }
     }
 
@@ -606,9 +693,25 @@ export class GameAudio {
     }
     this.prevSlipRaw = slip;
 
-    /* ---- environment ---- */
-    this.wG.gain.value = Math.min(1, speed / 58) * 0.16 + (raining ? 0.02 : 0);
-    this.wF.frequency.value = 280 + speed * 16;
+    // Road texture bed: low rumble tied to speed, distinct from wind/tyre-hum.
+    // Ducked while the tyre screech layer is active so the two low-mid
+    // layers don't stack into mud.
+    const roadRise = Math.min(1, speed / 40);
+    this.sp(this.roadRumbleF.frequency, 55 + roadRise * 70, 0.1);
+    this.sp(this.roadRumbleG.gain, roadRise * 0.05 * (1 - screechMix * 0.45), 0.1);
+
+    /* ---- environment ----
+       Wind roar opens (cutoff + level) with speed and is deliberately mixed
+       under the engine at low speed but past it by ~140 km/h (~39 m/s),
+       matching a real cockpit where wind becomes the dominant sound well
+       before the engine is at high load. The flutter depth scales with the
+       wind level itself so a stationary car has a dead-still cabin. */
+    const windRise = smoothstep(15, 60, speed);
+    const windLevel = windRise * 0.32 + (raining ? 0.02 : 0);
+    this.sp(this.wF.frequency, 300 + speed * 26, 0.15);
+    this.sp(this.wG.gain, windLevel, 0.12);
+    this.sp(this.windFlutterDepth.gain, windRise * 0.045, 0.15);
+
     this.rG.gain.value = raining ? 0.05 : 0;
     this.hornSet(horn);
   }
