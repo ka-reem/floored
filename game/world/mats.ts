@@ -80,8 +80,12 @@ export function buildMats(): Mats {
           "vec2 sUV=gl_FragCoord.xy/uScreen; sUV.x=1.0-sUV.x;" +
             "vec3 refC=texture2D(tRef,sUV).rgb;" +
             "float ndv=clamp(dot(normalize(vNormal),normalize(vViewPosition)),0.,1.);" +
-            "float fr=uRefStr*pow(1.0-ndv,2.0);" +
-            "gl_FragColor.rgb+=refC*fr;\n#include <dithering_fragment>"
+            "float fr=clamp(uRefStr*pow(1.0-ndv,2.0),0.,1.);" +
+            // blend toward the reflection instead of stacking it on top —
+            // additive stacking let a bright reflected highlight (e.g. the
+            // car's own tail-lights) blow the pixel out to solid white,
+            // especially at grazing angles on wet roads where fr is near 1
+            "gl_FragColor.rgb=mix(gl_FragColor.rgb,refC,fr);\n#include <dithering_fragment>"
         );
     };
     refMats.push(mat);

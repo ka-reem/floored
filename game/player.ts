@@ -251,7 +251,7 @@ export function buildPlayerCar(
   spotR.target = tgtR;
 
   /* cockpit */
-  const cockpit = buildCockpit(spec.cockpitAccent, mirrorTexture);
+  const cockpit = buildCockpit(spec.cockpitAccent, mirrorTexture, spec.id);
   cockpit.group.position.y = P.belt - COCKPIT_REF.belt;
   cockpit.group.scale.x = P.W / COCKPIT_REF.W;
   bodyG.add(cockpit.group);

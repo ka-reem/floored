@@ -45,7 +45,10 @@ export class PostFX {
   constructor(private renderer: THREE.WebGLRenderer) {
     this.fsQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
     this.fsScene.add(this.fsQuad);
-    this.mirrorRT = new THREE.WebGLRenderTarget(320, 128, { type: THREE.HalfFloatType });
+    // MSAA here: at 320x128 the cost is negligible, but without it tiny bright
+    // points (stars, distant tail-lights) alias to single texels and flicker
+    // wildly frame to frame once blown up onto the mirror glass.
+    this.mirrorRT = new THREE.WebGLRenderTarget(320, 128, { type: THREE.HalfFloatType, samples: 4 });
 
     this.brightMat = new THREE.ShaderMaterial({
       uniforms: { tIn: { value: null }, uExp: { value: 1 } },

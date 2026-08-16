@@ -91,6 +91,10 @@ export class Game {
   private amb: THREE.AmbientLight;
   private chasePos = new THREE.Vector3();
   private lookPos = new THREE.Vector3();
+  // camMode as of the last updateCamera() call — lets the chase branch detect
+  // a fresh switch into chase mode and snap instead of easing from whatever
+  // stale position chasePos/lookPos were left at while another mode was active
+  private lastCamMode = -1;
   /* 0 = chase cam sits behind the car, 1 = swung round in front looking back.
      Eased so the swing only happens when the car is really reversing. */
   private revCam = 0;
@@ -204,7 +208,7 @@ export class Game {
 
     this.car = freshCarState(HX + LANE_OFF[1], DECKY, -430, 0, 23);
     this.buildRig();
-    this.chasePos.set(this.car.x, DECKY + 2.4, this.car.z - 8);
+    this.chasePos.set(this.car.x, DECKY + 2.15, this.car.z - 7);
     this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
 
     this.timeSpeed = this.settings.autoTime ? 150 : 0;
@@ -226,7 +230,7 @@ export class Game {
         this.car.r = 0;
         this.car.wvx = 0;
         this.car.wvz = 0;
-        this.chasePos.set(this.car.x - Math.sin(this.car.h) * 5, this.car.y + 1.85, this.car.z - Math.cos(this.car.h) * 5);
+        this.chasePos.set(this.car.x - Math.sin(this.car.h) * 4.4, this.car.y + 2.15, this.car.z - Math.cos(this.car.h) * 4.4);
         this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
       },
       setCam: (i: number) => (this.camMode = i % 3),
@@ -547,7 +551,7 @@ export class Game {
     car.slope = 0;
     car.pitchDyn = 0;
     this.pitchVis = 0;
-    this.chasePos.set(car.x - Math.sin(car.h) * 5, car.y + 1.85, car.z - Math.cos(car.h) * 5);
+    this.chasePos.set(car.x - Math.sin(car.h) * 4.4, car.y + 2.15, car.z - Math.cos(car.h) * 4.4);
     this.lookPos.set(car.x, car.y + 0.95, car.z);
   }
 
@@ -656,6 +660,12 @@ export class Game {
     rig.carGroup.updateMatrixWorld();
     rig.cockpit.group.visible = this.camMode === 1;
     rig.exteriorG.visible = this.camMode !== 1;
+    // the cockpit now has its own nav screen (drawScreen above), so the
+    // external HUD minimap is redundant in that view — hide it
+    if (this.mmap) {
+      const mmapCv = document.getElementById("mmap");
+      if (mmapCv) mmapCv.style.display = this.camMode === 1 ? "none" : "block";
+    }
     rig.pivFL.rotation.y = car.delta;
     rig.pivFR.rotation.y = car.delta;
     const spin = (-car.u / this.spec.phys.WR) * dt;
@@ -693,7 +703,7 @@ export class Game {
           units: this.settings.units, onLimiter: car.onLimiter,
         }
       );
-      rig.cockpit.drawScreen(car.x, car.z, car.h, this.time);
+      rig.cockpit.drawScreen(car.x, car.z, car.h, this.time, this.world);
     }
     if (this.dropT > 0.033) {
       rig.cockpit.dropletsUpdate(this.dropT, wiping, rig.cockpit.wiperA.rotation.z, this.rain, Math.abs(car.u));
@@ -712,14 +722,20 @@ export class Game {
     if (this.revCam < 0.002) this.revCam = 0;
     if (this.camMode === 0) {
       // chase
-      const dist = (4.2 + this.spec.shell.L * 0.25) + clamp(Math.abs(car.u) * 0.03, 0, 0.9);
+      // chasePos/lookPos only get updated in this branch, so after a stretch
+      // in cockpit/hood view they're stale (wrong height after an elevation
+      // change, wrong lateral offset after turns) — easing from that on
+      // re-entry reads as the camera diving before it settles. Snap instead.
+      const freshEntry = this.lastCamMode !== 0;
+      const dist = (3.75 + this.spec.shell.L * 0.25) + clamp(Math.abs(car.u) * 0.03, 0, 0.9);
       // flip: 0 = camera behind the car, 1 = in front of it looking back. The
       // swing is an arc around the car, not a lerp through it.
       const flip = this.lookBack ? 1 - this.revCam : this.revCam;
       const ang = car.h + Math.PI * (1 - flip);
       const ax = Math.sin(ang), az = Math.cos(ang);
-      this.tmpV.set(car.x + ax * dist, car.y + 1.85, car.z + az * dist);
-      this.chasePos.lerp(this.tmpV, 1 - Math.exp(-5.5 * dt));
+      this.tmpV.set(car.x + ax * dist, car.y + 2.15, car.z + az * dist);
+      if (freshEntry) this.chasePos.copy(this.tmpV);
+      else this.chasePos.lerp(this.tmpV, 1 - Math.exp(-5.5 * dt));
       // smoothing lags a moving target by ~speed/5.5 m; cap the trail so the
       // camera can't drift arbitrarily far behind at high speed, and keep a
       // minimum radius so the mid-swing shortcut never clips through the car
@@ -745,7 +761,8 @@ export class Game {
         car.z - az * 2.8 - fx * lat
       );
       // aim is smoothed too — the delta term above snaps with keyboard taps
-      this.lookPos.lerp(this.tmpV2, 1 - Math.exp(-9 * dt));
+      if (freshEntry) this.lookPos.copy(this.tmpV2);
+      else this.lookPos.lerp(this.tmpV2, 1 - Math.exp(-9 * dt));
       this.camera.lookAt(this.lookPos);
     } else {
       const back = this.lookBack ? Math.PI : 0;
@@ -794,6 +811,7 @@ export class Game {
       this.camera.fov = fovT;
       this.camera.updateProjectionMatrix();
     }
+    this.lastCamMode = this.camMode;
   }
 
   private renderMirror() {
@@ -959,7 +977,7 @@ export class Game {
         this.chunksUpdate();
       }
       const mmapCv = document.getElementById("mmap") as HTMLCanvasElement | null;
-      if (this.mmap && mmapCv && this.frameN % 4 === 0)
+      if (this.mmap && mmapCv && this.camMode !== 1 && this.frameN % 4 === 0)
         drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
     } else {
       this.acc = 0;
