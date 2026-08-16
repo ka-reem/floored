@@ -834,7 +834,7 @@ export class Traffic {
       n.v = n.v0 * rand(0.85, 1.0);
       n.turnCd = rand(2, 8);
       n.blink = 0;
-      this.placeHwy(n);
+      this.placeHwy(n, player.z);
       n.hVis = cor.pose(z, this.cpose).h;
       return true;
     }
@@ -861,11 +861,18 @@ export class Traffic {
     n.y = p.y;
   }
 
-  private placeHwy(n: Npc) {
+  /** `refZ` anchors the render position across the loop seam: corridor.worldOf
+      returns a z canonicalised into [Z0, Z1), so a car just ahead of the
+      player on the far side of the wrap (player near Z1, car's s near Z0)
+      would otherwise render a full LOOP away instead of a few metres ahead.
+      Re-adding the right multiple of LOOP puts it back next to `refZ` (always
+      the player, so far) without changing x/y, which are already periodic. */
+  private placeHwy(n: Npc, refZ: number) {
     const p = this.cor.worldOf(n.s, n.offCur + (n.wob || 0), this._cw);
     n.x = p.x;
     n.y = p.y;
-    n.z = p.z;
+    const LOOP = this.cor.LOOP;
+    n.z = p.z + LOOP * Math.round((refZ - p.z) / LOOP);
   }
 
   /* ---------------- impact from player ---------------- */
@@ -1002,7 +1009,7 @@ export class Traffic {
       n.laneK = bestK;
       n.offCur = n.offT = cor.laneOffset(bestK, z);
       n.s = z;
-      this.placeHwy(n);
+      this.placeHwy(n, car.z);
       n.hVis = cor.pose(z, this.cpose).h;
     } else {
       const near = this.world.net.nearest(tx, tz);
@@ -1043,7 +1050,14 @@ export class Traffic {
     camFx /= cl;
     camFz /= cl;
     const hd = this.hideDist();
-    if (Math.hypot(player.x - this.lastPx, player.z - this.lastPz) > 150) this.warpSeed = true;
+    /* The engine splices the endless loop by subtracting corridor.LOOP from
+       the player's z in a single frame — a ~4 km jump that must NOT read as a
+       teleport (it would force a full reseed and a visible traffic churn
+       right at the seam every lap). Measure z with the corridor's wrapped
+       shortest-way-round distance so an exact-LOOP jump reads as ~0; a real
+       teleport (respawn, garage) still isn't LOOP-aligned and still trips it. */
+    const dzWrap = this.cor.deltaZ(this.lastPz, player.z);
+    if (Math.hypot(player.x - this.lastPx, dzWrap) > 150) this.warpSeed = true;
     this.lastPx = player.x;
     this.lastPz = player.z;
 
@@ -1283,7 +1297,7 @@ export class Traffic {
       }
 
       /* smooth heading + place */
-      if (n.hw) this.placeHwy(n);
+      if (n.hw) this.placeHwy(n, player.z);
       else this.placeTown(n);
       let targetH: number;
       if (n.hw) {
