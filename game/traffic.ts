@@ -573,6 +573,16 @@ export class Traffic {
   // match "4-6s" as a literal number — at this game's encounter density,
   // 4-6s alone still landed near 11-15 total, so this leans a bit longer.
   private static readonly CC_GLOBAL_GAP = 8;
+  /** Kill switch for the close-call reaction sounds (horn/chirp on near-
+      misses) — OFF per a user decision superseding the rarity tuning above.
+      All the detection/gating/cooldown machinery above is left intact
+      (including the sound-quality work in audio.ts's npcHorn/npcChirp) so
+      this can come back for a future scoring-feedback feature by flipping
+      one flag; closeCalls() below simply never has anything to report while
+      this is false, since n.ccKind is only ever set past this gate. The
+      doppler engine voice pool (updateNpcs) is a completely separate system
+      and is unaffected. */
+  private static readonly CLOSE_CALL_AUDIO = false;
   private _nearBuf: NpcAudioSample[] = Array.from({ length: 12 }, () => ({
     npc: null, x: 0, y: 0, z: 0, vx: 0, vz: 0, d2: 0, type: "", heavy: false,
   }));
@@ -1478,7 +1488,7 @@ export class Traffic {
          won't react again for a while) plus a global one across ALL NPCs
          (see globalCcCd above) so weaving through a crowd can't produce
          several different cars reacting in the same few seconds. */
-      if (n.ccCd <= 0 && this.globalCcCd <= 0 && (nearPass || (panic && n.brake && playerSpeed > 8))) {
+      if (Traffic.CLOSE_CALL_AUDIO && n.ccCd <= 0 && this.globalCcCd <= 0 && (nearPass || (panic && n.brake && playerSpeed > 8))) {
         n.ccKind = n.drv.timid ? "chirp" : "horn";
         n.ccCd = 10 + rand(0, 3);
         this.globalCcCd = Traffic.CC_GLOBAL_GAP;
