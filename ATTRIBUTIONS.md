@@ -1,11 +1,13 @@
 # Attributions
 
 Third-party assets bundled in this repository, with the licence each was
-obtained under. Everything here is CC0 / public domain: no attribution is
-legally required, but it is recorded so the provenance of every shipped asset
-is auditable.
+obtained under. Most assets are CC0 / public domain; assets requiring credit
+are identified explicitly below so the provenance of every shipped asset is
+auditable.
 
 ## NPC vehicle bodyshells — `public/models/cars/*.glb`
+
+### Original six traffic styles
 
 | | |
 |---|---|
@@ -17,19 +19,14 @@ is auditable.
 | Mirror | https://rgsdev.itch.io/free-low-poly-vehicles-pack |
 | Author's site | https://www.patreon.com/rgsdev |
 
-The pack contains generic, unbranded vehicle silhouettes — no real-world
-manufacturer, model, badge or trade dress is depicted or implied.
+The rgsdev pack contains generic, unbranded vehicle silhouettes — no
+real-world manufacturer, model, badge or trade dress is depicted or implied.
 
-Ten of the pack's twenty-one vehicles are used, one per traffic style in
-`game/traffic.ts`:
+Six of the pack's twenty-one vehicles remain in use:
 
 | style | source model | notes |
 |---|---|---|
-| `hybrid` | Hatchback | |
-| `sedan` | Sedan | |
-| `compact` | Pickup | a small pickup, for fleet variety |
 | `kei` | Van | fitted to kei dimensions — reads as a kei van |
-| `suv` | SUV | |
 | `van` | Van | |
 | `taxi` | Taxi | |
 | `police` | Police Sedan | black/white livery kept; white takes the paint slot |
@@ -38,7 +35,7 @@ Ten of the pack's twenty-one vehicles are used, one per traffic style in
 
 `bike` has no model in the pack and stays procedural.
 
-### How the shipped GLBs were produced
+### How the original six GLBs were produced
 
 The source pack is FBX. The committed GLBs were baked from it by
 `tools/build-npc-models.mjs`, which is run offline, not at build time:
@@ -53,7 +50,25 @@ proportions are cartoonish — a 2.8 m wide sedan), drops the wheels in favour o
 the fleet's shared instanced wheel, collapses the material slots into a baked
 vertex colour plus the `paintable` mask the NPC shader reads, and records the
 lamp and wheel anchors. See the header comment in that file for the details.
-Total: 10 models, ~9.0k triangles, 553 KB.
+
+### Four everyday passenger styles
+
+| | |
+|---|---|
+| Asset | Orchids Simulator Traffic Car Pack |
+| Author | SphereBall20 (@playmode280513) |
+| Licence | **CC BY 4.0** — commercial use and modification permitted with credit |
+| Source | https://sketchfab.com/3d-models/orchids-simulator-traffic-car-pack-2fc5970d5ba2415fa98ec98b8801e794 |
+
+Four ordinary passenger vehicles from the pack replace the `hybrid`, `suv`,
+`compact`, and `sedan` styles. The 26 MB source scene is not shipped. The
+offline `tools/build-orchids-models.mjs` bake selects only those four unnamed
+nodes, removes their wheel geometry in favor of the fleet's shared instanced
+wheels, samples the source 1K textures into vertex colors, strips all textures,
+and fits each body to the game's existing dimensions. This also removes
+readable badges and avoids runtime texture memory or additional draw calls.
+
+The four baked models contain 5,452 triangles and total about 262 KB.
 
 ## PBR road/ground textures — `public/assets/pbr/*`
 
