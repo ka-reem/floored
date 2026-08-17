@@ -1058,8 +1058,11 @@ export class Game {
        reading that flag stay honest about what is actually switched on. */
     const hi = this.highBeam;
     const lamps = car.lightsOn || hi;
-    // modern three uses physical (candela) spot intensities
-    const si = lamps ? (this.rain ? 985 : 760) * (hi ? 1.9 : 1) : 0;
+    // modern three uses physical (candela) spot intensities. Peak is down
+    // ~12.5% from the previous tune — decay carries the pool now instead of
+    // raw hotspot brightness — and high beam's multiplier is up from 1.9 to
+    // 2.15 to buy that back so the low/high flash contrast doesn't go soft.
+    const si = lamps ? (this.rain ? 862 : 665) * (hi ? 2.15 : 1) : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
     /* Halogen dipped beam is warm — around 3200 K — and reading it as warm is
@@ -1114,12 +1117,15 @@ export class Game {
       sp.distance = hi ? HL_THROW_HI : HL_THROW;
       /* The cut-off constraint pins the axis pitch to the half-angle, so a
          wide cone is forced to point steeply down and its hot spot lands on
-         the bumper. These angles put the hot spot ~1.8 m ahead on dipped and
-         ~3.2 m on main — the dipped hot spot sits a bit closer than before
-         now that the cone is wider, but the extra reach and intensity make
-         the pool read longer overall, not shorter. */
-      sp.angle = hi ? 0.20 : 0.30;
-      sp.penumbra = hi ? 0.24 : 0.42;
+         the bumper. These angles put the hot spot ~1.6 m ahead on dipped and
+         ~2.7 m on main, closer than earlier tunes — deliberately: with decay
+         (see the SpotLight ctor in player.ts) dropped well below the inverse-
+         square norm, the pool no longer depends on a bright near hotspot to
+         read as "on", so the axis is allowed to sit closer while penumbra
+         (below) feathers the disc into a spread instead of a hard-edged
+         pool. */
+      sp.angle = hi ? 0.23 : 0.33;
+      sp.penumbra = hi ? 0.4 : 0.6;
       sp.target.position.z = hi ? 46 : 26;
       const pitch = hi
         ? sp.angle - Math.atan(HI_RISE)
