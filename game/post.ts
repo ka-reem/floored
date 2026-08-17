@@ -22,23 +22,33 @@ const VSH = "varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy
 // holdFrame) so the "dropped frame" moments track the shader's own bucketing
 const frac = (x: number) => x - Math.floor(x);
 
-/** Live console knobs for the three POV visibility tweaks (auto-gain floor,
- * shadow grain reduction, taillight protection) — each 0..1, scaling that
- * one effect's strength independently so it can be zeroed or dialed back
- * without touching the other two or redeploying. Read fresh every frame in
- * process(), so edits from the console (`window.__povTune.gainFloor = 0`)
- * take effect immediately. 1 is the shipped default for all three. */
+/** Live console knobs for the POV visibility tweaks — read fresh every frame
+ * in process(), so console edits (`window.__povTune.gainFloor = 0`) take
+ * effect immediately, no redeploy or reload.
+ * gainFloor / shadowGrain / lampProtect: each 0..1, scaling that one
+ * post-degrade effect's strength independently (1 = shipped default).
+ * sensorGain: 1..3, default 1.8 — multiplies the image feeding the whole POV
+ * degrade chain (see povSrcMat below), i.e. it brightens the *source* before
+ * crush/grain/everything rather than lifting the result afterward, so detail
+ * the degrade would otherwise have nothing to work with survives into it. */
 declare global {
   interface Window {
-    __povTune?: { gainFloor: number; shadowGrain: number; lampProtect: number };
+    __povTune?: {
+      gainFloor: number; shadowGrain: number; lampProtect: number; sensorGain: number;
+    };
   }
 }
+const POV_TUNE_DEFAULT = { gainFloor: 1, shadowGrain: 1, lampProtect: 1, sensorGain: 1.8 };
 function readPovTune() {
-  if (typeof window === "undefined") return { gainFloor: 1, shadowGrain: 1, lampProtect: 1 };
-  if (!window.__povTune) window.__povTune = { gainFloor: 1, shadowGrain: 1, lampProtect: 1 };
+  if (typeof window === "undefined") return POV_TUNE_DEFAULT;
+  if (!window.__povTune) window.__povTune = { ...POV_TUNE_DEFAULT };
   const t = window.__povTune;
-  const c = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1);
-  return { gainFloor: c(t.gainFloor), shadowGrain: c(t.shadowGrain), lampProtect: c(t.lampProtect) };
+  const c01 = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1);
+  const cGain = (v: number) => (Number.isFinite(v) ? Math.max(1, Math.min(3, v)) : POV_TUNE_DEFAULT.sensorGain);
+  return {
+    gainFloor: c01(t.gainFloor), shadowGrain: c01(t.shadowGrain), lampProtect: c01(t.lampProtect),
+    sensorGain: cGain(t.sensorGain),
+  };
 }
 
 export class PostFX {
@@ -87,6 +97,7 @@ export class PostFX {
   private copyMat: THREE.ShaderMaterial;
   private smearMat: THREE.ShaderMaterial;
   private povMat: THREE.ShaderMaterial;
+  private povSrcMat: THREE.ShaderMaterial;
 
   constructor(private renderer: THREE.WebGLRenderer) {
     this.fsQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
@@ -443,6 +454,22 @@ void main(){
  vec3 lv=vec3(19.,23.,17.);
  gl_FragColor=vec4(floor(clamp(col,0.,1.)*lv+.5)/lv,1.); }`,
     });
+    /* Sensor auto-gain: the dashcam POV source is dark twice over — the
+       night exposure upstream, then this degrade's own crush — and the
+       visibility floor/grain/lamp tweaks above operate on the *result*, so
+       they can only dress up detail that's already gone. Real dashcams
+       compensate with sensor gain: this brightens the frame the whole POV
+       chain (smear, crush, grain) is built from, so the murk downstream
+       comes from cheap-camera processing rather than the image having
+       nothing left in it. Highlights clipping harder off the back of this
+       is correct — the smear pass below is what a real over-gained sensor's
+       blown-out lamps look like. */
+    this.povSrcMat = new THREE.ShaderMaterial({
+      uniforms: { tIn: { value: null }, uGain: { value: 1.8 } },
+      vertexShader: VSH,
+      fragmentShader: `precision highp float; varying vec2 vUv; uniform sampler2D tIn; uniform float uGain;
+void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb*uGain,1.0); }`,
+    });
     this.copyMat = new THREE.ShaderMaterial({
       uniforms: { tIn: { value: null } },
       vertexShader: VSH,
@@ -599,7 +626,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.overTex.dispose();
     for (const m of [
       this.brightMat, this.blurMat, this.compMat, this.fxaaMat, this.mbMat,
-      this.copyMat, this.dashMat, this.smearMat, this.povMat,
+      this.copyMat, this.dashMat, this.smearMat, this.povMat, this.povSrcMat,
     ])
       m.dispose();
   }
@@ -727,11 +754,19 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       const holdFrame =
         hitActive && hitEnv > 0.2 &&
         frac(Math.sin(hitBucket * 12.9898 + this.hitSeed * 78.233) * 43758.5453) > 0.8;
+      // live-tunable, read fresh every frame so console edits land immediately
+      const tune = readPovTune();
       // box-downsample to half res (exact 2:1, so the bilinear tap averages a
-      // clean 2x2), build the highlight streak layer off it, then degrade
+      // clean 2x2) *with sensor gain applied here* — povSrcMat multiplies by
+      // uGain instead of a plain copy, so the brightened image is what the
+      // smear, crush and grain below all actually see. Highlights blow out
+      // harder off the back of it; that's the smear pass doing its job on a
+      // brighter source, which is the point (an over-gained sensor's lamps
+      // really do smear like that).
       if (!holdFrame) {
-        this.copyMat.uniforms.tIn.value = cur.texture;
-        this.runPass(this.copyMat, this.povA);
+        this.povSrcMat.uniforms.tIn.value = cur.texture;
+        this.povSrcMat.uniforms.uGain.value = tune.sensorGain;
+        this.runPass(this.povSrcMat, this.povA);
         this.smearMat.uniforms.tIn.value = this.povA.texture;
         this.runPass(this.smearMat, this.povB);
       }
@@ -745,8 +780,6 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.povMat.uniforms.uHitEnv.value = hitEnv;
       this.povMat.uniforms.uHitSeed.value = this.hitSeed;
       this.povMat.uniforms.uHitT.value = hitActive ? hitElapsed : 0;
-      // live-tunable, read fresh every frame so console edits land immediately
-      const tune = readPovTune();
       this.povMat.uniforms.uGainFloor.value = tune.gainFloor;
       this.povMat.uniforms.uShadowGrain.value = tune.shadowGrain;
       this.povMat.uniforms.uLampProtect.value = tune.lampProtect;
