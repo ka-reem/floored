@@ -17,6 +17,10 @@ import * as THREE from "three";
    grain, bit-crush banding and torn interlace rows. */
 
 const VSH = "varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.,1.); }";
+// mirrors the GLSL h21() hash's fractional part, used JS-side to decide
+// which frame buckets the dashcam impact glitch holds (see process()'s
+// holdFrame) so the "dropped frame" moments track the shader's own bucketing
+const frac = (x: number) => x - Math.floor(x);
 
 export class PostFX {
   sceneRT!: THREE.WebGLRenderTarget;
@@ -43,6 +47,13 @@ export class PostFX {
   private overCv: HTMLCanvasElement;
   private overTex: THREE.CanvasTexture;
   private overAt = -1;
+  // dashcam impact-glitch event (see dashcamHit()): hitAt/-Dur/-Seed/-Intensity
+  // describe at most one in-flight burst. hitAt sits far in the past so the
+  // envelope in process() reads 0 before the first real hit ever lands.
+  private hitAt = -1e6;
+  private hitDur = 0;
+  private hitSeed = 0;
+  private hitIntensity = 0;
 
   private fsScene = new THREE.Scene();
   private fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -292,11 +303,18 @@ void main(){ vec3 s=vec3(0.); float wsum=0.;
         uOverPos: { value: new THREE.Vector2(0.022, 0.925) },
         uOverSize: { value: new THREE.Vector2(0.3, 0.03) },
         uOverAmt: { value: 1 },
+        // dashcam impact glitch: uHitEnv is the decaying 0..1 burst envelope
+        // (exactly 0 outside an event — every hit-driven term below is a
+        // multiply against it, so idle cost is a handful of ALU ops and zero
+        // extra texture fetches), uHitSeed reseeds the randomness per event,
+        // uHitT is seconds since the hit landed (drives the flash decay and
+        // the wobble phase).
+        uHitEnv: { value: 0 }, uHitSeed: { value: 0 }, uHitT: { value: 0 },
       },
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv;
 uniform sampler2D tLow,tSmear,tOver; uniform vec2 uLow,uOverPos,uOverSize;
-uniform float uTime,uOverAmt;
+uniform float uTime,uOverAmt,uHitEnv,uHitSeed,uHitT;
 float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
 void main(){
  vec2 d=vUv-.5; float r2=dot(d,d);
@@ -305,18 +323,36 @@ void main(){
  // free-running one drives that into the range where mobile GPUs stop
  // range-reducing accurately and the grain collapses into a fixed pattern.
  float tq=mod(floor(uTime*15.),61.);
+ // event-local ~24fps frame bucket for the impact glitch, offset by the
+ // per-event seed so consecutive hits don't snap on the same buckets
+ float hq=floor(uHitT*24.+uHitSeed);
  // (i) mild rolling wobble + (f) interlace tear: a few rows per frame get
  // yanked sideways, the rest only wobble
  vec2 uv=vUv;
  uv.x+=sin(uv.y*19.+uTime*3.3)*.0011+sin(uv.y*103.+uTime*11.)*.00035;
  float row=floor(uv.y*uLow.y);
  uv.x+=step(.972,h21(vec2(row,tq)*.017))*(h21(vec2(row*1.7,tq*.31+7.))-.5)*.05;
+ // impact tear: far more rows torn, far harder, only while the burst runs
+ float tearGate=step(.45,h21(vec2(row*2.3,hq+3.)))*uHitEnv;
+ uv.x+=tearGate*(h21(vec2(row*1.3,hq+19.))-.5)*.14;
+ // whole-frame displacement jump: snaps for 1-2 buckets at a time rather than
+ // every bucket (the step-gate), so it reads as a struck-camera jolt and not
+ // a continuous shake
+ vec2 hitOff=(vec2(h21(vec2(hq,uHitSeed)),h21(vec2(hq+31.,uHitSeed*1.7)))-.5)
+   *step(.55,h21(vec2(floor(hq*.5),uHitSeed+5.)))*.05*uHitEnv;
+ // quick refocus wobble as the burst settles: a damped sine that (like the
+ // rest) is gated to zero at both env=0 and env=1, so it reads as a
+ // mid-to-late-burst settle rather than part of the initial jolt
+ float wob=uHitEnv*(1.-uHitEnv)*4.;
+ vec2 hitWobble=vec2(sin(uHitT*(17.+uHitSeed*2.3)),cos(uHitT*(21.+uHitSeed*1.7)))*.004*wob;
+ uv+=hitOff+hitWobble;
  uv=clamp(uv,vec2(.001),vec2(.999));
  // (g) low internal resolution: snap onto the half-res grid, then let a
  // little of the unsnapped bilinear tap back in so it is soft, not crunchy
  vec2 uvs=(floor(uv*uLow)+.5)/uLow;
- // (d) chromatic fringing, strongly radial so the frame edges separate
- vec2 ca=d*(.0045+.032*r2)+vec2(.0016,0.);
+ // (d) chromatic fringing, strongly radial so the frame edges separate;
+ // impact spike pushes the split hard for the length of the burst
+ vec2 ca=(d*(.0045+.032*r2)+vec2(.0016,0.))*(1.+uHitEnv*2.4);
  vec3 col;
  col.r=mix(texture2D(tLow,uvs+ca).r,texture2D(tLow,uv+ca).r,.22);
  col.g=mix(texture2D(tLow,uvs).g,   texture2D(tLow,uv).g,   .22);
@@ -325,6 +361,9 @@ void main(){
  // white, so lamps read as hard streaks rather than pretty glow
  col+=texture2D(tSmear,uv).rgb*1.15;
  col=mix(col,vec3(1.),smoothstep(.72,1.02,dot(col,vec3(.299,.587,.114)))*.75);
+ // momentary exposure spike: a fast white flash on the first ~60ms after
+ // impact registers, decaying linearly to 0 well inside the burst envelope
+ col+=vec3(clamp(1.-uHitT/.06,0.,1.))*uHitEnv;
  // (b) crushed blacks, then sensor bleed: the edges of the frame clip into
  // dark red/magenta (negative green) and the vignette carries a red cast
  col=max(col-.06,vec3(0.))*1.22;
@@ -442,6 +481,35 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     if (on === this.pov) return;
     this.pov = on;
     this.histValid = false;
+  }
+
+  /** Register a physical impact for the dashcam-glitch burst: a short,
+   * randomized "physically struck camera" flourish layered on top of the POV
+   * degrade (frame-jump snaps, tear lines, a dropped frame, an exposure
+   * flash, a chroma-separation spike and a settling refocus wobble), all
+   * driven off one decaying envelope so it collapses back to the plain POV
+   * look on its own.
+   *
+   * severity is the impact speed in m/s (same magnitude engine.ts already
+   * feeds audio.crash with — hitInfo.relSpeed / res.wallImpact). Hard gate:
+   * anything under 3 m/s is a rub/scrape, not a discrete hit, and is dropped
+   * here rather than by the caller, so this is safe to call unconditionally
+   * from every crash site. 3-15 m/s maps to 0.3-1.0 intensity (clamped
+   * above 15). Call this only while camMode is the dashcam POV — off-POV
+   * calls are cheap no-ops (the shader path that reads the envelope only
+   * runs under `if (pov)` below), but the engine should still gate the call
+   * itself to avoid arming a burst that fires the instant the player swaps
+   * into POV later.
+   */
+  dashcamHit(severity: number) {
+    if (severity < 3) return;
+    const intensity = Math.max(0.3, Math.min(1, 0.3 + (0.7 * (severity - 3)) / 12));
+    // a second impact mid-burst restarts the envelope at the new severity
+    // instead of layering two — exactly one glitch is ever in flight
+    this.hitAt = performance.now() / 1000;
+    this.hitDur = 0.3 + 0.5 * intensity; // 0.3s (soft) .. 0.8s (heavy) burst
+    this.hitIntensity = intensity;
+    this.hitSeed = Math.random() * 1000;
   }
 
   /** Repaint the burnt-in DVR strip (blinking REC dot + wall-clock stamp). */
@@ -592,12 +660,32 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       if (!pov) this.runPass(this.copyMat, null);
     }
     if (pov) {
+      // impact-glitch envelope: quadratic ease-out reaches exactly 0 at
+      // hitDur (not just asymptotically small), so every hit-driven shader
+      // term is bit-exact zero — and the pass is bit-identical steady-state
+      // POV — the instant the burst ends, not "eventually negligible".
+      const hitElapsed = performance.now() / 1000 - this.hitAt;
+      const hitActive = hitElapsed >= 0 && hitElapsed < this.hitDur;
+      const hitEnvT = hitActive ? hitElapsed / this.hitDur : 1;
+      const hitEnv = hitActive ? (1 - hitEnvT) * (1 - hitEnvT) : 0;
+      // dropped/repeated frame: during a couple of hashed windows near the
+      // front of the burst, skip resampling the source into povA/povB
+      // entirely and let the degrade run again on the stale texture — a
+      // real held frame, not a simulated one. Same event-local ~24fps
+      // bucket + seed the shader uses for its own jump gating, so the
+      // "camera skipped a beat" moments line up with the frame-jump snaps.
+      const hitBucket = Math.floor(hitElapsed * 24 + this.hitSeed);
+      const holdFrame =
+        hitActive && hitEnv > 0.2 &&
+        frac(Math.sin(hitBucket * 12.9898 + this.hitSeed * 78.233) * 43758.5453) > 0.8;
       // box-downsample to half res (exact 2:1, so the bilinear tap averages a
       // clean 2x2), build the highlight streak layer off it, then degrade
-      this.copyMat.uniforms.tIn.value = cur.texture;
-      this.runPass(this.copyMat, this.povA);
-      this.smearMat.uniforms.tIn.value = this.povA.texture;
-      this.runPass(this.smearMat, this.povB);
+      if (!holdFrame) {
+        this.copyMat.uniforms.tIn.value = cur.texture;
+        this.runPass(this.copyMat, this.povA);
+        this.smearMat.uniforms.tIn.value = this.povA.texture;
+        this.runPass(this.smearMat, this.povB);
+      }
       if (!dash) this.updateOverlay(opts.time);
       this.povMat.uniforms.uOverAmt.value = dash ? 0 : 1;
       this.povMat.uniforms.tLow.value = this.povA.texture;
@@ -605,6 +693,9 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // wrapped: the noise clock is floor(t*15) and float precision in the
       // hash falls apart once the session has been up for a few hours
       this.povMat.uniforms.uTime.value = opts.time % 60;
+      this.povMat.uniforms.uHitEnv.value = hitEnv;
+      this.povMat.uniforms.uHitSeed.value = this.hitSeed;
+      this.povMat.uniforms.uHitT.value = hitActive ? hitElapsed : 0;
       this.runPass(this.povMat, null);
     }
     this.renderer.setRenderTarget(null);
