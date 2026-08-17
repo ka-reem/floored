@@ -210,18 +210,12 @@ export function drawMiniMap(
     g.fillText(String(ex.no), X, Z);
   }
 
-  // ---- traffic ----
+  // traffic dots removed by request — only police still show (gameplay signal)
   for (const n of npcs) {
-    if (!n.active) continue;
+    if (!n.active || n.type !== "police") continue;
     const X = tx(n.x), Z = tz(n.z);
     if (X < 2 || X > Wp - 2 || Z < 2 || Z > Wp - 2) continue;
-    g.fillStyle = n.wreck
-      ? "#ff8020"
-      : n.type === "police"
-        ? (((now * 3) | 0) % 2 ? "#ff4050" : "#3d74ff")
-        : n.hw
-          ? "#8fd8ff"
-          : "#ffb050";
+    g.fillStyle = ((now * 3) | 0) % 2 ? "#ff4050" : "#3d74ff";
     g.fillRect(X - 1.4, Z - 1.4, 2.8, 2.8);
   }
 
