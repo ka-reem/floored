@@ -62,6 +62,12 @@ const LAYER_NOREF = 1;
     one pair of numbers so the light pool and the paint cannot disagree. */
 const HL_THROW = 115, HL_THROW_HI = 200;
 
+/** Lateral fill-cone throw, metres — shorter than the main beam's on
+    purpose: this cone's job is lighting the adjacent lane close in, not
+    reaching down the road, and a longer cutoff would just mean more of it
+    sits inside the anti-blowout knee's compressed zone for no visual gain. */
+const HL_SPREAD_THROW = 35, HL_SPREAD_THROW_HI = 48;
+
 /** Headlight aim, as the slope of the beam's upper edge — the cut-off — not
     of its axis. Positive is downward.
 
@@ -1077,6 +1083,19 @@ export class Game {
       : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
+    /* Lateral fill cones. Peak candela is comparable to the main low beam's
+       — not "dim", just spread across a much wider cone and a short cutoff,
+       so the delivered illuminance at any one point is a fraction of the
+       main beam's. Kept out of the anti-dazzle decay story: this cone's own
+       short throw (HL_SPREAD_THROW/_HI) is what keeps distant cars in the
+       next lane from riding the knee's ceiling, so it doesn't need the main
+       beam's steep high-mode decay on top — see the verification table in
+       the widen-laterally commit message. */
+    const si2 = lamps
+      ? hi ? (this.rain ? 3630 : 2800) : (this.rain ? 908 : 700)
+      : 0;
+    this.rig.spreadL.intensity = si2;
+    this.rig.spreadR.intensity = si2;
     /* Halogen dipped beam is warm — around 3200 K — and reading it as warm is
        most of why the pool on the tarmac looks like light rather than like a
        grey texture that got brighter. Main beam runs whiter, the way a boosted
@@ -1084,6 +1103,8 @@ export class Game {
     const beamC = hi ? 0xfff4e6 : 0xffeeda;
     this.rig.spotL.color.setHex(beamC);
     this.rig.spotR.color.setHex(beamC);
+    this.rig.spreadL.color.setHex(beamC);
+    this.rig.spreadR.color.setHex(beamC);
     /* Point the retroreflection beam (mats.setBeam) at the same place the
        lamps are pointing. Without this call every marking on the road stays
        at one flat brightness, which is precisely the look the crushed ambient
@@ -1148,6 +1169,20 @@ export class Game {
         : sp.angle + Math.atan(LOW_DIP);
       sp.target.position.y =
         sp.position.y - (sp.target.position.z - sp.position.z) * Math.tan(pitch);
+    }
+    /* Spread cones aim outward from each lamp toward its own side, wide and
+       short — not edge-pinned like the main beam, since there's no cut-off
+       to protect here: a wide soft cone pointed at the shoulder never puts a
+       hard line on anything worth not dazzling. High mode pushes the aim
+       point further out and further ahead, proportionate to the main beam's
+       own low→high reach, so the fill grows with the throw instead of
+       staying a fixed puddle while the main beam extends past it. */
+    for (const [sp, side] of [[this.rig.spreadL, -1], [this.rig.spreadR, 1]] as const) {
+      sp.distance = hi ? HL_SPREAD_THROW_HI : HL_SPREAD_THROW;
+      sp.angle = hi ? 0.58 : 0.55;
+      sp.penumbra = hi ? 0.85 : 0.9;
+      sp.decay = hi ? 1.6 : 1.3;
+      sp.target.position.set(side * (hi ? 4.5 : 3.5), hi ? -0.4 : -0.5, hi ? 22 : 14);
     }
     this.rig.headMat.emissiveIntensity = hi ? 4.2 : car.lightsOn ? 2.4 : 0.12;
     // the glow sprite keeps most of its punch in daylight when flashing, or a

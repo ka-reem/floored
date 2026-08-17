@@ -192,6 +192,13 @@ export interface PlayerRig {
   wheels: THREE.Group[];
   spotL: THREE.SpotLight;
   spotR: THREE.SpotLight;
+  /** Wide, short-throw, heavily-feathered fill cone per lamp — the "spill"
+      a real projector/reflector headlamp throws to the sides that the narrow
+      edge-aimed main beam (spotL/spotR) deliberately doesn't cover. Lights
+      the adjacent lane, not the road ahead; see the per-frame drive in
+      engine.ts for the geometry. */
+  spreadL: THREE.SpotLight;
+  spreadR: THREE.SpotLight;
   headMat: THREE.MeshStandardMaterial;
   tailMat: THREE.MeshStandardMaterial;
   sigMatL: THREE.MeshStandardMaterial;
@@ -485,6 +492,26 @@ export function buildPlayerCar(
   spotL.target = tgtL;
   spotR.target = tgtR;
 
+  /* Lateral fill cones — same physical lamp, the wide-angle low-intensity
+     portion of the reflector real headlamps also throw. Angle/penumbra/decay/
+     distance are all driven per-frame in engine.ts alongside the main beam's,
+     switching low/high mode together; the values here are just a sane
+     pre-first-frame default. No shadows: two more shadow-casting lights per
+     car would be a real cost, and a wide, soft, near-field fill has nothing
+     a missing shadow would read as wrong. */
+  const spreadL = new THREE.SpotLight(0xdfe9ff, 0, 35, 0.55, 0.9, 1.3);
+  const spreadR = new THREE.SpotLight(0xdfe9ff, 0, 35, 0.55, 0.9, 1.3);
+  spreadL.castShadow = false;
+  spreadR.castShadow = false;
+  spreadL.position.copy(spotL.position);
+  spreadR.position.copy(spotR.position);
+  const spreadTgtL = new THREE.Object3D(), spreadTgtR = new THREE.Object3D();
+  spreadTgtL.position.set(-3.5, -0.5, 14);
+  spreadTgtR.position.set(3.5, -0.5, 14);
+  lampsG.add(spreadL, spreadTgtL, spreadR, spreadTgtR);
+  spreadL.target = spreadTgtL;
+  spreadR.target = spreadTgtR;
+
   /* cockpit */
   const cockpit = buildCockpit(spec.cockpitAccent, mirrorTexture, spec.id);
   cockpit.group.position.y = P.belt - COCKPIT_REF.belt;
@@ -494,7 +521,7 @@ export function buildPlayerCar(
   return {
     spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,
     wheels: [wFL, wFR, wRL, wRR],
-    spotL, spotR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
+    spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
     halfW: P.W / 2 + 0.02,
     halfL: L2 + 0.02,
     dispose(sceneRef: THREE.Scene) {
