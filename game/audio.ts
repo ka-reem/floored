@@ -126,6 +126,14 @@ export class GameAudio {
   private singF!: BiquadFilterNode; private singG!: GainNode; private singLfoDepth!: GainNode;
   private screechF!: BiquadFilterNode; private screechG!: GainNode; private screechAmDepth!: GainNode;
   private slipEnv = 0;
+  /** Separate smoothed envelope driving ONLY the sing/screech voice's mix
+      and pitch/character — see update()'s slipDemand handling. Everywhere
+      else (skid chirp, ABS tick, layer-1 rolling hum damping) keeps reading
+      slipEnv, untouched. Numerically identical to slipEnv whenever
+      slipDemand is 0 or omitted (every scenario audited before this field
+      existed), since it's derived from max(slip, demand*scale) smoothed
+      the same way — so this only changes behavior in the new case. */
+  private demandEnv = 0;
   private lastTireT = 0;
   private prevSlipRaw = 0;
   private lastChirp = -1;
@@ -871,11 +879,23 @@ export class GameAudio {
    *                  future weather system can pass a real intensity
    *                  without an API change. Has no effect when raining is
    *                  false.
+   * @param slipDemand optional, from CarState.slipDemand — the pre-ESC-
+   *                  intervention yaw/sideslip control error, 0 when ESC
+   *                  isn't correcting. `slip` (slipAmt) is derived from tire
+   *                  slip angles, which ESC's ongoing correction keeps small
+   *                  across frames even during a confident swerve it fully
+   *                  cancels — slipDemand is large in exactly that moment
+   *                  instead. Drives ONLY the sing/screech voice (mix,
+   *                  pitch, character), via max(slip, slipDemand*1.7)
+   *                  smoothed separately from the envelope everything else
+   *                  (skid chirp, ABS tick, road hum damping) still uses —
+   *                  omitting it reproduces today's behavior exactly, since
+   *                  max(slip, 0) === slip.
    */
   update(
     rpm: number, thr: number, slip: number, speed: number, now: number,
     cut: boolean, raining: boolean, horn: boolean,
-    gear?: number, onLimiter?: boolean, rainIntensity?: number
+    gear?: number, onLimiter?: boolean, rainIntensity?: number, slipDemand?: number
   ) {
     if (!this.ok) return;
     const p = this.prof;
@@ -1009,6 +1029,9 @@ export class GameAudio {
     this.lastTireT = now;
     const envK = 1 - Math.exp(-dt / 0.14);
     this.slipEnv += (clamp01(slip) - this.slipEnv) * envK;
+    // See update()'s slipDemand doc comment: same smoothing, but the
+    // sing/screech voice alone reads this instead of slipEnv below.
+    this.demandEnv += (clamp01(Math.max(slip, (slipDemand ?? 0) * 1.7)) - this.demandEnv) * envK;
 
     // Wheelspin off the line happens at near-zero car speed, so the sustained
     // layers only fade partway with speed rather than muting entirely.
@@ -1025,19 +1048,21 @@ export class GameAudio {
     );
 
     // Layer 2: grip singing crossfades in first, and partially back out as
-    // the screech takes over so the two never just sum linearly.
+    // the screech takes over so the two never just sum linearly. Driven by
+    // demandEnv (see update()'s slipDemand doc), not slipEnv — identical to
+    // before whenever slipDemand is 0/omitted.
     const singMix =
-      smoothstep(0.12, 0.45, this.slipEnv) * (1 - smoothstep(0.55, 0.92, this.slipEnv) * 0.7);
-    this.sp(this.singF.frequency, 1200 + this.slipEnv * 1500, 0.05);
-    this.sp(this.singF.Q, (9 + this.slipEnv * 4) * wetQ, 0.08);
-    this.sp(this.singLfoDepth.gain, 15 + this.slipEnv * 40, 0.1);
+      smoothstep(0.12, 0.45, this.demandEnv) * (1 - smoothstep(0.55, 0.92, this.demandEnv) * 0.7);
+    this.sp(this.singF.frequency, 1200 + this.demandEnv * 1500, 0.05);
+    this.sp(this.singF.Q, (9 + this.demandEnv * 4) * wetQ, 0.08);
+    this.sp(this.singLfoDepth.gain, 15 + this.demandEnv * 40, 0.1);
     this.sp(this.singG.gain, singMix * 0.09 * speedGate * wetLevel, 0.05);
 
     // Layer 3: full screech, broadband and amplitude-modulated, only once
-    // slip is sustained and severe.
-    const screechMix = smoothstep(0.4, 0.85, this.slipEnv);
+    // slip is sustained and severe. Also demandEnv-driven, same reasoning.
+    const screechMix = smoothstep(0.4, 0.85, this.demandEnv);
     const screechBase = screechMix * 0.15 * speedGate * wetLevel;
-    this.sp(this.screechF.frequency, 900 + this.slipEnv * 500, 0.06);
+    this.sp(this.screechF.frequency, 900 + this.demandEnv * 500, 0.06);
     this.sp(this.screechF.Q, 2.2 * (raining ? 0.5 : 1), 0.08);
     this.sp(this.screechG.gain, screechBase, 0.04);
     this.sp(this.screechAmDepth.gain, screechBase * 0.5, 0.06);

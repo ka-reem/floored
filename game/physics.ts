@@ -13,6 +13,14 @@ export interface CarState {
   rev: boolean; revT: number;
   wvx: number; wvz: number; axS: number; ayS: number;
   rpm: number; onLimiter: boolean; thrEff: number; brkEff: number; slipAmt: number;
+  /** Pre-intervention yaw/sideslip demand ESC is actively correcting for
+      this frame, 0 when ESC isn't intervening — see stepPhysics's ESC
+      block. Additive-only field for audio (a confident swerve that ESC
+      fully cancels leaves slipAmt itself at 0, since slipAmt is derived
+      from tire slip angles that ESC's ongoing correction keeps small
+      across frames — this exposes the control-error signal instead, which
+      IS large in exactly that moment). Does not feed back into physics. */
+  slipDemand: number;
   slope: number; pitchDyn: number; rollDyn: number;
   odo: number; shiftT: number; cut: number; absOn: boolean; tcOn: boolean;
   /** Auto-hold: stopped and staying stopped until the driver asks to move. */
@@ -29,7 +37,7 @@ export function freshCarState(x: number, y: number, z: number, h: number, u = 0)
   return {
     x, y, z, h, u, v: 0, r: 0, delta: 0, gear: 1, rev: false, revT: 0,
     wvx: 0, wvz: 0, axS: 0, ayS: 0, rpm: 1200, onLimiter: false,
-    thrEff: 0, brkEff: 0, slipAmt: 0,
+    thrEff: 0, brkEff: 0, slipAmt: 0, slipDemand: 0,
     slope: 0, pitchDyn: 0, rollDyn: 0, odo: 0, shiftT: 0, cut: 0, absOn: false, hold: true,
     tcOn: false, sigL: false, sigR: false, lightsUser: false, lightsOn: true,
     damage: 0,
@@ -268,7 +276,7 @@ export function stepPhysics(
      angle actually asks for, ceilinged by what the tyres can hold at this speed;
      the deadband leaves room for a playful slide, and the handbrake switches it
      off entirely so deliberate drifts still work. */
-  let escMz = 0, escDrag = 0;
+  let escMz = 0, escDrag = 0, slipDemand = 0;
   if (opts.tcEnabled && hb < 0.3 && Math.abs(car.u) > 4) {
     const escRef = Math.min(
       Math.abs((car.u * Math.tan(car.delta)) / LWB),
@@ -288,6 +296,10 @@ export function stepPhysics(
       escMz = -Math.sign(car.r) * clamp(eR * 4.5 + eB * 8 * bFade, 0, 3.5) * IZ;
       escDrag = clamp(eR * 0.25 + eB * 0.45 * bFade, 0, 0.25) * M;
       car.tcOn = true;
+      // Audio-only, additive: the same eR/eB excess that's about to be
+      // corrected below, exposed BEFORE that correction is integrated —
+      // see CarState.slipDemand. Not read anywhere else in this function.
+      slipDemand = eR * 3 + eB * 5 * bFade;
     }
   }
   const du =
@@ -350,6 +362,7 @@ export function stepPhysics(
   if (Math.abs(hHere - car.y) > 3) car.y = hHere;
   car.slipAmt =
     clamp(Math.max(Math.abs(af), Math.abs(ar)) * 2 - 0.35, 0, 1.4) + (car.absOn ? 0.15 : 0);
+  car.slipDemand = slipDemand;
   car.pitchDyn = lerp(car.pitchDyn, clamp(-car.axS * 0.016, -0.05, 0.05), clamp(6 * dt, 0, 1));
   car.rollDyn = lerp(car.rollDyn, clamp(car.ayS * 0.02, -0.07, 0.07), clamp(6 * dt, 0, 1));
   if (Math.abs(car.x) > 1700) {

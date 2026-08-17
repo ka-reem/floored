@@ -1767,7 +1767,7 @@ export class Game {
       this.audio.update(
         this.car.rpm, this.car.thrEff, this.car.slipAmt, Math.abs(this.car.u), now,
         this.car.cut > 0 || this.car.shiftT > 0.1, this.rain, this.input.horn > 0,
-        this.car.gear, this.car.onLimiter
+        this.car.gear, this.car.onLimiter, this.car.slipDemand
       );
       this.npcAudioFeed();
       this.hud(now, dt);
