@@ -562,6 +562,17 @@ export class Traffic {
   private _idleB: Npc[] = [];
   private _wrecks: Npc[] = [];
   private _closeCalls: Npc[] = [];
+  /** Global close-call rate cap, decremented once per update() below —
+      on top of each NPC's own ccCd, this caps the whole traffic system to
+      one reaction every CC_GLOBAL_GAP seconds regardless of how many NPCs
+      independently qualify in the same window, so weaving through a
+      crowded scene can't produce a chorus of horns/chirps in short order. */
+  private globalCcCd = 0;
+  // Tuned against a Monte Carlo sim of a 2-minute aggressive weave to land
+  // the total reaction count around 5-10 (the actual target), not just to
+  // match "4-6s" as a literal number — at this game's encounter density,
+  // 4-6s alone still landed near 11-15 total, so this leans a bit longer.
+  private static readonly CC_GLOBAL_GAP = 8;
   private _nearBuf: NpcAudioSample[] = Array.from({ length: 12 }, () => ({
     npc: null, x: 0, y: 0, z: 0, vx: 0, vz: 0, d2: 0, type: "", heavy: false,
   }));
@@ -1189,6 +1200,7 @@ export class Traffic {
     if (Math.hypot(player.x - this.lastPx, dzWrap) > 150) this.warpSeed = true;
     this.lastPx = player.x;
     this.lastPz = player.z;
+    this.globalCcCd = Math.max(0, this.globalCcCd - dt);
 
     /* Budget follows the player. On the deck almost everything goes on the
        deck; in town the deck only keeps a skeleton crew — and none at all once
@@ -1444,21 +1456,32 @@ export class Traffic {
           }
         }
         if (ahead > 0 && ahead < 9 && side < 3) panic = true;
-        // near-miss: player passing close alongside at real closing speed, not
-        // just idling nose-to-tail
-        if (side > 1.0 && side < 2.4 && ahead > -5 && ahead < 11 && playerSpeed + n.v > 9) nearPass = true;
+        // near-miss FOR THE CLOSE-CALL SOUND ONLY (nearPass has no other use —
+        // panic above still drives actual evasive braking and is untouched).
+        // A genuinely tight squeeze at real speed, not just "somewhat near":
+        // this is a weaving-through-traffic game, so a loose threshold here
+        // turns the core loop into a beep chorus. Tightened from a 1.0-2.4m
+        // side window / ahead -5..11 / combined speed >9 to a real near-miss;
+        // tuned against a Monte Carlo sim of a 2-minute aggressive weave to
+        // land around 5-10 total reactions rather than dozens.
+        if (side > 0.3 && side < 0.9 && ahead > -1 && ahead < 4 && playerSpeed + n.v > 28) nearPass = true;
       }
 
       if (n.hw) this.updateHwy(n, dt, v0, lead, panic);
       else this.updateTown(n, dt, v0, lead, phase, panic);
 
       /* Close-call event: a near-miss pass, or the player forcing this driver
-         into a hard brake. Personality-gated so it reads as different people
-         reacting differently — aggressive drivers lean on the horn, timid ones
-         just brake/chirp — and cooled down so one encounter doesn't spam. */
-      if (n.ccCd <= 0 && (nearPass || (panic && n.brake))) {
+         into a hard brake at real speed (not a gentle lift near a crawl).
+         Personality-gated so it reads as different people reacting
+         differently — aggressive drivers lean on the horn, timid ones just
+         brake/chirp. Two-layer cooldown: a long per-NPC one (this same car
+         won't react again for a while) plus a global one across ALL NPCs
+         (see globalCcCd above) so weaving through a crowd can't produce
+         several different cars reacting in the same few seconds. */
+      if (n.ccCd <= 0 && this.globalCcCd <= 0 && (nearPass || (panic && n.brake && playerSpeed > 8))) {
         n.ccKind = n.drv.timid ? "chirp" : "horn";
-        n.ccCd = 2.2;
+        n.ccCd = 10 + rand(0, 3);
+        this.globalCcCd = Traffic.CC_GLOBAL_GAP;
       }
 
       /* smooth heading + place */

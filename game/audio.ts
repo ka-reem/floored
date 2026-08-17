@@ -1332,10 +1332,15 @@ export class GameAudio {
   }
 
   /** One-shot horn honk positioned like a doppler-pool voice, for the
-      traffic agent's close-call events. */
+      traffic agent's close-call events. Two detuned square tones (~400 +
+      500Hz) as before, but with a real attack/hold/release envelope and a
+      peaking "body" filter around the honk formant a bare two-tone square
+      chord doesn't have — the old version snapped on at full gain and
+      immediately exponential-decayed, which read as a synthetic beep
+      rather than a horn. */
   npcHorn(x: number, z: number) {
     if (!this.ok) return;
-    const { pan, gain } = this.npcSpatial(x, z, 0.09);
+    const { pan, gain } = this.npcSpatial(x, z, 0.1);
     if (gain <= 0) return;
     const c = this.ctx, t = c.currentTime;
     const o1 = c.createOscillator(), o2 = c.createOscillator(), g = c.createGain(), pn = c.createStereoPanner();
@@ -1343,26 +1348,41 @@ export class GameAudio {
     o2.type = "square";
     o1.frequency.value = 400;
     o2.frequency.value = 500;
+    // Body: real horn diaphragms resonate well above the fundamental —
+    // this is the buzzy "honk" formant a plain two-tone chord lacks on its
+    // own.
+    const body = c.createBiquadFilter();
+    body.type = "peaking";
+    body.frequency.value = 950;
+    body.Q.value = 1.8;
+    body.gain.value = 7;
     pn.pan.value = pan;
-    g.gain.setValueAtTime(gain, t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    // Attack/hold/release: punches in over ~20ms, holds near full level,
+    // then releases — a honk, not a click that immediately decays.
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain, t + 0.02);
+    g.gain.setValueAtTime(gain, t + 0.28);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
     o1.connect(g);
     o2.connect(g);
-    g.connect(pn).connect(this.master);
+    g.connect(body).connect(pn).connect(this.master);
     o1.start(t);
     o2.start(t);
-    o1.stop(t + 0.32);
-    o2.stop(t + 0.32);
+    o1.stop(t + 0.52);
+    o2.stop(t + 0.52);
   }
 
-  /** One-shot tire chirp positioned like a doppler-pool voice, for the
-      traffic agent's close-call events. */
+  /** One-shot brake/tire squeak positioned like a doppler-pool voice, for
+      the traffic agent's timid-driver close-call events — noise-based (like
+      the tire skid-chirp bark), not a tonal blip, so it reads as a scrub
+      rather than a beep. Slightly lower and broader than the skid chirp's
+      own range for a squeal rather than a bark. */
   npcChirp(x: number, z: number) {
     if (!this.ok) return;
-    const { pan, gain } = this.npcSpatial(x, z, 0.11);
+    const { pan, gain } = this.npcSpatial(x, z, 0.1);
     if (gain <= 0) return;
     const c = this.ctx, t = c.currentTime;
-    const decay = 0.05;
+    const decay = 0.065;
     const nSamp = Math.max(64, Math.floor(c.sampleRate * decay * 3));
     const buf = c.createBuffer(1, nSamp, c.sampleRate);
     const d = buf.getChannelData(0);
@@ -1372,8 +1392,8 @@ export class GameAudio {
     src.buffer = buf;
     const f = c.createBiquadFilter();
     f.type = "bandpass";
-    f.frequency.value = 1900 + Math.random() * 700;
-    f.Q.value = 1.6;
+    f.frequency.value = 1200 + Math.random() * 1200;
+    f.Q.value = 1.1;
     const g = c.createGain();
     g.gain.value = gain;
     const pn = c.createStereoPanner();
