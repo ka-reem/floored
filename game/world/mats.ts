@@ -677,7 +677,14 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       setRough(ramp, rough);
       for (const m of refMats) {
         const d = ud(m);
-        const str = reflectionsOn ? d.refStr * (on ? 2.6 : 1) : 0;
+        /* Road SSR is disabled outright (str 0 regardless of the settings
+           toggle): even luminance-gated, the mirrored skyline painted white
+           patches across the road that no tuning pass killed — the user
+           chose to drop the effect. The shader path and wet/rough plumbing
+           stay; restore by reverting to `reflectionsOn ? d.refStr * (on ?
+           2.6 : 1) : 0` if a future reflection source is better behaved. */
+        void reflectionsOn;
+        const str = 0;
         d.curStr = str;
         if (d.sh) d.sh.uniforms.uRefStr.value = str;
         /* Puddle-patch modulation is a rain effect. On a dry road the scan's
