@@ -295,6 +295,19 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
               "fr*=mix(1.0, clamp(uRoughRef/max(roughnessFactor,0.02),0.0,3.0), uRoughMod);"
             : "") +
           "fr=clamp(fr,0.,1.);" +
+          /* Real asphalt only visibly mirrors concentrated LIGHT SOURCES —
+             lamps, tail-lights, lit signs. Broad dim content (the sky band,
+             the skyline glow) reflects too, but at road reflectance it is
+             far below what the eye picks up; reflecting it here painted a
+             hard-edged bright patch across the road at grazing angles (the
+             "white box that vanishes as you approach" bug). Gate the
+             reflected colour by its own luminance so point lights keep
+             their streaks and area glow contributes almost nothing, and cap
+             the sky-dominant blue channel's share so what remains cannot
+             read as a pale slab. */
+          "float rl=dot(refC,vec3(.299,.587,.114));" +
+          "refC*=smoothstep(.20,.60,rl);" +
+          "fr*=mix(.25,1.,smoothstep(.14,.45,rl));" +
           // blend toward the reflection instead of stacking it on top —
           // additive stacking let a bright reflected highlight (e.g. the
           // car's own tail-lights) blow the pixel out to solid white,
