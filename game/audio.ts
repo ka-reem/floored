@@ -656,6 +656,25 @@ export class GameAudio {
       call from devtools at any time including mid-gameplay. */
   getLevels() {
     if (!this.ok) return null;
+    // NPC pool detail: npcVoicesActive alone can't tell a diagnosis apart
+    // from "the pool is fine, something else is the source" — these let a
+    // pasted snapshot show the pool's actual output and the closest voice's
+    // character (distance/gain/cutoff) directly, rather than needing a
+    // follow-up round-trip to ask for them.
+    let npcNoiseSum = 0, npcOscSum = 0;
+    let nearest: { dist: number; noiseG: number; cutoff: number } | null = null;
+    let nearestD2 = Infinity;
+    for (const v of this.npcVoices) {
+      if (!v.active) continue;
+      npcNoiseSum += v.noiseG.gain.value;
+      npcOscSum += v.oscG.gain.value;
+      const dx = v.lastX - this.lastPx, dz = v.lastZ - this.lastPz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < nearestD2) {
+        nearestD2 = d2;
+        nearest = { dist: Math.sqrt(d2), noiseG: v.noiseG.gain.value, cutoff: v.noiseF.frequency.value };
+      }
+    }
     return {
       engine: this.engG.gain.value,
       intake: this.inG.gain.value,
@@ -671,6 +690,9 @@ export class GameAudio {
       scrape: this.scrapeG.gain.value,
       reverbWet: this.reverbWet.gain.value,
       npcVoicesActive: this.npcVoices.filter((v) => v.active).length,
+      npcNoiseSum,
+      npcOscSum,
+      npcNearest: nearest,
       master: this.master.gain.value,
     };
   }
