@@ -471,8 +471,8 @@ export function buildPlayerCar(
     pg.position.set(0, P.tail * 0.8, -L2 - 0.24);
     exteriorG.add(pg);
   }
-  const spotL = new THREE.SpotLight(0xdfe9ff, 0, 90, 0.46, 0.42, 1.4);
-  const spotR = new THREE.SpotLight(0xdfe9ff, 0, 90, 0.46, 0.42, 1.4);
+  const spotL = new THREE.SpotLight(0xdfe9ff, 0, 115, 0.46, 0.42, 1.2);
+  const spotR = new THREE.SpotLight(0xdfe9ff, 0, 115, 0.46, 0.42, 1.2);
   spotL.position.set(-hlX, P.nose, L2 - 0.05);
   spotR.position.set(hlX, P.nose, L2 - 0.05);
   const tgtL = new THREE.Object3D(), tgtR = new THREE.Object3D();

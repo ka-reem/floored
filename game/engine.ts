@@ -60,23 +60,24 @@ const LAYER_NOREF = 1;
 /** Headlight throw, metres: dipped and main. These set the spotlight distance
     and, as a ratio, how far down the road the retroreflective paint answers —
     one pair of numbers so the light pool and the paint cannot disagree. */
-const HL_THROW = 90, HL_THROW_HI = 155;
+const HL_THROW = 115, HL_THROW_HI = 200;
 
 /** Headlight aim, as the slope of the beam's upper edge — the cut-off — not
     of its axis. Positive is downward.
 
-    Dipped beam is aimed 1.0% below horizontal, which is where the real
-    regulation puts it (ECE allows 1.0–1.5% for a lamp at this height) and is
-    the shallowest setting inside that range, so the pool reaches as far as it
-    legally can: the cut-off meets the road at lampHeight/0.01, i.e. 50 m on
-    the lowest-nosed shell and 62 m on the highest.
+    Dipped beam is aimed 0.4% below horizontal — shallower than the ECE
+    1.0–1.5% floor for a lamp at this height, traded deliberately for reach:
+    the cut-off meets the road at lampHeight/0.004, i.e. 125 m on the
+    lowest-nosed shell and 155 m on the highest, well past HL_THROW's own
+    cutoff, so the pool's tail is intensity-limited rather than geometry-
+    limited before the cut-off would otherwise clip it.
 
     Main beam is aimed 2.6% ABOVE horizontal instead. Level would be more
     literal, but at 40 m a level cut-off tops out around 0.85 m and leaves the
     greenhouse of the car in front dark, which loses the one contrast that
     makes flashing worth anything. 2.6% clears a roof at 40 m and keeps
     clearing it further out. */
-const LOW_DIP = 0.006, HI_RISE = 0.026;
+const LOW_DIP = 0.004, HI_RISE = 0.026;
 
 /** How bright lane paint sits at night *outside* the headlight beam, 0..1.
     Lower than mats.ts's 0.18 default because the night deck underneath it is
@@ -1058,7 +1059,7 @@ export class Game {
     const hi = this.highBeam;
     const lamps = car.lightsOn || hi;
     // modern three uses physical (candela) spot intensities
-    const si = lamps ? (this.rain ? 700 : 540) * (hi ? 1.9 : 1) : 0;
+    const si = lamps ? (this.rain ? 985 : 760) * (hi ? 1.9 : 1) : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
     /* Halogen dipped beam is warm — around 3200 K — and reading it as warm is
@@ -1113,11 +1114,11 @@ export class Game {
       sp.distance = hi ? HL_THROW_HI : HL_THROW;
       /* The cut-off constraint pins the axis pitch to the half-angle, so a
          wide cone is forced to point steeply down and its hot spot lands on
-         the bumper. These angles put the hot spot ~2.1 m ahead on dipped and
-         ~3.2 m on main, which is where the old beam already threw its
-         near-field brightness — the cone narrows so the foreground does not
-         get brighter than it is today while the cut-off is being fixed. */
-      sp.angle = hi ? 0.20 : 0.26;
+         the bumper. These angles put the hot spot ~1.8 m ahead on dipped and
+         ~3.2 m on main — the dipped hot spot sits a bit closer than before
+         now that the cone is wider, but the extra reach and intensity make
+         the pool read longer overall, not shorter. */
+      sp.angle = hi ? 0.20 : 0.30;
       sp.penumbra = hi ? 0.24 : 0.42;
       sp.target.position.z = hi ? 46 : 26;
       const pitch = hi
@@ -1681,11 +1682,16 @@ export class Game {
           this.crashCooldown = 0.4;
           this.audio.crash(hitInfo.relSpeed);
           this.car.damage += hitInfo.relSpeed * 0.5;
+          // dashcam impact glitch: gated on POV here (not inside dashcamHit)
+          // so a hit taken in another camera doesn't arm a burst that fires
+          // the moment the player later switches into POV
+          if (this.camMode === CAM_POV) this.post.dashcamHit(hitInfo.relSpeed);
         }
       }
       if (res.wallImpact > 4 && this.crashCooldown <= 0) {
         this.crashCooldown = 0.4;
         this.audio.crash(res.wallImpact);
+        if (this.camMode === CAM_POV) this.post.dashcamHit(res.wallImpact);
       }
       this.camera.getWorldDirection(this.tmpV);
       this.traffic.update(
