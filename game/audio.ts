@@ -174,6 +174,12 @@ export class GameAudio {
   private npcTaken: boolean[] = new Array(GameAudio.NPC_SCAN_MAX).fill(false);
   private npcDist: number[] = new Array(GameAudio.NPC_SCAN_MAX).fill(0);
   private npcUnclaimed: number[] = new Array(GameAudio.NPC_SCAN_MAX).fill(0);
+  // continuing[voice] = this frame's claim is the SAME car it was already
+  // tracking (matched by position in the tracking pass below), as opposed
+  // to a fresh activation or a steal from a different car — used to give
+  // steals a brief mixG dip instead of gliding oscG/noiseG straight to the
+  // new car's values while staying at full volume throughout.
+  private npcContinuing: boolean[] = new Array(GameAudio.NPC_POOL).fill(false);
 
   /* scrape/grind */
   private scrapeG!: GainNode;
@@ -584,8 +590,14 @@ export class GameAudio {
         oscG.gain.value = 0;
         osc.connect(oscG);
         osc.start();
+        // Lowpass, not bandpass: a distant car's noise should darken with
+        // range (air absorption rolls off highs, not lows), not sit at a
+        // fixed brightness until its gain hits zero. Q=0.7 is close to
+        // Butterworth (0.707) for lowpass — flat, no resonant peak; that
+        // same value was a bad, too-wide choice back when this was a
+        // bandpass (bandwidth = freq/Q ≈ 1000Hz at 700Hz center).
         const noiseF = ctx.createBiquadFilter();
-        noiseF.type = "bandpass";
+        noiseF.type = "lowpass";
         noiseF.frequency.value = 700;
         noiseF.Q.value = 0.7;
         const noiseG = ctx.createGain();
@@ -1190,7 +1202,8 @@ export class GameAudio {
     const claims = this.npcClaims;
     const taken = this.npcTaken;
     const dist = this.npcDist;
-    for (let i = 0; i < n; i++) claims[i] = null;
+    const continuing = this.npcContinuing;
+    for (let i = 0; i < n; i++) { claims[i] = null; continuing[i] = false; }
     for (let i = 0; i < m; i++) taken[i] = false;
 
     // Precompute squared distance-to-player once per npc; Infinity marks an
@@ -1217,6 +1230,7 @@ export class GameAudio {
       if (best >= 0 && bestD < 400) { // within 20m of last position -> same car
         claims[vi] = best;
         taken[best] = true;
+        continuing[vi] = true;
       }
     }
 
@@ -1245,6 +1259,13 @@ export class GameAudio {
         }
         if (worstVi >= 0 && dist[ni] < worstD) {
           taken[claims[worstVi]!] = false;
+          // This voice matched its OLD npc in the tracking pass above
+          // (that's the only way it could already be claims[worstVi] !==
+          // null with v.active — see the loop above), so continuing[] is
+          // stale true here; clear it or the apply loop below will think
+          // this is a same-car continuation instead of the steal it is,
+          // and skip the mixG dip meant to smooth the handoff.
+          continuing[worstVi] = false;
           vi = worstVi;
         }
       }
@@ -1262,6 +1283,14 @@ export class GameAudio {
         continue;
       }
       const npc = list[ni];
+      // A steal — an already-active voice reassigned to a DIFFERENT car
+      // than the one it was tracking, as opposed to continuing the same
+      // car (continuing[vi]) or waking up from silence (v.active was
+      // false) — gets a brief mixG dip instead of gliding oscG/noiseG/
+      // frequency straight to the new car's values while staying pinned at
+      // full volume throughout; the dip makes the handoff read as a quick
+      // fade rather than a pitch/timbre glitch.
+      const stolen = v.active && !continuing[vi];
       v.active = true;
       v.lastX = npc.x;
       v.lastZ = npc.z;
@@ -1279,11 +1308,25 @@ export class GameAudio {
       const pan = clampRange(this.lateralOf(dx, dz, ph) / 10, -1, 1);
       const speedMag = Math.hypot(npc.vx, npc.vz);
 
+      // Noise branch is lowpassed and DARKENS WITH DISTANCE (not just the
+      // car's own speed) — air absorption on a distant engine/road noise
+      // rolls off the highs long before the lows, same as any real distant
+      // vehicle. Was a bandpass with Q=0.7 (bandwidth ~1000Hz at 700Hz
+      // center — wide open) driven only by npc speed, so a far voice kept
+      // full brightness right up until its gain hit zero at 70m: bright,
+      // broadband, un-distance-varying noise sources are exactly what
+      // reads as "white hiss" to a listener. Now: 2000Hz at <=5m down to a
+      // 400Hz floor by 40m+, with a small secondary lift from the car's own
+      // speed on top (a fast car's engine has more high-frequency content
+      // than an idling one, but distance dominates).
+      const distDarken = clampRange((dist - 5) / 35, 0, 1);
+      const cutoff = clampRange(2000 - distDarken * 1600 + Math.min(1, speedMag / 30) * 150, 400, 2000);
+
       this.sp(v.osc.frequency, baseFreq * dopplerFactor, 0.05);
       this.sp(v.oscG.gain, g * 0.55, 0.08);
-      this.sp(v.noiseF.frequency, 550 + Math.min(1, speedMag / 30) * 900, 0.08);
+      this.sp(v.noiseF.frequency, cutoff, 0.08);
       this.sp(v.noiseG.gain, g * 0.5, 0.08);
-      this.sp(v.mixG.gain, 1, 0.08); // mix already carries falloff via oscG/noiseG
+      this.sp(v.mixG.gain, stolen ? 0.15 : 1, stolen ? 0.05 : 0.08);
       this.sp(v.panner.pan, pan, 0.08);
     }
   }

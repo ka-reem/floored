@@ -22,6 +22,25 @@ const VSH = "varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy
 // holdFrame) so the "dropped frame" moments track the shader's own bucketing
 const frac = (x: number) => x - Math.floor(x);
 
+/** Live console knobs for the three POV visibility tweaks (auto-gain floor,
+ * shadow grain reduction, taillight protection) — each 0..1, scaling that
+ * one effect's strength independently so it can be zeroed or dialed back
+ * without touching the other two or redeploying. Read fresh every frame in
+ * process(), so edits from the console (`window.__povTune.gainFloor = 0`)
+ * take effect immediately. 1 is the shipped default for all three. */
+declare global {
+  interface Window {
+    __povTune?: { gainFloor: number; shadowGrain: number; lampProtect: number };
+  }
+}
+function readPovTune() {
+  if (typeof window === "undefined") return { gainFloor: 1, shadowGrain: 1, lampProtect: 1 };
+  if (!window.__povTune) window.__povTune = { gainFloor: 1, shadowGrain: 1, lampProtect: 1 };
+  const t = window.__povTune;
+  const c = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1);
+  return { gainFloor: c(t.gainFloor), shadowGrain: c(t.shadowGrain), lampProtect: c(t.lampProtect) };
+}
+
 export class PostFX {
   sceneRT!: THREE.WebGLRenderTarget;
   reflectRT!: THREE.WebGLRenderTarget;
@@ -310,11 +329,17 @@ void main(){ vec3 s=vec3(0.); float wsum=0.;
         // uHitT is seconds since the hit landed (drives the flash decay and
         // the wobble phase).
         uHitEnv: { value: 0 }, uHitSeed: { value: 0 }, uHitT: { value: 0 },
+        // POV visibility trio (each 0..1, independently tunable live via
+        // window.__povTune — see readPovTune() below). 1 = the shipped
+        // effect at full strength, 0 = off, so any one item can be zeroed
+        // without touching the other two.
+        uGainFloor: { value: 1 }, uShadowGrain: { value: 1 }, uLampProtect: { value: 1 },
       },
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv;
 uniform sampler2D tLow,tSmear,tOver; uniform vec2 uLow,uOverPos,uOverSize;
 uniform float uTime,uOverAmt,uHitEnv,uHitSeed,uHitT;
+uniform float uGainFloor,uShadowGrain,uLampProtect;
 float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
 void main(){
  vec2 d=vUv-.5; float r2=dot(d,d);
@@ -360,7 +385,15 @@ void main(){
  // (c) blown highlights: the smear layer goes in hot and then clips to flat
  // white, so lamps read as hard streaks rather than pretty glow
  col+=texture2D(tSmear,uv).rgb*1.15;
- col=mix(col,vec3(1.),smoothstep(.72,1.02,dot(col,vec3(.299,.587,.114)))*.75);
+ // taillight protection: this clip is what crushes a bright saturated lamp
+ // to flat white, so gate its strength down wherever the pixel is clearly
+ // coloured (a red tail lamp, an amber indicator) rather than white glare —
+ // a cheap max-min saturation proxy is enough to tell the two apart. Grey
+ // reflections and headlight blowout (already near-white, low sat) are
+ // untouched; uLampProtect at 0 restores the original hard clip.
+ float lampSat=max(col.r,max(col.g,col.b))-min(col.r,min(col.g,col.b));
+ float lampProtect=uLampProtect*smoothstep(.35,.6,lampSat);
+ col=mix(col,vec3(1.),smoothstep(.72,1.02,dot(col,vec3(.299,.587,.114)))*.75*(1.-lampProtect));
  // momentary exposure spike: a fast white flash on the first ~60ms after
  // impact registers, decaying linearly to 0 well inside the burst envelope
  col+=vec3(clamp(1.-uHitT/.06,0.,1.))*uHitEnv;
@@ -384,10 +417,26 @@ void main(){
  // image that is dragging, which is exactly the cheap-sensor tell.
  vec2 np=floor(uv*uLow*.8);
  float l=dot(col,vec3(.299,.587,.114));
- float dark=mix(1.,.28,smoothstep(.03,.55,l));
+ float shadowT=smoothstep(.03,.55,l); // 0 deep shadow .. 1 at/above midtone
+ float dark=mix(1.,.28,shadowT);
+ // shadow grain reduction: the grain multiplier above already tapers toward
+ // highlights (dark→.28), but silhouettes sit in the shadow end where it's
+ // still full strength and the noise eats them. Cut the shadow end toward
+ // ~50% too, fading the cut back to a no-op by the same midtone point the
+ // taper above already uses, so nothing changes outside the shadows.
+ dark=mix(dark,dark*mix(.5,1.,shadowT),uShadowGrain);
  float n1=h21(np+tq*13.7), n2=h21(np*.33+tq*7.1+41.3), n3=h21(np*.29+tq*3.9+91.7);
  col+=(n1-.5)*.22*dark;
  col+=vec3(n2-.5,(n2+n3)*.5-.5,n3-.5)*.10*dark;
+ // auto-gain floor: adaptive dark-end lift, like a real camera's night gain
+ // riding up the noise floor so silhouettes stay barely readable instead of
+ // crushing to pure black. A floor, not a brightening — it only ever lifts
+ // pixels *below* the target (the max(...,0.) is 0 for anything already
+ // brighter), so midtones/highlights and the overall dark read are
+ // untouched; scaled by uGainFloor so 0 restores true crush-to-black.
+ float gainTarget=.055*uGainFloor;
+ float lift=max(0.,gainTarget-dot(col,vec3(.299,.587,.114)));
+ col+=lift*vec3(1.02,1.05,.98)*(.72+.56*n1);
  // interlace comb, then (e) the bit-crush. Quantising last is what makes the
  // banding survive; the uneven per-channel level counts tint the bands.
  col*=1.-.085*step(.5,fract(vUv.y*uLow.y*.5));
@@ -696,6 +745,11 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.povMat.uniforms.uHitEnv.value = hitEnv;
       this.povMat.uniforms.uHitSeed.value = this.hitSeed;
       this.povMat.uniforms.uHitT.value = hitActive ? hitElapsed : 0;
+      // live-tunable, read fresh every frame so console edits land immediately
+      const tune = readPovTune();
+      this.povMat.uniforms.uGainFloor.value = tune.gainFloor;
+      this.povMat.uniforms.uShadowGrain.value = tune.shadowGrain;
+      this.povMat.uniforms.uLampProtect.value = tune.lampProtect;
       this.runPass(this.povMat, null);
     }
     this.renderer.setRenderTarget(null);
