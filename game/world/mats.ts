@@ -140,6 +140,8 @@ interface RoadUD {
   detRep: THREE.Vector2;
   detTex: THREE.Texture | null;
   roughMod: number;
+  /** wet-state-scaled roughMod actually driving the shader (see setWet) */
+  curRoughMod?: number;
   /** longitudinal wheel-path streaking amplitude, 0 = off */
   grooveAmt: number;
   /** streak frequency, in radians per unit of the mesh's u axis */
@@ -222,7 +224,8 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       // target itself, so a texel sitting at the map's mean gives a ratio of
       // exactly 1 and the tuned reflection strength is left alone
       sh.uniforms.uRoughRef = { value: mat.roughness * (d.roughK > 0 ? 1 / d.roughK : 1) };
-      sh.uniforms.uRoughMod = { value: hasRough ? d.roughMod : 0 };
+      // curRoughMod tracks the wet state (see setWet); the game boots dry
+      sh.uniforms.uRoughMod = { value: hasRough ? (d.curRoughMod ?? d.roughMod * 0.15) : 0 };
       sh.uniforms.uGrooveAmt = { value: d.grooveAmt };
       sh.uniforms.uGrooveF = { value: d.grooveFreq };
       d.sh = sh;
@@ -664,6 +667,15 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
         const str = reflectionsOn ? d.refStr * (on ? 2.6 : 1) : 0;
         d.curStr = str;
         if (d.sh) d.sh.uniforms.uRefStr.value = str;
+        /* Puddle-patch modulation is a rain effect. On a dry road the scan's
+           smooth patches were still mirroring up to 3x at grazing angles, so
+           bright signage reflected as hard-edged patches far ahead that faded
+           out on approach (Fresnel steepening) — the "square of light that
+           vanishes as you reach it" artifact. Dry roads keep only a whisper
+           of patch variation; rain restores the full standing-water look. */
+        d.curRoughMod = (on ? 1 : 0.15) * d.roughMod;
+        if (d.sh && d.sh.uniforms.uRoughMod)
+          d.sh.uniforms.uRoughMod.value = d.curRoughMod;
       }
     },
     setPbrDetail(on) {
