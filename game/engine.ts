@@ -1058,11 +1058,23 @@ export class Game {
        reading that flag stay honest about what is actually switched on. */
     const hi = this.highBeam;
     const lamps = car.lightsOn || hi;
-    // modern three uses physical (candela) spot intensities. Peak is down
-    // ~12.5% from the previous tune — decay carries the pool now instead of
-    // raw hotspot brightness — and high beam's multiplier is up from 1.9 to
-    // 2.15 to buy that back so the low/high flash contrast doesn't go soft.
-    const si = lamps ? (this.rain ? 862 : 665) * (hi ? 2.15 : 1) : 0;
+    /* Modern three uses physical (candela) spot intensities. Low beam runs a
+       shallow decay (~1.0, set below with angle/penumbra) so it spreads into
+       an even carpet rather than a hot 2 m disc — that part of the spread
+       retune was right. High beam CANNOT share that shallow decay, though:
+       the NPC anti-blowout knee (traffic.ts) compresses anything above ~1.3
+       units of pre-knee radiance towards the same ~4.0 ceiling regardless of
+       how far past threshold it is, and ACES then maps that ceiling to near-
+       white — so a decay shallow enough to keep the ground pool flat also
+       keeps every car from here to the horizon pinned at the same saturated
+       white, killing the near/far gradient that makes a flash read as a
+       flash. High beam instead runs a steeper decay (1.5, near its old 1.4)
+       so cars stop saturating past ~25-30 m even though its candela is much
+       higher than low beam's — see the per-distance table in the retune
+       commit message for the numbers this was solved against. */
+    const si = lamps
+      ? hi ? (this.rain ? 7000 : 5400) : (this.rain ? 908 : 700)
+      : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
     /* Halogen dipped beam is warm — around 3200 K — and reading it as warm is
@@ -1126,6 +1138,10 @@ export class Game {
          pool. */
       sp.angle = hi ? 0.23 : 0.33;
       sp.penumbra = hi ? 0.4 : 0.6;
+      // decay is per-mode, not a fixed ctor value (see player.ts) — low
+      // stays shallow for the carpet, high goes steeper so distant cars
+      // fall back out of the knee's ceiling instead of staying pinned white
+      sp.decay = hi ? 1.5 : 1.0;
       sp.target.position.z = hi ? 46 : 26;
       const pitch = hi
         ? sp.angle - Math.atan(HI_RISE)

@@ -471,8 +471,11 @@ export function buildPlayerCar(
     pg.position.set(0, P.tail * 0.8, -L2 - 0.24);
     exteriorG.add(pg);
   }
-  const spotL = new THREE.SpotLight(0xdfe9ff, 0, 115, 0.46, 0.6, 0.9);
-  const spotR = new THREE.SpotLight(0xdfe9ff, 0, 115, 0.46, 0.6, 0.9);
+  // decay (last arg) is overwritten every frame in engine.ts's per-mode
+  // block — low beam and high beam no longer share one value — so this is
+  // just a sane pre-first-frame default, not the value either mode runs at
+  const spotL = new THREE.SpotLight(0xdfe9ff, 0, 115, 0.46, 0.6, 1.0);
+  const spotR = new THREE.SpotLight(0xdfe9ff, 0, 115, 0.46, 0.6, 1.0);
   spotL.position.set(-hlX, P.nose, L2 - 0.05);
   spotR.position.set(hlX, P.nose, L2 - 0.05);
   const tgtL = new THREE.Object3D(), tgtR = new THREE.Object3D();
