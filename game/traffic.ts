@@ -478,6 +478,21 @@ export interface Driver {
   timid: number;  // 0/1 — lifts and brakes early for signals
   weave: number;  // 0/1 — changes lanes even when nothing blocks them
   jit: number;    // phase of a slow per-driver cruise-speed drift
+  /** Persistent lateral offset from the lane's true centre, metres, signed.
+      Rolled once at spawn and kept for the driver's whole life — nobody
+      actually drives dead-centre. Rides on top of laneOffset() everywhere
+      that's read for driving/placement, clamped per-position by maxBias()
+      so it never eats into the pavement margin through a taper or the toll
+      plaza's spread. */
+  bias: number;
+  /** Amplitude (m) of an ultra-slow sinusoidal wander on top of `bias`; 0 for
+      drivers who don't wander at all. Folded into the render-only `wob` path
+      alongside the bike's wobble, not into the driving offset itself. */
+  driftAmp: number;
+  /** Angular rate (rad/s) of that wander — TAU / period, period 20-40s. */
+  driftRate: number;
+  /** Phase of that wander, so drivers don't wander in lockstep. */
+  driftPhase: number;
 }
 
 type Arch = {
@@ -738,7 +753,10 @@ export class Traffic {
         hw: true, edge: null, eDir: 1, segHint: { i: 0 }, nextEdgeId: -1,
         dir: 1, laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: this.cor.lanePitch(0) / 3, s: 0,
         v: 0, v0: 10,
-        drv: { spd: 1, gap: 1, acc: 1, lane: 0.5, react: 0.3, corner: 1, timid: 0, weave: 0, jit: rand(0, TAU) },
+        drv: {
+          spd: 1, gap: 1, acc: 1, lane: 0.5, react: 0.3, corner: 1, timid: 0, weave: 0, jit: rand(0, TAU),
+          bias: 0, driftAmp: 0, driftRate: 0, driftPhase: 0,
+        },
         pT: 0, pLead: { ds: Infinity, v: 0 },
         brake: false,
         blink: 0, blinkT: 0, turnCd: rand(2, 8), nudgeT: 0,
@@ -816,7 +834,8 @@ export class Traffic {
     let r = this.rng();
     if (n.type === "police") r = 0.74 + r * 0.18;
     else if (heavy) r = Math.min(r, 0.66);
-    const A = ARCH[r < 0.1 ? 0 : r < 0.3 ? 1 : r < 0.72 ? 2 : r < 0.92 ? 3 : 4];
+    const idx = r < 0.1 ? 0 : r < 0.3 ? 1 : r < 0.72 ? 2 : r < 0.92 ? 3 : 4;
+    const A = ARCH[idx];
     const d = n.drv;
     const R = (p: [number, number]) => p[0] + this.rng() * (p[1] - p[0]);
     d.spd = R(A.spd);
@@ -828,6 +847,21 @@ export class Traffic {
     d.timid = A.timid;
     d.weave = A.weave;
     d.jit = this.rng() * TAU;
+    // dawdler/cautious hug the centre closest, brisk/speeder drift furthest —
+    // sign is a coin flip, so no side of a lane reads as systematically busier
+    const biasLo = idx <= 1 ? 0.05 : idx === 2 ? 0.1 : 0.15;
+    const biasHi = idx <= 1 ? 0.15 : idx === 2 ? 0.3 : 0.4;
+    d.bias = (this.rng() < 0.5 ? -1 : 1) * R([biasLo, biasHi]);
+    // ~40% of drivers hold their line dead steady; the rest wander a hair,
+    // slow enough (20-40s/cycle) that it reads as human, not as a glitch
+    if (this.rng() < 0.4) {
+      d.driftAmp = 0;
+      d.driftRate = 0;
+    } else {
+      d.driftAmp = rand(0.04, 0.08);
+      d.driftRate = TAU / rand(20, 40);
+    }
+    d.driftPhase = this.rng() * TAU;
     n.pT = this.rng() * d.react;
     n.pLead.ds = Infinity;
     n.pLead.v = 0;
@@ -1003,7 +1037,7 @@ export class Traffic {
       n.edge = null;
       n.dir = 1;
       n.laneK = laneK;
-      n.offCur = n.offT = off;
+      n.offCur = n.offT = off + this.biasAt(n, z);
       n.s = z;
       n.wreck = null;
       n.fade = 1;
@@ -1541,7 +1575,12 @@ export class Traffic {
       let dh = angDiff(targetH, n.hVis);
       n.hVis += clamp(dh, -6 * dt, 6 * dt);
       n.spin += (n.v / n.wr) * dt;
-      n.wob = n.type === "bike" ? Math.sin(now * 0.9 + n.id * 2.1) * 0.28 : 0;
+      // ultra-subtle per-driver wander on top of the bike's own wobble —
+      // amplitude 0 for the ~40% of drivers who don't drift at all
+      const drift = n.drv.driftAmp > 0
+        ? Math.sin(now * n.drv.driftRate + n.drv.driftPhase) * n.drv.driftAmp
+        : 0;
+      n.wob = (n.type === "bike" ? Math.sin(now * 0.9 + n.id * 2.1) * 0.28 : 0) + drift;
     }
 
     /* overlap resolution between NPCs sharing a lane (cheap, one pass) */
@@ -1658,6 +1697,24 @@ export class Traffic {
   }
 
   /* corridor driving: one-way, variable lane count, wrapped */
+  /** Max magnitude a driver's persistent lane bias (or the taper/toll pitch
+      can produce) may take at this corridor position, so a half-width plus a
+      0.25 m margin always stays inside the lane — rides on lanePitch the same
+      way LANE_FOLLOW_RATE rides on the taper geometry, so it scales itself up
+      through the toll plaza's wider pitch and would scale down through any
+      future narrowing without needing a special case here. */
+  private maxBias(n: Npc, z: number): number {
+    return Math.max(0, this.cor.lanePitch(z) / 2 - n.W / 2 - 0.25);
+  }
+
+  /** clamp(drv.bias) at this corridor position/car — the one path every
+      caller should use to fold a driver's persistent lateral bias onto a
+      lane centre. */
+  private biasAt(n: Npc, z: number): number {
+    const m = this.maxBias(n, z);
+    return clamp(n.drv.bias, -m, m);
+  }
+
   /** True when no active NPC is within the danger box of lane offset `off2`
       near corridor position `s` — shared by comfort lane changes and forced
       taper merges. */
@@ -1772,7 +1829,7 @@ export class Traffic {
        geometry is sized against it — while an active, signalled lane change
        (blink is on) is deliberately throttled to the slower, driver-specific
        laneRate so the manoeuvre itself reads as gradual. */
-    n.offT = cor.laneOffset(n.laneK, n.s);
+    n.offT = cor.laneOffset(n.laneK, n.s) + this.biasAt(n, n.s);
     const dOff = n.offT - n.offCur;
     const rate = n.blink !== 0 ? n.laneRate || cor.lanePitch(n.s) / 3 : LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) {
