@@ -169,6 +169,42 @@ function boxTris(b) {
   return faces.map((f) => ({ p: f.map((i) => c[i].slice()), name: "cargo", hex: b.c }));
 }
 
+/** Möller–Trumbore, double-sided. Returns the ray parameter or null. */
+function rayTri(o, d, a, b, c) {
+  const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+  const p = [d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]];
+  const det = e1[0] * p[0] + e1[1] * p[1] + e1[2] * p[2];
+  if (Math.abs(det) < 1e-9) return null;
+  const inv = 1 / det;
+  const t = [o[0] - a[0], o[1] - a[1], o[2] - a[2]];
+  const u = (t[0] * p[0] + t[1] * p[1] + t[2] * p[2]) * inv;
+  if (u < 0 || u > 1) return null;
+  const q = [t[1] * e1[2] - t[2] * e1[1], t[2] * e1[0] - t[0] * e1[2], t[0] * e1[1] - t[1] * e1[0]];
+  const v = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inv;
+  if (v < 0 || u + v > 1) return null;
+  const s = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv;
+  return s > 1e-5 ? s : null;
+}
+
+/** Move a lamp anchor out through the bodywork until it is clear of it.
+
+    A lamp cluster's centroid sits *on* the lamp, which is a few centimetres
+    inside the car's outer skin. The glow sprites are depth-tested points, so
+    an anchor even a centimetre inside is hidden by the panel in front of it —
+    from straight behind, a tail sprite anchored on the lamp never draws at
+    all. Push it out past the last surface along the lamp's own axis, plus a
+    small clearance. */
+function pushOut(p, dir, tris) {
+  let far = 0;
+  for (const t of tris) {
+    const s = rayTri(p, dir, t.p[0], t.p[1], t.p[2]);
+    if (s !== null && s > far) far = s;
+  }
+  const d = far + 0.06;
+  return [p[0] + dir[0] * d, p[1] + dir[1] * d, p[2] + dir[2] * d];
+}
+
 function centroid(tris) {
   if (!tris.length) return null;
   let x = 0, y = 0, z = 0;
@@ -220,11 +256,13 @@ function build(style, cfg) {
   const normals = creaseNormals(tris, Math.cos(THREE.MathUtils.degToRad(38)));
 
   const slot = (name) => tris.filter((t) => t.name === name);
+  const out2 = (pair, dir) => pair && [pushOut(pair[0], dir, tris), pushOut(pair[1], dir, tris)];
   const lamps = {
-    head: lampPair(slot("headlights")),
-    tail: lampPair(slot("rear lights")),
-    flashR: centroid(slot("flashers siren red")),
-    flashB: centroid(slot("flashers siren blue")),
+    head: out2(lampPair(slot("headlights")), [0, 0, 1]),
+    tail: out2(lampPair(slot("rear lights")), [0, 0, -1]),
+    // roof bar: clear it upward
+    flashR: (p => p && pushOut(p, [0, 1, 0], tris))(centroid(slot("flashers siren red"))),
+    flashB: (p => p && pushOut(p, [0, 1, 0], tris))(centroid(slot("flashers siren blue"))),
   };
 
   const wheels = wheelMeshes.map((m) => {
@@ -243,17 +281,24 @@ function build(style, cfg) {
   const normal = new Float32Array(nv * 3);
   const color = new Float32Array(nv * 3);
   const paintable = new Float32Array(nv);
+  /* Which lamp a vertex belongs to, so the NPC shader can make it emit on its
+     own: 1 = headlight, 2 = rear light, 0 = not a lamp. Without this the lamp
+     quads are just dark paint that only shows when something else lights them,
+     and a car's lights stop reading the moment the glow sprite is small. */
+  const lampKind = new Float32Array(nv);
   let seenPaint = false;
   tris.forEach((t, i) => {
     const isPaint = t.name === cfg.paint;
     if (isPaint) seenPaint = true;
     C.setHex(isPaint ? 0xffffff : t.hex ?? matColor(t.name), THREE.SRGBColorSpace);
+    const lk = t.name === "headlights" ? 1 : t.name === "rear lights" ? 2 : 0;
     for (let k = 0; k < 3; k++) {
       const o = (i * 3 + k) * 3;
       position.set(t.p[k], o);
       normal.set(normals[i][k], o);
       color[o] = C.r; color[o + 1] = C.g; color[o + 2] = C.b;
       paintable[i * 3 + k] = isPaint ? 1 : 0;
+      lampKind[i * 3 + k] = lk;
     }
   });
   if (!seenPaint) throw new Error(`${cfg.src}: paint slot "${cfg.paint}" not found`);
@@ -265,7 +310,7 @@ function build(style, cfg) {
     wheels,
     source: "Free Low Poly Vehicles Pack by rgsdev (CC0)",
   };
-  return { position, normal, color, paintable, extras, tris: tris.length };
+  return { position, normal, color, paintable, lampKind, extras, tris: tris.length };
 }
 
 /* ------------------------- minimal GLB writer ------------------------- */
@@ -280,11 +325,11 @@ function pad4(n) { return (4 - (n % 4)) % 4; }
 function writeGlb(file, m) {
   const nv = m.position.length / 3;
   const map = new Map();
-  const P = [], N = [], CO = [], PA = [], IDX = [];
+  const P = [], N = [], CO = [], PA = [], LK = [], IDX = [];
   for (let i = 0; i < nv; i++) {
     const k = `${m.position[i * 3].toFixed(4)},${m.position[i * 3 + 1].toFixed(4)},${m.position[i * 3 + 2].toFixed(4)}|` +
       `${m.normal[i * 3].toFixed(3)},${m.normal[i * 3 + 1].toFixed(3)},${m.normal[i * 3 + 2].toFixed(3)}|` +
-      `${m.color[i * 3].toFixed(3)},${m.color[i * 3 + 1].toFixed(3)},${m.color[i * 3 + 2].toFixed(3)}|${m.paintable[i]}`;
+      `${m.color[i * 3].toFixed(3)},${m.color[i * 3 + 1].toFixed(3)},${m.color[i * 3 + 2].toFixed(3)}|${m.paintable[i]}|${m.lampKind[i]}`;
     let ix = map.get(k);
     if (ix === undefined) {
       ix = P.length / 3;
@@ -293,6 +338,7 @@ function writeGlb(file, m) {
       N.push(m.normal[i * 3], m.normal[i * 3 + 1], m.normal[i * 3 + 2]);
       CO.push(m.color[i * 3], m.color[i * 3 + 1], m.color[i * 3 + 2]);
       PA.push(m.paintable[i]);
+      LK.push(m.lampKind[i]);
     }
     IDX.push(ix);
   }
@@ -329,6 +375,7 @@ function writeGlb(file, m) {
   const aNor = addF32(N, 3);
   const aCol = addF32(CO, 3);
   const aPaint = addF32(PA, 1);
+  const aLamp = addF32(LK, 1);
   const ia = Uint16Array.from(IDX);
   const vIdx = addView(Buffer.from(ia.buffer, ia.byteOffset, ia.byteLength), TARGET_ELEMENT);
   accessors.push({
@@ -347,7 +394,10 @@ function writeGlb(file, m) {
       name: m.extras.style,
       extras: m.extras,
       primitives: [{
-        attributes: { POSITION: aPos, NORMAL: aNor, COLOR_0: aCol, _PAINTABLE: aPaint },
+        attributes: {
+          POSITION: aPos, NORMAL: aNor, COLOR_0: aCol,
+          _PAINTABLE: aPaint, _LAMP: aLamp,
+        },
         indices: aIdx, material: 0,
       }],
     }],

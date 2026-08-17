@@ -100,12 +100,20 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
   const paint = src.attributes._paintable ?? src.attributes.paintable;
   const color = src.attributes.color;
   if (!paint || !color) return null;
+  const lamp = src.attributes._lamp ?? src.attributes.lampKind;
 
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", src.attributes.position);
   geo.setAttribute("normal", src.attributes.normal);
   geo.setAttribute("color", color);
   geo.setAttribute("paintable", paint);
+  /* Which lamp each vertex belongs to (1 head, 2 tail, 0 none). An older model
+     file without it still works — the shader reads 0 and simply emits nothing,
+     leaving that style's lamps to the glow sprites alone. */
+  geo.setAttribute(
+    "lampKind",
+    lamp ?? new THREE.BufferAttribute(new Float32Array(src.attributes.position.count), 1)
+  );
   if (src.index) geo.setIndex(src.index);
   geo.computeBoundingSphere();
 

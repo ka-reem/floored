@@ -89,7 +89,8 @@ const NPC_COLORS = [
 const GLASS_C = 0x0a0e18, TRIM_C = 0x101218, BUMP_C = 0x2b2f38;
 const LAMP_C = 0xdfe6f2, TAIL_C = 0x8e1620, PLATE_C = 0xd4d8e0, TYRE_C = 0x0b0b0f;
 
-type Part = { g: THREE.BufferGeometry; c: number; paint: number };
+/** `lamp`: 0 none, 1 headlight, 2 rear light — drives the emissive term. */
+type Part = { g: THREE.BufferGeometry; c: number; paint: number; lamp?: number };
 
 /* Bodyshell at two levels of detail. Near work gets curved, merged, smooth-shaded
    panels; the far tier drops the roof cap and runs a coarse extrusion, since past
@@ -120,7 +121,7 @@ function mergeParts(parts: Part[]) {
     ic += p.g.index ? p.g.index.count : n;
   }
   const pos = new Float32Array(vc * 3), nor = new Float32Array(vc * 3), col = new Float32Array(vc * 3);
-  const pnt = new Float32Array(vc);
+  const pnt = new Float32Array(vc), lmp = new Float32Array(vc);
   const idx = new Uint32Array(ic);
   let vo = 0, io = 0;
   const C = new THREE.Color();
@@ -134,6 +135,7 @@ function mergeParts(parts: Part[]) {
       col[(vo + i) * 3 + 1] = C.g;
       col[(vo + i) * 3 + 2] = C.b;
       pnt[vo + i] = p.paint;
+      lmp[vo + i] = p.lamp || 0;
     }
     if (p.g.index) {
       const I = p.g.index.array;
@@ -147,6 +149,7 @@ function mergeParts(parts: Part[]) {
   out.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
   out.setAttribute("color", new THREE.BufferAttribute(col, 3));
   out.setAttribute("paintable", new THREE.BufferAttribute(pnt, 1));
+  out.setAttribute("lampKind", new THREE.BufferAttribute(lmp, 1));
   out.setIndex(new THREE.BufferAttribute(idx, 1));
   out.computeBoundingSphere();
   return out;
@@ -158,15 +161,16 @@ function passengerGeo(type: string, hi: boolean) {
   const P = BODY[type];
   const S = shell(P, hi);
   const parts: Part[] = [];
-  const add = (g: THREE.BufferGeometry, c: number, paint: number) => parts.push({ g, c, paint });
+  const add = (g: THREE.BufferGeometry, c: number, paint: number, lamp = 0) =>
+    parts.push({ g, c, paint, lamp });
   const box = (
     w: number, h: number, d: number, x: number, y: number, z: number,
-    c: number, paint: number, r = 0.05
+    c: number, paint: number, r = 0.05, lamp = 0
   ) => {
     // far bodies use plain boxes — a rounded one costs four times the triangles
     const g = hi ? roundedBoxGeo(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d);
     g.translate(x, y, z);
-    add(g, c, paint);
+    add(g, c, paint, lamp);
   };
   const L2 = P.L / 2, W2 = P.W / 2;
   const livery = type === "taxi" ? 1 : type === "police" ? 1 : 1;
@@ -180,8 +184,8 @@ function passengerGeo(type: string, hi: boolean) {
   box(P.W * 0.97, 0.23, 0.24, 0, P.ride + 0.11, -L2 + 0.08, BUMP_C, 0, 0.09);
   // lamps
   for (const sx of [-1, 1]) {
-    box(0.32, 0.14, 0.12, sx * (W2 - 0.28), P.nose - 0.04, L2 - 0.09, LAMP_C, 0, 0.045);
-    box(0.3, 0.16, 0.12, sx * (W2 - 0.27), P.tail - 0.1, -L2 + 0.08, TAIL_C, 0, 0.045);
+    box(0.32, 0.14, 0.12, sx * (W2 - 0.28), P.nose - 0.04, L2 - 0.09, LAMP_C, 0, 0.045, 1);
+    box(0.3, 0.16, 0.12, sx * (W2 - 0.27), P.tail - 0.1, -L2 + 0.08, TAIL_C, 0, 0.045, 2);
   }
   if (hi) {
     box(P.W * 1.0, 0.12, P.L * 0.6, 0, P.ride - 0.04, 0, TRIM_C, 0, 0.05);
@@ -245,16 +249,16 @@ function truckGeo(hi: boolean) {
     S.roof.translate(0, 0, 2.0);
     parts.push({ g: S.roof, c: 0xffffff, paint: 1 });
   }
-  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06) => {
+  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06, lamp = 0) => {
     const g = hi ? roundedBoxGeo(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d);
     g.translate(x, y, z);
-    parts.push({ g, c, paint });
+    parts.push({ g, c, paint, lamp });
   };
   box(2.16, 2.24, 4.3, 0, 1.44, -1.05, 0xd6dae2, 0, 0.07);
   box(2.2, 0.14, 4.32, 0, 2.58, -1.05, 0xb9bfc9, 0, 0.05);
   box(2.12, 0.32, 0.5, 0, 0.36, 3.02, BUMP_C, 0, 0.06);
-  box(2.0, 0.26, 0.16, 0, 0.62, -3.2, TAIL_C, 0, 0.05);
-  for (const sx of [-1, 1]) box(0.3, 0.16, 0.14, sx * 0.78, 0.86, 3.06, LAMP_C, 0, 0.05);
+  box(2.0, 0.26, 0.16, 0, 0.62, -3.2, TAIL_C, 0, 0.05, 2);
+  for (const sx of [-1, 1]) box(0.3, 0.16, 0.14, sx * 0.78, 0.86, 3.06, LAMP_C, 0, 0.05, 1);
   if (hi) for (const sx of [-1, 1]) box(0.13, 0.24, 0.06, sx * 1.14, 1.72, 2.72, 0x22252c, 0, 0.03);
   return mergeParts(parts);
 }
@@ -266,17 +270,17 @@ function busGeo(hi: boolean) {
   parts.push({ g: S.hull, c: 0xffffff, paint: 1 });
   parts.push({ g: S.glass, c: GLASS_C, paint: 0 });
   if (S.roof) parts.push({ g: S.roof, c: 0xffffff, paint: 1 });
-  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06) => {
+  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06, lamp = 0) => {
     const g = hi ? roundedBoxGeo(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d);
     g.translate(x, y, z);
-    parts.push({ g, c, paint });
+    parts.push({ g, c, paint, lamp });
   };
   for (const sx of [-1, 1]) box(0.05, 0.86, 6.6, sx * 1.14, 1.72, -0.4, GLASS_C, 0, 0.03);
   box(2.24, 0.3, 0.4, 0, 0.5, 4.6, BUMP_C, 0, 0.08);
   box(2.24, 0.3, 0.4, 0, 0.5, -4.6, BUMP_C, 0, 0.08);
   for (const sx of [-1, 1]) {
-    box(0.32, 0.18, 0.14, sx * 0.86, 0.78, 4.68, LAMP_C, 0, 0.05);
-    box(0.3, 0.2, 0.14, sx * 0.86, 0.86, -4.68, TAIL_C, 0, 0.05);
+    box(0.32, 0.18, 0.14, sx * 0.86, 0.78, 4.68, LAMP_C, 0, 0.05, 1);
+    box(0.3, 0.2, 0.14, sx * 0.86, 0.86, -4.68, TAIL_C, 0, 0.05, 2);
   }
   return mergeParts(parts);
 }
@@ -288,17 +292,17 @@ function vanGeo(hi: boolean) {
 
 function bikeGeo(hi: boolean) {
   const parts: Part[] = [];
-  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06) => {
+  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06, lamp = 0) => {
     const g = hi ? roundedBoxGeo(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d);
     g.translate(x, y, z);
-    parts.push({ g, c, paint });
+    parts.push({ g, c, paint, lamp });
   };
   box(0.34, 0.5, 1.9, 0, 0.62, 0, 0xffffff, 1, 0.12);
   box(0.42, 0.46, 0.4, 0, 1.06, -0.18, 0x14161c, 0, 0.13);
   box(0.3, 0.27, 0.29, 0, 1.4, -0.12, 0x0d0f14, 0, 0.11);
   box(0.52, 0.07, 0.09, 0, 0.96, 0.55, TRIM_C, 0, 0.03);
-  box(0.16, 0.12, 0.1, 0, 0.92, 0.92, LAMP_C, 0, 0.04);
-  box(0.14, 0.1, 0.08, 0, 0.86, -0.94, TAIL_C, 0, 0.04);
+  box(0.16, 0.12, 0.1, 0, 0.92, 0.92, LAMP_C, 0, 0.04, 1);
+  box(0.14, 0.1, 0.08, 0, 0.86, -0.94, TAIL_C, 0, 0.04, 2);
   if (hi) box(0.5, 0.06, 0.5, 0, 1.18, -0.5, 0x1a1d24, 0, 0.03);
   return mergeParts(parts);
 }
@@ -359,16 +363,22 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
         attribute float paintable;
         attribute vec3 paintCol;
         attribute float dissolve;
+        attribute float lampKind;
+        attribute vec2 lampLvl;
         varying float vPaintable;
         varying vec3 vPaintCol;
-        varying float vDissolve;`
+        varying float vDissolve;
+        varying float vLampKind;
+        varying vec2 vLampLvl;`
       )
       .replace(
         "#include <begin_vertex>",
         `#include <begin_vertex>
         vPaintable = paintable;
         vPaintCol = paintCol;
-        vDissolve = dissolve;`
+        vDissolve = dissolve;
+        vLampKind = lampKind;
+        vLampLvl = lampLvl;`
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -376,7 +386,9 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
         `#include <common>
         varying float vPaintable;
         varying vec3 vPaintCol;
-        varying float vDissolve;`
+        varying float vDissolve;
+        varying float vLampKind;
+        varying vec2 vLampLvl;`
       )
       .replace(
         "#include <clipping_planes_fragment>",
@@ -391,6 +403,22 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
         "#include <color_fragment>",
         `#include <color_fragment>
         diffuseColor.rgb = mix(diffuseColor.rgb, vPaintCol, vPaintable);`
+      )
+      /* Lamps light themselves. The lamp quads are ordinary dark paint
+         otherwise, so they only showed when something else lit them, and a
+         car's lights lived or died entirely by its glow sprite — which is
+         capped in screen size, so the lights faded out exactly as the player
+         closed in. An emissive surface scales with the car instead, so a lamp
+         reads at any distance and gets brighter as you approach, which is what
+         a real one does. Levels are per instance (see renderInstances): x
+         drives the headlights, y the tail/brake lamps. */
+      .replace(
+        "#include <emissivemap_fragment>",
+        `#include <emissivemap_fragment>
+        if (vLampKind > 0.5) {
+          float lvl = vLampKind > 1.5 ? vLampLvl.y : vLampLvl.x;
+          totalEmissiveRadiance += diffuseColor.rgb * lvl;
+        }`
       )
       .replace(
         "#include <aomap_fragment>",
@@ -521,6 +549,8 @@ type Lod = {
   mesh: THREE.InstancedMesh;
   paint: THREE.InstancedBufferAttribute;
   diss: THREE.InstancedBufferAttribute;
+  /** per instance: x = headlight level, y = tail/brake level */
+  lamp: THREE.InstancedBufferAttribute;
   n: number;
 };
 type StyleMesh = { near: Lod; far: Lod };
@@ -640,13 +670,16 @@ export class Traffic {
         m.count = 0;
         const paint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
         const diss = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+        const lamp = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
         diss.array.fill(1);
         paint.setUsage(THREE.DynamicDrawUsage);
         diss.setUsage(THREE.DynamicDrawUsage);
+        lamp.setUsage(THREE.DynamicDrawUsage);
         m.geometry.setAttribute("paintCol", paint);
         m.geometry.setAttribute("dissolve", diss);
+        m.geometry.setAttribute("lampLvl", lamp);
         scene.add(m);
-        return { mesh: m, paint, diss, n: 0 };
+        return { mesh: m, paint, diss, lamp, n: 0 };
       };
       this.lampsOf.push(null);
       this.styles.push({ near: mk(true), far: mk(false) });
@@ -739,9 +772,11 @@ export class Traffic {
     // dispose would otherwise free buffers the mesh is still drawing from
     m.geo.setAttribute("paintCol", lod.paint);
     m.geo.setAttribute("dissolve", lod.diss);
+    m.geo.setAttribute("lampLvl", lod.lamp);
     lod.mesh.geometry = m.geo;
     old.deleteAttribute("paintCol");
     old.deleteAttribute("dissolve");
+    old.deleteAttribute("lampLvl");
     old.dispose();
 
     this.lampsOf[si] = m.lamps;
@@ -1533,7 +1568,7 @@ export class Traffic {
       }
     }
 
-    this.renderInstances(player);
+    this.renderInstances(player, night);
     this.updateLights(now, night);
   }
 
@@ -1755,7 +1790,7 @@ export class Traffic {
      culled by view direction here — the scene is also rendered from the rear
      camera for the mirrors and from the reflection camera for the road, and
      both want the traffic behind the player. Nothing in here allocates. */
-  private renderInstances(player: CarState) {
+  private renderInstances(player: CarState, night: boolean) {
     for (const st of this.styles) {
       st.near.n = 0;
       st.far.n = 0;
@@ -1780,6 +1815,14 @@ export class Traffic {
       pa[i * 3 + 1] = n.cg;
       pa[i * 3 + 2] = n.cb;
       (lod.diss.array as Float32Array)[i] = n.fade;
+      /* Emissive lamp levels. A wreck's lights are dead; otherwise the tails
+         glow at a running level and jump on the brakes. These are radiance
+         multipliers on the lamp's own colour, so the tail values look large
+         against TAIL_C, which is a deliberately dark red. */
+      const la = lod.lamp.array as Float32Array;
+      const lit = night && !n.wreck;
+      la[i * 2] = lit ? 2.2 : 0;
+      la[i * 2 + 1] = n.wreck ? 0 : n.brake ? 3.4 : lit ? 1.5 : 0;
       if (d2 < WHEEL2) {
         const fx = sn, fz = c, rx = fz, rz = -fx;
         for (const [lo, so] of n.wheelOffs) {
@@ -1809,6 +1852,7 @@ export class Traffic {
     lod.mesh.instanceMatrix.needsUpdate = true;
     lod.paint.needsUpdate = true;
     lod.diss.needsUpdate = true;
+    lod.lamp.needsUpdate = true;
   }
 
   /* light sprites */
