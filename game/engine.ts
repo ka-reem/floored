@@ -66,7 +66,15 @@ const HL_THROW = 115, HL_THROW_HI = 200;
     purpose: this cone's job is lighting the adjacent lane close in, not
     reaching down the road, and a longer cutoff would just mean more of it
     sits inside the anti-blowout knee's compressed zone for no visual gain. */
-const HL_SPREAD_THROW = 35, HL_SPREAD_THROW_HI = 48;
+const HL_SPREAD_THROW = 30, HL_SPREAD_THROW_HI = 42;
+
+/** Lateral fill-cone pitch, radians below horizontal, edge-pinned the same
+    way as the main beam (see the loop below): this is the AXIS angle, not
+    the cutoff, and for a cone this wide the axis has to point down by
+    nearly its own half-angle before the upper edge clears horizontal. Tuned
+    against the vertical-panel knee check, not against reach — a shallower
+    pitch reaches further but re-opens the whiteout this replaced. */
+const HL_SPREAD_PITCH = (26 * Math.PI) / 180, HL_SPREAD_PITCH_HI = (28 * Math.PI) / 180;
 
 /** Headlight aim, as the slope of the beam's upper edge — the cut-off — not
     of its axis. Positive is downward.
@@ -1083,16 +1091,21 @@ export class Game {
       : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
-    /* Lateral fill cones. Peak candela is comparable to the main low beam's
-       — not "dim", just spread across a much wider cone and a short cutoff,
-       so the delivered illuminance at any one point is a fraction of the
-       main beam's. Kept out of the anti-dazzle decay story: this cone's own
-       short throw (HL_SPREAD_THROW/_HI) is what keeps distant cars in the
-       next lane from riding the knee's ceiling, so it doesn't need the main
-       beam's steep high-mode decay on top — see the verification table in
-       the widen-laterally commit message. */
+    /* Lateral fill cones. First cut of these pinned their upper edge ~29°
+       ABOVE horizontal (a wide angle aimed only ~4° down), which reached
+       cars broadside at every distance the cone's cutoff allowed — exactly
+       the whiteout the main beam's edge-aimed cutoff was built to avoid, and
+       nothing here inherited that protection. Fixed two ways at once: the
+       aim is pitched hard enough now (see the loop below) that the cone's
+       upper edge sits only a few degrees above horizontal instead of ~29°,
+       and intensity is solved so a vertical mid-grey panel — a car's body,
+       not the ground — never crosses the traffic-knee threshold (1.3) at
+       3/5/10/20 m; see the verification table in the tame-the-spread-cones
+       commit message. Ground coverage is real but deliberately more modest
+       than the first cut — that's the trade for cars in the next lane no
+       longer blowing out regardless of range. */
     const si2 = lamps
-      ? hi ? (this.rain ? 3630 : 2800) : (this.rain ? 908 : 700)
+      ? hi ? (this.rain ? 3070 : 2370) : (this.rain ? 1840 : 1420)
       : 0;
     this.rig.spreadL.intensity = si2;
     this.rig.spreadR.intensity = si2;
@@ -1171,18 +1184,25 @@ export class Game {
         sp.position.y - (sp.target.position.z - sp.position.z) * Math.tan(pitch);
     }
     /* Spread cones aim outward from each lamp toward its own side, wide and
-       short — not edge-pinned like the main beam, since there's no cut-off
-       to protect here: a wide soft cone pointed at the shoulder never puts a
-       hard line on anything worth not dazzling. High mode pushes the aim
-       point further out and further ahead, proportionate to the main beam's
-       own low→high reach, so the fill grows with the throw instead of
-       staying a fixed puddle while the main beam extends past it. */
+       short. Unlike the main beam this IS edge-pinned now too, for the same
+       reason: pitch is set from the cone's own half-angle so the upper edge
+       lands a controlled few degrees above horizontal (0.5-0.53 rad cones
+       can't get fully below horizontal from a bumper-height mount without
+       losing all reach — see the commit message's trig) instead of the ~29°
+       the unpinned first cut left it at. horizDist is the 3-D distance to
+       the aim point, not just forward distance, because the lateral kick is
+       large enough here (unlike the main beam's) to matter for the pitch a
+       symmetric cone needs to keep its topmost ray fixed. */
     for (const [sp, side] of [[this.rig.spreadL, -1], [this.rig.spreadR, 1]] as const) {
       sp.distance = hi ? HL_SPREAD_THROW_HI : HL_SPREAD_THROW;
-      sp.angle = hi ? 0.58 : 0.55;
-      sp.penumbra = hi ? 0.85 : 0.9;
-      sp.decay = hi ? 1.6 : 1.3;
-      sp.target.position.set(side * (hi ? 4.5 : 3.5), hi ? -0.4 : -0.5, hi ? 22 : 14);
+      sp.angle = hi ? 0.53 : 0.5;
+      sp.penumbra = 0.5;
+      sp.decay = hi ? 1.3 : 1.2;
+      const kick = hi ? 4.0 : 3.0, tz = hi ? 22 : 14;
+      const spitch = hi ? HL_SPREAD_PITCH_HI : HL_SPREAD_PITCH;
+      const horizDist = Math.hypot(kick, tz);
+      sp.target.position.set(
+        side * kick, sp.position.y - horizDist * Math.tan(spitch), tz);
     }
     this.rig.headMat.emissiveIntensity = hi ? 4.2 : car.lightsOn ? 2.4 : 0.12;
     // the glow sprite keeps most of its punch in daylight when flashing, or a

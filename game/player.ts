@@ -494,20 +494,27 @@ export function buildPlayerCar(
 
   /* Lateral fill cones — same physical lamp, the wide-angle low-intensity
      portion of the reflector real headlamps also throw. Angle/penumbra/decay/
-     distance are all driven per-frame in engine.ts alongside the main beam's,
-     switching low/high mode together; the values here are just a sane
-     pre-first-frame default. No shadows: two more shadow-casting lights per
-     car would be a real cost, and a wide, soft, near-field fill has nothing
-     a missing shadow would read as wrong. */
-  const spreadL = new THREE.SpotLight(0xdfe9ff, 0, 35, 0.55, 0.9, 1.3);
-  const spreadR = new THREE.SpotLight(0xdfe9ff, 0, 35, 0.55, 0.9, 1.3);
+     distance/target are all driven per-frame in engine.ts alongside the main
+     beam's, switching low/high mode together; the values here are just a
+     sane pre-first-frame default. No shadows: two more shadow-casting lights
+     per car would be a real cost, and a wide, soft, near-field fill has
+     nothing a missing shadow would read as wrong.
+
+     Mounted lower than the main lamp (bumper-ish, not headlamp height): a
+     wide symmetric cone whose upper edge must stay near horizontal can only
+     reach as far as lampHeight/tan(topEdgeAngle) before it's fully
+     attenuated anyway, so a lower lamp buys a bit more throw for the same
+     safety margin, and it also keeps this cone's hot core aimed at the road
+     rather than at another car's bumper height. */
+  const spreadL = new THREE.SpotLight(0xdfe9ff, 0, 30, 0.5, 0.5, 1.2);
+  const spreadR = new THREE.SpotLight(0xdfe9ff, 0, 30, 0.5, 0.5, 1.2);
   spreadL.castShadow = false;
   spreadR.castShadow = false;
-  spreadL.position.copy(spotL.position);
-  spreadR.position.copy(spotR.position);
+  spreadL.position.set(-hlX, P.nose - 0.16, L2 - 0.05);
+  spreadR.position.set(hlX, P.nose - 0.16, L2 - 0.05);
   const spreadTgtL = new THREE.Object3D(), spreadTgtR = new THREE.Object3D();
-  spreadTgtL.position.set(-3.5, -0.5, 14);
-  spreadTgtR.position.set(3.5, -0.5, 14);
+  spreadTgtL.position.set(-3.0, -1.1, 14);
+  spreadTgtR.position.set(3.0, -1.1, 14);
   lampsG.add(spreadL, spreadTgtL, spreadR, spreadTgtR);
   spreadL.target = spreadTgtL;
   spreadR.target = spreadTgtR;
