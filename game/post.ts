@@ -25,28 +25,44 @@ const frac = (x: number) => x - Math.floor(x);
 /** Live console knobs for the POV visibility tweaks — read fresh every frame
  * in process(), so console edits (`window.__povTune.gainFloor = 0`) take
  * effect immediately, no redeploy or reload.
- * gainFloor / shadowGrain / lampProtect: each 0..1, scaling that one
- * post-degrade effect's strength independently (1 = shipped default).
- * sensorGain: 1..3, default 1.8 — multiplies the image feeding the whole POV
- * degrade chain (see povSrcMat below), i.e. it brightens the *source* before
- * crush/grain/everything rather than lifting the result afterward, so detail
- * the degrade would otherwise have nothing to work with survives into it. */
+ * gainFloor / shadowGrain / lampProtect / skyCrush: each 0..1, scaling that
+ * one post-degrade effect's strength independently (defaults below are the
+ * shipped balance, not "off" — only sensorGain=1 and skyCrush/gainFloor=0
+ * are truly off).
+ * sensorGain: 1..3, default 1.25 — multiplies the image feeding the whole
+ * POV degrade chain (see povSrcMat below), i.e. it brightens the *source*
+ * before crush/grain/everything rather than lifting the result afterward.
+ * Turned down from an earlier 1.8: that overshot into a visibly lit sky, so
+ * this is now a small assist and skyCrush (below) cleans up what it still
+ * lifts. gainFloor's target also came down alongside it (1 → 0.4) so bodies
+ * go back to barely-there — car visibility is being carried by taillights
+ * (traffic.ts) plus lampProtect, not by brightening the whole frame.
+ * skyCrush: darkens the upper frame's dim, desaturated sky glow — the thing
+ * sensorGain lifts along with everything else — back toward black, without
+ * touching saturated or genuinely bright pixels (tail lamps, headlights,
+ * signs). See the povMat shader for the screen-y / saturation / luma mask. */
 declare global {
   interface Window {
     __povTune?: {
       gainFloor: number; shadowGrain: number; lampProtect: number; sensorGain: number;
+      skyCrush: number;
     };
   }
 }
-const POV_TUNE_DEFAULT = { gainFloor: 1, shadowGrain: 1, lampProtect: 1, sensorGain: 1.8 };
+const POV_TUNE_DEFAULT = {
+  gainFloor: 0.4, shadowGrain: 1, lampProtect: 1, sensorGain: 1.25, skyCrush: 0.6,
+};
 function readPovTune() {
   if (typeof window === "undefined") return POV_TUNE_DEFAULT;
   if (!window.__povTune) window.__povTune = { ...POV_TUNE_DEFAULT };
   const t = window.__povTune;
-  const c01 = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1);
+  const c01 = (v: number, d: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : d);
   const cGain = (v: number) => (Number.isFinite(v) ? Math.max(1, Math.min(3, v)) : POV_TUNE_DEFAULT.sensorGain);
   return {
-    gainFloor: c01(t.gainFloor), shadowGrain: c01(t.shadowGrain), lampProtect: c01(t.lampProtect),
+    gainFloor: c01(t.gainFloor, POV_TUNE_DEFAULT.gainFloor),
+    shadowGrain: c01(t.shadowGrain, POV_TUNE_DEFAULT.shadowGrain),
+    lampProtect: c01(t.lampProtect, POV_TUNE_DEFAULT.lampProtect),
+    skyCrush: c01(t.skyCrush, POV_TUNE_DEFAULT.skyCrush),
     sensorGain: cGain(t.sensorGain),
   };
 }
@@ -340,17 +356,18 @@ void main(){ vec3 s=vec3(0.); float wsum=0.;
         // uHitT is seconds since the hit landed (drives the flash decay and
         // the wobble phase).
         uHitEnv: { value: 0 }, uHitSeed: { value: 0 }, uHitT: { value: 0 },
-        // POV visibility trio (each 0..1, independently tunable live via
-        // window.__povTune — see readPovTune() below). 1 = the shipped
-        // effect at full strength, 0 = off, so any one item can be zeroed
-        // without touching the other two.
-        uGainFloor: { value: 1 }, uShadowGrain: { value: 1 }, uLampProtect: { value: 1 },
+        // POV visibility knobs (independently tunable live via
+        // window.__povTune — see readPovTune() below, whose POV_TUNE_DEFAULT
+        // is the source of truth for these; the values here are just the
+        // material's pre-first-frame defaults).
+        uGainFloor: { value: 0.4 }, uShadowGrain: { value: 1 }, uLampProtect: { value: 1 },
+        uSkyCrush: { value: 0.6 },
       },
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv;
 uniform sampler2D tLow,tSmear,tOver; uniform vec2 uLow,uOverPos,uOverSize;
 uniform float uTime,uOverAmt,uHitEnv,uHitSeed,uHitT;
-uniform float uGainFloor,uShadowGrain,uLampProtect;
+uniform float uGainFloor,uShadowGrain,uLampProtect,uSkyCrush;
 float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
 void main(){
  vec2 d=vUv-.5; float r2=dot(d,d);
@@ -416,6 +433,20 @@ void main(){
  col+=vec3(.085,-.012,.045)*smoothstep(.06,.5,r2)*(1.-smoothstep(0.,.5,le));
  col*=1.-r2*.55;
  col.r*=1.+r2*.16;
+ // sky pulldown: sensor gain (povSrcMat) brightens the whole source frame,
+ // sky included, so the upper half can read as lit night haze instead of
+ // black. Pull it back down — but only dim, washed-out, upper-frame content:
+ // screen-y above the horizon band (ramps in from .55 to the top edge),
+ // low saturation (a real sky glow, not a coloured sign or lamp), and only
+ // moderate luma (fades out well before it would touch a genuinely bright
+ // pixel) — so tail lamps, headlights and signs punch straight through.
+ // Runs ahead of the grain/DVR/quantise below, so the grime still sits on
+ // top of the crushed sky rather than being crushed along with it.
+ float skySat=max(col.r,max(col.g,col.b))-min(col.r,min(col.g,col.b));
+ float skyBand=smoothstep(.55,1.0,vUv.y);
+ float skyLowSat=1.-smoothstep(.06,.22,skySat);
+ float skyDim=1.-smoothstep(.35,.75,le);
+ col*=1.-skyBand*skyLowSat*skyDim*uSkyCrush*.9;
  // burnt-in DVR strip, ahead of the noise and the codec so it degrades with
  // the rest of the frame. Suppressed when the V-key pass already drew one.
  vec2 op=(vUv-uOverPos)/uOverSize;
@@ -465,7 +496,7 @@ void main(){
        is correct — the smear pass below is what a real over-gained sensor's
        blown-out lamps look like. */
     this.povSrcMat = new THREE.ShaderMaterial({
-      uniforms: { tIn: { value: null }, uGain: { value: 1.8 } },
+      uniforms: { tIn: { value: null }, uGain: { value: 1.25 } },
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv; uniform sampler2D tIn; uniform float uGain;
 void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb*uGain,1.0); }`,
@@ -783,6 +814,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.povMat.uniforms.uGainFloor.value = tune.gainFloor;
       this.povMat.uniforms.uShadowGrain.value = tune.shadowGrain;
       this.povMat.uniforms.uLampProtect.value = tune.lampProtect;
+      this.povMat.uniforms.uSkyCrush.value = tune.skyCrush;
       this.runPass(this.povMat, null);
     }
     this.renderer.setRenderTarget(null);
