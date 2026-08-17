@@ -15,9 +15,9 @@ import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
    which belongs to the game renderer's GL context, away from the garage
    preview renderer, which builds its own cube env in its own context. */
 
-/** Tried in order; the first that exists wins. `/assets/env/night.hdr` is the
- *  override hook for a purpose-shot city panorama; below it are the CC0 street
- *  HDRIs that live in the tree today (see ATTRIBUTIONS.md).
+/** Tried in order; the first that exists wins. To override with a purpose-shot
+ *  city panorama, add its path at the head of this list; the CC0 street HDRIs
+ *  below live in the tree today (see ATTRIBUTIONS.md).
  *
  *  cobblestone_street_night leads because it is the far punchier of the two:
  *  75% of its light arrives from the brightest 0.1% of its pixels (the street
@@ -26,7 +26,6 @@ import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
  *  moving streak across a clearcoated wing; a diffuse sky would land as
  *  another smooth gradient, which is what the painted cube already gives us. */
 const HDRI_URLS = [
-  "/assets/env/night.hdr",
   "/hdri/cobblestone_street_night_2k.hdr",
   "/hdri/modern_evening_street_2k.hdr",
 ];
