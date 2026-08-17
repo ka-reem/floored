@@ -129,6 +129,17 @@ export class GameAudio {
   private lastTireT = 0;
   private prevSlipRaw = 0;
   private lastChirp = -1;
+  /** Dedicated low-speed brake-squeal voice — the classic rising "eeeee"
+      right before a hard stop finishes. Distinct from singF/screechF: those
+      are driven by the smoothed slip envelope, which under ABS/ESC-era
+      physics.ts sits at a flat ~0.15 for the whole straight-line-ABS stop
+      (well under the screech threshold, correctly — real ABS doesn't
+      produce sustained screech) and then drops to exactly 0 the instant ABS
+      releases, with no transition. This layer fills exactly that gap: it
+      triggers on genuine hard/panic braking specifically in the last ~40
+      km/h before a stop and rises in pitch as speed approaches zero. */
+  private brakeSqF!: BiquadFilterNode; private brakeSqG!: GainNode;
+  private prevBrakeSpeed = 0;
 
   /* environment */
   private wF!: BiquadFilterNode; private wG!: GainNode;
@@ -445,6 +456,18 @@ export class GameAudio {
       amMix.connect(this.screechAmDepth).connect(this.screechG.gain);
       amA.start(); amB.start();
 
+      // Layer 4: low-speed brake squeal. Narrowband and high-Q — a tonal
+      // "eeeee", not the broadband screech above — so it reads distinctly
+      // even though it can be active at the same time as the screech/sing
+      // layers (a hard stop that's also sliding wants both).
+      this.brakeSqF = ctx.createBiquadFilter();
+      this.brakeSqF.type = "bandpass";
+      this.brakeSqF.frequency.value = 1400;
+      this.brakeSqF.Q.value = 7;
+      this.brakeSqG = ctx.createGain();
+      this.brakeSqG.gain.value = 0;
+      this.noiseNode().connect(this.brakeSqF).connect(this.brakeSqG).connect(this.master);
+
       /* ---- environment ---- */
       // Wind roar: lowpassed noise whose cutoff and level open with speed,
       // becoming the dominant sound at high speed. A slow two-LFO "flutter"
@@ -684,6 +707,7 @@ export class GameAudio {
       tireRoll: this.tireRoadG.gain.value,
       tireSing: this.singG.gain.value,
       tireScreech: this.screechG.gain.value,
+      brakeSqueal: this.brakeSqG.gain.value,
       roadRumble: this.roadRumbleG.gain.value,
       wind: this.wG.gain.value,
       rain: this.rG.gain.value,
@@ -804,6 +828,7 @@ export class GameAudio {
     this.singG.gain.value = 0;
     this.screechG.gain.value = 0;
     this.screechAmDepth.gain.value = 0;
+    this.brakeSqG.gain.value = 0;
     this.wG.gain.value = 0;
     this.windFlutterDepth.gain.value = 0;
     this.roadRumbleG.gain.value = 0;
@@ -1045,6 +1070,26 @@ export class GameAudio {
       this.lastAbsTick = now;
       this.burst(0.018 + speedGate * 0.014, 340 + Math.random() * 120, 0.011, 3.5);
     }
+
+    /* Low-speed brake squeal: the classic rising "eeeee" in the last ~40
+       km/h of a hard stop. Gated on genuine hard/panic braking, not routine
+       firm braking — verified against a headless physics.ts audit that
+       ordinary firm braking (br=0.6, a normal stop) never engages ABS at
+       all (raw slip stays exactly 0 throughout), while only a real
+       max-effort stop does, so slip > a small floor here is already a
+       reliable "this is a hard stop" signal on its own, no separate brake-
+       pedal input needed. Also requires an actual decelerating trend (not
+       just low speed) so idling/crawling doesn't trigger it. Pitch rises
+       and level swells as speed approaches zero, then cuts out at
+       standstill or the moment the car stops actually slowing (releases
+       the pedal, speeds back up, or the slip signal drops out). */
+    const decel = (this.prevBrakeSpeed - speed) / Math.max(dt, 1 / 240);
+    this.prevBrakeSpeed = speed;
+    const brakeSqActive = speed > 0.3 && speed < 11 && decel > 2.5 && slip > 0.08;
+    const stopCloseness = clampRange(1 - speed / 11, 0, 1);
+    const brakeSqTarget = brakeSqActive ? (0.02 + stopCloseness * 0.045) * speedGate : 0;
+    this.sp(this.brakeSqF.frequency, 1400 + stopCloseness * 1400, 0.08);
+    this.sp(this.brakeSqG.gain, brakeSqTarget, brakeSqActive ? 0.08 : 0.15);
 
     // Road texture bed: low rumble tied to speed, distinct from wind/tyre-hum.
     // Ducked while the tyre screech layer is active so the two low-mid
