@@ -792,6 +792,22 @@ export class Traffic {
     m.geo.setAttribute("dissolve", lod.diss);
     m.geo.setAttribute("lampLvl", lod.lamp);
     lod.mesh.geometry = m.geo;
+    if (m.map) {
+      /* The four detailed passenger bodies keep one resized texture each.
+         Their meshes are already separate instanced draw calls by style, so a
+         per-style material preserves the authored UV detail without changing
+         the fleet's draw-call count. Far LODs keep the shared untextured
+         material and procedural geometry. */
+      const material = this.npcMat.clone();
+      material.map = m.map;
+      material.roughnessMap = m.roughnessMap;
+      material.metalnessMap = m.metalnessMap;
+      if (m.roughnessMap) material.roughness = 1;
+      if (m.metalnessMap) material.metalness = 1;
+      material.needsUpdate = true;
+      npcShader(material);
+      lod.mesh.material = material;
+    }
     old.deleteAttribute("paintCol");
     old.deleteAttribute("dissolve");
     old.deleteAttribute("lampLvl");

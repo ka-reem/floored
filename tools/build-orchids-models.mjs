@@ -5,10 +5,10 @@
 
    The downloaded pack is deliberately not shipped. It is one unnamed 26 MB
    scene with 323 meshes and 77 embedded images. Four ordinary passenger cars
-   are selected by their stable glTF node indices, their 1K textures are sampled
-   into vertex colours, wheel geometry is discarded, and the result is fitted
-   to traffic.ts's dimensions. The four resulting files total only a few
-   hundred KB and need no runtime texture fetches or additional draw calls.
+   are selected by their stable glTF node indices, their UVs are preserved,
+   their 1K colour textures are resized to 512px JPEGs (metallic/roughness to
+   256px), wheel geometry is discarded, and the result is fitted to
+   traffic.ts's dimensions. Each style remains one instanced draw call.
 
    Source: "Orchids Simulator Traffic Car Pack" by SphereBall20, CC-BY 4.0.
    See ATTRIBUTIONS.md for the canonical URL and required credit. */
@@ -138,61 +138,50 @@ function boundsOfNodes(nodes) {
 }
 
 const imageCache = new Map();
-async function imageForMaterial(materialIndex) {
-  const mat = doc.materials[materialIndex];
-  const textureIndex = mat?.pbrMetallicRoughness?.baseColorTexture?.index;
+async function imageForTexture(textureIndex, size, quality) {
   const imageIndex = doc.textures[textureIndex]?.source;
   if (imageIndex === undefined) return null;
-  if (imageCache.has(imageIndex)) return imageCache.get(imageIndex);
+  const cacheKey = `${imageIndex}:${size}:${quality}`;
+  if (imageCache.has(cacheKey)) return imageCache.get(cacheKey);
   const image = doc.images[imageIndex];
   if (image.uri) throw new Error("external source images are not supported");
   const view = doc.bufferViews[image.bufferView];
   const encoded = bin.subarray(view.byteOffset || 0, (view.byteOffset || 0) + view.byteLength);
-  const decoded = await sharp(encoded).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const value = { data: decoded.data, width: decoded.info.width, height: decoded.info.height };
-  imageCache.set(imageIndex, value);
+  const value = await sharp(encoded)
+    .resize({ width: size, height: size, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality, chromaSubsampling: "4:4:4" })
+    .toBuffer();
+  imageCache.set(cacheKey, value);
   return value;
 }
 
-function srgbToLinear(v) {
-  v /= 255;
-  return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-}
-
-function sample(image, u, v) {
-  if (!image) return [1, 1, 1];
-  u = ((u % 1) + 1) % 1;
-  v = ((v % 1) + 1) % 1;
-  const x = Math.min(image.width - 1, Math.floor(u * image.width));
-  const y = Math.min(image.height - 1, Math.floor(v * image.height));
-  const o = (y * image.width + x) * 4;
-  return [
-    srgbToLinear(image.data[o]),
-    srgbToLinear(image.data[o + 1]),
-    srgbToLinear(image.data[o + 2]),
-  ];
+async function imagesForMaterial(materialIndex) {
+  const pbr = doc.materials[materialIndex]?.pbrMetallicRoughness;
+  return {
+    base: await imageForTexture(pbr?.baseColorTexture?.index, 512, 86),
+    metallicRoughness: await imageForTexture(pbr?.metallicRoughnessTexture?.index, 256, 82),
+  };
 }
 
 /** Every triangle of one selected body, transformed to pack world space and
- * carrying the source texture's colour at each vertex. */
-async function bodyTriangles(nodeIndex) {
+ * carrying the source UV at each vertex. */
+function bodyTriangles(nodeIndex) {
   const primitive = meshRecord(nodeIndex);
   const pos = readAccessor(primitive.attributes.POSITION);
   const uv = readAccessor(primitive.attributes.TEXCOORD_0);
   const idx = readAccessor(primitive.indices);
-  const image = await imageForMaterial(primitive.material);
   const matrix = worldMatrix(nodeIndex);
   const v = new THREE.Vector3();
   const out = [];
   for (let i = 0; i < idx.count; i += 3) {
-    const p = [], c = [];
+    const p = [], texcoord = [];
     for (let k = 0; k < 3; k++) {
       const ix = idx.array[i + k];
       v.set(pos.array[ix * 3], pos.array[ix * 3 + 1], pos.array[ix * 3 + 2]).applyMatrix4(matrix);
       p.push([v.x, v.y, v.z]);
-      c.push(sample(image, uv.array[ix * 2], uv.array[ix * 2 + 1]));
+      texcoord.push([uv.array[ix * 2], uv.array[ix * 2 + 1]]);
     }
-    out.push({ p, c });
+    out.push({ p, uv: texcoord });
   }
   return out;
 }
@@ -234,11 +223,15 @@ async function build(style, cfg) {
     (p[2] - ctr.z) * scale[2],
   ];
 
-  const tris = await bodyTriangles(cfg.body);
+  const tris = bodyTriangles(cfg.body);
   if (tris.length !== cfg.tris)
     throw new Error(`${style}: expected ${cfg.tris} triangles, found ${tris.length}`);
   for (const tri of tris) tri.p = tri.p.map(fit);
   const normals = creaseNormals(tris, Math.cos(THREE.MathUtils.degToRad(42)));
+  const images = await imagesForMaterial(meshRecord(cfg.body).material);
+  if (!images.base) throw new Error(`${style}: source body has no base-colour texture`);
+  if (!images.metallicRoughness)
+    throw new Error(`${style}: source body has no metallic-roughness texture`);
 
   const wheels = wheelNodes.map((node) => {
     const b = boundsOfNodes([node]);
@@ -251,21 +244,22 @@ async function build(style, cfg) {
   const position = new Float32Array(nv * 3);
   const normal = new Float32Array(nv * 3);
   const color = new Float32Array(nv * 3);
+  const texcoord = new Float32Array(nv * 2);
   const paintable = new Float32Array(nv);
   const lampKind = new Float32Array(nv);
+  color.fill(1);
   tris.forEach((tri, i) => {
     for (let k = 0; k < 3; k++) {
       const o = (i * 3 + k) * 3;
       position.set(tri.p[k], o);
       normal.set(normals[i][k], o);
-      color.set(tri.c[k], o);
+      texcoord.set(tri.uv[k], (i * 3 + k) * 2);
     }
   });
 
-  /* Texture colours remain fixed for this first four-car trial. Keeping the
-     mask at zero preserves windows, grilles and panel shading without shipping
-     a texture or adding a per-style material. Other fleet styles still use
-     random per-instance paint, so overall traffic colour remains varied. */
+  /* These four retain their authored paint and detail texture, so their paint
+     mask remains zero. Other fleet styles still use random per-instance paint,
+     keeping the overall stream varied. */
   const frontY = cfg.H * 0.46, rearY = cfg.H * 0.42;
   const lamps = {
     head: [[-cfg.W * 0.32, frontY, cfg.L * 0.49], [cfg.W * 0.32, frontY, cfg.L * 0.49]],
@@ -280,7 +274,12 @@ async function build(style, cfg) {
     wheels,
     source: "Orchids Simulator Traffic Car Pack by SphereBall20 (CC-BY 4.0)",
   };
-  return { position, normal, color, paintable, lampKind, extras };
+  return {
+    position, normal, color, texcoord, paintable, lampKind,
+    image: images.base,
+    metallicRoughnessImage: images.metallicRoughness,
+    extras,
+  };
 }
 
 /* Minimal one-mesh GLB writer, matching tools/build-npc-models.mjs. */
@@ -289,12 +288,12 @@ function pad4(n) { return (4 - (n % 4)) % 4; }
 
 function writeGlb(file, m) {
   const nv = m.position.length / 3;
-  const map = new Map(), P = [], N = [], CO = [], PA = [], LK = [], IDX = [];
+  const map = new Map(), P = [], N = [], CO = [], UV = [], PA = [], LK = [], IDX = [];
   for (let i = 0; i < nv; i++) {
     const key =
       `${m.position[i * 3].toFixed(4)},${m.position[i * 3 + 1].toFixed(4)},${m.position[i * 3 + 2].toFixed(4)}|` +
       `${m.normal[i * 3].toFixed(3)},${m.normal[i * 3 + 1].toFixed(3)},${m.normal[i * 3 + 2].toFixed(3)}|` +
-      `${m.color[i * 3].toFixed(3)},${m.color[i * 3 + 1].toFixed(3)},${m.color[i * 3 + 2].toFixed(3)}|0|0`;
+      `${m.texcoord[i * 2].toFixed(5)},${m.texcoord[i * 2 + 1].toFixed(5)}|0|0`;
     let ix = map.get(key);
     if (ix === undefined) {
       ix = P.length / 3;
@@ -302,6 +301,7 @@ function writeGlb(file, m) {
       P.push(m.position[i * 3], m.position[i * 3 + 1], m.position[i * 3 + 2]);
       N.push(m.normal[i * 3], m.normal[i * 3 + 1], m.normal[i * 3 + 2]);
       CO.push(m.color[i * 3], m.color[i * 3 + 1], m.color[i * 3 + 2]);
+      UV.push(m.texcoord[i * 2], m.texcoord[i * 2 + 1]);
       PA.push(0); LK.push(0);
     }
     IDX.push(ix);
@@ -333,6 +333,7 @@ function writeGlb(file, m) {
   };
 
   const aPos = addF32(P, 3), aNor = addF32(N, 3), aCol = addF32(CO, 3);
+  const aUv = addF32(UV, 2);
   const aPaint = addF32(PA, 1), aLamp = addF32(LK, 1);
   const indices = Uint16Array.from(IDX);
   const indexView = addView(Buffer.from(indices.buffer, indices.byteOffset, indices.byteLength), TARGET_ELEMENT);
@@ -341,6 +342,8 @@ function writeGlb(file, m) {
     type: "SCALAR", min: [0], max: [P.length / 3 - 1],
   });
   const aIdx = accessors.length - 1;
+  const imageView = addView(m.image);
+  const metallicRoughnessImageView = addView(m.metallicRoughnessImage);
   const binary = Buffer.concat(chunks);
   const gltf = {
     asset: { version: "2.0", generator: "racing-game tools/build-orchids-models.mjs" },
@@ -352,7 +355,7 @@ function writeGlb(file, m) {
       extras: m.extras,
       primitives: [{
         attributes: {
-          POSITION: aPos, NORMAL: aNor, COLOR_0: aCol,
+          POSITION: aPos, NORMAL: aNor, COLOR_0: aCol, TEXCOORD_0: aUv,
           _PAINTABLE: aPaint, _LAMP: aLamp,
         },
         indices: aIdx,
@@ -363,10 +366,18 @@ function writeGlb(file, m) {
       name: "npcBody",
       pbrMetallicRoughness: {
         baseColorFactor: [1, 1, 1, 1],
-        metallicFactor: 0.24,
-        roughnessFactor: 0.64,
+        baseColorTexture: { index: 0, texCoord: 0 },
+        metallicRoughnessTexture: { index: 1, texCoord: 0 },
+        metallicFactor: 1,
+        roughnessFactor: 1,
       },
     }],
+    samplers: [{ magFilter: 9729, minFilter: 9987, wrapS: 10497, wrapT: 10497 }],
+    textures: [{ sampler: 0, source: 0 }, { sampler: 0, source: 1 }],
+    images: [
+      { mimeType: "image/jpeg", bufferView: imageView },
+      { mimeType: "image/jpeg", bufferView: metallicRoughnessImageView },
+    ],
     accessors,
     bufferViews: views,
     buffers: [{ byteLength: binary.length }],
