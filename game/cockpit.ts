@@ -1242,29 +1242,40 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   /* --------------------------------------------------------- nav screen */
 
   const scrCv = document.createElement("canvas");
-  scrCv.width = 256;
-  scrCv.height = 160;
+  // 2x the head unit's 256x160 logical space — carscreen.ts maps its
+  // coordinates onto whatever store it gets, and the dash-top tablet is
+  // big enough on screen now that 1x visibly pixelates.
+  scrCv.width = 512;
+  scrCv.height = 320;
   const scrTex = new THREE.CanvasTexture(scrCv);
-  const SCR = { x: STACK.x, y: 0.79, z: STACK.z - 0.028 };
+  /* Dash-top tablet, per the user's reference: the head unit stands proud
+     of the pad at the centre of the dash — clearly visible from the seat
+     and the POV dashcam — instead of sunk low into the stack. It sits just
+     behind the pad crest (crest ~y1.0 at z0.695), leans back a touch and
+     yaws gently toward the driver's eye at x0.36. */
+  const SCR = { x: -0.10, y: 1.10, z: 0.72, tilt: 0.10, yaw: -0.08 };
   const scrMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.28, 0.175),
+    new THREE.PlaneGeometry(0.36, 0.225),
     new THREE.MeshBasicMaterial({ map: scrTex, transparent: true })
   );
   scrMesh.position.set(SCR.x, SCR.y, SCR.z);
-  scrMesh.rotation.set(STACK.tilt, Math.PI - STACK.yaw, 0); // angled toward the driver
+  scrMesh.rotation.set(SCR.tilt, Math.PI - SCR.yaw, 0);
   interiorG.add(scrMesh);
-  // the screen is sunk into the stack behind a thin bezel — not floating
-  put(bezel(0.315, 0.21, 0.018, 0.018, 0.014), piano,
-    [SCR.x, SCR.y, SCR.z + 0.004], [-STACK.tilt, STACK.yaw, 0]);
-  put(box(0.29, 0.185, 0.006), shadow,
-    [SCR.x, SCR.y, SCR.z + 0.012], [-STACK.tilt, STACK.yaw, 0]);
+  // tablet body: slim piano-black slab + bezel lip around the glass
+  put(bezel(0.395, 0.26, 0.017, 0.017, 0.016), piano,
+    [SCR.x, SCR.y, SCR.z + 0.005], [-SCR.tilt, SCR.yaw, 0]);
+  put(rbox(0.395, 0.26, 0.024, 0.012), shadow,
+    [SCR.x, SCR.y, SCR.z + 0.018], [-SCR.tilt, SCR.yaw, 0]);
   // a faint backlight ring behind the bezel, so the head unit reads as lit
   // rather than a screen bolted to a dead panel
   const navGlow = new THREE.MeshStandardMaterial({
     color: 0x05070c, emissive: trimAccent, emissiveIntensity: 0.4, roughness: 0.6,
   });
-  put(bezel(0.324, 0.219, 0.006, 0.02, 0.004), navGlow,
-    [SCR.x, SCR.y, SCR.z + 0.007], [-STACK.tilt, STACK.yaw, 0]);
+  put(bezel(0.404, 0.269, 0.006, 0.02, 0.004), navGlow,
+    [SCR.x, SCR.y, SCR.z + 0.010], [-SCR.tilt, SCR.yaw, 0]);
+  // mount foot rooting the tablet into the pad top so it doesn't float
+  put(rbox(0.09, 0.13, 0.035, 0.012), piano,
+    [SCR.x, SCR.y - 0.115, SCR.z + 0.028], [-SCR.tilt * 1.6, SCR.yaw, 0]);
 
   const NAV_R = 95; // metres of road drawn around the car
   const CX = 128, CY = 116; // car sits low on the screen so more road ahead is visible

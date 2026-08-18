@@ -68,6 +68,13 @@ function stateFor(cv: HTMLCanvasElement): ScreenState {
   let s = states.get(cv);
   if (s) return s;
   const g = cv.getContext("2d")!;
+  /* All drawing below uses the module's logical 256x160 space; a base
+     transform maps it onto whatever resolution the canvas actually is, so
+     the cockpit can raise the backing store for a sharper panel without
+     touching any coordinates. save/restore pairs preserve a base transform,
+     so this survives every code path. */
+  const scale = cv.width / W;
+  g.setTransform(scale, 0, 0, cv.height / H, 0, 0);
   const bg = g.createRadialGradient(NCX, NCY - 20, 12, NCX, NCY - 20, 150);
   bg.addColorStop(0, "#101722");
   bg.addColorStop(1, "#080b12");
@@ -79,12 +86,14 @@ function stateFor(cv: HTMLCanvasElement): ScreenState {
   vign.addColorStop(0, "rgba(0,0,0,0)");
   vign.addColorStop(1, "rgba(0,0,0,.42)");
   const music = document.createElement("canvas");
-  music.width = W - NAV_W;
-  music.height = H;
+  music.width = (W - NAV_W) * scale;
+  music.height = H * scale;
   s = {
     g, bg, reflect, vign, music, mg: music.getContext("2d")!,
     trackIdx: 0, trackStart: 0, paintedIdx: -1, paintedPx: -1,
   };
+  // Same trick for the card's offscreen context: logical coords, scaled store.
+  s.mg.setTransform(scale, 0, 0, scale, 0, 0);
   states.set(cv, s);
   return s;
 }
@@ -537,7 +546,7 @@ export function drawCarScreen(
   drawNav(g, st, x, z, h, timeH, world);
 
   // ---- right: cached music card, one blit ---------------------------------
-  g.drawImage(st.music, NAV_W, 0);
+  g.drawImage(st.music, NAV_W, 0, W - NAV_W, H);
 
   // ---- glass: bezel, reflection sweep, vignette ---------------------------
   g.fillStyle = st.reflect;
