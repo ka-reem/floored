@@ -1,9 +1,11 @@
 import * as THREE from "three";
 
 /* Post pipeline (v4): the scene is rendered linear-HDR into a half-float MSAA
-   target, then bright-extract → separable blur → composite (exposure, fitted
-   ACES, film grade, slight CA, vignette, manual sRGB encode) → FXAA + adaptive
-   sharpen → optional dashcam degrade → frame-blend motion blur → screen.
+   target, then bright-extract → separable blur (plus, on the desktop tier, an
+   eighth-res wide-halo chain — see DUAL_BLOOM below) → composite (exposure,
+   fitted ACES, film grade, slight CA, vignette, desktop film finishers,
+   manual sRGB encode) → FXAA + adaptive sharpen → optional dashcam degrade →
+   frame-blend motion blur → screen.
 
    `grade` no longer means "slightly different colours": it swaps the clean
    look for the full dashcam pass (soft cheap lens, chroma bleed, sensor noise,
@@ -52,6 +54,42 @@ declare global {
 const POV_TUNE_DEFAULT = {
   gainFloor: 0.4, shadowGrain: 1, lampProtect: 1, sensorGain: 1.25, skyCrush: 0.6,
 };
+
+/* ---- Cinematic night look (desktop tier only — engine wires tierCaps
+   .dualBloom/.filmLook through setCinema; mobile tiers pass false and every
+   uniform below reads 0, leaving the composite bit-identical to the single-
+   bloom pipeline).
+
+   TWO-SCALE BLOOM: the single quarter-res chain had to be wide enough to give
+   lamps an atmosphere, which also meant every taillight core was already a
+   blurred disc. Split it: the quarter-res chain drops from 3 blur iterations
+   to 2 (a tight, crisp core), and its output is downsampled to eighth res and
+   blurred twice more into a *separate* wide halo that the composite adds at
+   its own strength. Same bright-pass, same soft knee, so the anti-blowout
+   behaviour upstream (traffic.ts KNEE/KNEE_MAX, untouched) still governs what
+   can enter the bloom at all. Strength multipliers are applied to the
+   existing 0.85 (clean) / 1.15 (grade) base so total energy stays in the
+   same family: core 0.85→0.66, plus halo at 0.45 — richer glow around the
+   lamp, less white in its middle.
+
+   FILM FINISHERS: each behind its own flag so any one of them can be zeroed
+   at merge without shader surgery. Amplitudes are deliberately "shot on a
+   camera at night", not Instagram — see the composite shader for the exact
+   terms. */
+const DUAL_BLOOM = true;    // two-scale bloom master flag (desktop)
+const DUAL_CORE_MUL = 0.78; // core strength = base(0.85/1.15) * this
+const DUAL_HALO_MUL = 0.53; // halo strength = base(0.85/1.15) * this
+const FILM_GRAIN = true;    // finer per-pixel animated grain, ~45% lower amplitude
+const FILM_VIGNETTE = true; // extra quartic (corners-only) falloff
+const FILM_CA = true;       // small radial CA boost at frame edges
+const FILM_TONE = true;     // deeper black toe + tiny black-point pull
+/** Lens-dirt overlay (CC0, Kenney particle pack dirt_02 — copied to
+ *  public/assets/lens/): a faint additive smudge layer that mostly rides the
+ *  wide bloom halo, so it glints when a bright lamp crosses the frame and all
+ *  but disappears against dark road. Fetched lazily the first time filmLook
+ *  turns on, so mobile tiers never download it. */
+const FILM_DIRT = true;
+const DIRT_URL = "/assets/lens/dirt_02.png";
 function readPovTune() {
   if (typeof window === "undefined") return POV_TUNE_DEFAULT;
   if (!window.__povTune) window.__povTune = { ...POV_TUNE_DEFAULT };
@@ -74,6 +112,8 @@ export class PostFX {
   private brightRT!: THREE.WebGLRenderTarget;
   private blurA!: THREE.WebGLRenderTarget;
   private blurB!: THREE.WebGLRenderTarget;
+  private haloA!: THREE.WebGLRenderTarget;
+  private haloB!: THREE.WebGLRenderTarget;
   private ldrRT!: THREE.WebGLRenderTarget;
   private fxaaRT!: THREE.WebGLRenderTarget;
   private mbRT!: THREE.WebGLRenderTarget;
@@ -88,6 +128,11 @@ export class PostFX {
       reflection allocation. Distinct from `perf`, which is the reactive
       frame-time fallback and can fire on top of this on any tier. */
   private mobile = false;
+  /** desktop-tier cinematic extras (setCinema): two-scale bloom + film look */
+  private cineDual = false;
+  private cineFilm = false;
+  private dirtTex: THREE.Texture | null = null;
+  private dirtLoadStarted = false;
   private speedKmh = 0;
   private pov = false;
   /** false for one frame after a hard view change: the temporal blend is
@@ -154,14 +199,22 @@ void main(){ vec2 px=uDir/uRes; vec3 s=texture2D(tIn,vUv).rgb*.227;
     });
     this.compMat = new THREE.ShaderMaterial({
       uniforms: {
-        tScene: { value: null }, tBloom: { value: null }, uTime: { value: 0 },
+        tScene: { value: null }, tBloom: { value: null }, tBloomW: { value: null },
+        uTime: { value: 0 },
         uGrade: { value: 1 }, uExp: { value: 1.12 },
         uRes: { value: new THREE.Vector2(1, 1) }, uBloomStr: { value: 1.0 },
-        uSpeedT: { value: 0 },
+        uHaloStr: { value: 0 }, uSpeedT: { value: 0 },
+        // film-look finisher gates, 0 (mobile / flag off — bit-identical to
+        // the pre-cinema composite) or 1 (desktop): see FILM_* above
+        uFilmGrain: { value: 0 }, uFilmVig: { value: 0 },
+        uFilmCA: { value: 0 }, uFilmTone: { value: 0 },
+        tDirt: { value: null }, uFilmDirt: { value: 0 },
       },
       vertexShader: VSH,
-      fragmentShader: `varying vec2 vUv; uniform sampler2D tScene,tBloom;
-uniform float uTime,uGrade,uBloomStr,uExp,uSpeedT; uniform vec2 uRes;
+      fragmentShader: `varying vec2 vUv; uniform sampler2D tScene,tBloom,tBloomW,tDirt;
+uniform float uTime,uGrade,uBloomStr,uHaloStr,uExp,uSpeedT;
+uniform float uFilmGrain,uFilmVig,uFilmCA,uFilmTone,uFilmDirt;
+uniform vec2 uRes;
 float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453+uTime); }
 /* Fitted ACES (Narkowicz's curve was hue-shifting saturated neon badly; the
    Hill fit keeps reds/magentas from turning orange in bloom cores). */
@@ -172,15 +225,24 @@ vec3 aces(vec3 c){ c=ACIN*c;
  return clamp(ACOUT*(a/b),0.,1.); }
 void main(){
  vec2 uv=vUv; vec2 d=uv-.5; float r2=dot(d,d);
- float ca=.0008+.0026*r2;
+ // FILM_CA: the base CA stays; the flag adds a touch more radial split at
+ // the very edges only (r2-scaled, so the centre term is untouched)
+ float ca=.0008+(.0026+uFilmCA*.0014)*r2;
  vec3 col; col.r=texture2D(tScene,uv+d*ca).r; col.g=texture2D(tScene,uv).g; col.b=texture2D(tScene,uv-d*ca).b;
- vec3 bl=texture2D(tBloom,uv).rgb; col=col*uExp+bl*uBloomStr;
+ // two-scale bloom: tight core + wide halo. uHaloStr is 0 on mobile tiers
+ // (tBloomW is then bound to the same core texture purely to keep the
+ // sampler valid), so this line degenerates to the original single add.
+ vec3 bl=texture2D(tBloom,uv).rgb;
+ vec3 blw=texture2D(tBloomW,uv).rgb;
+ col=col*uExp+bl*uBloomStr+blw*uHaloStr;
  col=aces(col);
  col=pow(col,vec3(1./2.2));
  // film grade: gentle S-curve, split-tone (cool shadows / warm highlights),
  // slight vibrance. Applied in both modes; the dashcam pass degrades on top.
  float l=dot(col,vec3(.2126,.7152,.0722));
- col=mix(col,col*col*(3.-2.*col),.22);
+ // FILM_TONE (a): steeper S — deepens the toe smoothly, so shadows go down
+ // without clipping and keep their internal detail (AC-night black, not mud)
+ col=mix(col,col*col*(3.-2.*col),.22+uFilmTone*.08);
  col+=vec3(-.010,-.002,.016)*(1.-smoothstep(0.,.45,l));
  col+=vec3(.014,.006,-.010)*smoothstep(.55,1.,l);
  float sat=mix(1.16,1.0,smoothstep(.25,.9,l));
@@ -188,8 +250,25 @@ void main(){
  // punch without a hard mask, cheap since r2 is already computed above
  sat+=uSpeedT*r2*.55;
  col=mix(vec3(dot(col,vec3(.2126,.7152,.0722))),col,sat);
- col+=(hash(uv*uRes*.5)-.5)*(uGrade>.5?.012:.018)*(1.-l*.7);
- col*=1.-r2*(uGrade>.5?.30:.42)-r2*uSpeedT*.16;
+ // FILM_TONE (b): black-point pull — the last ~1.5/255 of grey wash (fog
+ // floor, bounce fill) goes to true black; the tiny rescale keeps white at 1
+ col=max(col-vec3(.006*uFilmTone),vec3(0.))*(1.+.008*uFilmTone);
+ // FILM_DIRT: additive smudge layer — near-invisible at rest (~2/255) and
+ // only really waking where the wide halo says a bright source sits behind
+ // it (clamped so a blown lamp can't torch the whole overlay). First cut ran
+ // .035 base / .14 glint and read as a dirty windshield against the tunnel
+ // walls; dirt on a lens only shows against light. uFilmDirt stays 0 until
+ // the lazily fetched texture is actually resident, so no pop-in of garbage.
+ vec4 dirt=texture2D(tDirt,uv);
+ col+=dirt.rgb*dirt.a*uFilmDirt
+   *(.008+.06*min(dot(blw,vec3(.299,.587,.114))*uHaloStr,1.));
+ // FILM_GRAIN: with the flag the grain goes per-pixel (finer) and ~45%
+ // quieter — a night-footage sensor texture rather than visible noise
+ col+=(hash(uv*uRes*mix(.5,1.,uFilmGrain))-.5)
+   *(uGrade>.5?.012:.018)*(1.-uFilmGrain*.45)*(1.-l*.7);
+ // FILM_VIGNETTE: quartic term only reaches the corners (r2^2), leaving the
+ // existing r2 falloff — and the frame centre — exactly where it was
+ col*=1.-r2*(uGrade>.5?.30:.42)-r2*r2*uFilmVig*.18-r2*uSpeedT*.16;
  gl_FragColor=vec4(clamp(col,0.,1.),1.); }`,
     });
     this.fxaaMat = new THREE.ShaderMaterial({
@@ -524,6 +603,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.histValid = false;
     for (const rt of [
       this.sceneRT, this.brightRT, this.blurA, this.blurB,
+      this.haloA, this.haloB,
       this.reflectRT, this.ldrRT, this.fxaaRT, this.mbRT, this.prevRT,
       this.dashRT, this.softA, this.softB, this.povA, this.povB,
     ])
@@ -535,6 +615,12 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.brightRT = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
     this.blurA = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
     this.blurB = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
+    // the wide-halo pair for two-scale bloom lives at eighth res: at 1/64 of
+    // the pixels its two extra blur iterations cost almost nothing, and the
+    // resolution itself is most of the softness
+    const hw = Math.max(80, w >> 3), hh = Math.max(45, h >> 3);
+    this.haloA = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType });
+    this.haloB = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType });
     // mobile tiers never render into the reflection RT (the engine's tier
     // gate skips the pass entirely), so its allocation drops to the perf-mode
     // quarter size there — it only exists to keep the material binding valid
@@ -589,6 +675,35 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.mobile = on;
     this.mirrorRT.setSize(on ? 160 : 320, on ? 64 : 128);
     return true;
+  }
+
+  /** Tier wiring for the desktop-only cinematic extras (two-scale bloom and
+   * the film-look finishers). The engine feeds tierCaps.dualBloom /
+   * tierCaps.filmLook here at construction and on every settings apply, so a
+   * manual tier flip lands the same frame. With both false the pipeline is
+   * bit-identical to the pre-cinema composite: the halo passes never run and
+   * every uFilm* uniform reads 0. */
+  setCinema(dualBloom: boolean, filmLook: boolean) {
+    this.cineDual = dualBloom && DUAL_BLOOM;
+    this.cineFilm = filmLook;
+    if (filmLook && FILM_DIRT && !this.dirtLoadStarted) {
+      this.dirtLoadStarted = true;
+      new THREE.TextureLoader().load(
+        DIRT_URL,
+        (tex) => {
+          tex.minFilter = THREE.LinearFilter;
+          tex.magFilter = THREE.LinearFilter;
+          tex.generateMipmaps = false;
+          this.dirtTex = tex;
+          this.compMat.uniforms.tDirt.value = tex;
+        },
+        undefined,
+        () => {
+          /* fetch failed (offline dev, asset missing) — the uniform gate in
+             process() keeps uFilmDirt at 0 and the overlay simply never runs */
+        }
+      );
+    }
   }
 
   /** Per-frame speed feed for the speed-perception cues (peripheral radial
@@ -672,11 +787,13 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
   dispose() {
     for (const rt of [
       this.sceneRT, this.brightRT, this.blurA, this.blurB, this.reflectRT,
+      this.haloA, this.haloB,
       this.ldrRT, this.fxaaRT, this.mbRT, this.prevRT, this.mirrorRT,
       this.dashRT, this.softA, this.softB, this.povA, this.povB,
     ])
       rt?.dispose();
     this.overTex.dispose();
+    this.dirtTex?.dispose();
     for (const m of [
       this.brightMat, this.blurMat, this.compMat, this.fxaaMat, this.mbMat,
       this.copyMat, this.dashMat, this.smearMat, this.povMat, this.povSrcMat,
@@ -696,13 +813,18 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     mblur: number; time: number;
   }) {
     const u = this.compMat.uniforms;
+    // two-scale bloom runs on the desktop tier only, and steps aside with the
+    // reactive perf fallback the same way the third blur iteration does
+    const dual = this.cineDual && !this.perf;
     if (opts.bloom) {
       this.brightMat.uniforms.tIn.value = this.sceneRT.texture;
       this.brightMat.uniforms.uExp.value = opts.exposure;
       this.runPass(this.brightMat, this.brightRT);
       this.blurMat.uniforms.uRes.value.set(this.brightRT.width, this.brightRT.height);
-      // a third ping-pong widens the glow and kills the boxy quarter-res edges
-      const iters = this.perf ? 2 : 3;
+      // single-scale: a third ping-pong widens the glow and kills the boxy
+      // quarter-res edges. Two-scale: stop at 2 — the core is *meant* to stay
+      // tight (crisp taillight centres); the width moves to the halo chain.
+      const iters = this.perf ? 2 : dual ? 2 : 3;
       for (let b = 0; b < iters; b++) {
         this.blurMat.uniforms.tIn.value = (b === 0 ? this.brightRT : this.blurB).texture;
         this.blurMat.uniforms.uDir.value.set(1, 0);
@@ -711,16 +833,43 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
         this.blurMat.uniforms.uDir.value.set(0, 1);
         this.runPass(this.blurMat, this.blurB);
       }
+      if (dual) {
+        // wide halo: downsample the core to eighth res, then two more blur
+        // iterations — the atmospheric glow that makes lamps read as filmed
+        // through night air rather than pasted discs
+        this.copyMat.uniforms.tIn.value = this.blurB.texture;
+        this.runPass(this.copyMat, this.haloA);
+        this.blurMat.uniforms.uRes.value.set(this.haloA.width, this.haloA.height);
+        for (let b = 0; b < 2; b++) {
+          this.blurMat.uniforms.tIn.value = this.haloA.texture;
+          this.blurMat.uniforms.uDir.value.set(1, 0);
+          this.runPass(this.blurMat, this.haloB);
+          this.blurMat.uniforms.tIn.value = this.haloB.texture;
+          this.blurMat.uniforms.uDir.value.set(0, 1);
+          this.runPass(this.blurMat, this.haloA);
+        }
+      }
     }
     // 0 below 80 km/h, ramps to 1 by 200 km/h — shared by the speed vignette
     // (compMat) and the peripheral radial blur / motion-blur boost (mbMat).
     const speedT = Math.max(0, Math.min(1, (this.speedKmh - 80) / 120));
     u.tScene.value = this.sceneRT.texture;
     u.tBloom.value = this.blurB.texture;
+    // when the halo isn't rendered, tBloomW still needs a valid binding —
+    // uHaloStr is 0 so what it samples never reaches the frame
+    u.tBloomW.value = (dual ? this.haloA : this.blurB).texture;
     u.uTime.value = opts.time % 10;
     u.uGrade.value = opts.grade ? 1 : 0;
     u.uExp.value = opts.exposure;
-    u.uBloomStr.value = opts.bloom ? (opts.grade ? 1.15 : 0.85) : 0;
+    const bloomBase = opts.grade ? 1.15 : 0.85;
+    u.uBloomStr.value = opts.bloom ? (dual ? bloomBase * DUAL_CORE_MUL : bloomBase) : 0;
+    u.uHaloStr.value = opts.bloom && dual ? bloomBase * DUAL_HALO_MUL : 0;
+    const film = this.cineFilm ? 1 : 0;
+    u.uFilmGrain.value = FILM_GRAIN ? film : 0;
+    u.uFilmVig.value = FILM_VIGNETTE ? film : 0;
+    u.uFilmCA.value = FILM_CA ? film : 0;
+    u.uFilmTone.value = FILM_TONE ? film : 0;
+    u.uFilmDirt.value = FILM_DIRT && this.dirtTex ? film : 0;
     u.uSpeedT.value = speedT;
     const pov = this.pov;
     // POV forces the frame blend on even with motion blur switched off in

@@ -39,6 +39,12 @@ export interface TierCaps {
   mblur: boolean;
   /** dashcam degrade passes (V-key grade + POV evidence-footage chain) */
   dashcam: boolean;
+  /** two-scale bloom: tight quarter-res core + wide eighth-res halo
+      (post.ts). Off ⇒ the original single-chain bloom, untouched. */
+  dualBloom?: boolean;
+  /** desktop film-look finishers — fine grain / extra vignette / edge CA /
+      black toe — each individually killable via post.ts's FILM_* flags. */
+  filmLook?: boolean;
   /* bloom is deliberately absent: it stays on for every tier. */
 }
 
@@ -47,16 +53,19 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     tier: "mobile-base", dprCap: 1.1, pbrDetail: false, spreadCones: false,
     fenceOverdraw: false, drawDistScale: 0.65, mirrorHalf: true,
     reflections: false, mblur: false, dashcam: false,
+    dualBloom: false, filmLook: false,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
     fenceOverdraw: true, drawDistScale: 0.85, mirrorHalf: true,
     reflections: false, mblur: false, dashcam: false,
+    dualBloom: false, filmLook: false,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
     fenceOverdraw: true, drawDistScale: 1, mirrorHalf: false,
     reflections: true, mblur: true, dashcam: true,
+    dualBloom: true, filmLook: true,
   },
 };
 

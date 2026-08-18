@@ -340,6 +340,8 @@ export class Game {
     // mobile tiers run the cockpit mirror at half resolution; the reflection
     // RT allocation follows in applySettings' makeTargets pass below
     this.post.setMobile(this.tierCaps.mirrorHalf);
+    // desktop-only cinematic extras: two-scale bloom + film-look finishers
+    this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
     /* On the low preset the photo scans are not fetched at all — some 60 MB of
        texture memory and a 5 MB download, on exactly the device that asked for
        less. The load is deferred rather than cancelled, so updatePbrDetail()
@@ -706,6 +708,8 @@ export class Game {
     // a tier flip changes the mirror/reflection RT policy even when the pixel
     // ratio happens not to move — force the target rebuild path below
     if (this.post.setMobile(this.tierCaps.mirrorHalf)) this.lastPR = -1;
+    // tier flips retarget the cinematic extras on the same frame too
+    this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
     /* DPR: perf mode floors everything at 1; otherwise the preset's own cap
        (low 1, medium 1.5) combines with the tier ceiling — 1.1 mobile-base,
        1.35 mobile-high, 1.75 desktop — and the lower one wins. */
