@@ -300,6 +300,11 @@ export class GameAudio {
   private convWet: GainNode | null = null;
   private lastReverbT = 0;
   private hornSample: { src: AudioBufferSourceNode; g: GainNode } | null = null;
+  /** Cached player-horn playback points (see hornLoopPoints). */
+  private hornLoop: { buf: AudioBuffer; onset: number; start: number; end: number } | null = null;
+  /** Debug: count of distinct player-horn starts (sample or synth), for the
+      headless horn test to assert "held key = exactly one start". */
+  private hornStarts = 0;
   private npcHornRR = 0; // round-robin over the recorded npc horn variants
 
   /* NPC doppler pool */
@@ -959,18 +964,6 @@ export class GameAudio {
     this.setReverb(this.lastReverbT);
   }
 
-  /** Nearest zero crossing (rising or falling) to `t` seconds in channel 0,
-      searched forward — used to snap sample loop points so a mid-waveform
-      loop seam doesn't click. */
-  private zeroCrossAt(buf: AudioBuffer, t: number) {
-    const d = buf.getChannelData(0);
-    const start = Math.min(d.length - 2, Math.max(1, Math.round(t * buf.sampleRate)));
-    for (let i = start; i < d.length - 1; i++) {
-      if ((d[i] <= 0 && d[i + 1] > 0) || (d[i] >= 0 && d[i + 1] < 0)) return i / buf.sampleRate;
-    }
-    return t;
-  }
-
   /** Debug snapshot of every noise/tone layer's current live gain, for
       diagnosing "mystery background sound" reports from the console:
       `__audioDebug.getLevels()` (this instance is auto-exposed there by
@@ -1245,27 +1238,114 @@ export class GameAudio {
     log({ kind: "synth", layers: [], gain: g.gain.value, lpHz, rate });
   }
 
+  /** Player-horn playback points for `buf`, measured from the recording
+      itself and cached per buffer:
+        - onset:  where the audible attack begins (the file has ~125 ms of
+                  near-silent lead-in; starting there, minus a few ms of
+                  headroom, keeps a tap responsive without clipping the attack)
+        - start/end: a sustain-only loop window. The previous hardcoded
+                  window (0.16..0.42 s) overshot the note — the recorded horn
+                  releases at ~0.385 s, so every loop pass played the die-off
+                  then snapped back to full blast: the reported "beep beep
+                  beep" under a held key. Here the sustain is derived from a
+                  10 ms RMS envelope (windows holding >= 70% of peak), the
+                  loop start snaps to a RISING zero crossing past the attack
+                  wobble, and the loop end is chosen among rising zero
+                  crossings near the sustain's tail as the one whose next few
+                  ms best match the waveform at the loop start — same phase
+                  direction + matched shape = a whole-period, seam-free loop. */
+  private hornLoopPoints(buf: AudioBuffer) {
+    if (this.hornLoop && this.hornLoop.buf === buf) return this.hornLoop;
+    const d = buf.getChannelData(0), sr = buf.sampleRate;
+    const win = Math.max(1, Math.floor(sr * 0.01));
+    const nw = Math.max(1, Math.floor(d.length / win));
+    const env = new Float32Array(nw);
+    let peak = 0;
+    for (let w = 0; w < nw; w++) {
+      let s = 0;
+      for (let i = w * win, e = (w + 1) * win; i < e; i++) s += d[i] * d[i];
+      env[w] = Math.sqrt(s / win);
+      if (env[w] > peak) peak = env[w];
+    }
+    const risingAt = (from: number, to: number) => {
+      const a = Math.max(1, Math.floor(from * sr)), b = Math.min(d.length - 1, Math.floor(to * sr));
+      for (let i = a; i < b; i++) if (d[i] <= 0 && d[i + 1] > 0) return i;
+      return -1;
+    };
+    // onset: first envelope window that leaves the lead-in noise floor
+    let ow = 0;
+    while (ow < nw && env[ow] < peak * 0.1) ow++;
+    const onset = Math.max(0, (ow * win) / sr - 0.005);
+    // sustain: first/last windows holding >= 70% of peak RMS
+    const th = peak * 0.7;
+    let s0 = 0;
+    while (s0 < nw && env[s0] < th) s0++;
+    let s1 = nw - 1;
+    while (s1 > s0 && env[s1] < th) s1--;
+    const susA = (s0 * win) / sr, susB = ((s1 + 1) * win) / sr;
+    // loop start: rising zero crossing a quarter of the way into the sustain
+    const lsI = risingAt(susA + (susB - susA) * 0.25, susB);
+    // loop end: the best-matching rising crossing in the last ~50 ms before
+    // the tail (susB - 15 ms), compared against loopStart over a 3 ms window
+    const target = susB - 0.015;
+    const cmp = Math.floor(sr * 0.003);
+    let leI = -1, leErr = Infinity;
+    if (lsI > 0) {
+      const a = Math.max(lsI + Math.floor(sr * 0.05), Math.floor((target - 0.05) * sr));
+      const b = Math.min(d.length - cmp - 1, Math.floor(target * sr));
+      for (let i = a; i < b; i++) {
+        if (!(d[i] <= 0 && d[i + 1] > 0)) continue;
+        let err = 0;
+        for (let k = 0; k < cmp; k++) { const e = d[i + k] - d[lsI + k]; err += e * e; }
+        if (err < leErr) { leErr = err; leI = i; }
+      }
+    }
+    // fallback if the recording is too short/odd to analyze: loop everything
+    // after the onset (still one continuous sound, just a rougher seam)
+    const start = lsI > 0 && leI > 0 ? lsI / sr : onset;
+    const end = lsI > 0 && leI > 0 ? leI / sr : buf.duration;
+    this.hornLoop = { buf, onset, start, end };
+    return this.hornLoop;
+  }
+
+  /** Player-horn debug snapshot for the headless horn test: live gain of the
+      active horn (sample or synth fallback), whether one is sounding, and how
+      many distinct starts have fired. Read-only. */
+  hornDebug() {
+    return {
+      sampleActive: !!this.hornSample,
+      synthActive: !!this.hornOsc,
+      gain: this.hornSample ? this.hornSample.g.gain.value : this.hornOsc ? this.hornOsc.g.gain.value : 0,
+      starts: this.hornStarts,
+      loop: this.hornLoop ? { onset: this.hornLoop.onset, start: this.hornLoop.start, end: this.hornLoop.end } : null,
+    };
+  }
+
   hornSet(on: boolean) {
     if (!this.ok) return;
     const c = this.ctx;
     /* Recorded path: the Alfa horn one-shot with its real attack, looping a
-       zero-crossing-snapped window of the sustain while the key is held
+       measured, phase-matched window of the sustain while the key is held
        (press-and-hold works even though the recording is finite), then a
-       quick release fade on the natural tail. Falls back to the synth
-       two-tone below until the sample is decoded. */
+       quick release fade. Falls back to the synth two-tone below until the
+       sample is decoded. Called every frame with the current input level;
+       all branches are edge-guarded, so a held key starts exactly one voice
+       and repeated same-state calls are no-ops. */
     const hornBuf = this.samples.get("hornPlayer");
     if (on && hornBuf && !this.hornSample && !this.hornOsc) {
       const t = c.currentTime;
+      const { onset, start, end } = this.hornLoopPoints(hornBuf);
       const src = c.createBufferSource();
       src.buffer = hornBuf;
       src.loop = true;
-      src.loopStart = this.zeroCrossAt(hornBuf, 0.16);
-      src.loopEnd = this.zeroCrossAt(hornBuf, 0.42);
+      src.loopStart = start;
+      src.loopEnd = end;
       const g = c.createGain();
       g.gain.setValueAtTime(0.0001, t);
       g.gain.linearRampToValueAtTime(0.16, t + 0.015);
       src.connect(g).connect(this.master);
-      src.start(t);
+      src.start(t, onset);
+      this.hornStarts++;
       this.hornSample = { src, g };
       return;
     }
@@ -1292,6 +1372,7 @@ export class GameAudio {
       g.connect(this.master);
       o1.start();
       o2.start();
+      this.hornStarts++;
       this.hornOsc = { o1, o2, g };
     } else if (!on && this.hornOsc) {
       this.hornOsc.o1.stop();
