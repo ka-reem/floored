@@ -19,22 +19,29 @@ const TOTAL_BUDGET_MB = 30;
 // Dirs on the critical path (loaded at or before first drivable frame).
 const CRITICAL_DIRS = ['public/assets', 'public/models'];
 // Dirs whose contents are lazy-loaded (async after first paint, alt variants).
-const LAZY_DIRS = ['public/hdri'];
+// assets/audio decodes on the first user gesture; assets/lens fetches only
+// when the desktop film-look enables — neither blocks the first drivable
+// frame, so they count against the total budget, not the critical one.
+const LAZY_DIRS = ['public/hdri', 'public/assets/audio', 'public/assets/lens'];
+// Subtrees of CRITICAL_DIRS that are actually lazy (listed above) — skipped
+// while summing the critical walk so they are not double-counted.
+const CRITICAL_SKIP = new Set(['public/assets/audio', 'public/assets/lens']);
 // -----------------------------------------------------------------------------
 
 const MB = 1024 * 1024;
 
-function walkSize(dir) {
+function walkSize(dir, skip) {
   let total = 0;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
-    if (entry.isDirectory()) total += walkSize(p);
+    if (skip && skip.has(relative(ROOT, p))) continue;
+    if (entry.isDirectory()) total += walkSize(p, skip);
     else if (entry.isFile()) total += statSync(p).size;
   }
   return total;
 }
 
-function report(dirs) {
+function report(dirs, skip) {
   let sum = 0;
   for (const d of dirs) {
     const abs = join(ROOT, d);
@@ -42,14 +49,15 @@ function report(dirs) {
       console.log(`  ${d.padEnd(28)} (absent)`);
       continue;
     }
-    const size = walkSize(abs);
+    const size = walkSize(abs, skip);
     sum += size;
     console.log(`  ${d.padEnd(28)} ${(size / MB).toFixed(2).padStart(8)} MB`);
     for (const entry of readdirSync(abs, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const sub = join(abs, entry.name);
+      if (skip && skip.has(relative(ROOT, sub))) continue;
       console.log(
-        `    ${relative(ROOT, sub).padEnd(28)} ${(walkSize(sub) / MB).toFixed(2).padStart(6)} MB`,
+        `    ${relative(ROOT, sub).padEnd(28)} ${(walkSize(sub, skip) / MB).toFixed(2).padStart(6)} MB`,
       );
     }
   }
@@ -57,7 +65,7 @@ function report(dirs) {
 }
 
 console.log('Critical-path asset dirs:');
-const critical = report(CRITICAL_DIRS);
+const critical = report(CRITICAL_DIRS, CRITICAL_SKIP);
 console.log('Lazy-loaded asset dirs:');
 const lazy = report(LAZY_DIRS);
 const total = critical + lazy;
