@@ -108,12 +108,22 @@ const SAMPLE_FILES: Record<string, string> = {
   crashHeavy: "crash/heavy.wav",
   metalL0: "crash/metal_l0.wav",
   metalL1: "crash/metal_l1.wav",
+  metalL2: "crash/metal_l2.wav",
+  metalL3: "crash/metal_l3.wav",
   metalM0: "crash/metal_m0.wav",
   metalM1: "crash/metal_m1.wav",
+  metalM2: "crash/metal_m2.wav",
+  metalM3: "crash/metal_m3.wav",
   metalH0: "crash/metal_h0.wav",
   metalH1: "crash/metal_h1.wav",
+  metalH2: "crash/metal_h2.wav",
+  metalH3: "crash/metal_h3.wav",
   glass0: "crash/glass_0.wav",
   glass1: "crash/glass_1.wav",
+  glass2: "crash/glass_2.wav",
+  thud0: "crash/thud_0.wav",
+  thud1: "crash/thud_1.wav",
+  thud2: "crash/thud_2.wav",
   hornPlayer: "horns/player.wav",
   hornA: "horns/npc_a.wav",
   hornB: "horns/npc_b.wav",
@@ -128,6 +138,33 @@ const SAMPLE_FILES: Record<string, string> = {
     timbre. Spacing rises like a real ladder so playbackRate stays near 1 at
     each band centre. */
 const RPM_ANCHORS = [1050, 2400, 4200, 6400];
+
+/** One crash() invocation, as recorded into the debug log (see
+    getCrashLog()) — lets the headless test assert which layers/variants a
+    given severity actually produced without decoding any audio output. */
+export interface CrashDebugEntry {
+  t: number;
+  sev: number;
+  tier: "soft" | "med" | "heavy";
+  kind: "full" | "rattle" | "skip" | "synth";
+  /** sample keys actually started this call (empty for skip/synth) */
+  layers: string[];
+  gain: number;
+  /** shared lowpass cutoff in Hz applied to every layer */
+  lpHz: number;
+  rate: number;
+}
+
+/** Severity (m/s of delta-v / normal closing speed — what engine.ts passes:
+    NpcHit.relSpeed gated >2.5, wallImpact gated >4; a wall hit's delta-v is
+    ~1.07x the closing normal speed, so an 80 km/h head-on arrives as ~25)
+    below which a contact is a body thud — no crash body, no glass, no
+    debris. Measured in-game: parapet-brush wall impacts arrive at 4-6,
+    +15 km/h traffic nudges at ~4, +30 km/h hits at ~8, hard wall hits 20+. */
+const CRASH_SOFT_MAX = 6;
+/** Severity at and above which the full heavy layer stack (glass + debris
+    tail + second metal hit) is in play — ~50 km/h of closing speed. */
+const CRASH_HEAVY_MIN = 14;
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 const clampRange = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x);
@@ -218,7 +255,16 @@ export class GameAudio {
   private rainGustDepth!: GainNode;
   private nextDroplet = 0;
   private hornOsc: { o1: OscillatorNode; o2: OscillatorNode; g: GainNode } | null = null;
-  private crashGain: GainNode | null = null;
+  /* crash one-shots: shuffle bags per variant family (no two consecutive
+     picks identical, even across bag refills), a time-based rapid-rehit
+     gate (replaces the old play-to-completion latch that swallowed every
+     hit for the full length of the longest sample), and a debug log so a
+     headless test can assert on what a given severity actually selected. */
+  private crashBags = new Map<string, string[]>();
+  private crashLastPick = new Map<string, string>();
+  private lastCrashT = -10;
+  private lastCrashSev = 0;
+  private crashLog: CrashDebugEntry[] = [];
   private lastAbsTick = -10;
 
   /* cabin EQ (interior/exterior switch) */
@@ -1035,58 +1081,168 @@ export class GameAudio {
     return buf.duration / rate + delay;
   }
 
+  /** Draw a variant key from a per-family shuffle bag: every variant in the
+      family plays once before any repeats, and the first draw of a fresh
+      bag is swapped away from the previous draw so two consecutive picks
+      are never identical (unless only one variant of the family decoded).
+      Only keys whose buffers actually decoded enter the bag. */
+  private drawVariant(family: string, keys: string[]): AudioBuffer | null {
+    const avail = keys.filter((k) => this.samples.has(k));
+    if (!avail.length) return null;
+    let bag = this.crashBags.get(family);
+    if (!bag || !bag.length) {
+      bag = avail.slice();
+      for (let i = bag.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [bag[i], bag[j]] = [bag[j], bag[i]];
+      }
+      if (bag.length > 1 && bag[bag.length - 1] === this.crashLastPick.get(family)) {
+        const j = Math.floor(Math.random() * (bag.length - 1));
+        [bag[bag.length - 1], bag[j]] = [bag[j], bag[bag.length - 1]];
+      }
+      this.crashBags.set(family, bag);
+    }
+    const key = bag.pop()!;
+    this.crashLastPick.set(family, key);
+    return this.samples.get(key) ?? null;
+  }
+
+  /** Last ~48 crash() invocations with what each actually selected —
+      consumed by test/audio-crash-check.mjs via __audioDebug. */
+  getCrashLog(): CrashDebugEntry[] {
+    return this.crashLog;
+  }
+
+  /* Severity-mapped crash. `intensity` is m/s of delta-v (wall hits) or
+     normal closing speed (NPC hits) — see CRASH_SOFT_MAX above for the
+     measured in-game distribution. Three audible regimes, continuously
+     scaled inside each:
+       soft  (<6):   dull low-passed body thud — one generic-impact variant,
+                     sometimes a quiet light-metal tap. No crash body, no
+                     glass, no debris: a parapet brush must not sound like
+                     an accident (the sustained part of that contact is the
+                     scrape bed's job, which keeps running independently).
+       med  (6-14):  recorded crash body + medium metal variant; a debris
+                     tail fades in probabilistically toward the top.
+       heavy (>=14): heavy crash body + heavy metal + second offset metal
+                     hit + glass + debris tail.
+     Gain and a shared lowpass open continuously with severity (a 6.5 hit is
+     quieter AND duller than a 13 hit even though both are "med"), and every
+     layer gets randomized variant selection (shuffle bags), playbackRate
+     (+/-12-15%), gain (+/-3dB) and start offsets, so no two hits stamp out
+     the same render.
+     Rapid re-hits: a second call within 120ms is the same contact burst
+     (dropped); within 700ms a not-clearly-bigger hit plays a single quiet
+     metal rattle instead of a full crash — multi-contact pileups stay alive
+     without machine-gunning the full stack (the old latch instead went
+     dead for the entire length of the longest sample: 2.2s after a heavy). */
   crash(intensity: number) {
     if (!this.ok) return;
     const c = this.ctx, t = c.currentTime;
-    if (this.crashGain) return; // avoid stacking
-    /* Recorded path: a real crash one-shot picked by severity, layered with
-       a Kenney metal impact (randomized variant + slight repitch so repeat
-       hits don't sound stamped) and, for the big ones, breaking glass. All
-       through one shared gain that keeps the old anti-stacking contract. */
-    const sev = intensity >= 10 ? 2 : intensity >= 4.5 ? 1 : 0;
-    const mainBuf = this.samples.get(sev === 2 ? "crashHeavy" : sev === 1 ? "crashMed" : "crashDebris");
-    const metalBuf = this.samples.get(
-      (sev === 2 ? "metalH" : sev === 1 ? "metalM" : "metalL") + (Math.random() < 0.5 ? "0" : "1")
-    );
-    if (mainBuf) {
-      const g = c.createGain();
-      g.gain.value = Math.min(0.65, 0.22 + intensity * 0.035);
-      g.connect(this.master);
-      this.crashGain = g;
-      let dur = this.playSample(mainBuf, 1, g, 0.94 + Math.random() * 0.12);
-      if (metalBuf)
-        dur = Math.max(dur, this.playSample(metalBuf, 0.8, g, 0.92 + Math.random() * 0.16, 0.01));
-      const glassBuf = this.samples.get(Math.random() < 0.5 ? "glass0" : "glass1");
-      if (sev === 2 && glassBuf && Math.random() < 0.65)
-        dur = Math.max(dur, this.playSample(glassBuf, 0.5, g, 0.95 + Math.random() * 0.1, 0.04));
-      // release the anti-stacking latch when the longest layer ends
-      const release = c.createBufferSource();
-      release.buffer = c.createBuffer(1, 1, c.sampleRate);
-      release.connect(g);
-      release.start(t + dur);
-      release.onended = () => {
-        if (this.crashGain === g) this.crashGain = null;
-      };
+    const tier: CrashDebugEntry["tier"] =
+      intensity >= CRASH_HEAVY_MIN ? "heavy" : intensity >= CRASH_SOFT_MAX ? "med" : "soft";
+    const log = (e: Omit<CrashDebugEntry, "t" | "sev" | "tier">) => {
+      this.crashLog.push({ t, sev: intensity, tier, ...e });
+      if (this.crashLog.length > 48) this.crashLog.shift();
+    };
+    const since = t - this.lastCrashT;
+    if (since < 0.12) {
+      log({ kind: "skip", layers: [], gain: 0, lpHz: 0, rate: 1 });
       return;
     }
-    const buf = c.createBuffer(1, c.sampleRate * 0.4, c.sampleRate);
+    // 0..1 across the audible range: 0 at the call-site gate, 1 at ~27 m/s
+    // (an ~90 km/h head-on). Drives gain and filter continuously.
+    const u = clamp01((intensity - 2.5) / 24.5);
+    // shared tone: soft bumps are dull (600-900Hz), full crashes open up
+    const lpHz = 600 * Math.pow(2, u * 4.2) * (0.85 + Math.random() * 0.3);
+    const gain =
+      (0.16 + 0.48 * Math.pow(u, 0.8)) * Math.pow(10, ((Math.random() * 6 - 3) / 20));
+    const rate = 0.88 + Math.random() * 0.26; // +/-12-14% repitch, per-hit
+    const metalKeys =
+      tier === "heavy" ? ["metalH0", "metalH1", "metalH2", "metalH3"]
+      : tier === "med" ? ["metalM0", "metalM1", "metalM2", "metalM3"]
+      : ["metalL0", "metalL1", "metalL2", "metalL3"];
+    // bag per tier — a shared "metal" bag would carry another tier's
+    // leftover variants into this hit
+    const metalFam = "metal-" + tier;
+
+    const rattle = since < 0.7 && intensity < this.lastCrashSev * 1.4;
+    this.lastCrashT = t;
+    if (!rattle) this.lastCrashSev = intensity;
+
+    if (this.samples.has("crashMed") || this.samples.has("thud0")) {
+      const g = c.createGain();
+      g.gain.value = rattle ? gain * 0.4 : gain;
+      const lp = c.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.frequency.value = rattle ? Math.min(lpHz, 1800) : lpHz;
+      lp.Q.value = 0.7;
+      lp.connect(g).connect(this.master);
+      const layers: string[] = [];
+      const play = (key: string, lg: number, r: number, delay = 0) => {
+        const buf = this.samples.get(key);
+        if (!buf) return;
+        this.playSample(buf, lg, lp, r, delay);
+        layers.push(key);
+      };
+      const draw = (family: string, keys: string[]) => {
+        const buf = this.drawVariant(family, keys);
+        if (!buf) return null;
+        return this.crashLastPick.get(family)!;
+      };
+      if (rattle) {
+        // one quiet metal tap from the tier's bag — keeps a pileup's
+        // follow-up contacts audible without restacking the full crash
+        const k = draw(metalFam, metalKeys);
+        if (k) play(k, 0.7, rate);
+        log({ kind: "rattle", layers, gain: g.gain.value, lpHz: lp.frequency.value, rate });
+        return;
+      }
+      if (tier === "soft") {
+        const k = draw("thud", ["thud0", "thud1", "thud2"]);
+        if (k) play(k, 1, 0.85 + Math.random() * 0.3);
+        // metal tap: occasional colour on top of the thud, or the whole
+        // sound if the thud set didn't decode
+        const m = !k || Math.random() < 0.35 ? draw(metalFam, metalKeys) : null;
+        if (m) play(m, 0.45, rate, 0.01 + Math.random() * 0.02);
+      } else {
+        play(tier === "heavy" ? "crashHeavy" : "crashMed", 1, rate);
+        const m = draw(metalFam, metalKeys);
+        if (m) play(m, 0.8, 0.92 + Math.random() * 0.16, 0.005 + Math.random() * 0.02);
+        // debris tail: fades in across upper-med, always on for heavy
+        const debrisP = tier === "heavy" ? 1 : smoothstep(9, CRASH_HEAVY_MIN, intensity) * 0.8;
+        if (Math.random() < debrisP)
+          play("crashDebris", 0.4 + u * 0.25, 0.9 + Math.random() * 0.2, 0.06 + Math.random() * 0.1);
+        if (tier === "heavy") {
+          const gk = draw("glass", ["glass0", "glass1", "glass2"]);
+          if (gk && Math.random() < 0.85) play(gk, 0.5, 0.95 + Math.random() * 0.1, 0.03 + Math.random() * 0.04);
+          // second, later metal hit — big wrecks clatter more than once
+          const m2 = draw(metalFam, metalKeys);
+          if (m2) play(m2, 0.5, 0.85 + Math.random() * 0.2, 0.05 + Math.random() * 0.06);
+        }
+      }
+      log({ kind: "full", layers, gain: g.gain.value, lpHz: lp.frequency.value, rate });
+      return;
+    }
+    /* Synth fallback (samples not yet decoded): filtered noise burst, with
+       the same continuous severity->gain/cutoff mapping so even the
+       fallback isn't one fixed sound. */
+    const buf = c.createBuffer(1, Math.floor(c.sampleRate * (0.2 + u * 0.3)), c.sampleRate);
     const d = buf.getChannelData(0);
+    const decay = 0.04 + u * 0.06;
     for (let i = 0; i < d.length; i++)
-      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * 0.07));
+      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * decay));
     const src = c.createBufferSource();
     src.buffer = buf;
     const f = c.createBiquadFilter();
     f.type = "lowpass";
-    f.frequency.value = 1400;
+    f.frequency.value = lpHz;
     const g = c.createGain();
-    g.gain.value = Math.min(0.5, 0.1 + intensity * 0.05);
+    g.gain.value = (rattle ? 0.4 : 1) * Math.min(0.5, 0.08 + u * 0.45);
     src.connect(f).connect(g).connect(this.master);
-    this.crashGain = g;
     src.start(t);
-    src.stop(t + 0.4);
-    src.onended = () => {
-      this.crashGain = null;
-    };
+    src.stop(t + buf.duration + 0.02);
+    log({ kind: "synth", layers: [], gain: g.gain.value, lpHz, rate });
   }
 
   hornSet(on: boolean) {

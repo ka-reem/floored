@@ -169,7 +169,7 @@ catalogued in `public/assets-staging/CATALOG.md` §18–24.
 | `crash/debris.wav` | crash, by Feed_ (freesound) | https://freesound.org/people/Feed_/sounds/545692/ |
 | `crash/med.wav` | car crash short 1, by Logicogonist (freesound) | https://freesound.org/people/Logicogonist/sounds/807438/ |
 | `crash/heavy.wav` | Crash.wav, by CogFireStudios (freesound) | https://freesound.org/people/CogFireStudios/sounds/420356/ |
-| `crash/metal_*.wav`, `crash/glass_*.wav` | Kenney Impact Sounds (CC0, License.txt in staging) | https://kenney.nl/assets/impact-sounds |
+| `crash/metal_*.wav`, `crash/glass_*.wav`, `crash/thud_*.wav` | Kenney Impact Sounds (CC0, License.txt in staging) | https://kenney.nl/assets/impact-sounds |
 | `horns/player.wav`, `horns/npc_a.wav`, `horns/npc_c.wav` | Alfa Romeo MiTo horn, by boedie (freesound) | https://freesound.org/people/boedie/sounds/457425/ |
 | `horns/npc_b.wav` | Car horn beep beep, by AmishRob (freesound) | https://freesound.org/people/AmishRob/sounds/423990/ |
 | `horns/truck.wav` | Truck_horns, by ikbenraar (freesound) | https://freesound.org/people/ikbenraar/sounds/570603/ |
