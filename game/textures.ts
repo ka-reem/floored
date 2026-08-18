@@ -50,6 +50,8 @@ export interface PbrSet {
   normal: THREE.Texture | null;
   rough: THREE.Texture | null;
   metal: THREE.Texture | null;
+  /** cutout opacity map (alpha.jpg) — perforated fences, grated catwalks */
+  alpha: THREE.Texture | null;
   /** mean *linear* luminance of the albedo; 1 until measured */
   albedoMean: number;
   /** mean of the roughness map's green channel; 1 until measured */
@@ -124,31 +126,34 @@ function loadMap(
 export async function loadPbrSet(
   name: string,
   repeat = new THREE.Vector2(1, 1),
-  wantMetal = false
+  wantMetal = false,
+  wantAlpha = false
 ): Promise<PbrSet> {
   const set: PbrSet = {
-    albedo: null, normal: null, rough: null, metal: null,
+    albedo: null, normal: null, rough: null, metal: null, alpha: null,
     albedoMean: 1, roughMean: 1,
   };
   if (typeof document === "undefined") return set;
   const loader = new THREE.TextureLoader();
   const dir = `${PBR_BASE}/${name}`;
-  const [albedo, normal, rough, metal] = await Promise.all([
+  const [albedo, normal, rough, metal, alpha] = await Promise.all([
     loadMap(loader, `${dir}/albedo.jpg`, true, repeat, (m) => (set.albedoMean = m)),
     loadMap(loader, `${dir}/normal.jpg`, false, repeat),
     loadMap(loader, `${dir}/rough.jpg`, false, repeat, (m) => (set.roughMean = m)),
     wantMetal ? loadMap(loader, `${dir}/metal.jpg`, false, repeat) : Promise.resolve(null),
+    wantAlpha ? loadMap(loader, `${dir}/alpha.jpg`, false, repeat) : Promise.resolve(null),
   ]);
   // an orphaned normal/rough with no albedo is not a usable set; drop the lot
   // so a half-finished asset drop can never half-apply
   if (!albedo) {
-    for (const t of [normal, rough, metal]) t?.dispose();
+    for (const t of [normal, rough, metal, alpha]) t?.dispose();
     return set;
   }
   set.albedo = albedo;
   set.normal = normal;
   set.rough = rough;
   set.metal = metal;
+  set.alpha = alpha;
   return set;
 }
 
@@ -558,6 +563,69 @@ export function exitSignTexF(exitNo: number, dist: string, jp: string) {
     ctx.moveTo(w / 2 + 138, 168);
     ctx.lineTo(w / 2 + 124, 138);
     ctx.stroke();
+  });
+}
+
+/** Procedural perforated-steel panel: opaque sheet with a punched hole grid.
+    Fallback for the Fence007A photo scan — the canvas carries its own alpha,
+    so an alphaTest material works identically whether or not the scan lands
+    (the scan splits the same information across albedo.jpg + alpha.jpg). */
+export function fenceTexF(kind: "perf" | "grate" = "perf") {
+  const t = makeTex(128, 128, (ctx, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#4b5058";
+    ctx.fillRect(0, 0, w, h);
+    // subtle rolled-sheet shading so the fallback doesn't read dead flat
+    for (let i = 0; i < 40; i++) {
+      const v = randi(60, 96);
+      ctx.fillStyle = `rgba(${v},${v + 4},${v + 10},${rand(0.08, 0.2)})`;
+      ctx.fillRect(rand(0, w), rand(0, h), rand(2, 9), rand(2, 9));
+    }
+    ctx.globalCompositeOperation = "destination-out";
+    if (kind === "perf") {
+      const P = 16, R = 5.2;
+      for (let y = P / 2; y < h; y += P)
+        for (let x = P / 2; x < w; x += P) {
+          ctx.beginPath();
+          ctx.arc(x, y, R, 0, Math.PI * 2);
+          ctx.fill();
+        }
+    } else {
+      // grate: long open slots between bearing bars
+      for (let y = 4; y < h; y += 16) ctx.fillRect(0, y, w, 9);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#3a3e46";
+      for (let x = 0; x < w; x += 32) ctx.fillRect(x, 0, 4, h);
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }, true);
+  return t;
+}
+
+/** Elongated road-surface word. Characters are stacked along the direction of
+    travel and stretched ~2.6:1, the way real Japanese expressway paint is laid
+    out so it reads correctly at a flat viewing angle. char[0] sits nearest the
+    driver (canvas bottom): the quad from flatQuad() maps canvas-up to
+    down-the-road, so the driver meets the characters in reading order. */
+export function roadWordTexF(word: string, color = "rgba(235,240,248,.92)") {
+  const chars = [...word];
+  const CW = 112, CH = 232;
+  return makeTex(128, CH * chars.length, (ctx, w, h) => {
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = color;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    chars.forEach((c, i) => {
+      const cy = h - (i + 0.5) * CH; // first char at the bottom
+      ctx.save();
+      ctx.translate(w / 2, cy);
+      // stretch the glyph vertically; latin glyphs get a slightly narrower face
+      const latin = /[\x20-\x7e]/.test(c);
+      ctx.scale(latin ? 1.0 : 0.92, 2.35);
+      ctx.font = `700 ${latin ? 92 : 84}px "Hiragino Sans","Yu Gothic",sans-serif`;
+      ctx.fillText(c, 0, 0);
+      ctx.restore();
+    });
   });
 }
 

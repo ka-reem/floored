@@ -1,6 +1,7 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { type Rng } from "../util";
-import { makeTex, asphalt, signTexF, exitSignTexF, warnTexF } from "../textures";
+import { makeTex, asphalt, signTexF, exitSignTexF, warnTexF, roadWordTexF } from "../textures";
 import { RAMP_W, CONNECT_Z } from "./const";
 import { parapetGap } from "./ramps";
 import {
@@ -30,6 +31,56 @@ const LAYER_NOREF = 1;
 const CHUNK_Z = 300;
 /** parapet geometry every N stations (stations are 4 m apart) */
 const WALL_EVERY = 2;
+
+/* ---- perf gates -----------------------------------------------------------
+   Each flag guards something additive and purely cosmetic: flipping one off
+   removes the feature cleanly with no knock-on effects. They exist so the
+   renderTier system (built concurrently in settings/engine/post by another
+   lane) can wire them to quality presets at merge time — do NOT import
+   settings from here. Everything they guard is instanced or merged, so the
+   costs are bounded: the flags mainly trade overdraw (cones, cutout panels)
+   and a handful of draw calls. */
+/** additive light cones under the streetlight heads (overdraw) */
+export const FX_LAMP_CONES = true;
+/** procedural jet fans hung from the tunnel ceiling (3 instanced meshes) */
+export const FX_JET_FANS = true;
+/** perforated-steel sound barriers (alphaTest overdraw; falls back to the old
+    translucent slab wall when off) */
+export const FX_FENCE_PANELS = true;
+/** gantry catwalk decking + floodlight fittings (a few meshes per gantry) */
+export const FX_CATWALKS = true;
+/** photoscanned GLB props: jersey barriers + toll floodlights (async loads,
+    ~2 MB of textures; skipping them skips the download too) */
+export const FX_PROP_MODELS = true;
+/** toll canopy underside lighting (glow points + emissive strips) */
+export const FX_TOLL_GLOW = true;
+
+/** Load a photoscan prop and hand back its meshes (geometry still in the
+    file's local space). Failure-tolerant like the PBR sets: a missing file
+    simply never calls back, and the world stands without the prop. */
+function loadProp(
+  url: string,
+  cb: (meshes: { geo: THREE.BufferGeometry; mat: THREE.Material }[]) => void
+) {
+  new GLTFLoader().load(
+    url,
+    (g) => {
+      const out: { geo: THREE.BufferGeometry; mat: THREE.Material }[] = [];
+      g.scene.updateMatrixWorld(true);
+      g.scene.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (m.isMesh) {
+          const geo = m.geometry.clone();
+          geo.applyMatrix4(m.matrixWorld);
+          out.push({ geo, mat: m.material as THREE.Material });
+        }
+      });
+      if (out.length) cb(out);
+    },
+    undefined,
+    () => {}
+  );
+}
 
 type Vec3 = [number, number, number];
 
@@ -390,6 +441,55 @@ export function buildHighway(
     }
   }
 
+  /* ---- road text + toll approach striping ----
+     Kanji lane text, elongated ~3:1 like the real paint, laid with the same
+     retroreflective beam response as every other marking so it blazes when the
+     headlights land on it. All of it keeps clear of the tunnel and the plaza
+     islands. */
+  const wordMat = (word: string) => {
+    const m = new THREE.MeshBasicMaterial({
+      map: roadWordTexF(word), transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+    mats.addBeam(m, { near: 18, far: 62, spread: 0.95 });
+    return m;
+  };
+  const word = (z: number, lat: number, mat: THREE.Material, chars: number) =>
+    decal(z, lat, 1.5, chars * 2.1 + 0.8, mat);
+  {
+    // speed limit on every lane, three spots well clear of the features
+    const m80 = wordMat("80");
+    for (const z of [-1180, -240, 1680])
+      for (let k = 0; k < Math.round(cor.laneCount(z)); k++)
+        word(z, cor.laneOffset(k, z), m80, 2);
+    // 料金所 across all lanes as the plaza looms
+    const mToll = wordMat("料金所");
+    for (let k = 0; k < Math.round(cor.laneCount(1308)); k++)
+      word(1308, cor.laneOffset(k, 1308), mToll, 3);
+    // per-gate sorting text where the lanes have spread for the gates
+    const mEtc = wordMat("ETC"), mGen = wordMat("一般");
+    const zSort = 1360, nSort = cor.lanes(zSort);
+    for (let k = 0; k < nSort; k++) {
+      const etc = k > 0 && k < nSort - 1;
+      word(zSort, cor.laneOffset(k, zSort), etc ? mEtc : mGen, etc ? 3 : 2);
+    }
+    // transverse rumble-bar groups walking down to the gates
+    for (const zg of [1302, 1334, 1362, 1382])
+      for (let b = 0; b < 3; b++) {
+        const z = zg + b * 1.7;
+        const hwz = cor.halfWidth(z) - 0.7;
+        const M = soup(marks, chunkOf(z));
+        const p0 = cor.worldOf(z, -hwz), p1 = cor.worldOf(z, hwz);
+        const p2 = cor.worldOf(z + 0.5, hwz), p3 = cor.worldOf(z + 0.5, -hwz);
+        const Y = 0.024;
+        M.quadUv(
+          [p0.x, p0.y + Y, p0.z], [p3.x, p3.y + Y, p3.z],
+          [p2.x, p2.y + Y, p2.z], [p1.x, p1.y + Y, p1.z],
+          [0, 0], [0, 1], [1, 1], [1, 0]
+        );
+      }
+  }
+
   /* ---- emit the chunked deck meshes ---- */
   const emit = (
     m: Map<number, Soup>, mat: THREE.Material, uv: boolean,
@@ -476,6 +576,7 @@ export function buildHighway(
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const board = signFactory(scene, cor);
+  const exitWordMat = wordMat("出口");
   const postMat = new THREE.MeshStandardMaterial({
     color: 0x39404e, roughness: 0.6, metalness: 0.6 });
 
@@ -499,9 +600,11 @@ export function buildHighway(
     bea.position.set(bp.x, bp.y + 1.9, bp.z);
     scene.add(bea);
 
-    // decel-lane arrows leading into the exit
-    if (isExit)
+    // decel-lane arrows leading into the exit, and 出口 painted in the lane
+    if (isExit) {
       for (let k = 0; k < 3; k++) decal(r.zr - 34 - k * 26, lat + 0.5, 1.6, 3.4, arrowMat);
+      word(r.zr - 122, lat + 0.5, exitWordMat, 2);
+    }
     // ground-level sign at the ramp foot
     const gx = r.footX - 6, gz = r.footZ + (isExit ? -1 : 1) * (RAMP_W / 2 + 2.4);
     const gpole = new THREE.Mesh(new THREE.BoxGeometry(0.24, 3.6, 0.24), postMat);
@@ -562,6 +665,22 @@ export function buildHighway(
   {
     const gMat = new THREE.MeshStandardMaterial({ color: 0x3a404c, roughness: 0.6, metalness: 0.4 });
     const words = ["箱崎 Hakozaki", "新宿 Shinjuku", "渋谷 Shibuya", "湾岸線 Wangan"];
+    /* Shared fittings for the catwalk + floodlight dressing: one material set
+       for every gantry, so the extra meshes cost draw calls but no compiles. */
+    const floodFaceMat = new THREE.MeshBasicMaterial({ color: 0xe8f1ff, fog: false });
+    const floodGlowMat = new THREE.SpriteMaterial({
+      map: mats.glowTex, color: 0xcfe4ff, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.85,
+    });
+    /** grated walkway deck with UVs in grate tiles (1.2 m pitch) */
+    const catwalkGeom = (len: number) => {
+      const cg = new THREE.PlaneGeometry(len, 1.1);
+      cg.rotateX(-Math.PI / 2);
+      const uv = cg.attributes.uv as THREE.BufferAttribute;
+      for (let i = 0; i < uv.count; i++)
+        uv.setXY(i, uv.getX(i) * (len / 1.2), uv.getY(i) * (1.1 / 1.2));
+      return cg;
+    };
     for (const z of cor.lattice(PITCH.gantry)) {
       if (cor.inTunnel(z) || cor.inToll(z)) continue;
       if (CONNECT_Z.some((cz) => Math.abs(z - cz) < 220)) continue;
@@ -597,39 +716,129 @@ export function buildHighway(
         new THREE.MeshStandardMaterial({ color: 0x555c68, roughness: 0.8 }));
       sBack.position.set(0, 5.5, -0.35 + SIGN.BACK_GAP);
       g.add(sBack);
+      if (FX_CATWALKS) {
+        /* Maintenance catwalk along the beam — the detail that makes a gantry
+           read as a structure someone climbs rather than a floating goalpost —
+           plus a pair of floodlights washing the board. The "light" itself is
+           an emissive face + glow sprite, matching the no-new-dynamic-lights
+           rule; the board is a MeshBasicMaterial and needs no help. */
+        const deckLen = legLat * 2 - 0.8;
+        const deck = new THREE.Mesh(catwalkGeom(deckLen), mats.catwalk);
+        deck.position.set(0, 7.62, 0.65);
+        g.add(deck);
+        for (const yr of [8.0, 8.45]) {
+          const rail = new THREE.Mesh(new THREE.BoxGeometry(deckLen, 0.05, 0.05), gMat);
+          rail.position.set(0, yr, 1.15);
+          g.add(rail);
+        }
+        for (const sx of [-1, 1]) {
+          const fl = new THREE.Group();
+          fl.position.set(sx * (sw / 2 - 0.4), 7.05, -0.75);
+          const body = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.22, 0.28), gMat);
+          fl.add(body);
+          const face = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.16), floodFaceMat);
+          face.position.set(0, -0.06, -0.16);
+          face.rotation.set(0.7, Math.PI, 0);
+          fl.add(face);
+          const gl = new THREE.Sprite(floodGlowMat);
+          gl.scale.set(1.5, 1.5, 1);
+          gl.position.set(0, -0.12, -0.22);
+          fl.add(gl);
+          g.add(fl);
+        }
+      }
       g.position.set(p.x, p.y, p.z);
       g.rotation.y = p.h;
       scene.add(g);
     }
   }
-  /* Sound walls, on the shoulder away from the town. Swept along the corridor
-     stations like the rest of the furniture — a straight box drifts more than a
-     metre off a curving deck edge over its own length — and kept well away from
-     the gores, since a 2.6 m translucent slab standing over an exit reads as a
-     black panel across the sign line. */
+  /* Sound barriers, on the shoulder away from the town. Swept along the
+     corridor stations like the rest of the furniture — a straight box drifts
+     more than a metre off a curving deck edge over its own length — and kept
+     well away from the gores, since a 3 m barrier standing over an exit reads
+     as a black panel across the sign line.
+
+     The hero version is a perforated galvanised-mesh screen standing on the
+     parapet: an alphaTest cutout (never alpha blend — the depth buffer stays
+     honest against every glow sprite behind it), driven by the Fence007A scan
+     with a punched-canvas fallback, mast posts every 8 m, and a beam response
+     from mats.addBeam so the panels flare as the headlights rake them and die
+     away behind the car. UVs run in panel-widths so the scan tiles at life
+     size. */
   {
-    const SEG = 92, H = 2.6;
-    const swMat = soundwall.clone();
-    swMat.side = THREE.DoubleSide;
-    const S = new Soup();
-    for (const z0 of cor.lattice(PITCH.soundwall)) {
-      if (z0 + SEG > cor.ZB1) continue;
-      const mid = z0 + SEG / 2;
-      if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
-      if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
-      const i0 = Math.round((z0 - cor.ZB0) / 4);
-      const i1 = Math.min(ST.length - 1, Math.round((z0 + SEG - cor.ZB0) / 4));
-      for (let i = i0; i < i1; i++) {
-        const la = ST[i].hw + 0.3, lb = ST[i + 1].hw + 0.3;
-        const a0 = pt(i, la), b0 = pt(i + 1, lb);
-        const a1 = pt(i, la, H), b1 = pt(i + 1, lb, H);
-        S.quad(a0, b0, b1, a1);
+    const SEG = 120, H = 3.0, PANEL_W = 2.4;
+    if (FX_FENCE_PANELS) {
+      const S = new Soup();
+      const postAt: { x: number; y: number; z: number; h: number }[] = [];
+      for (const z0 of cor.lattice(PITCH.soundwall)) {
+        if (z0 + SEG > cor.ZB1) continue;
+        const mid = z0 + SEG / 2;
+        if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
+        if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
+        const i0 = Math.round((z0 - cor.ZB0) / 4);
+        const i1 = Math.min(ST.length - 1, Math.round((z0 + SEG - cor.ZB0) / 4));
+        for (let i = i0; i < i1; i++) {
+          // centred over the parapet, rising out of its top (base tucked just
+          // below the coping so no sliver of sky shows between them)
+          const la = ST[i].hw + 0.23, lb = ST[i + 1].hw + 0.23;
+          const y0 = WALL_H - 0.15;
+          S.quadUv(
+            pt(i, la, y0), pt(i + 1, lb, y0),
+            pt(i + 1, lb, y0 + H), pt(i, la, y0 + H),
+            [ST[i].s / PANEL_W, 0], [ST[i + 1].s / PANEL_W, 0],
+            [ST[i + 1].s / PANEL_W, 1], [ST[i].s / PANEL_W, 1]
+          );
+          if (i % 2 === 0) {
+            const p = ST[i];
+            postAt.push({
+              x: p.x + p.nx * la, y: p.y + y0, z: p.z + p.nz * la,
+              h: Math.atan2(p.tx, p.tz),
+            });
+          }
+        }
       }
-    }
-    if (!S.empty) {
-      const m = new THREE.Mesh(S.geom(false), swMat);
-      m.castShadow = true;
-      scene.add(m);
+      if (!S.empty) {
+        const m = new THREE.Mesh(S.geom(true), mats.fence);
+        // no castShadow: an alphaTest caster forces alpha-aware depth material
+        // work for a shadow nobody can see at night
+        scene.add(m);
+        // mast posts + a top rail lump, one instanced mesh
+        const postG = new THREE.BoxGeometry(0.16, H + 0.3, 0.16);
+        const posts = new THREE.InstancedMesh(postG, mats.pole, postAt.length);
+        const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(),
+          V = new THREE.Vector3(), SC = new THREE.Vector3(1, 1, 1);
+        postAt.forEach((p, i) => {
+          E.set(0, p.h, 0);
+          Q.setFromEuler(E);
+          V.set(p.x, p.y + (H + 0.3) / 2 - 0.15, p.z);
+          M.compose(V, Q, SC);
+          posts.setMatrixAt(i, M);
+        });
+        posts.computeBoundingSphere();
+        scene.add(posts);
+      }
+    } else {
+      // tier fallback: the old translucent polycarbonate slab
+      const swMat = soundwall.clone();
+      swMat.side = THREE.DoubleSide;
+      const S = new Soup();
+      for (const z0 of cor.lattice(PITCH.soundwall)) {
+        if (z0 + SEG > cor.ZB1) continue;
+        const mid = z0 + SEG / 2;
+        if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
+        if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
+        const i0 = Math.round((z0 - cor.ZB0) / 4);
+        const i1 = Math.min(ST.length - 1, Math.round((z0 + SEG - cor.ZB0) / 4));
+        for (let i = i0; i < i1; i++) {
+          const la = ST[i].hw + 0.3, lb = ST[i + 1].hw + 0.3;
+          S.quad(pt(i, la), pt(i + 1, lb), pt(i + 1, lb, H), pt(i, la, H));
+        }
+      }
+      if (!S.empty) {
+        const m = new THREE.Mesh(S.geom(false), swMat);
+        m.castShadow = true;
+        scene.add(m);
+      }
     }
   }
 
@@ -644,6 +853,59 @@ export function buildHighway(
     const NP = zs.length;
     const poles = new THREE.InstancedMesh(poleG, mats.pole, NP);
     const arms = new THREE.InstancedMesh(armG, mats.pole, NP);
+    /* The head that was always missing: a cobra housing over an emissive lens
+       strip. The lens is what your eye reads as "the lamp" from below — the
+       glow sprite alone floated in space with no fixture to belong to. */
+    const headG = new THREE.BoxGeometry(1.05, 0.15, 0.34);
+    const lensG = new THREE.BoxGeometry(0.74, 0.05, 0.24);
+    const heads = new THREE.InstancedMesh(headG, mats.pole, NP);
+    // fog:true on both lens and cone — an unfogged cone 600 m out renders at
+    // full brightness and the row of them reads as a wall of light pyramids
+    const lensMat = new THREE.MeshBasicMaterial({ color: 0xffe2b4 });
+    const lens = new THREE.InstancedMesh(lensG, lensMat, NP);
+    /* Fake volumetric cone under each head: additive, alpha baked into the
+       texture (top bright, hem gone), so the overdraw is cheap and the sodium
+       pool connects lamp to road the way humid night air does. Gated — it is
+       pure overdraw and the first thing a low tier should shed. */
+    /* Canvas top lands on the cylinder's TOP (v=1 up there), so the bright
+       stop goes first: the shaft is brightest at the lamp and dies before it
+       reaches the road, like light through night air actually does. */
+    const coneTex = makeTex(64, 128, (ctx, w, h) => {
+      const g = ctx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, "rgba(255,214,150,0.30)");
+      g.addColorStop(1, "rgba(255,214,150,0)");
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+    });
+    const coneG = new THREE.CylinderGeometry(0.28, 2.05, 7.1, 10, 1, true);
+    /* fog stays ON: with additive blending the night fog colour is near
+       black, so fogging is what fades a cone out with distance instead of
+       leaving a full-brightness pyramid on the horizon. BackSide only — a
+       double-sided cone fills the whole frame with orange the moment the
+       camera passes through it, and the far wall alone gives the same read
+       from outside at half the overdraw. */
+    const coneMat = new THREE.MeshBasicMaterial({
+      map: coneTex, color: 0xff9e50, transparent: true, opacity: 0.42,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+      side: THREE.BackSide,
+    });
+    /* And a view-distance fade: driving under a lamp puts the camera inside
+       its cone, and even the back wall alone washes half the frame orange.
+       Fading the fragment out inside ~18 m keeps the shafts a mid-distance
+       effect, which is the only place the fake ever reads as light anyway. */
+    coneMat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying float vConeDist;")
+        .replace("#include <project_vertex>",
+          "#include <project_vertex>\nvConeDist = -mvPosition.z;");
+      sh.fragmentShader = sh.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying float vConeDist;")
+        .replace("#include <map_fragment>",
+          "#include <map_fragment>\ndiffuseColor.a *= smoothstep(7.0, 19.0, vConeDist);");
+    };
+    coneMat.customProgramCacheKey = () => "lampcone";
+    const cones = FX_LAMP_CONES ? new THREE.InstancedMesh(coneG, coneMat, NP) : null;
     const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
       E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
     let n = 0;
@@ -668,13 +930,32 @@ export function buildHighway(
       M.compose(V, Q, S);
       arms.setMatrixAt(n, M);
       const lampLat = lat - flip * 1.55;
-      lightPts.push(p.x + lampLat * p.nx, p.y + 7.45, p.z + lampLat * p.nz);
+      const lx = p.x + lampLat * p.nx, lz = p.z + lampLat * p.nz;
+      lightPts.push(lx, p.y + 7.45, lz);
+      V.set(lx, p.y + 7.5, lz);
+      M.compose(V, Q, S);
+      heads.setMatrixAt(n, M);
+      V.set(lx, p.y + 7.41, lz);
+      M.compose(V, Q, S);
+      lens.setMatrixAt(n, M);
+      if (cones) {
+        V.set(lx, p.y + 7.45 - 3.55, lz);
+        M.compose(V, Q, S);
+        cones.setMatrixAt(n, M);
+      }
       n++;
     }
-    poles.count = arms.count = n;
+    poles.count = arms.count = heads.count = lens.count = n;
     poles.computeBoundingSphere();
     arms.computeBoundingSphere();
-    scene.add(poles, arms);
+    heads.computeBoundingSphere();
+    lens.computeBoundingSphere();
+    scene.add(poles, arms, heads, lens);
+    if (cones) {
+      cones.count = n;
+      cones.computeBoundingSphere();
+      scene.add(cones);
+    }
   }
   return { deckLightPts: lightPts };
 }
@@ -714,9 +995,15 @@ function buildTunnel(
   wm.receiveShadow = true;
   scene.add(wm, cm);
 
-  // portal frames: a thick collar at each mouth so the entry reads as a mouth
-  const portalMat = new THREE.MeshStandardMaterial({ color: 0x3b3f4a, roughness: 0.8 });
+  /* Portal architecture. The bare collar read as a cardboard cut-out; a real
+     urban tunnel mouth is a piece of civil engineering — a headwall carrying
+     the hill, splayed wing walls, and a rack of signage bolted to the face.
+     All of it shares the deck-concrete material so the photoscan reaches it. */
+  const portalMat = mats.concDouble;
   for (const z of [TUNNEL.z0, TUNNEL.z1]) {
+    const entry = z === TUNNEL.z0;
+    // the hill is inside the tube: +z of the entry mouth, -z of the exit one
+    const inward = entry ? 1 : -1;
     const p = cor.pose(z);
     const hw = cor.halfWidth(z) + 0.55;
     const g = new THREE.Group();
@@ -728,6 +1015,17 @@ function buildTunnel(
       leg.position.set(s * (hw + 0.85), (H + 2.2) / 2, 0);
       g.add(leg);
     }
+    // headwall above and behind the collar, and wing walls splaying off it
+    const head = new THREE.Mesh(new THREE.BoxGeometry(hw * 2 + 13, 5.4, 1.1), portalMat);
+    head.position.set(0, H + 2.6, inward * 1.5);
+    g.add(head);
+    for (const s of [-1, 1]) {
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(1.1, H + 4.4, 7), portalMat);
+      wing.position.set(s * (hw + 5.6), (H + 4.4) / 2 - 1.6, inward * 3.4);
+      wing.rotation.y = s * 0.42;
+      wing.rotation.z = s * 0.05;
+      g.add(wing);
+    }
     /* Hazard chevrons across the header. This texture has an opaque near-black
        background, so unlike the (bright) sign panels it must respect fog —
        otherwise it stays jet black while the portal around it fades out, and
@@ -738,39 +1036,197 @@ function buildTunnel(
     hz.position.set(0, H + 1.1, -0.95);
     hz.rotation.y = Math.PI;
     g.add(hz);
+    if (entry) {
+      // tunnel name board on the headwall face, over the mouth
+      const nameTex = makeTex(512, 96, (ctx, w2, h2) => {
+        ctx.fillStyle = "#12312b";
+        ctx.fillRect(0, 0, w2, h2);
+        ctx.strokeStyle = "#dfe9e4";
+        ctx.lineWidth = 4;
+        ctx.strokeRect(4, 4, w2 - 8, h2 - 8);
+        ctx.fillStyle = "#eef6f1";
+        ctx.textAlign = "center";
+        ctx.font = '700 44px "Hiragino Sans","Yu Gothic",sans-serif';
+        ctx.fillText("汐留トンネル", w2 / 2, 44);
+        ctx.font = "700 26px sans-serif";
+        ctx.fillText("SHIODOME TN  340m", w2 / 2, 80);
+      });
+      const name = new THREE.Mesh(new THREE.PlaneGeometry(7.4, 1.4),
+        new THREE.MeshBasicMaterial({ map: nameTex }));
+      name.position.set(0, H + 2.8, inward * 1.5 - inward * 0.6);
+      name.rotation.y = Math.PI;
+      g.add(name);
+      // clearance board on the left leg, speed roundel on the right
+      const clrTex = makeTex(224, 96, (ctx, w2, h2) => {
+        ctx.fillStyle = "#d8a41c";
+        ctx.fillRect(0, 0, w2, h2);
+        ctx.fillStyle = "#171204";
+        ctx.textAlign = "center";
+        ctx.font = "800 40px sans-serif";
+        ctx.fillText("制限高", w2 / 2, 40);
+        ctx.fillText("4.5m", w2 / 2, 82);
+      });
+      const clr = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 0.75),
+        new THREE.MeshBasicMaterial({ map: clrTex }));
+      clr.position.set(-(hw + 0.85), 4.1, -0.85);
+      clr.rotation.y = Math.PI;
+      g.add(clr);
+      const spdTex = makeTex(128, 128, (ctx, w2, h2) => {
+        ctx.clearRect(0, 0, w2, h2);
+        ctx.fillStyle = "#f2f5f9";
+        ctx.beginPath();
+        ctx.arc(w2 / 2, h2 / 2, 58, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#c81e28";
+        ctx.lineWidth = 12;
+        ctx.beginPath();
+        ctx.arc(w2 / 2, h2 / 2, 50, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "#20449c";
+        ctx.textAlign = "center";
+        ctx.font = "800 56px sans-serif";
+        ctx.fillText("60", w2 / 2, h2 / 2 + 20);
+      });
+      const spd = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.95),
+        new THREE.MeshBasicMaterial({ map: spdTex, transparent: true }));
+      spd.position.set(hw + 0.85, 4.1, -0.85);
+      spd.rotation.y = Math.PI;
+      g.add(spd);
+    }
     g.position.set(p.x, p.y, p.z);
     g.rotation.y = p.h;
     scene.add(g);
   }
 
-  /* Ceiling lighting: a long emissive batten every 14 m plus an additive glow
-     sprite, which is what actually reads as light without adding real lights
-     to a scene that is already at its shadow-caster budget. */
+  /* Ceiling lighting: twin-tube fluorescent fixtures every 14 m — a dark
+     housing carrying two emissive tubes — plus an additive glow sprite, which
+     is what actually reads as light without adding real lights to a scene
+     that is already at its shadow-caster budget. */
   const battenMat = new THREE.MeshBasicMaterial({ color: 0xfff0cf, fog: false });
+  const housingMat = new THREE.MeshStandardMaterial({
+    color: 0x272b33, roughness: 0.6, metalness: 0.5 });
   const NL = Math.floor((TUNNEL.z1 - TUNNEL.z0) / 14);
-  const bat = new THREE.InstancedMesh(new THREE.BoxGeometry(1.4, 0.12, 4.6), battenMat, NL);
+  const housing = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1.5, 0.16, 4.9), housingMat, NL);
+  const bat = new THREE.InstancedMesh(new THREE.BoxGeometry(0.16, 0.07, 4.5), battenMat, NL * 2);
+  /* Low wall-washer fittings: the emissive lens the existing glow points were
+     always pretending to hang from. */
+  const washer = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(0.55, 0.1, 0.9),
+    new THREE.MeshBasicMaterial({ color: 0xffe3ae, fog: false }), NL * 2);
   const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
     E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
   const glowPts: number[] = [];
-  let n = 0;
+  let n = 0, nt = 0, nw = 0;
   for (let k = 0; k < NL; k++) {
     const z = TUNNEL.z0 + 7 + k * 14;
     const p = cor.pose(z);
     E.set(0, p.h, 0);
     Q.setFromEuler(E);
-    V.set(p.x, p.y + H - 0.16, p.z);
+    V.set(p.x, p.y + H - 0.1, p.z);
     M.compose(V, Q, S);
-    bat.setMatrixAt(n++, M);
+    housing.setMatrixAt(n++, M);
+    for (const s of [-1, 1]) {
+      V.set(p.x + s * 0.34 * p.nx, p.y + H - 0.2, p.z + s * 0.34 * p.nz);
+      M.compose(V, Q, S);
+      bat.setMatrixAt(nt++, M);
+    }
     glowPts.push(p.x, p.y + H - 0.3, p.z);
     // wall-washer strips low down on both sides
     for (const sgn of [-1, 1]) {
       const lat = sgn * (cor.halfWidth(z) + 0.5);
       glowPts.push(p.x + lat * p.nx, p.y + 2.6, p.z + lat * p.nz);
+      const wlat = sgn * (cor.halfWidth(z) + 0.32);
+      V.set(p.x + wlat * p.nx, p.y + 2.72, p.z + wlat * p.nz);
+      M.compose(V, Q, S);
+      washer.setMatrixAt(nw++, M);
     }
   }
-  bat.count = n;
+  housing.count = n;
+  bat.count = nt;
+  washer.count = nw;
+  housing.computeBoundingSphere();
   bat.computeBoundingSphere();
-  scene.add(bat);
+  washer.computeBoundingSphere();
+  scene.add(housing, bat, washer);
+
+  /* Jet fans, in pairs under the crown. No CC0 model exists for these (the
+     asset hunt came back empty), so they are honest geometry: shroud cylinder,
+     dark blade disc, ceiling bracket — instanced, three draw calls for all of
+     them. At 200 km/h they are silhouettes strobing past the battens, which
+     is exactly what they are in life. */
+  if (FX_JET_FANS) {
+    const fanZ: number[] = [];
+    for (let z = TUNNEL.z0 + 50; z < TUNNEL.z1 - 30; z += 84) fanZ.push(z);
+    const NF = fanZ.length * 2;
+    const shroudG = new THREE.CylinderGeometry(0.62, 0.62, 2.6, 12, 1, true);
+    shroudG.rotateX(Math.PI / 2);
+    const shrouds = new THREE.InstancedMesh(shroudG, mats.pole, NF);
+    const discG = new THREE.CircleGeometry(0.56, 12);
+    const discs = new THREE.InstancedMesh(discG,
+      new THREE.MeshStandardMaterial({
+        color: 0x14161c, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide }), NF);
+    const brackG = new THREE.BoxGeometry(0.22, 1.0, 0.22);
+    const bracks = new THREE.InstancedMesh(brackG, mats.pole, NF);
+    let nf = 0;
+    for (const z of fanZ)
+      for (const s of [-1, 1]) {
+        const p = cor.pose(z);
+        const lat = s * 3.2;
+        const fx = p.x + lat * p.nx, fz = p.z + lat * p.nz, fy = p.y + H - 1.15;
+        E.set(0, p.h, 0);
+        Q.setFromEuler(E);
+        V.set(fx, fy, fz);
+        M.compose(V, Q, S);
+        shrouds.setMatrixAt(nf, M);
+        V.set(fx - 1.32 * p.tx, fy, fz - 1.32 * p.tz);
+        M.compose(V, Q, S);
+        discs.setMatrixAt(nf, M);
+        V.set(fx, fy + 0.95, fz);
+        M.compose(V, Q, S);
+        bracks.setMatrixAt(nf, M);
+        nf++;
+      }
+    shrouds.count = discs.count = bracks.count = nf;
+    shrouds.computeBoundingSphere();
+    discs.computeBoundingSphere();
+    bracks.computeBoundingSphere();
+    scene.add(shrouds, discs, bracks);
+  }
+
+  /* Emergency-exit boards down the left wall — the single most recognisable
+     piece of tunnel furniture there is, and their green is the only colour in
+     the tube that is not sodium. Unlit like the battens: it is night in here
+     at every hour. */
+  {
+    const exitTex = makeTex(224, 96, (ctx, w2, h2) => {
+      ctx.fillStyle = "#0c7a44";
+      ctx.fillRect(0, 0, w2, h2);
+      ctx.fillStyle = "#eafff2";
+      ctx.textAlign = "center";
+      ctx.font = '700 40px "Hiragino Sans",sans-serif';
+      ctx.fillText("非常口", w2 / 2 - 24, 60);
+      ctx.font = "800 44px sans-serif";
+      ctx.fillText("→", w2 - 40, 62);
+    });
+    const exitMat = new THREE.MeshBasicMaterial({ map: exitTex, fog: false });
+    const NE = Math.floor((TUNNEL.z1 - TUNNEL.z0 - 60) / 56);
+    const exits = new THREE.InstancedMesh(new THREE.PlaneGeometry(1.2, 0.55), exitMat, NE);
+    let ne = 0;
+    for (let k = 0; k < NE; k++) {
+      const z = TUNNEL.z0 + 44 + k * 56;
+      const p = cor.pose(z);
+      const lat = -(cor.halfWidth(z) + 0.42);
+      E.set(0, p.h + Math.PI / 2, 0);
+      Q.setFromEuler(E);
+      V.set(p.x + lat * p.nx, p.y + 2.5, p.z + lat * p.nz);
+      M.compose(V, Q, S);
+      exits.setMatrixAt(ne++, M);
+    }
+    exits.count = ne;
+    exits.computeBoundingSphere();
+    scene.add(exits);
+  }
   const gg = new THREE.BufferGeometry();
   gg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(glowPts), 3));
   const gm = new THREE.PointsMaterial({
@@ -828,6 +1284,8 @@ function buildToll(
      Every dimension here is shared with the corridor check via TOLL_PLAZA, so
      the clearance it asserts is the clearance actually built. */
   const { kerbW, boothW, islandLen: IL, colliderHw } = TOLL_PLAZA;
+  /** warm booth-interior glow points, in plaza-local coordinates */
+  const boothGlow: number[] = [];
   for (let k = 1; k < lanes; k++) {
     const lat = cor.laneEdge(k, zc);
     const kerb = new THREE.Mesh(new THREE.BoxGeometry(kerbW, 0.32, IL), kerbMat);
@@ -846,10 +1304,18 @@ function buildToll(
       b.position.set(lat, 1.77, -1.5);
       b.castShadow = true;
       plaza.add(b);
-      const gl = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 1.3), glassMat);
-      gl.position.set(lat - boothW / 2 - 0.02, 2.15, -1.5);
-      gl.rotation.y = -Math.PI / 2;
-      plaza.add(gl);
+      // glazing on BOTH faces — the attendant serves whichever lane pays —
+      // plus a roof cap and a warm interior glow so the booth reads occupied
+      for (const s of [-1, 1]) {
+        const gl = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 1.3), glassMat);
+        gl.position.set(lat + s * (boothW / 2 + 0.02), 2.15, -1.5);
+        gl.rotation.y = s * Math.PI / 2;
+        plaza.add(gl);
+      }
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(boothW + 0.34, 0.14, 3.7), steel);
+      cap.position.set(lat, 3.3, -1.5);
+      plaza.add(cap);
+      boothGlow.push(lat, 2.3, -1.5);
     } else {
       const post = new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.6, 0.4), steel);
       post.position.set(lat, 1.1, -2.2);
@@ -865,17 +1331,86 @@ function buildToll(
     plaza.add(pivot);
   }
 
-  // canopy over the whole plaza
+  /* Canopy over the whole plaza: corrugated-steel roof deck, brushed-panel
+     fascia ring, lit soffit. The roof keeps its box (it carries the shadow);
+     the fascia is what the approaching driver actually sees, and the name
+     board on it is the "料金所" moment the cantilever warning signs promised. */
   const CW = hw * 2 + 5, CL = TOLL_PLAZA.groupLen;
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(CW, 0.9, CL),
-    new THREE.MeshStandardMaterial({ color: 0x2f333d, roughness: 0.8 }));
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(CW, 0.9, CL), mats.canopyRoof);
   roof.position.y = 7.4;
   roof.castShadow = true;
   plaza.add(roof);
+  for (const [w2, d2, x2, z2] of [
+    [CW + 0.3, 0.3, 0, -CL / 2 - 0.05], [CW + 0.3, 0.3, 0, CL / 2 + 0.05],
+    [0.3, CL + 0.3, -CW / 2 - 0.05, 0], [0.3, CL + 0.3, CW / 2 + 0.05, 0],
+  ] as const) {
+    const f = new THREE.Mesh(new THREE.BoxGeometry(w2, 1.3, d2), mats.canopyFascia);
+    f.position.set(x2, 7.15, z2);
+    plaza.add(f);
+  }
+  // fascia name board, centred over the middle gate, facing the approach
+  const fasciaTex = makeTex(512, 112, (ctx, w2, h2) => {
+    ctx.fillStyle = "#173a63";
+    ctx.fillRect(0, 0, w2, h2);
+    ctx.strokeStyle = "#dfe7f2";
+    ctx.lineWidth = 5;
+    ctx.strokeRect(5, 5, w2 - 10, h2 - 10);
+    ctx.fillStyle = "#f2f7fc";
+    ctx.textAlign = "center";
+    ctx.font = '800 52px "Hiragino Sans","Yu Gothic",sans-serif';
+    ctx.fillText("料金所", w2 / 2, 58);
+    ctx.font = "700 30px sans-serif";
+    ctx.fillText("TOLL GATE", w2 / 2, 96);
+  });
+  const fasciaSign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.55),
+    new THREE.MeshBasicMaterial({ map: fasciaTex, fog: false }));
+  fasciaSign.position.set(0, 7.15, -CL / 2 - 0.25);
+  fasciaSign.rotation.y = Math.PI;
+  plaza.add(fasciaSign);
+  /* The soffit fakes its own bounce light: nothing dynamic ever reaches it
+     (the troffers are emissive props, not lights), so without the emissive
+     term the canopy underside is a black slab over a lit plaza. */
   const soffit = new THREE.Mesh(new THREE.BoxGeometry(CW - 1.2, 0.16, CL - 1.2),
-    new THREE.MeshStandardMaterial({ color: 0xe6e9ef, roughness: 0.6 }));
+    new THREE.MeshStandardMaterial({
+      color: 0xe6e9ef, roughness: 0.6,
+      emissive: 0x40444e, emissiveIntensity: 1 }));
   soffit.position.y = 6.92;
   plaza.add(soffit);
+  /* Underside lighting: rows of emissive troffers plus a cloud of additive
+     glow — a real plaza is a pool of flat white light under a dark roof, and
+     that read is the whole reason to slow down for it. Not registered in
+     neonMats: the canopy shades its own soffit, so these stay lit by day. */
+  if (FX_TOLL_GLOW) {
+    const troffMat = new THREE.MeshBasicMaterial({ color: 0xf4f6ff, fog: false });
+    const NTR = 2 * 7;
+    const troff = new THREE.InstancedMesh(new THREE.BoxGeometry(1.9, 0.09, 0.55), troffMat, NTR);
+    const TM = new THREE.Matrix4(), TV = new THREE.Vector3(),
+      TQ = new THREE.Quaternion(), TS = new THREE.Vector3(1, 1, 1);
+    const canopyGlow: number[] = [];
+    let ntr = 0;
+    for (const sx of [-1, 1])
+      for (let j = 0; j < 7; j++) {
+        const dz = -CL / 2 + 4 + j * ((CL - 8) / 6);
+        TV.set(sx * CW / 4.4, 6.82, dz);
+        TM.compose(TV, TQ, TS);
+        troff.setMatrixAt(ntr++, TM);
+        canopyGlow.push(p0.x + (sx * CW / 4.4) * p0.nx, p0.y + 6.6,
+          p0.z + (sx * CW / 4.4) * p0.nz + dz);
+      }
+    troff.count = ntr;
+    troff.computeBoundingSphere();
+    plaza.add(troff);
+    const cg = new THREE.BufferGeometry();
+    cg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(canopyGlow), 3));
+    const cgm = new THREE.PointsMaterial({
+      size: 7, sizeAttenuation: false, color: 0xeef2ff, map: mats.glowTex,
+      transparent: true, opacity: 0.85, fog: false, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const cgp = new THREE.Points(cg, cgm);
+    cgp.frustumCulled = false;
+    scene.add(cgp);
+  }
   // canopy columns stand on the outer shoulder — outboard of the widest lane
   // but still on the pavement, so they are not left hanging off the deck edge
   const colLat = hw - 0.75;
@@ -909,6 +1444,15 @@ function buildToll(
       ctx.fillText(etc ? "専用" : "CASH", w / 2, 120);
     });
   const etcTex = laneSign(true), cashTex = laneSign(false);
+  const sigGreenMat = new THREE.MeshBasicMaterial({ color: 0x3dff8a, fog: false });
+  const sigHaloMat = new THREE.SpriteMaterial({
+    map: mats.glowTex, color: 0x4dffa0, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.9,
+  });
+  const sigHaloWhite = new THREE.SpriteMaterial({
+    map: mats.glowTex, color: 0xdfe9ff, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.8,
+  });
   for (let k = 0; k < lanes; k++) {
     const etc = k > 0 && k < lanes - 1;
     const m = new THREE.MeshBasicMaterial({ map: etc ? etcTex : cashTex, fog: false });
@@ -916,13 +1460,117 @@ function buildToll(
     s.position.set(cor.laneOffset(k, zc), 5.3, -CL / 2 + 1.2);
     s.rotation.y = Math.PI;
     plaza.add(s);
-    // green "lane open" arrow under each sign
-    const a = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9),
-      new THREE.MeshBasicMaterial({ color: 0x4dffa0, map: mats.glowTex, fog: false,
-        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
-    a.position.set(cor.laneOffset(k, zc), 4.0, -CL / 2 + 1.15);
-    a.rotation.y = Math.PI;
-    plaza.add(a);
+    /* Lane status signal under each sign: a real fixture — dark housing, a
+       hard emissive ↓ lens, an additive halo. Every gate runs green because
+       every gate is open (the plaza deliberately never closes a lane the
+       player can thread); the housing still carries the dark red-lens slot
+       above it, which is what sells it as a signal rather than a lamp. */
+    const sig = new THREE.Group();
+    sig.position.set(cor.laneOffset(k, zc), 4.15, -CL / 2 + 1.05);
+    const hous = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.1, 0.24),
+      new THREE.MeshStandardMaterial({ color: 0x1c1f26, roughness: 0.55, metalness: 0.5 }));
+    sig.add(hous);
+    const red = new THREE.Mesh(new THREE.CircleGeometry(0.17, 12),
+      new THREE.MeshStandardMaterial({ color: 0x3a0c0c, roughness: 0.3 }));
+    red.position.set(0, 0.26, -0.125);
+    red.rotation.y = Math.PI;
+    sig.add(red);
+    const green = new THREE.Mesh(new THREE.CircleGeometry(0.19, 12), sigGreenMat);
+    green.position.set(0, -0.2, -0.125);
+    green.rotation.y = Math.PI;
+    sig.add(green);
+    const halo = new THREE.Sprite(sigHaloMat);
+    halo.scale.set(1.3, 1.3, 1);
+    halo.position.set(0, -0.2, -0.2);
+    sig.add(halo);
+    plaza.add(sig);
+  }
+  // booth interior glow
+  if (boothGlow.length) {
+    const bg = new THREE.BufferGeometry();
+    bg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(boothGlow), 3));
+    const bp = new THREE.Points(bg, new THREE.PointsMaterial({
+      size: 5, sizeAttenuation: false, color: 0xffd9a4, map: mats.glowTex,
+      transparent: true, opacity: 0.8, fog: false, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }));
+    bp.frustumCulled = false;
+    plaza.add(bp);
+  }
+
+  /* Photoscanned jersey barriers (two variants alternating, breaking the
+     repetition) — crash protection ahead of every island nose, and a
+     channelising run down each outer shoulder through the gates. Colliders
+     go in immediately so the props are never ghosts; the meshes stream in
+     when the GLBs land. */
+  if (FX_PROP_MODELS) {
+    interface Slot { lat: number; dz: number; }
+    const slotsA: Slot[] = [], slotsB: Slot[] = [];
+    for (let k = 1; k < lanes; k++) {
+      const lat = cor.laneEdge(k, zc);
+      for (let j = 0; j < 3; j++)
+        (k % 2 ? slotsA : slotsB).push({ lat, dz: -IL / 2 - 1.3 - j * 1.68 });
+      add({
+        x0: wx(lat) - colliderHw, x1: wx(lat) + colliderHw,
+        z0: wz(lat, -IL / 2 - 6.6), z1: wz(lat, -IL / 2),
+        y0: p0.y - 0.5, y1: p0.y + 1.4,
+      });
+    }
+    for (const s of [-1, 1]) {
+      const lat = s * (hw - 0.55);
+      let j = 0;
+      for (let dz = -CL / 2 + 1; dz <= CL / 2 - 1; dz += 1.66, j++)
+        (j % 2 ? slotsA : slotsB).push({ lat, dz });
+      add({
+        x0: wx(lat) - 0.35, x1: wx(lat) + 0.35,
+        z0: wz(lat, -CL / 2 + 0.5), z1: wz(lat, CL / 2 - 0.5),
+        y0: p0.y - 0.5, y1: p0.y + 1.4,
+      });
+    }
+    const place = (slots: Slot[]) => (meshes: { geo: THREE.BufferGeometry; mat: THREE.Material }[]) => {
+      const { geo, mat } = meshes[0];
+      const im = new THREE.InstancedMesh(geo, mat, slots.length);
+      const M = new THREE.Matrix4(), V = new THREE.Vector3(),
+        Q = new THREE.Quaternion(), E = new THREE.Euler(0, Math.PI / 2, 0),
+        S = new THREE.Vector3(1.05, 1.05, 1.05);
+      Q.setFromEuler(E); // the scans run along x; the plaza runs along z
+      slots.forEach((sl, i) => {
+        V.set(sl.lat, 0, sl.dz);
+        M.compose(V, Q, S);
+        im.setMatrixAt(i, M);
+      });
+      im.castShadow = true;
+      im.computeBoundingSphere();
+      plaza.add(im);
+    };
+    loadProp("/assets/props/concrete-road-barrier/concrete_road_barrier_1k.gltf", place(slotsA));
+    loadProp("/assets/props/concrete-road-barrier-02/concrete_road_barrier_02_1k.gltf", place(slotsB));
+
+    /* Security floodlights along the canopy fascia — the photoscanned heads
+       aimed down the approach, with the glow sprites doing the "light". */
+    loadProp("/assets/props/security-light/security_light_1k.gltf", (meshes) => {
+      const spots = [-CW / 3, -CW / 9, CW / 9, CW / 3];
+      const g = new THREE.Group();
+      for (const x of spots) {
+        for (const { geo, mat } of meshes) {
+          const m = mat as THREE.MeshStandardMaterial;
+          if (m.name && /glass|bulb/i.test(m.name)) {
+            m.emissive = new THREE.Color(0xcfe0ff);
+            m.emissiveIntensity = 1.4;
+          }
+          const mesh = new THREE.Mesh(geo, mat);
+          mesh.scale.setScalar(2.2);
+          mesh.rotation.set(-2.35, 0, 0);
+          mesh.position.set(x, 6.55, -CL / 2 - 0.1);
+          g.add(mesh);
+        }
+        const halo = new THREE.Sprite(sigHaloWhite);
+        halo.scale.set(2.2, 2.2, 1);
+        halo.position.set(x, 6.35, -CL / 2 - 0.35);
+        g.add(halo);
+      }
+      plaza.add(g);
+    });
   }
   // the approach boards are cantilevers like the exit ones, so they are placed
   // with the rest of the signage from corridor.signPlan()
