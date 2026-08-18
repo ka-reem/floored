@@ -572,7 +572,10 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   // piano black: tighter clearcoat-style highlight so the console reads as
   // polished lacquer under the cabin light rather than semi-gloss plastic
   const piano = new THREE.MeshStandardMaterial({ color: 0x0a0b0f, roughness: 0.1, metalness: 0.42 });
+  piano.name = "piano";
   const shadow = new THREE.MeshStandardMaterial({ color: 0x05060a, roughness: 0.96 });
+  shadow.name = "shadow";
+  soft.name = "soft";
   const grille = new THREE.MeshStandardMaterial({ map: meshTex, roughness: 0.85 });
   const stitch = new THREE.MeshStandardMaterial({
     map: stitchTex, bumpMap: stitchTex, bumpScale: 0.25, roughness: 0.68,
@@ -721,7 +724,10 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
       const merged = gs.length === 1 ? gs[0] : mergeGeometries(gs, false);
       if (!merged) continue;
       merged.computeBoundingSphere();
-      interiorG.add(new THREE.Mesh(merged, mat));
+      const mm = new THREE.Mesh(merged, mat);
+      // named per material so headless test harnesses can toggle merge buckets
+      if (mat.name) mm.name = `merged:${mat.name}`;
+      interiorG.add(mm);
     }
     buckets.clear();
   }
@@ -843,11 +849,12 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      same depression whatever the seating position is.
 
      The pod's vertical bulk is the constraint: anything stacked on top of the
-     dials — a deep bezel, a cowl, a hood — eats into the road ahead, and from
-     the fixed dashcam POV it reads as a dead black bar across mid-frame, so
-     this uses a shallow open ring (no lip, no brow — dashboard.ts's hood is
-     gone for the same reason) and keeps the pod's top edge ~7 degrees below
-     the eye line. 15.5 degrees of depression is a
+     dials — a deep bezel, a cowl, a hood, even an open ring — eats into the
+     road ahead, and from the fixed dashcam POV it reads as a dead black bar
+     across mid-frame (the ring's outer edge sits ~25 cm from that lens, so its
+     few centimetres of collar smear into a giant band), so the pod is fully
+     open above its sill (no lip, no brow, no ring — dashboard.ts's hood is
+     gone for the same reason). 15.5 degrees of depression is a
      real car's cluster angle; it only fits because the eye now sits 0.9 m back
      from the dash instead of 0.5 m. */
   const POD_Z = 0.6;
@@ -858,12 +865,17 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
        and it leans its top-front corner into the sight line and shears the top
        off the gauges. */
     put(rbox(0.68, 0.18, 0.26, 0.055), soft, [x, y - 0.15, z + 0.14], [-tilt, 0, 0], 1.6);
-    // bezel ring around the dials
-    put(bezel(0.68, 0.262, 0.05, 0.06, 0.023), soft, [x, y, z - 0.012], [-tilt, 0, 0], 2.2);
-    // thin bright ring inside the bezel
-    put(bezel(0.63, 0.232, 0.009, 0.05, 0.006), trimStripMat, [x, y, z - 0.032], [-tilt, 0, 0], [6, 1]);
-    // matte throat behind the cluster so nothing shows through the gaps
-    put(box(0.62, 0.28, 0.01), shadow, [x, y, z + 0.035], [-tilt, 0, 0]);
+    /* No bezel ring, no trim ring, no full-height throat. All three were
+       centred on the dials, so their outer edges stood ~3 cm proud of the dial
+       tops only ~25 cm from the fixed dashcam lens — nearly edge-on, that thin
+       collar smeared into a giant unlit band across mid-frame that buried the
+       dash-top tablet's map pane (measured by hide/paint bisect against the
+       POV camera; see test/pov-bisect.mjs / pov-paint.mjs). The cluster keeps
+       its mounted look from dashboard.ts's recessed shell and the per-dial
+       chrome rings; here only furniture that stays BELOW the dial centres
+       survives: a stitched sill under the cluster rooting it into the pod. */
+    put(rbox(0.62, 0.05, 0.05, 0.02), soft, [x, y - 0.135, z - 0.028], [-tilt, 0, 0], [4, 1]);
+    put(box(0.56, 0.006, 0.011), stitch, [x, y - 0.108, z - 0.049], [-tilt, 0, 0]);
   }
 
   /* -------------------------------------------------------- vents & facia */

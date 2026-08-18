@@ -141,8 +141,11 @@ export function buildInstrumentCluster(
   /* housing: a shallow box the dials sit in. No brow/hood on any trim — the
      dials sit in an open recess like the reference car's, because from the
      fixed dashcam POV a brow is a featureless black bar laid across the frame
-     right where the road hands over to the cluster. */
-  const shell = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.25, 0.05), shellMat);
+     right where the road hands over to the cluster. The box hugs the dials
+     (0.52 x 0.22): the old 0.56 x 0.25 shell stood ~3 cm proud of the dial
+     rims, and from the dashcam that margin alone smeared into a dark wedge
+     clipping the dash-top tablet's near corner. */
+  const shell = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.22, 0.05), shellMat);
   shell.position.z = -0.03;
   group.add(shell);
 
