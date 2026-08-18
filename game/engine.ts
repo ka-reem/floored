@@ -15,6 +15,7 @@ import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
 import { DECKY } from "./world/const";
 import { getCorridor, TUNNEL } from "./world/corridor";
+import { getRouteGraph, BYPASS_EDGE } from "./world/routegraph";
 import { spawnZ } from "./world/ramps";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
@@ -365,10 +366,17 @@ export class Game {
     const rng = mulberry32(this.seed);
     this.terrain = makeTerrain(rng);
     const net = buildRoadNet(rng, this.terrain);
+    /* the route graph: the corridor grown into a small closed graph (bypass
+       viaduct + town loop). Deterministic like the corridor; assertClosed()
+       sits here next to the world build the same way assertPitches() guards
+       the furniture lattices. */
+    const routes = getRouteGraph();
+    routes.assertClosed();
     this.world = {
       colliders: new ColliderIndex(),
       net,
       terrain: this.terrain,
+      routes,
       exits: [],
       chunks: [],
       neonMats: [],
@@ -453,6 +461,27 @@ export class Game {
       // to reach the thump within a second or two
       toTunnel: (kmh = 110) => (window as any).__neonx.toCorridor(TUNNEL.z0 - 80, kmh),
       toSeam: (kmh = 110) => (window as any).__neonx.toCorridor(this.cor.Z1 - 120, kmh),
+      /* Drop the car onto the bypass viaduct at arclength s, in lane, at
+         speed. s=60 is just past the diverge wedge; ~560 is the elevated run
+         with the city view. */
+      toBypass: (s = 60, kmh = 110, lane = 0) => {
+        const by = this.world.routes!.bypass;
+        const ss = Math.max(4, Math.min(by.len - 4, s));
+        const p = by.worldOf(ss, by.laneOffset(lane, ss));
+        const h = by.poseAt(ss).h;
+        this.car.x = p.x;
+        this.car.y = p.y;
+        this.car.z = p.z;
+        this.car.h = h;
+        this.car.u = kmh / 3.6;
+        this.car.v = 0;
+        this.car.r = 0;
+        this.car.rev = false;
+        this.car.wvx = 0;
+        this.car.wvz = 0;
+        this.chasePos.set(p.x - Math.sin(h) * 4.4, p.y + 2.15, p.z - Math.cos(h) * 4.4);
+        this.lookPos.set(p.x, p.y + 0.95, p.z);
+      },
       state: () => ({
         x: this.car.x, y: this.car.y, z: this.car.z, h: this.car.h,
         u: this.car.u, kmh: Math.abs(this.car.u) * 3.6,
@@ -465,6 +494,8 @@ export class Game {
         camMode: this.camMode, camPitch: this.camera.rotation.x,
         camYaw: this.camera.rotation.y, revCam: this.revCam,
         npcs: this.traffic.npcs.filter((n) => n.active).length,
+        npcsBypass: this.traffic.npcs.filter((n) => n.active && n.route === BYPASS_EDGE).length,
+        onBypass: !!this.world.routes?.surfaceAt(this.car.x, this.car.z, 2),
         wrecks: this.traffic.activeWrecks().length,
         chunksVisible: this.world.chunks.filter((c) => c.group.visible).length,
         chunksTotal: this.world.chunks.length,
@@ -810,7 +841,20 @@ export class Game {
 
   resetCar() {
     const car = this.car;
-    if (car.y > 4) {
+    const bySurf = this.world.routes?.surfaceAt(car.x, car.z, 2);
+    if (bySurf && Math.abs(bySurf.y - car.y) < 3.4) {
+      /* On the bypass: put the car back on its CURRENT route edge — snapping
+         to the corridor from the viaduct would teleport it sideways and 12 m
+         down. Mid-lane at the same arclength, facing down the edge. */
+      const by = this.world.routes!.bypass;
+      const s = Math.max(4, Math.min(by.len - 4, bySurf.s));
+      const off = by.laneOffset(Math.floor(by.lanes(s) / 2), s);
+      const w = by.worldOf(s, off);
+      car.x = w.x;
+      car.y = w.y;
+      car.z = w.z;
+      car.h = by.poseAt(s).h;
+    } else if (car.y > 4) {
       /* Back onto the corridor. It is one-way now, so there is no travel
          direction to preserve — the alignment supplies the lane centre, the
          deck height and the heading, all at the z we are already at. */

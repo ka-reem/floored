@@ -71,7 +71,7 @@ async function main() {
       "--window-size=1280,800",
       "--mute-audio",
     ],
-    defaultViewport: { width: 1280, height: 800 },
+    defaultViewport: { width: Number(process.env.SHOT_W || 1280), height: Number(process.env.SHOT_H || 800) },
     protocolTimeout: 300000,
   });
   const page = await browser.newPage();

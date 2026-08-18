@@ -2,6 +2,7 @@ import type { WorldData } from "./world/data";
 import type { CarState } from "./physics";
 import type { Npc } from "./traffic";
 import { getCorridor, TUNNEL, TOLL, type Corridor } from "./world/corridor";
+import { MERGE_Z } from "./world/routegraph";
 import { HX } from "./world/const";
 
 /* North-up top-down minimap: the town road graph, the expressway corridor
@@ -170,6 +171,44 @@ export function drawMiniMap(
       g.strokeStyle = "rgba(160,220,255,.5)";
       g.lineWidth = 1;
       g.stroke();
+    }
+
+    /* ---- the bypass viaduct: a second ribbon, drawn AFTER the corridor so
+       the bridge crossing reads as the overlap it is. Station-swept with the
+       asymmetric half-widths, so the gore wedges taper on the map exactly as
+       they do on the road. */
+    const bst = world.routes?.bypass.stations;
+    if (bst && bst.length > 2 &&
+      bst[0].z + dz < car.z + R && bst[bst.length - 1].z + dz > car.z - R) {
+      g.beginPath();
+      for (let i = 0; i < bst.length; i += SKIP) {
+        const p = bst[i];
+        const X = tx(p.x + p.nx * p.hwL), Z = tz(p.z + p.nz * p.hwL + dz);
+        if (i === 0) g.moveTo(X, Z);
+        else g.lineTo(X, Z);
+      }
+      for (let i = bst.length - 1; i >= 0; i -= SKIP) {
+        const p = bst[i];
+        g.lineTo(tx(p.x - p.nx * p.hwR), tz(p.z - p.nz * p.hwR + dz));
+      }
+      g.closePath();
+      g.fillStyle = "rgba(74,58,128,.85)";
+      g.fill();
+      g.strokeStyle = "rgba(172,150,255,.9)";
+      g.lineWidth = 1.4;
+      g.stroke();
+      // merge gore marker on the east side, the diverge carries exit no. 3
+      const mp = cor.worldOf(MERGE_Z, cor.halfWidth(MERGE_Z) + 8);
+      const MX = tx(mp.x), MZ = tz(mp.z + dz);
+      if (MX > 6 && MX < Wp - 6 && MZ > 6 && MZ < Wp - 6) {
+        g.fillStyle = "rgba(172,150,255,.95)";
+        g.beginPath();
+        g.moveTo(MX, MZ - 3.2);
+        g.lineTo(MX + 2.8, MZ + 2.4);
+        g.lineTo(MX - 2.8, MZ + 2.4);
+        g.closePath();
+        g.fill();
+      }
     }
   }
 

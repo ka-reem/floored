@@ -1,4 +1,5 @@
 import { getCorridor, TUNNEL, TOLL } from "./world/corridor";
+import { getRouteGraph } from "./world/routegraph";
 import { HX } from "./world/const";
 import { TAU } from "./util";
 import type { NavWorld, NavEdge, NavRamp } from "./cockpit";
@@ -60,6 +61,9 @@ interface ScreenState {
   trackStart: number;      // performance.now() when the track began
   paintedIdx: number;      // last track painted into the music canvas
   paintedPx: number;       // last progress-bar width painted
+  /** on-bypass latch: drawNav has no y, so under/over the bridge crossing is
+      disambiguated by continuity (see the corridor block) */
+  wasBy: boolean;
 }
 
 const states = new WeakMap<HTMLCanvasElement, ScreenState>();
@@ -90,7 +94,7 @@ function stateFor(cv: HTMLCanvasElement): ScreenState {
   music.height = H * scale;
   s = {
     g, bg, reflect, vign, music, mg: music.getContext("2d")!,
-    trackIdx: 0, trackStart: 0, paintedIdx: -1, paintedPx: -1,
+    trackIdx: 0, trackStart: 0, paintedIdx: -1, paintedPx: -1, wasBy: false,
   };
   // Same trick for the card's offscreen context: logical coords, scaled store.
   s.mg.setTransform(scale, 0, 0, scale, 0, 0);
@@ -342,7 +346,14 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
       const stn = cor.stations;
       const step = (stn.length > 1 ? stn[1].z - stn[0].z : 4) || 4;
       const onDeck = cor.heightAt(x, z, 4) !== null;
-      const curDeck = !bestEdge && !bestRamp && onDeck;
+      /* On the bypass? surfaceAt is a plan-view projection and this pane has
+         no y, so the bridge crossing (bypass OVER deck) is settled by
+         continuity: once on the bypass, stay "on" it until its pavement is
+         genuinely left — a deck car passing under never latches. */
+      const byHit = getRouteGraph().surfaceAt(x, z, 4);
+      const onBy = !!byHit && (st.wasBy || !onDeck);
+      st.wasBy = onBy;
+      const curDeck = !bestEdge && !bestRamp && onDeck && !onBy;
       const corNear = stn.length > 1 && Math.abs(x - HX) < R + 90;
       const paveAt = (lo: number, hi: number, dz: number): boolean => {
         const i0 = Math.max(0, Math.ceil((lo - stn[0].z) / step));
@@ -402,6 +413,32 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
           g.lineWidth = 1;
           g.stroke();
         }
+      }
+
+      /* the bypass viaduct: second ribbon over the corridor (the crossing
+         reads as the overlap), route-blue whenever it is the driven route */
+      const bst = getRouteGraph().bypass.stations;
+      for (const lap of corNear ? LAPS : NO_LAPS) {
+        const dz = lap * cor.LOOP;
+        if (bst[0].z + dz > z + R || bst[bst.length - 1].z + dz < z - R) continue;
+        g.beginPath();
+        for (let i = 0; i < bst.length; i += 2) {
+          const p = bst[i];
+          toS(p.x + p.nx * p.hwL, p.z + p.nz * p.hwL + dz);
+          if (i === 0) g.moveTo(_s.x, _s.y);
+          else g.lineTo(_s.x, _s.y);
+        }
+        for (let i = bst.length - 1; i >= 0; i -= 2) {
+          const p = bst[i];
+          toS(p.x - p.nx * p.hwR, p.z - p.nz * p.hwR + dz);
+          g.lineTo(_s.x, _s.y);
+        }
+        g.closePath();
+        g.fillStyle = onBy ? "rgba(38,102,220,.9)" : "rgba(74,58,122,.85)";
+        g.fill();
+        g.strokeStyle = onBy ? "#7db6ff" : "rgba(150,132,230,.8)";
+        g.lineWidth = onBy ? 2 : 1.2;
+        g.stroke();
       }
     }
 
@@ -493,7 +530,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
   g.fill();
   g.fillStyle = "#cfd8e8";
   g.font = "600 8px sans-serif";
-  g.fillText("首都高 C1 環状線", 23, H - 9);
+  g.fillText(st.wasBy ? "湾岸 Bypass ルート" : "首都高 C1 環状線", 23, H - 9);
 
   // compass: north needle, correct under the heading-up rotation
   g.fillStyle = "rgba(8,11,18,.7)";

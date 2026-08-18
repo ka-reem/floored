@@ -3,6 +3,9 @@ import { clamp, lerp, rand, pick, TAU, angDiff, mulberry32 } from "./util";
 import { loadNpcModels, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
 import { HX, LANE_LAT } from "./world/const";
 import { getCorridor } from "./world/corridor";
+import {
+  getRouteGraph, BYPASS, BYPASS_EDGE, DIVERGE_Z, type RoutePose,
+} from "./world/routegraph";
 import { signalPhase, type WorldData } from "./world/data";
 import type { REdge, EdgePose } from "./world/roadnet";
 import type { CarState } from "./physics";
@@ -343,6 +346,12 @@ export interface Npc {
   nextEdgeId: number;
   /** always +1 on the corridor; kept so the minimap/debug can read a heading */
   dir: number;
+  /** Route-graph edge this expressway car is driving: −1 is the main
+      corridor (`n.s` = corridor z, exactly as ever), BYPASS_EDGE puts `n.s`
+      in the bypass's own arclength space. Town cars ignore it. */
+  route: number;
+  /** diverge decision: 0 undecided, 1 taking the bypass, −1 staying on */
+  wantBypass: number;
   laneK: number; offCur: number; offT: number;
   /** target lane once the pre-signal delay elapses; -1 when not changing */
   pendK: number;
@@ -448,6 +457,14 @@ export class Traffic {
   private pose: EdgePose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
   private pose2: EdgePose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
   private cor = getCorridor();
+  private routes = getRouteGraph();
+  /** mergeWindow() walks every bypass station — resolve once */
+  private mergeWin = this.routes.mergeWindow();
+  private bpose: RoutePose = {
+    x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0, bank: 0,
+  };
+  /** player's bypass surface hit this frame, or null (set in update()) */
+  private playerBy: { s: number } | null = null;
   private cpose = { x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0 };
   private _cw = { x: 0, y: 0, z: 0 };
   private rng = mulberry32(0xbeef);
@@ -626,7 +643,8 @@ export class Traffic {
         L: d.L, W: d.W, wr: d.wr, wz: d.wz, mass: d.mass,
         wheelOffs: [[d.wz, hw2], [d.wz, -hw2], [-d.wz, hw2], [-d.wz, -hw2]],
         hw: true, edge: null, eDir: 1, segHint: { i: 0 }, nextEdgeId: -1,
-        dir: 1, laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: this.cor.lanePitch(0) / 3, s: 0,
+        dir: 1, route: -1, wantBypass: 0,
+        laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: this.cor.lanePitch(0) / 3, s: 0,
         v: 0, v0: 10,
         drv: {
           spd: 1, gap: 1, acc: 1, lane: 0.5, react: 0.3, corner: 1, timid: 0, weave: 0, jit: rand(0, TAU),
@@ -716,6 +734,8 @@ export class Traffic {
     n.pendK = -1;
     n.blink = 0;
     n.ccKind = null;
+    n.route = -1;
+    n.wantBypass = 0;
   }
 
   /** Roll a persistent personality. Heavies never speed, police are always brisk. */
@@ -927,6 +947,8 @@ export class Traffic {
       n.hw = true;
       n.edge = null;
       n.dir = 1;
+      n.route = -1;
+      n.wantBypass = 0;
       n.laneK = laneK;
       n.offCur = n.offT = off + this.biasAt(n, z);
       n.s = z;
@@ -938,6 +960,56 @@ export class Traffic {
       n.blink = 0;
       this.placeHwy(n, player.z);
       n.hVis = cor.pose(z, this.cpose).h;
+      return true;
+    }
+    return false;
+  }
+
+  /** Seed a car onto the bypass viaduct ahead of a player who is driving it —
+      the same hidden-spawn contract as trySpawnHwy, in the bypass's own
+      arclength space. Heavies stay off the sporty route. */
+  private trySpawnBypass(
+    n: Npc, player: CarState, camFx: number, camFz: number, hd: number
+  ): boolean {
+    if (!this.ready[n.style]) return false;
+    if (n.type === "truck" || n.type === "bus") return false;
+    const pb = this.playerBy;
+    if (!pb) return false;
+    const by = this.routes.bypass;
+    this.rollDriver(n);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const ahead = this.warpSeed ? rand(45, hd + 200) : rand(hd + 15, hd + 200);
+      const s = pb.s + ahead;
+      if (s > by.len - 60) return false; // past the merge — the deck spawner owns it
+      const laneK = this.rng() < 0.5 ? 0 : 1;
+      const off = by.laneOffset(laneK, s);
+      const p = by.worldOf(s, off, this._cw);
+      if (!this.warpSeed && !this.hidden(player, camFx, camFz, p.x, p.y, p.z, hd, false))
+        continue;
+      let blocked = false;
+      for (const m of this.npcs) {
+        if (!m.active || !m.hw || m.route !== BYPASS_EDGE) continue;
+        if (Math.abs(m.offCur - off) > 2.2) continue;
+        if (Math.abs(m.s - s) < 20) blocked = true;
+      }
+      if (blocked) continue;
+      n.active = true;
+      n.hw = true;
+      n.edge = null;
+      n.dir = 1;
+      n.route = BYPASS_EDGE;
+      n.wantBypass = 0;
+      n.laneK = laneK;
+      n.offCur = n.offT = off + this.biasAtBypass(n);
+      n.s = s;
+      n.wreck = null;
+      n.fade = 1;
+      n.v0 = rand(26, 33) * n.drv.spd;
+      n.v = n.v0 * rand(0.85, 1.0);
+      n.turnCd = rand(2, 8);
+      n.blink = 0;
+      this.placeHwy(n, player.z);
+      n.hVis = by.poseAt(s, this.bpose).h;
       return true;
     }
     return false;
@@ -970,6 +1042,16 @@ export class Traffic {
       Re-adding the right multiple of LOOP puts it back next to `refZ` (always
       the player, so far) without changing x/y, which are already periodic. */
   private placeHwy(n: Npc, refZ: number) {
+    if (n.route === BYPASS_EDGE) {
+      // the bypass never leaves the canonical band, so no lap re-anchoring —
+      // and worldOf folds the banked cross-fall into y (the deck-height snap
+      // the corridor's heightAt used to provide comes from the graph here)
+      const p = this.routes.bypass.worldOf(n.s, n.offCur + (n.wob || 0), this._cw);
+      n.x = p.x;
+      n.y = p.y;
+      n.z = p.z;
+      return;
+    }
     const p = this.cor.worldOf(n.s, n.offCur + (n.wob || 0), this._cw);
     n.x = p.x;
     n.y = p.y;
@@ -1103,6 +1185,24 @@ export class Traffic {
     n.pT = 0;
     n.pLead.ds = Infinity;
     const cor = this.cor;
+    const bys = this.routes.surfaceAt(car.x, car.z, 2);
+    if (bys && Math.abs(car.y - bys.y) < 6) {
+      // on the bypass viaduct: park it in the player's own bypass lane
+      const by = this.routes.bypass;
+      const s = Math.min(by.len - 2, bys.s + 24);
+      const k =
+        Math.abs(by.laneOffset(0, s) - bys.lat) <
+        Math.abs(by.laneOffset(1, s) - bys.lat) ? 0 : 1;
+      n.hw = true;
+      n.dir = 1;
+      n.route = BYPASS_EDGE;
+      n.laneK = k;
+      n.offCur = n.offT = by.laneOffset(k, s);
+      n.s = s;
+      this.placeHwy(n, car.z);
+      n.hVis = by.poseAt(s, this.bpose).h;
+      return true;
+    }
     const deckY = cor.heightAt(car.x, car.z, 6);
     if (deckY !== null && Math.abs(car.y - deckY) < 6) {
       // drop it in the player's own lane, a few car lengths up the corridor
@@ -1152,7 +1252,10 @@ export class Traffic {
        and falls by several metres, so a fixed height threshold would misread
        it near the low points. */
     const deckY = this.cor.heightAt(player.x, player.z, 8);
-    const playerUp = deckY !== null && Math.abs(player.y - deckY) < 7;
+    const bySurf = this.routes.surfaceAt(player.x, player.z, 4);
+    this.playerBy = bySurf && Math.abs(player.y - bySurf.y) < 7 ? bySurf : null;
+    const playerUp =
+      (deckY !== null && Math.abs(player.y - deckY) < 7) || this.playerBy !== null;
     const cap = Math.round(this.N * clamp(density, 0.15, 1));
     this.occBudget = 40;
     // camera forward, flattened
@@ -1191,7 +1294,14 @@ export class Traffic {
     for (const n of this.npcs) {
       if (n.active) {
         let soft = false, hard = false;
-        if (n.hw) {
+        if (n.hw && n.route === BYPASS_EDGE) {
+          /* bypass cars: `n.s` is edge arclength, not a corridor z, so
+             recycling runs on world distance (the town rule) */
+          const d = Math.hypot(n.x - player.x, n.z - player.z);
+          soft = d > hd + 430;
+          hard = d > hd + 560;
+          if (n.wreck && !hard) soft = false;
+        } else if (n.hw) {
           /* The fleet lives ahead of the player: once a car is properly
              behind it is recycled straight back to the head of the queue.
              Cars still close behind stay — they are the ones just overtaken,
@@ -1230,7 +1340,9 @@ export class Traffic {
       let worst: Npc | null = null, wd = -1;
       for (const n of this.npcs)
         if (n.active && n.hw && !n.wreck) {
-          const d = Math.abs(this.cor.deltaZ(player.z, n.s));
+          const d = n.route === BYPASS_EDGE
+            ? Math.hypot(n.x - player.x, n.z - player.z)
+            : Math.abs(this.cor.deltaZ(player.z, n.s));
           if (d > wd) { wd = d; worst = n; }
         }
       if (worst && wd > 200) this.deactivate(worst);
@@ -1253,7 +1365,12 @@ export class Traffic {
       // a style still waiting on its model costs no budget — otherwise a slow
       // file at the head of the idle pool could starve the live styles
       if (!this.ready[n.style]) continue;
-      if (this.trySpawnHwy(n, player, playerUp, camFx, camFz, hd)) hwyCount++;
+      /* while the player drives the bypass, about half the stream is seeded
+         onto it ahead of them; the rest keeps the main deck alive below */
+      const onBy =
+        this.playerBy && this.rng() < 0.55 &&
+        this.trySpawnBypass(n, player, camFx, camFz, hd);
+      if (onBy || this.trySpawnHwy(n, player, playerUp, camFx, camFz, hd)) hwyCount++;
       spawnBudget--;
     }
     while (spawnBudget > 0 && townCount < townTarget && (idleTown.length || idleHwy.length)) {
@@ -1311,6 +1428,41 @@ export class Traffic {
            evaluated outside the built extent, and a wreck's z is anchored to
            the player's lap rather than wrapped — so fold it in first and put
            the lap back afterwards. */
+        /* a bypass wreck is contained by the bypass's own parapets, in its
+           own station frame — the corridor clamp below would teleport it
+           sideways onto the deck edge 50 m away */
+        if (n.hw && n.route === BYPASS_EDGE) {
+          const by = this.routes.bypass;
+          const bHit = by.project(n.x, n.z, BYPASS.half + 6);
+          if (bHit) {
+            const p = by.poseAt(bHit.s, this.bpose);
+            const { hwL, hwR } = by.halfWidths(bHit.s);
+            const blim = Math.max(
+              0, (bHit.lat >= 0 ? hwL : hwR) - n.W / 2);
+            if (Math.abs(bHit.lat) > blim) {
+              const cl = bHit.lat < 0 ? -blim : blim;
+              n.x = p.x + cl * p.nx;
+              n.z = p.z + cl * p.nz;
+              const vn = w.vx * p.nx + w.vz * p.nz;
+              if (bHit.lat > 0 === vn > 0) {
+                w.vx -= p.nx * vn * 1.5;
+                w.vz -= p.nz * vn * 1.5;
+                w.vx *= 0.7;
+                w.vz *= 0.7;
+                w.vr *= 0.8;
+              }
+            }
+            n.y = p.y + Math.max(-blim, Math.min(blim, bHit.lat)) * p.bank;
+          }
+          n.brake = false;
+          const sp2 = w.vx * w.vx + w.vz * w.vz;
+          if (w.age > 9 || (w.age > 4 && sp2 < 0.05 &&
+            Math.hypot(n.x - player.x, n.z - player.z) > 60)) {
+            n.fade -= dt * 1.4;
+            if (n.fade <= 0) this.deactivate(n);
+          }
+          continue;
+        }
         const lap = n.z - this.cor.wrapZ(n.z);
         const zw = n.z - lap;
         const zc = this.cor.zAt(n.x, zw);
@@ -1446,7 +1598,8 @@ export class Traffic {
         if (side > 0.3 && side < 0.9 && ahead > -1 && ahead < 4 && playerSpeed + n.v > 28) nearPass = true;
       }
 
-      if (n.hw) this.updateHwy(n, dt, v0, lead, panic);
+      if (n.hw && n.route === BYPASS_EDGE) this.updateBypass(n, dt, v0, lead, panic);
+      else if (n.hw) this.updateHwy(n, dt, v0, lead, panic);
       else this.updateTown(n, dt, v0, lead, phase, panic);
 
       /* Close-call event: a near-miss pass, or the player forcing this driver
@@ -1467,7 +1620,9 @@ export class Traffic {
       if (n.hw) this.placeHwy(n, player.z);
       else this.placeTown(n);
       let targetH: number;
-      if (n.hw) {
+      if (n.hw && n.route === BYPASS_EDGE) {
+        targetH = this.routes.bypass.poseAt(n.s, this.bpose).h;
+      } else if (n.hw) {
         targetH = this.cor.pose(n.s, this.cpose).h;
       } else {
         targetH = Math.atan2(this.pose.tx, this.pose.tz);
@@ -1501,7 +1656,8 @@ export class Traffic {
         const rear = along > 0 ? A : B, front = along > 0 ? B : A;
         rear.v = Math.min(rear.v, front.v * 0.9);
         rear.brake = true;
-        if (rear.hw) rear.s = this.cor.wrapZ(rear.s - (need - Math.abs(along)) * 0.5);
+        if (rear.hw && rear.route !== BYPASS_EDGE)
+          rear.s = this.cor.wrapZ(rear.s - (need - Math.abs(along)) * 0.5);
         else rear.s = Math.max(0, rear.s - (need - Math.abs(along)) * 0.5);
       }
     }
@@ -1615,17 +1771,26 @@ export class Traffic {
   }
 
   /** True when no active NPC is within the danger box of lane offset `off2`
-      near corridor position `s` — shared by comfort lane changes and forced
-      taper merges. */
-  private laneClearAt(n: Npc, s: number, off2: number): boolean {
+      near position `s` on route `route` — shared by comfort lane changes,
+      forced taper merges, and the bypass merge's gap acceptance. `s` and
+      `off2` are in the route's own space (corridor z / bypass arclength);
+      only cars on the same route are compared, so the two spaces never mix. */
+  private laneClearAt(n: Npc, s: number, off2: number, route = n.route): boolean {
     const cor = this.cor;
     for (const m of this.npcs) {
       if (m === n || !m.active || !m.hw || m.wreck) continue;
+      if (m.route !== route) continue;
       if (Math.abs(m.offCur - off2) > 2.2) continue;
-      const ds = cor.deltaZ(s, m.s);
+      const ds = route === BYPASS_EDGE ? m.s - s : cor.deltaZ(s, m.s);
       if (ds > -18 && ds < 28) return false;
     }
     return true;
+  }
+
+  /** clamp(drv.bias) for the bypass's constant-pitch lanes */
+  private biasAtBypass(n: Npc): number {
+    const m = Math.max(0, BYPASS.laneW / 2 - n.W / 2 - 0.25);
+    return clamp(n.drv.bias, -m, m);
   }
 
   private updateHwy(
@@ -1635,6 +1800,36 @@ export class Traffic {
     const drv = n.drv;
     const cor = this.cor;
     const nl = cor.lanes(n.s);
+
+    /* Route choice at the bypass diverge (west-side gore at DIVERGE_Z): a
+       kerb-lane share of the stream peels off onto the viaduct. Decided once
+       per approach; the chosen driver signals and works over to lane 0 like
+       any other signalled change. Heavies keep the trunk route. */
+    const dzDiv = cor.deltaZ(n.s, DIVERGE_Z);
+    if (n.wantBypass === 0 && dzDiv > 30 && dzDiv < 350) {
+      const heavy = n.type === "truck" || n.type === "bus";
+      /* per-lane odds tuned (Monte Carlo over the spawn-time lane/personality
+         distribution) so ~28% of the whole stream peels off — the 25-35%
+         share the route plan wants. Only the two kerb-side lanes ever exit. */
+      const p = n.laneK === 0 ? 0.65 : n.laneK === 1 ? 0.5 : 0;
+      n.wantBypass = !heavy && this.rng() < p ? 1 : -1;
+    } else if (n.wantBypass !== 0 && (dzDiv < -80 || dzDiv > 400)) {
+      n.wantBypass = 0; // past the gore — a fresh roll next lap
+    }
+    if (n.wantBypass === 1 && dzDiv > 0) {
+      if (n.laneK > 0 && n.pendK < 0) {
+        const k2 = n.laneK - 1;
+        const off2 = cor.laneOffset(k2, n.s);
+        if (this.laneClearAt(n, n.s, off2)) {
+          n.pendK = k2;
+          n.blink = -1;
+          n.blinkT = rand(0.6, 1.2);
+          n.laneRate = cor.lanePitch(n.s) / lerp(3, 2, drv.lane);
+          n.turnCd = Math.max(n.turnCd, 2);
+        } else if (dzDiv < 90) n.wantBypass = -1; // boxed in — stay on
+      }
+      if (n.laneK === 0 && dzDiv < 220) n.blink = -1; // exit signal
+    }
 
     /* Merge out of a lane that is about to end well before it does — a
        lookahead many seconds up the road (a multi-lane fan-in, like the toll
@@ -1688,6 +1883,30 @@ export class Traffic {
     n.v = Math.max(0, n.v + acc * dt);
     n.s = cor.wrapZ(n.s + n.v * dt);
 
+    /* the diverge itself: once past the gore nose in the kerb lane, the car
+       crosses onto the bypass edge — same world position, new station space */
+    if (n.wantBypass === 1) {
+      const past = cor.deltaZ(DIVERGE_Z, n.s);
+      if (past >= 0 && past < 70 && n.laneK === 0 && n.pendK < 0) {
+        const by = this.routes.bypass;
+        const hit = by.project(n.x, n.z, BYPASS.half + 10);
+        n.route = BYPASS_EDGE;
+        n.wantBypass = 0;
+        n.s = Math.max(0.5, Math.min(by.len - 1, hit ? hit.s : past));
+        /* lane 1 (+lat) is the one the deck's kerb lane feeds through the
+           wedge; offCur keeps the true bypass-frame offset so the handoff is
+           position-continuous, then eases onto the lane centre as the
+           pavements separate */
+        n.laneK = 1;
+        n.pendK = -1;
+        n.offT = by.laneOffset(1, n.s) + this.biasAtBypass(n);
+        n.offCur = hit ? hit.lat : n.offT;
+        n.laneRate = BYPASS.laneW / 1.6;
+        n.blink = -1;
+        return;
+      }
+    }
+
     n.turnCd -= dt;
     /* Lane change when stuck behind slower traffic — how long a driver puts up
        with it is their own business, and speeders weave for no reason at all. */
@@ -1733,10 +1952,108 @@ export class Traffic {
     const rate = n.blink !== 0 ? n.laneRate || cor.lanePitch(n.s) / 3 : LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) {
       n.offCur += clamp(dOff, -rate * dt, rate * dt);
-      if (n.blink !== 0 && n.pendK < 0 && Math.abs(dOff) < 0.35) n.blink = 0;
+      if (n.blink !== 0 && n.pendK < 0 && Math.abs(dOff) < 0.35 && n.wantBypass !== 1)
+        n.blink = 0;
     } else {
       n.offCur = n.offT;
-      if (n.blink !== 0 && n.pendK < 0) n.blink = 0;
+      if (n.blink !== 0 && n.pendK < 0 && n.wantBypass !== 1) n.blink = 0;
+    }
+  }
+
+  /* bypass driving: two lanes, finite arclength (no wrap — the edge ends at
+     the merge gore), IDM unchanged, a shade quicker than the deck's slow
+     lanes. The run ends in a Shuto-style fast-lane merge: fold to the inner
+     lane, signal, and take the first accepted gap inside mergeWindow(). */
+  private updateBypass(
+    n: Npc, dt: number, v0: number,
+    lead: { ds: number; v: number } | null, panic = false
+  ) {
+    const drv = n.drv;
+    const by = this.routes.bypass;
+    const mw = this.mergeWin;
+    v0 *= 1.1; // the sporty route
+
+    const aMax = 1.6 * drv.acc, bCom = 2.3, T = 1.25 * drv.gap, s0 = 2.2 + 1.4 * (drv.gap - 1);
+    let acc: number;
+    if (lead) {
+      const dv = n.v - lead.v;
+      const sStar = s0 + n.v * T + (n.v * dv) / (2 * Math.sqrt(aMax * bCom));
+      acc = aMax * (1 - Math.pow(n.v / v0, 4) - Math.pow(sStar / Math.max(lead.ds, 0.55), 2));
+    } else acc = aMax * (1 - Math.pow(n.v / v0, 4));
+
+    /* the merge. Inside the window, run the deck's own gap acceptance against
+       the fast lane (an east merge — the fast lane is the one alongside);
+       yield by easing off until a gap opens, and take the wedge's end as the
+       hard deadline (the pavement is closing — the overlap resolver and IDM
+       absorb a forced entry the way they absorb any too-tight lane change). */
+    if (n.s >= mw.s0 - 90) {
+      n.blink = -1; // deck on the −lat side: an east merge signals left
+      if (n.laneK !== 0 && n.pendK < 0) {
+        n.pendK = 0;
+        n.blinkT = rand(0.4, 0.9);
+        n.laneRate = BYPASS.laneW / 1.8;
+      }
+      if (n.s >= mw.s0) {
+        const zc = this.cor.wrapZ(this.cor.zAt(n.x, n.z));
+        const k = this.cor.lanes(zc) - 1;
+        const off2 = this.cor.laneOffset(k, zc);
+        if (this.laneClearAt(n, zc, off2, -1) || n.s > mw.s1 - 6) {
+          n.route = -1;
+          n.wantBypass = 0;
+          n.s = zc;
+          n.laneK = k;
+          n.pendK = -1;
+          n.offCur = this.cor.latAt(n.x, n.z);
+          n.offT = off2 + this.biasAt(n, zc);
+          n.laneRate = this.cor.lanePitch(zc) / 1.6;
+          n.blink = -1;
+          return;
+        }
+        acc = Math.min(acc, n.s > mw.s1 - 25 ? -2.6 : -1.2);
+      }
+    }
+
+    if (panic) acc = Math.min(acc, -6.5);
+    acc = clamp(acc, -8.5, 3.2);
+    n.brake = acc < -1.2;
+    n.v = Math.max(0, n.v + acc * dt);
+    n.s = Math.min(by.len - 0.5, n.s + n.v * dt);
+
+    n.turnCd -= dt;
+    /* comfort lane change between the two lanes, clear of the merge run */
+    const held = !!lead && lead.ds < 18 + 30 * drv.lane && lead.v < n.v0 * (0.8 + 0.12 * drv.lane);
+    const restless = drv.weave > 0 && (!lead || lead.ds > 30) && this.rng() < 0.35 * dt;
+    if (
+      n.pendK < 0 && n.blink === 0 && n.turnCd <= 0 && (held || restless) &&
+      n.s < mw.s0 - 150
+    ) {
+      const k2 = n.laneK === 0 ? 1 : 0;
+      const off2 = by.laneOffset(k2, n.s);
+      if (this.laneClearAt(n, n.s, off2)) {
+        n.pendK = k2;
+        n.blink = off2 < n.offCur ? -1 : 1;
+        n.blinkT = rand(1, 2);
+        n.laneRate = BYPASS.laneW / lerp(4, 2, drv.lane);
+        n.turnCd = lerp(12, 3.5, drv.lane);
+      }
+    }
+    if (n.pendK >= 0) {
+      n.blinkT -= dt;
+      if (n.blinkT <= 0) {
+        n.laneK = n.pendK;
+        n.pendK = -1;
+      }
+    }
+    n.offT = by.laneOffset(n.laneK, n.s) + this.biasAtBypass(n);
+    const dOff = n.offT - n.offCur;
+    const rate = n.blink !== 0 ? n.laneRate || BYPASS.laneW / 3 : LANE_FOLLOW_RATE;
+    if (Math.abs(dOff) > 0.02) {
+      n.offCur += clamp(dOff, -rate * dt, rate * dt);
+      if (n.blink !== 0 && n.pendK < 0 && Math.abs(dOff) < 0.35 && n.s < mw.s0 - 90)
+        n.blink = 0;
+    } else {
+      n.offCur = n.offT;
+      if (n.blink !== 0 && n.pendK < 0 && n.s < mw.s0 - 90) n.blink = 0;
     }
   }
 
@@ -1863,7 +2180,9 @@ export class Traffic {
           const heavy = n.type === "truck" || n.type === "bus";
           const sl = POOL_LEN * (heavy ? 1.15 : 1), sw = POOL_W * (heavy ? 1.3 : 1);
           const ahead = n.L / 2 + sl * 0.42;
-          const grade = n.hw ? this.cor.pose(n.s, this.cpose).grade : 0;
+          const grade = !n.hw ? 0
+            : n.route === BYPASS_EDGE ? this.routes.bypass.poseAt(n.s, this.bpose).grade
+              : this.cor.pose(n.s, this.cpose).grade;
           const q = 1 / Math.sqrt(1 + grade * grade);
           const sp = -grade * q, cp = q; // pitch that lays the quad on the slope
           const o = pk * 16;

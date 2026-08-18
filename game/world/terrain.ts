@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { sstep, type Rng, rrand } from "../util";
 import { getCorridor, type Corridor } from "./corridor";
+import { getRouteGraph } from "./routegraph";
 import { buildRamps, rampAt, type Ramp } from "./ramps";
 
 /* Rolling terrain the whole town conforms to. Flattened along the expressway
@@ -15,6 +16,8 @@ export interface Terrain {
   ramps: Ramp[];
   /** ramp surface height under a point, or null when off the pavement */
   onRamp(x: number, z: number): number | null;
+  /** bypass viaduct surface height under a point, or null when off it */
+  onBypass(x: number, z: number): number | null;
 }
 
 export function makeTerrain(rng: Rng): Terrain {
@@ -59,10 +62,19 @@ export function makeTerrain(rng: Rng): Terrain {
     // curved ramps
     const r = rampAt(ramps, x, z, 1.0);
     if (r && Math.abs(r.y - refY) < 3.4) best = Math.max(best, r.y);
+    /* the bypass viaduct (routegraph.ts), with the same refY gating as the
+       ramps: a car on the street or frontage under it is never yanked up —
+       the graph's own tests guarantee it runs ≥ 6 m above any live street
+       mid-route and never answers near deck height over the main pavement */
+    const g = getRouteGraph().surfaceAt(x, z, 1.0);
+    if (g && Math.abs(g.y - refY) < 3.4) best = Math.max(best, g.y);
     return best;
   }
 
-  return { h, heightAt, corridor, ramps, onRamp };
+  const onBypass = (x: number, z: number) =>
+    getRouteGraph().surfaceAt(x, z)?.y ?? null;
+
+  return { h, heightAt, corridor, ramps, onRamp, onBypass };
 }
 
 /** Ground heightfield mesh matching terrain.h. Wide enough in z to sit under
