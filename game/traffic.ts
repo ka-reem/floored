@@ -2,7 +2,8 @@ import * as THREE from "three";
 import { clamp, lerp, rand, pick, TAU, angDiff, mulberry32 } from "./util";
 import { loadNpcModels, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
 import { HX, LANE_LAT } from "./world/const";
-import { getCorridor } from "./world/corridor";
+import { getCorridor, PITCH, PHASE, TOLL } from "./world/corridor";
+import { worldTierCaps } from "./settings";
 import {
   getRouteGraph, BYPASS, BYPASS_EDGE, DIVERGE_Z, type RoutePose,
 } from "./world/routegraph";
@@ -172,11 +173,13 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
         attribute float dissolve;
         attribute float lampKind;
         attribute vec2 lampLvl;
+        attribute vec3 washCol;
         varying float vPaintable;
         varying vec3 vPaintCol;
         varying float vDissolve;
         varying float vLampKind;
-        varying vec2 vLampLvl;`
+        varying vec2 vLampLvl;
+        varying vec3 vWashCol;`
       )
       .replace(
         "#include <begin_vertex>",
@@ -185,7 +188,8 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
         vPaintCol = paintCol;
         vDissolve = dissolve;
         vLampKind = lampKind;
-        vLampLvl = lampLvl;`
+        vLampLvl = lampLvl;
+        vWashCol = washCol;`
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -195,7 +199,8 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
         varying vec3 vPaintCol;
         varying float vDissolve;
         varying float vLampKind;
-        varying vec2 vLampLvl;`
+        varying vec2 vLampLvl;
+        varying vec3 vWashCol;`
       )
       .replace(
         "#include <clipping_planes_fragment>",
@@ -225,7 +230,18 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
         if (vLampKind > 0.5) {
           float lvl = vLampKind > 1.5 ? vLampLvl.y : vLampLvl.x;
           totalEmissiveRadiance += diffuseColor.rgb * lvl;
-        }`
+        }
+        /* Streetlight wash (Lane S). The deck's sodium lamps are pure fakes —
+           emissive heads + additive cones + ground-pool quads, zero dynamic
+           lights — so nothing ever lit an NPC body passing under one. This is
+           the matching fake: renderInstances writes a per-instance warm
+           radiance (sodium under the lamp lattice, white under the toll
+           canopy) and it lands here as albedo-proportional bounce, weighted
+           toward up-facing panels so the roof/hood carry the wash the way a
+           downlight would. Rides inside outgoingLight, so the anti-blowout
+           knee below caps it along with everything else. */
+        totalEmissiveRadiance +=
+          vWashCol * diffuseColor.rgb * (0.55 + 0.45 * saturate(normal.y));`
       )
       .replace(
         "#include <aomap_fragment>",
@@ -379,6 +395,8 @@ type Lod = {
   diss: THREE.InstancedBufferAttribute;
   /** per instance: x = headlight level, y = tail/brake level */
   lamp: THREE.InstancedBufferAttribute;
+  /** per instance: streetlight wash radiance, linear RGB (see washCol) */
+  wash: THREE.InstancedBufferAttribute;
   n: number;
 };
 
@@ -416,6 +434,44 @@ function poolTexture(): THREE.Texture {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
+}
+
+/* ---- streetlight wash over NPC bodies ----
+   The deck's sodium lamps are fakes (no dynamic lights), so a car driving
+   under one stayed visually unlit while the deck around it glowed. Fix is the
+   matching fake: a per-instance warm radiance (washCol, read by npcShader
+   above) driven by proximity to the nearest lamp. Lamp positions are never
+   searched — both routes place their lights on a regular station lattice
+   (highway.ts, PITCH.light/PHASE.light), so nearest-lamp distance is pure
+   arithmetic plus one table lookup. The tables are baked once at construction
+   from the same rules highway.ts emits pools with (tunnel/toll skips, gore
+   parapet gaps, per-tier lampPoolEvery thinning, alternating sides), so a car
+   only ever washes under a lamp whose pool actually renders on this tier.
+   KEEP IN LOCKSTEP with the streetlight block in world/highway.ts. */
+const NO_LAMP = 1e9;
+/** falloff along the road: full inside CORE m of the lamp station, zero past
+    R m — a ~13 m lit footprint under each lamp, matching the deck pool quad
+    (5.6 m half-axis) with a little spill */
+const WASH_CORE_Z = 2.0, WASH_R_Z = 6.5;
+/** lateral falloff from the pool centre (pools sit toward the lamp's side of
+    the road; lamps alternate sides station to station) */
+const WASH_CORE_L = 1.8, WASH_R_L = 7.0;
+/** peak wash radiance as a multiple of body albedo */
+const WASH_GAIN = 1.25;
+/** sodium tint, linear (≈ the pools' sRGB 255,205,140 family) */
+const WASH_R = 1.0, WASH_G = 0.61, WASH_B = 0.26;
+/** the toll canopy's troffer zone: flat white light under the 34 m canopy */
+const TOLL_WASH_ZC = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
+const TOLL_WASH_CORE = 13, TOLL_WASH_R = 21;
+const TOLL_WASH_GAIN = 0.7;
+const TOLL_WASH_TINT_R = 0.92, TOLL_WASH_TINT_G = 0.95, TOLL_WASH_TINT_B = 1.0;
+
+/** smoothstep-shaped falloff: 1 inside `core`, 0 past `r` */
+function washFall(d: number, core: number, r: number) {
+  if (d >= r) return 0;
+  if (d <= core) return 1;
+  const t = (r - d) / (r - core);
+  return t * t * (3 - 2 * t);
 }
 
 /** One slot of the doppler feed's reused result buffer — see Traffic.nearestNpcs. */
@@ -500,6 +556,14 @@ export class Traffic {
   private _nearBuf: NpcAudioSample[] = Array.from({ length: 12 }, () => ({
     npc: null, x: 0, y: 0, z: 0, vx: 0, vz: 0, d2: 0, type: "", heavy: false,
   }));
+  /* Streetlight-wash lookup tables (see the WASH_* block above). One slot per
+     lamp lattice station; the value is the lamp pool's lateral centre offset
+     in that route's own frame, or NO_LAMP where no pool renders (tunnel, toll,
+     gore gaps, tier thinning, gore-clipped viaduct stations). */
+  private deckLampLat: Float32Array = new Float32Array(0);
+  private byLampLat: Float32Array = new Float32Array(0);
+  private nDeckLamp = 0;
+  private tollWashOn = false;
   /* Cars may only enter from beyond the fog wall, and they close on the player
      slowly, so a cold start would leave the road ahead empty for a minute or
      more. On the first frame — and after any teleport — the corridor ahead is
@@ -559,18 +623,23 @@ export class Traffic {
       const paint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
       const diss = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
       const lamp = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
+      const wash = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
       diss.array.fill(1);
       paint.setUsage(THREE.DynamicDrawUsage);
       diss.setUsage(THREE.DynamicDrawUsage);
       lamp.setUsage(THREE.DynamicDrawUsage);
+      wash.setUsage(THREE.DynamicDrawUsage);
       m.geometry.setAttribute("paintCol", paint);
       m.geometry.setAttribute("dissolve", diss);
       m.geometry.setAttribute("lampLvl", lamp);
+      m.geometry.setAttribute("washCol", wash);
       scene.add(m);
       this.lampsOf.push(null);
       this.ready.push(false);
-      this.styles.push({ mesh: m, paint, diss, lamp, n: 0 });
+      this.styles.push({ mesh: m, paint, diss, lamp, wash, n: 0 });
     }
+
+    this.buildLampWashTables();
 
     /* Sized for MAX_WHEELS rather than four: a modelled body may carry a
        second rear axle (the box truck does), and its wheels are only known
@@ -667,6 +736,59 @@ export class Traffic {
     );
   }
 
+  /** Bake the streetlight-wash tables from the same placement rules the
+      streetlight block in world/highway.ts emits pools with — KEEP IN
+      LOCKSTEP with it. Deck lamps sit on the corridor lattice
+      (PITCH.light/PHASE.light, sides alternating with the folded index,
+      skipped through the tunnel/toll and the bypass-gore parapet gaps);
+      viaduct lamps sit on the bypass's own s-lattice with gore-clipped
+      stations dropped. Pool thinning follows worldTierCaps().lampPoolEvery
+      exactly (deck thinning works in pole PAIRS, viaduct thinning on the
+      emit counter), so a car never washes under a lamp whose pool this tier
+      culled. Pool centre = lamp side · (halfWidth − 2.12): parapet mount
+      +0.23, arm/head −1.55, pool centre a further −0.8 inboard. */
+  private buildLampWashTables() {
+    const caps = worldTierCaps();
+    // FX_LAMP_POOLS in highway.ts is a const true; the tier cap is the only
+    // runtime gate on the pools, so it is the only gate mirrored here
+    const washOn = caps.lampPoolEvery !== 0;
+    const poolEvery = Math.max(1, caps.lampPoolEvery ?? 1);
+    this.tollWashOn = washOn && caps.tollGlow !== false;
+    const cor = this.cor;
+    const phase = PHASE.light ?? 0;
+    const nL = Math.round(cor.LOOP / PITCH.light);
+    this.nDeckLamp = nL;
+    this.deckLampLat = new Float32Array(nL).fill(NO_LAMP);
+    const gaps = this.routes.newParapetGaps();
+    if (washOn)
+      for (let ki = 0; ki < nL; ki++) {
+        const z = cor.wrapZ(phase + ki * PITCH.light);
+        if (cor.inTunnel(z) || cor.inToll(z)) continue;
+        const flip = ki % 2 ? 1 : -1;
+        if (gaps.some((g) => z > g.z0 && z < g.z1 && (g.side > 0) === (flip > 0)))
+          continue;
+        if (ki % (2 * poolEvery) >= 2) continue; // pools thin in pole pairs
+        this.deckLampLat[ki] = flip * (cor.halfWidth(z) - 2.12);
+      }
+    const by = this.routes.bypass;
+    const kbN = Math.max(0, Math.floor((by.len - phase) / PITCH.light) + 1);
+    this.byLampLat = new Float32Array(kbN).fill(NO_LAMP);
+    if (washOn) {
+      let k2 = 0, bi = 0;
+      for (let kb = 0; kb < kbN; kb++) {
+        const s = phase + kb * PITCH.light;
+        if (s < 40 || s > by.len - 40) continue;
+        const flip = k2++ % 2 ? 1 : -1;
+        const hws = by.halfWidths(s);
+        const hw = flip > 0 ? hws.hwL : hws.hwR;
+        if (hw < BYPASS.half - 0.02) continue; // gore-clipped station
+        const idx = bi++;
+        if (idx % poolEvery !== 0) continue;
+        this.byLampLat[kb] = flip * (hw - 2.12);
+      }
+    }
+  }
+
   /** Install a loaded bodyshell as its style's one and only geometry, and let
       the style spawn. Instance state — matrices, paint colours, dissolve — is
       untouched, so this can land on any frame, mid-drive. */
@@ -683,6 +805,7 @@ export class Traffic {
     m.geo.setAttribute("paintCol", lod.paint);
     m.geo.setAttribute("dissolve", lod.diss);
     m.geo.setAttribute("lampLvl", lod.lamp);
+    m.geo.setAttribute("washCol", lod.wash);
     lod.mesh.geometry = m.geo;
     if (m.map) {
       /* Each textured body keeps one resized texture. The meshes are already
@@ -702,6 +825,7 @@ export class Traffic {
     old.deleteAttribute("paintCol");
     old.deleteAttribute("dissolve");
     old.deleteAttribute("lampLvl");
+    old.deleteAttribute("washCol");
     old.dispose();
 
     this.lampsOf[si] = m.lamps;
@@ -2086,6 +2210,63 @@ export class Traffic {
       pa[i * 3 + 1] = n.cg;
       pa[i * 3 + 2] = n.cb;
       (lod.diss.array as Float32Array)[i] = n.fade;
+      /* Streetlight wash: nearest-lamp distance by lattice arithmetic (fold
+         the car's station into the lamp period, one table read), then a
+         smooth along-road × lateral falloff over the pool's footprint. Night
+         gate matches the lamp pools' own boolean; the tier gate is baked into
+         the tables. One vec3 write per car per frame, no searches. */
+      let wshR = 0, wshG = 0, wshB = 0;
+      if (night && n.hw) {
+        let w = 0;
+        if (n.route === BYPASS_EDGE) {
+          const ph = PHASE.light ?? 0;
+          const kb = Math.round((n.s - ph) / PITCH.light);
+          if (kb >= 0 && kb < this.byLampLat.length) {
+            const cLat = this.byLampLat[kb];
+            if (cLat < 1e8)
+              w = washFall(Math.abs(n.s - (ph + kb * PITCH.light)), WASH_CORE_Z, WASH_R_Z) *
+                washFall(Math.abs(n.offCur + n.wob - cLat), WASH_CORE_L, WASH_R_L);
+          }
+        } else {
+          const ph = PHASE.light ?? 0;
+          let wz: number, lat: number;
+          if (n.wreck) {
+            // a sliding wreck's s is stale — read its station from the world
+            const zw = this.cor.wrapZ(n.z);
+            wz = this.cor.wrapZ(this.cor.zAt(n.x, zw));
+            lat = this.cor.latAt(n.x, zw);
+          } else {
+            wz = this.cor.wrapZ(n.s);
+            lat = n.offCur + n.wob;
+          }
+          const kf = Math.round((wz - ph) / PITCH.light);
+          const ki = ((kf % this.nDeckLamp) + this.nDeckLamp) % this.nDeckLamp;
+          const cLat = this.deckLampLat[ki];
+          if (cLat < 1e8)
+            w = washFall(Math.abs(wz - (ph + kf * PITCH.light)), WASH_CORE_Z, WASH_R_Z) *
+              washFall(Math.abs(lat - cLat), WASH_CORE_L, WASH_R_L);
+          if (this.tollWashOn) {
+            // the toll canopy's troffer zone: flat white, no sodium lamps here
+            const dTol = Math.abs(wz - TOLL_WASH_ZC);
+            if (dTol < TOLL_WASH_R) {
+              const tw = washFall(dTol, TOLL_WASH_CORE, TOLL_WASH_R) * TOLL_WASH_GAIN;
+              wshR += tw * TOLL_WASH_TINT_R;
+              wshG += tw * TOLL_WASH_TINT_G;
+              wshB += tw * TOLL_WASH_TINT_B;
+            }
+          }
+        }
+        if (w > 0) {
+          const g = w * WASH_GAIN;
+          wshR += g * WASH_R;
+          wshG += g * WASH_G;
+          wshB += g * WASH_B;
+        }
+      }
+      const wa = lod.wash.array as Float32Array;
+      wa[i * 3] = wshR;
+      wa[i * 3 + 1] = wshG;
+      wa[i * 3 + 2] = wshB;
       /* Emissive lamp levels. A wreck's lights are dead; otherwise the tails
          glow at a running level and jump on the brakes. These are radiance
          multipliers on lamp-flagged vertices (lampKind) — a model whose bake
@@ -2122,6 +2303,7 @@ export class Traffic {
     lod.paint.needsUpdate = true;
     lod.diss.needsUpdate = true;
     lod.lamp.needsUpdate = true;
+    lod.wash.needsUpdate = true;
   }
 
   /* light sprites + headlight ground pools */
