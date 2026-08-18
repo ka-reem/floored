@@ -1275,6 +1275,11 @@ export class GameAudio {
        still work; this guard just keeps every voice silent and releases any
        that were sounding when the flag flipped. */
     if (!GameAudio.NPC_VOICES_ENABLED) {
+      // Listener pose must still track the player or npcHorn/npcChirp
+      // (kept enabled) spatialize against a stale origin and fall silent.
+      this.lastPx = px;
+      this.lastPz = pz;
+      this.lastPh = ph;
       for (const v of this.npcVoices) {
         if (v.active) { v.active = false; this.sp(v.mixG.gain, 0, 0.12); }
       }
