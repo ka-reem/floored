@@ -66,7 +66,8 @@ offline `tools/build-orchids-models.mjs` bake selects only those four unnamed
 nodes, removes their wheel geometry in favor of the fleet's shared instanced
 wheels, resizes each source 1K color texture to an embedded 512px JPEG (and its
 metallic-roughness map to 256px), and fits each body to the game's existing
-dimensions. Each style still uses its existing single instanced draw call.
+dimensions. Tail-light glow anchors are sampled from each texture's actual red
+lens regions. Each style still uses its existing single instanced draw call.
 
 The four baked models contain 5,452 triangles and total about 580 KB. Their
 base-colour and metallic-roughness maps occupy about 7 MB of uncompressed GPU
