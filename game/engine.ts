@@ -60,13 +60,19 @@ const LAYER_NOREF = 1;
 /** Headlight throw, metres: dipped and main. These set the spotlight distance
     and, as a ratio, how far down the road the retroreflective paint answers —
     one pair of numbers so the light pool and the paint cannot disagree. */
-const HL_THROW = 115, HL_THROW_HI = 200;
+const HL_THROW = 130, HL_THROW_HI = 200;
+
+/** The throw the per-material retro near/far bands (mats addBeam 18/62 etc.)
+    were originally tuned against. setBeam's range multiplier is derived
+    against this base, so extending a throw above stretches the paint response
+    by the same proportion instead of leaving it behind. */
+const HL_PAINT_BASE = 115;
 
 /** Lateral fill-cone throw, metres — shorter than the main beam's on
     purpose: this cone's job is lighting the adjacent lane close in, not
     reaching down the road, and a longer cutoff would just mean more of it
     sits inside the anti-blowout knee's compressed zone for no visual gain. */
-const HL_SPREAD_THROW = 30, HL_SPREAD_THROW_HI = 42;
+const HL_SPREAD_THROW = 36, HL_SPREAD_THROW_HI = 48;
 
 /** Lateral fill-cone pitch, radians below horizontal, edge-pinned the same
     way as the main beam (see the loop below): this is the AXIS angle, not
@@ -74,7 +80,7 @@ const HL_SPREAD_THROW = 30, HL_SPREAD_THROW_HI = 42;
     nearly its own half-angle before the upper edge clears horizontal. Tuned
     against the vertical-panel knee check, not against reach — a shallower
     pitch reaches further but re-opens the whiteout this replaced. */
-const HL_SPREAD_PITCH = (26 * Math.PI) / 180, HL_SPREAD_PITCH_HI = (28 * Math.PI) / 180;
+const HL_SPREAD_PITCH = (27.1 * Math.PI) / 180, HL_SPREAD_PITCH_HI = (29.1 * Math.PI) / 180;
 
 /** Headlight aim, as the slope of the beam's upper edge — the cut-off — not
     of its axis. Positive is downward.
@@ -1121,7 +1127,7 @@ export class Game {
        higher than low beam's — see the per-distance table in the retune
        commit message for the numbers this was solved against. */
     const si = lamps
-      ? hi ? (this.rain ? 7000 : 5400) : (this.rain ? 908 : 700)
+      ? hi ? (this.rain ? 7000 : 5400) : (this.rain ? 1010 : 780)
       : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
@@ -1176,7 +1182,7 @@ export class Game {
     this.beamDir.set(Math.sin(car.h), hi ? -0.012 : -0.05, Math.cos(car.h));
     this.mats.setBeam(
       lamps, this.beamPos, this.beamDir, f, BEAM_FLOOR,
-      hi ? HL_THROW_HI / HL_THROW : 1);
+      (hi ? HL_THROW_HI : HL_THROW) / HL_PAINT_BASE);
     /* Main beam is not simply brighter. The cone tightens and hardens, throws
        roughly 70% further, and — the part that actually reads as "high beam"
        down a dark road, and why oncoming traffic hates it — the cut-off comes
@@ -1207,8 +1213,8 @@ export class Game {
          read as "on", so the axis is allowed to sit closer while penumbra
          (below) feathers the disc into a spread instead of a hard-edged
          pool. */
-      sp.angle = hi ? 0.23 : 0.33;
-      sp.penumbra = hi ? 0.4 : 0.6;
+      sp.angle = hi ? 0.23 : 0.36;
+      sp.penumbra = hi ? 0.4 : 0.68;
       // decay is per-mode, not a fixed ctor value (see player.ts) — low
       // stays shallow for the carpet, high goes steeper so distant cars
       // fall back out of the knee's ceiling instead of staying pinned white
@@ -1232,7 +1238,7 @@ export class Game {
        symmetric cone needs to keep its topmost ray fixed. */
     for (const [sp, side] of [[this.rig.spreadL, -1], [this.rig.spreadR, 1]] as const) {
       sp.distance = hi ? HL_SPREAD_THROW_HI : HL_SPREAD_THROW;
-      sp.angle = hi ? 0.53 : 0.5;
+      sp.angle = hi ? 0.55 : 0.52;
       sp.penumbra = 0.5;
       sp.decay = hi ? 1.3 : 1.2;
       const kick = hi ? 4.0 : 3.0, tz = hi ? 22 : 14;
