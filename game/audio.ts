@@ -173,6 +173,8 @@ export class GameAudio {
 
   /* NPC doppler pool */
   private static readonly NPC_POOL = 8;
+  /** Master enable for NPC engine voices — user wants traffic silent. */
+  private static readonly NPC_VOICES_ENABLED = false;
   /** Upper bound on how many npcs updateNpcs() will scan in one call — a
       cap, not an expectation; callers should already trim to ~6-8. Sizes
       the preallocated scratch arrays below so the per-frame call is
@@ -1268,6 +1270,16 @@ export class GameAudio {
     px: number, pz: number, pvx: number, pvz: number, ph: number
   ) {
     if (!this.ok) return;
+    /* User call (after the noise-branch removal still wasn't enough): NPC
+       traffic makes no engine sound at all. The pool stays built and horns
+       still work; this guard just keeps every voice silent and releases any
+       that were sounding when the flag flipped. */
+    if (!GameAudio.NPC_VOICES_ENABLED) {
+      for (const v of this.npcVoices) {
+        if (v.active) { v.active = false; this.sp(v.mixG.gain, 0, 0.12); }
+      }
+      return;
+    }
     this.lastPx = px;
     this.lastPz = pz;
     this.lastPh = ph;
