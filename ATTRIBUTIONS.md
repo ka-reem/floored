@@ -158,6 +158,38 @@ a visible skybox — 2K is sufficient at that role. `cobblestone_street_night`
 is the recommended default (higher-contrast lamp highlights read better on
 curved metal at speed); `modern_evening_street` is a softer alternate.
 
+## Recorded audio — `public/assets/audio/*`
+
+Real recordings behind the sampled engine, tunnel reverb, skids, crashes and
+horns. All shipped files were converted offline (mono WAV,
+sliced/normalized, one-shots resampled to 22.05kHz) from the staged originals
+catalogued in `public/assets-staging/CATALOG.md` §18–24.
+
+**Attribution required (CC-BY):**
+
+| | |
+|---|---|
+| Asset | Car Tire Skid Squealing (`tires/skid.wav`) |
+| Author | **qubodup (opengameart.org)** |
+| Licence | **CC-BY 3.0** — https://creativecommons.org/licenses/by/3.0/ |
+| Source | https://opengameart.org/content/car-tire-skid-squealing |
+| Changes | downmixed to mono, peak-normalized |
+
+**CC0 / public domain (no attribution required; provenance recorded):**
+
+| Files | Asset / Author | Source |
+|---|---|---|
+| `engine/loop_0.wav` … `loop_3.wav` | Racing car engine sound loops, by domasx2 | https://opengameart.org/content/racing-car-engine-sound-loops |
+| `engine/idle.wav` | Elantra Engine Idle and Rev, by microman502 (freesound) | https://freesound.org/people/microman502/sounds/865228/ |
+| `reverb/tunnel_ir.wav` | 13.7s Boca Underpass (impulse response), by djericmark (freesound) | https://freesound.org/people/djericmark/sounds/724019/ |
+| `crash/debris.wav` | crash, by Feed_ (freesound) | https://freesound.org/people/Feed_/sounds/545692/ |
+| `crash/med.wav` | car crash short 1, by Logicogonist (freesound) | https://freesound.org/people/Logicogonist/sounds/807438/ |
+| `crash/heavy.wav` | Crash.wav, by CogFireStudios (freesound) | https://freesound.org/people/CogFireStudios/sounds/420356/ |
+| `crash/metal_*.wav`, `crash/glass_*.wav` | Kenney Impact Sounds (CC0, License.txt in staging) | https://kenney.nl/assets/impact-sounds |
+| `horns/player.wav`, `horns/npc_a.wav`, `horns/npc_c.wav` | Alfa Romeo MiTo horn, by boedie (freesound) | https://freesound.org/people/boedie/sounds/457425/ |
+| `horns/npc_b.wav` | Car horn beep beep, by AmishRob (freesound) | https://freesound.org/people/AmishRob/sounds/423990/ |
+| `horns/truck.wav` | Truck_horns, by ikbenraar (freesound) | https://freesound.org/people/ikbenraar/sounds/570603/ |
+
 ## Sourcing notes / other candidates evaluated but not shipped
 
 A parallel hunt for realistic car **interior** models (dashboard/wheel/seats,
