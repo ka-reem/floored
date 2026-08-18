@@ -4,8 +4,10 @@ import { TAU } from "./util";
 import type { NavWorld } from "./cockpit";
 
 /* CarPlay-style head unit for the cockpit's centre-stack screen: a split UI on
-   the existing 256x160 canvas — a nav map pane (~60%), a music player card
-   (~40%), thin bezel and a glass reflection over the lot.
+   the existing 256x160 canvas — a nav map on the right (~60%), a music
+   player card on the left (~40%), thin bezel and a glass reflection over the
+   lot. (Map on the RIGHT: in the dashcam POV the left edge of the tablet is
+   partially occluded by dash geometry, so the important pane lives right.)
 
    The nav pane is a STATIC, NORTH-UP overview: the full route network (one
    canonical lap of the expressway loop, the bypass viaduct, both town ramps
@@ -35,13 +37,12 @@ import type { NavWorld } from "./cockpit";
 /* ------------------------------------------------------------- geometry -- */
 
 const W = 256, H = 160;
-const NAV_W = 154;                 // split: ~60% map, ~40% music
-/** pane origin x — the map pane's left edge on the 256-wide screen */
-const NAV_X = 0;
+const NAV_W = 154;                 // split: right 60% map, left 40% music
+const NAV_X = W - NAV_W;           // nav pane spans NAV_X..W; music pane 0..NAV_X
 /** margin around the fitted network inside the pane */
 const MARG = 9;
-const CARD = { x: 159, y: 6, w: 91, h: 148 };
-const BAR_X = 168, BAR_W = 73, BAR_Y = 128; // progress bar, inside the card
+const CARD = { x: 6, y: 6, w: 91, h: 148 };
+const BAR_X = 15, BAR_W = 73, BAR_Y = 128; // progress bar, inside the card
 
 /* ------------------------------------------------------------ tracklist -- */
 
@@ -205,10 +206,11 @@ function paintArt(mg: CanvasRenderingContext2D, t: Track, x: number, y: number, 
 
 /** Repaint the whole card into the offscreen canvas. Only called when the
     track flips or the progress bar grows a pixel. Coordinates here are in the
-    card's own canvas space (origin at screen x = NAV_W). */
+    card's own canvas space (origin at screen x = 0 — the music pane is the
+    left pane, blitted at 0). */
 function paintMusic(st: ScreenState, px: number) {
   const mg = st.mg, t = TRACKS[st.trackIdx];
-  const x0 = CARD.x - NAV_W, y0 = CARD.y, cw = CARD.w, ch = CARD.h;
+  const x0 = CARD.x, y0 = CARD.y, cw = CARD.w, ch = CARD.h;
   const cx = x0 + cw / 2;
   mg.clearRect(0, 0, st.music.width, st.music.height);
   // pane ground behind the floating card
@@ -250,7 +252,7 @@ function paintMusic(st: ScreenState, px: number) {
   mg.font = "8px sans-serif";
   mg.fillText(t.artist, cx, ay + as + 25);
   // progress bar
-  const bx = BAR_X - NAV_W;
+  const bx = BAR_X;
   rr(mg, bx, BAR_Y, BAR_W, 3, 1.5);
   mg.fillStyle = "rgba(255,255,255,.16)";
   mg.fill();
@@ -592,6 +594,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
   g.rect(NAV_X, 0, NAV_W, H);
   g.clip();
 
+
   // the whole static map: one blit
   g.drawImage(st.base!, NAV_X, 0, NAV_W, H);
 
@@ -655,8 +658,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
   g.fillText((hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm, NAV_X + 12, 16);
   // signal bars
   g.fillStyle = "#9aa6bc";
-  for (let b = 0; b < 3; b++)
-    g.fillRect(NAV_X + 60 + b * 4, 15 - b * 2.4, 2.6, 2.6 + b * 2.4);
+  for (let b = 0; b < 3; b++) g.fillRect(NAV_X + 60 + b * 4, 15 - b * 2.4, 2.6, 2.6 + b * 2.4);
   // GPS arrow
   g.beginPath();
   g.moveTo(NAV_X + 84, 8);
@@ -718,11 +720,11 @@ export function drawCarScreen(
     st.paintedPx = px;
   }
 
-  // ---- nav map: static basemap blit + marker + live overlays --------------
+  // ---- right: nav map (static basemap blit + marker + live overlays) ------
   drawNav(g, st, x, z, h, timeH, world);
 
-  // ---- cached music card, one blit ----------------------------------------
-  g.drawImage(st.music, NAV_W, 0, W - NAV_W, H);
+  // ---- left: cached music card, one blit ----------------------------------
+  g.drawImage(st.music, 0, 0, W - NAV_W, H);
 
   // ---- glass: bezel, reflection sweep, vignette ---------------------------
   g.fillStyle = st.reflect;

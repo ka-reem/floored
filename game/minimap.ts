@@ -97,7 +97,10 @@ export function drawMiniMap(
   if (!g) return;
   const cor = getCorridor();
   const Wp = cv.width, sc = SC;
-  const tx = (x: number) => Wp / 2 + (x - car.x) * sc;
+  // x mirrored: +x in this y-up world points LEFT when north (+z) is
+  // up-screen — the old +x mapping drew a view-from-below (left turns bent
+  // right on the map). Same fix as the head-unit map's toS.
+  const tx = (x: number) => Wp / 2 - (x - car.x) * sc;
   const tz = (z: number) => Wp / 2 - (z - car.z) * sc;
   g.clearRect(0, 0, Wp, Wp);
   g.fillStyle = "rgba(8,10,18,.8)";
@@ -261,7 +264,7 @@ export function drawMiniMap(
   // ---- player ----
   g.save();
   g.translate(Wp / 2, Wp / 2);
-  g.rotate(car.h);
+  g.rotate(-car.h); // mirrored x flips the heading's screen sense too
   g.fillStyle = "#ffffff";
   g.beginPath();
   g.moveTo(0, -6.5);

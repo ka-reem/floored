@@ -546,6 +546,9 @@ export class Game {
       this.mats.envMap, this.mats.glowTex, this.post.mirrorRT.texture
     );
     this.rig.cockpit.setMirrorVis(this.mirror);
+    // POV mirror shield: re-handed on every rig build so a car swap never
+    // leaves post.ts projecting a disposed mesh
+    this.post.setPovMirror(this.rig.cockpit.mirrorGlass, this.camera);
   }
 
   setCar(carId: string, paintIx: number) {
@@ -1226,9 +1229,24 @@ export class Game {
        material it reaches is unlit, so the ambient crush above never touches
        them: this is the only lever that dims night paint, and it is set here
        rather than in mats.ts because it is a night-look decision. */
+    /* The wedge must pitch with the car the same way the spotlights now do
+       (lampsG rides bodyG — see player.ts): its y is a gradient per metre of
+       forward run, exactly the units car.slope is measured in, so following
+       the deck is literally adding the deck's own gradient. pitchVis (nose
+       dive/squat, positive = nose down) is subtracted to match bodyG's
+       rotation; it is a small damped angle, so the small-angle tan is fine.
+       Without these terms the wedge stayed world-horizontal and diverged from
+       a 6-10% ramp deck by its full grade — 3.4-5.7 degrees — which is most
+       of the paint's fully-lit tolerance. The lamp-line origin also rides the
+       nose, which sits slope*2.05 above/below car.y on a grade. The dipped
+       -0.05 / high -0.012 aim offsets are unchanged (a89aac9 character). */
+    const bpitch = car.slope - Math.tan(this.pitchVis);
     this.beamPos.set(
-      car.x + Math.sin(car.h) * 2.05, car.y + 0.62, car.z + Math.cos(car.h) * 2.05);
-    this.beamDir.set(Math.sin(car.h), hi ? -0.012 : -0.05, Math.cos(car.h));
+      car.x + Math.sin(car.h) * 2.05,
+      car.y + 0.62 + car.slope * 2.05,
+      car.z + Math.cos(car.h) * 2.05);
+    this.beamDir.set(
+      Math.sin(car.h), bpitch + (hi ? -0.012 : -0.05), Math.cos(car.h));
     this.mats.setBeam(
       lamps, this.beamPos, this.beamDir, f, BEAM_FLOOR,
       (hi ? HL_THROW_HI : HL_THROW) / HL_PAINT_BASE);
@@ -1883,7 +1901,13 @@ export class Game {
       this.audio.update(
         this.car.rpm, this.car.thrEff, this.car.slipAmt, Math.abs(this.car.u), now,
         this.car.cut > 0 || this.car.shiftT > 0.1, this.rain, this.input.horn > 0,
-        this.car.gear, this.car.onLimiter, this.car.slipDemand
+        // NOTE: slipDemand used to be passed 11th, landing in the optional
+        // rainIntensity slot — realigned (rainIntensity has no source yet).
+        this.car.gear, this.car.onLimiter, undefined, this.car.slipDemand,
+        // lane U (interior trim creaks): smoothed body accels + grade, and
+        // whether the camera is an in-cabin view (cockpit/POV).
+        this.car.axS, this.car.ayS, this.car.slope,
+        this.camMode === CAM_COCKPIT || this.camMode === CAM_POV
       );
       this.npcAudioFeed();
       this.hud(now, dt);
