@@ -35,7 +35,14 @@
    (kaze/okami) and only a rare soft thump on the sedan/kei. Horn/crash duck
    and rain hiss are unchanged from before.
 
-   The whole graph is built once in init(); update() only moves AudioParams. */
+   The whole graph is built once in init(); update() only moves AudioParams.
+
+   On top of the synth model sits a recorded-sample layer (see EngineMode
+   below): a 4-loop rpm-ladder engine with idle bed, a recorded skid loop, a
+   real underpass impulse response for the tunnel reverb, and recorded
+   crash/impact/horn one-shots. Samples lazy-load on the same user
+   gesture that unlocks the AudioContext; until they decode — or with
+   engineMode="synth" — the synthesized model carries everything, unchanged. */
 
 /** Per-car engine character. Chosen by setCar(); "generic" is the fallback. */
 export interface EngineProfile {
@@ -66,6 +73,61 @@ const PROFILES: Record<string, EngineProfile> = {
   okami: { cyl: 4, odd: 0.62, bright: 0.9, turbo: 0.5, level: 1.0, revLimit: 6900, burble: 0.9 },
   generic: { cyl: 4, odd: 0.3, bright: 1.0, turbo: 0.4, level: 0.95, revLimit: 7200, burble: 0.4 },
 };
+
+/** Which voice carries the engine: the synthesized model above, or the
+    recorded-sample engine (domasx2 CC0 rpm-ladder loops + Elantra idle bed).
+    "sampled" is the default so the recordings are heard immediately; the
+    synth stays fully intact for A/B — flip at runtime from the console via
+    `__audioDebug.setEngineMode("synth")`. The toggle also swaps the tire
+    screech body between the recorded skid loop and the synth screech, since
+    A/B-ing "recorded car sounds" as one experience is the point; one-shots
+    (crash, horns) are sample-first with synth fallback regardless of
+    mode, because they replace obviously-synthetic beeps rather than a tuned
+    model. Until the samples finish decoding, "sampled" behaves exactly like
+    "synth" — nothing goes silent while the fetch is in flight. */
+export type EngineMode = "synth" | "sampled";
+
+/** Committed recorded-sample set under public/assets/audio. All mono WAV:
+    decodeAudioData treats WAV bit-identically in every browser (Safari can't
+    decode OGG at all, and MP3/AAC pad ~40ms of encoder delay onto one-shot
+    heads and break loop seams). One-shots/beds are 22.05k — their content
+    sits below ~10kHz — so the whole set stays ~1.4MB; the four rpm-ladder
+    loops keep their original 44.1k samples byte-for-byte (seamless loops).
+    Licenses/provenance: see ATTRIBUTIONS.md ("Recorded audio"). */
+const SAMPLE_BASE = "/assets/audio";
+const SAMPLE_FILES: Record<string, string> = {
+  eng0: "engine/loop_0.wav",
+  eng1: "engine/loop_1.wav",
+  eng2: "engine/loop_2.wav",
+  eng3: "engine/loop_3.wav",
+  idle: "engine/idle.wav",
+  skid: "tires/skid.wav",
+  ir: "reverb/tunnel_ir.wav",
+  crashDebris: "crash/debris.wav",
+  crashMed: "crash/med.wav",
+  crashHeavy: "crash/heavy.wav",
+  metalL0: "crash/metal_l0.wav",
+  metalL1: "crash/metal_l1.wav",
+  metalM0: "crash/metal_m0.wav",
+  metalM1: "crash/metal_m1.wav",
+  metalH0: "crash/metal_h0.wav",
+  metalH1: "crash/metal_h1.wav",
+  glass0: "crash/glass_0.wav",
+  glass1: "crash/glass_1.wav",
+  hornPlayer: "horns/player.wav",
+  hornA: "horns/npc_a.wav",
+  hornB: "horns/npc_b.wav",
+  hornC: "horns/npc_c.wav",
+  hornTruck: "horns/truck.wav",
+};
+
+/** Nominal rpm each ladder loop represents. Tuning anchors, not measured
+    engine speeds: within a band the two neighbouring loops crossfade
+    equal-power while each plays at playbackRate = rpm/anchor, so pitch keeps
+    moving continuously inside the band and the crossfade only morphs
+    timbre. Spacing rises like a real ladder so playbackRate stays near 1 at
+    each band centre. */
+const RPM_ANCHORS = [1050, 2400, 4200, 6400];
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
 const clampRange = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x);
@@ -170,10 +232,38 @@ export class GameAudio {
   private reverbLP!: BiquadFilterNode;
   private reverbFeedback!: GainNode;
   private reverbWet!: GainNode;
+  /** Shared reverb send for all tire layers (synth + recorded skid). Built
+      in init(); a field so the lazily-wired skid loop can join it. */
+  private tireSend!: GainNode;
+
+  /* recorded-sample layers (lazy-loaded in init(), wired when decoded) */
+  private engineMode: EngineMode = "sampled";
+  private samples = new Map<string, AudioBuffer>();
+  private samplesRequested = false;
+  /** true once all four rpm-ladder loops are decoded, wired and running. */
+  private engReady = false;
+  private sampBus!: GainNode; // sampled-engine sum -> master (+ reverb send)
+  private sampLP!: BiquadFilterNode; // load/throttle "airbox" tone for the loops
+  private sampLimDepth!: GainNode; // rev-limiter stutter into sampBus.gain
+  private loopSrcs: AudioBufferSourceNode[] = [];
+  private loopGains: GainNode[] = [];
+  private idleG: GainNode | null = null;
+  private skidSrc: AudioBufferSourceNode | null = null;
+  private skidG: GainNode | null = null;
+  private conv: ConvolverNode | null = null;
+  private convWet: GainNode | null = null;
+  private lastReverbT = 0;
+  private hornSample: { src: AudioBufferSourceNode; g: GainNode } | null = null;
+  private npcHornRR = 0; // round-robin over the recorded npc horn variants
 
   /* NPC doppler pool */
   private static readonly NPC_POOL = 8;
-  /** Master enable for NPC engine voices — user wants traffic silent. */
+  /** User decision (2026-08-17): NPC traffic makes NO engine/proximity
+      sound at all — the doppler drone pool is disabled outright.
+      updateNpcs() still runs so its bookkeeping (player pose for the
+      horn/chirp spatializer) stays fresh, but every voice is released and
+      no per-car sound is emitted. Event one-shots (npcHorn/npcChirp) are
+      unaffected. */
   private static readonly NPC_VOICES_ENABLED = false;
   /** Upper bound on how many npcs updateNpcs() will scan in one call — a
       cap, not an expectation; callers should already trim to ~6-8. Sizes
@@ -602,12 +692,37 @@ export class GameAudio {
       const engSend = ctx.createGain();
       engSend.gain.value = 0.18;
       this.engG.connect(engSend).connect(this.reverbIn);
-      const tireSend = ctx.createGain();
-      tireSend.gain.value = 0.22;
-      this.tireRoadG.connect(tireSend);
-      this.singG.connect(tireSend);
-      this.screechG.connect(tireSend);
-      tireSend.connect(this.reverbIn);
+      this.tireSend = ctx.createGain();
+      this.tireSend.gain.value = 0.22;
+      this.tireRoadG.connect(this.tireSend);
+      this.singG.connect(this.tireSend);
+      this.screechG.connect(this.tireSend);
+      this.tireSend.connect(this.reverbIn);
+
+      /* ---- sampled engine bus ----
+         Prebuilt empty (cheap: three nodes, no sources) so the lazily
+         decoded rpm-ladder loops have somewhere to land without re-plumbing
+         anything: loop sources -> per-loop crossfade gains -> sampLP (the
+         load/throttle "airbox" lowpass, the sampled path's counterpart of
+         engLP) -> sampBus -> master, with the same fixed-ratio reverb send
+         the synth engine has, so tunnels treat both voices alike. The
+         limiter stutter LFO is shared with the synth path via a second
+         depth gain into sampBus.gain. Everything downstream of master
+         (volume, duck, cabin EQ, mute) applies unchanged. */
+      this.sampBus = ctx.createGain();
+      this.sampBus.gain.value = 0;
+      this.sampLP = ctx.createBiquadFilter();
+      this.sampLP.type = "lowpass";
+      this.sampLP.frequency.value = 900;
+      this.sampLP.Q.value = 0.8;
+      this.sampLP.connect(this.sampBus);
+      this.sampBus.connect(this.master);
+      const sampSend = ctx.createGain();
+      sampSend.gain.value = 0.18;
+      this.sampBus.connect(sampSend).connect(this.reverbIn);
+      this.sampLimDepth = ctx.createGain();
+      this.sampLimDepth.gain.value = 0;
+      limLfo.connect(this.sampLimDepth).connect(this.sampBus.gain);
 
       /* ---- NPC doppler pool ----
          Fixed pool of cheap voices (one osc + filtered noise each, not the
@@ -656,6 +771,11 @@ export class GameAudio {
       this.scrapeG.connect(this.master);
 
       this.ok = true;
+      // Recorded samples: kick the fetch+decode off now — init() runs on the
+      // same user gesture that unlocks the AudioContext, so this is the
+      // "lazy-load on first gesture" point. Fire-and-forget: until buffers
+      // land, the synth carries everything.
+      void this.loadSamples();
       // Debug-only: makes getLevels() reachable from the browser console as
       // __audioDebug.getLevels() without engine.ts needing to wire anything
       // up — for identifying which layer a "mystery noise" report is coming
@@ -664,6 +784,145 @@ export class GameAudio {
     } catch {
       this.ok = false;
     }
+  }
+
+  /** Runtime A/B toggle between the synthesized engine and the recorded
+      sample engine. Callable any time (console: `__audioDebug.setEngineMode`);
+      update() crossfades the voices on its normal smoothing constants, so
+      switching mid-drive is a quick fade, not a click. */
+  setEngineMode(m: EngineMode) {
+    this.engineMode = m === "synth" ? "synth" : "sampled";
+  }
+
+  getEngineMode(): EngineMode {
+    return this.engineMode;
+  }
+
+  /** True when the sampled engine is actually carrying the car this frame. */
+  private sampledActive() {
+    return this.engineMode === "sampled" && this.engReady;
+  }
+
+  /** Fetch + decode the recorded sample set, then wire the continuous
+      voices (rpm-ladder loops, idle bed, skid loop, tunnel IR). Individual
+      failures are non-fatal: whatever decodes is used, whatever doesn't
+      keeps its synth fallback. Never throws. */
+  private async loadSamples() {
+    if (this.samplesRequested) return;
+    this.samplesRequested = true;
+    await Promise.all(
+      Object.entries(SAMPLE_FILES).map(async ([key, path]) => {
+        try {
+          const res = await fetch(`${SAMPLE_BASE}/${path}`);
+          if (!res.ok) return;
+          const raw = await res.arrayBuffer();
+          const buf = await this.ctx.decodeAudioData(raw);
+          this.samples.set(key, buf);
+        } catch {
+          /* missing/undecodable file, or ctx closed mid-flight: skip */
+        }
+      })
+    );
+    if (!this.ok) return; // disposed while the fetch was in flight
+    try {
+      this.wireSampledEngine();
+      this.wireSkid();
+      this.wireConvolver();
+    } catch {
+      /* leave whatever failed on its synth fallback */
+    }
+  }
+
+  /** Start the four ladder loops + idle bed against the prebuilt sampled
+      bus. Sources run forever at gain 0 until update() mixes them in —
+      same always-running pattern as every synth layer in init(). */
+  private wireSampledEngine() {
+    const c = this.ctx;
+    const loops = [
+      this.samples.get("eng0"), this.samples.get("eng1"),
+      this.samples.get("eng2"), this.samples.get("eng3"),
+    ];
+    if (loops.some((b) => !b)) return; // ladder incomplete -> stay on synth
+    for (const buf of loops) {
+      const src = c.createBufferSource();
+      src.buffer = buf!;
+      src.loop = true;
+      const g = c.createGain();
+      g.gain.value = 0;
+      src.connect(g).connect(this.sampLP);
+      src.start();
+      this.loopSrcs.push(src);
+      this.loopGains.push(g);
+    }
+    const idle = this.samples.get("idle");
+    if (idle) {
+      const src = c.createBufferSource();
+      src.buffer = idle;
+      src.loop = true;
+      this.idleG = c.createGain();
+      this.idleG.gain.value = 0;
+      // Straight into sampBus, skipping sampLP: the idle bed is a real
+      // in-car recording that is already dark; the airbox lowpass sits low
+      // at idle rpm and would double-muffle it.
+      src.connect(this.idleG).connect(this.sampBus);
+      src.start();
+    }
+    this.engReady = true;
+  }
+
+  /** Recorded skid loop (qubodup, CC-BY 3.0), gain-driven by the same slip
+      envelope as the synth screech and sharing its reverb send. */
+  private wireSkid() {
+    const buf = this.samples.get("skid");
+    if (!buf) return;
+    const c = this.ctx;
+    this.skidSrc = c.createBufferSource();
+    this.skidSrc.buffer = buf;
+    this.skidSrc.loop = true;
+    this.skidG = c.createGain();
+    this.skidG.gain.value = 0;
+    this.skidSrc.connect(this.skidG);
+    this.skidG.connect(this.master);
+    this.skidG.connect(this.tireSend);
+    this.skidSrc.start();
+  }
+
+  /** Real underpass impulse response on a ConvolverNode wet bus, fed by the
+      same engine/tire sends as the synthetic feedback-delay reverb. Once
+      wired, setReverb() drives this instead of the FDN (never both — two
+      reverbs would smear); with no IR decoded, setReverb() behaves exactly
+      as before. UI sounds never touch reverbIn, so they stay dry. */
+  private wireConvolver() {
+    const buf = this.samples.get("ir");
+    if (!buf) return;
+    const c = this.ctx;
+    this.conv = c.createConvolver();
+    this.conv.normalize = true;
+    this.conv.buffer = buf;
+    this.convWet = c.createGain();
+    this.convWet.gain.value = 0;
+    this.reverbIn.connect(this.conv);
+    this.conv.connect(this.convWet).connect(this.master);
+    // Hand the tail over: kill the FDN's wet/feedback so the convolver is
+    // the only reverb voice from here on, and replay the current tunnel
+    // amount onto the new wet bus so wiring mid-tunnel doesn't go dry.
+    this.reverbWet.gain.cancelScheduledValues(c.currentTime);
+    this.reverbWet.gain.value = 0;
+    this.reverbFeedback.gain.cancelScheduledValues(c.currentTime);
+    this.reverbFeedback.gain.value = 0;
+    this.setReverb(this.lastReverbT);
+  }
+
+  /** Nearest zero crossing (rising or falling) to `t` seconds in channel 0,
+      searched forward — used to snap sample loop points so a mid-waveform
+      loop seam doesn't click. */
+  private zeroCrossAt(buf: AudioBuffer, t: number) {
+    const d = buf.getChannelData(0);
+    const start = Math.min(d.length - 2, Math.max(1, Math.round(t * buf.sampleRate)));
+    for (let i = start; i < d.length - 1; i++) {
+      if ((d[i] <= 0 && d[i + 1] > 0) || (d[i] >= 0 && d[i + 1] < 0)) return i / buf.sampleRate;
+    }
+    return t;
   }
 
   /** Debug snapshot of every noise/tone layer's current live gain, for
@@ -693,6 +952,13 @@ export class GameAudio {
       }
     }
     return {
+      engineMode: this.engineMode,
+      sampledEngineReady: this.engReady,
+      samplesDecoded: this.samples.size,
+      sampledEngine: this.sampBus.gain.value,
+      sampledIdle: this.idleG ? this.idleG.gain.value : null,
+      sampledSkid: this.skidG ? this.skidG.gain.value : null,
+      convolverWet: this.convWet ? this.convWet.gain.value : null,
       engine: this.engG.gain.value,
       intake: this.inG.gain.value,
       exhaust: this.exG.gain.value,
@@ -753,10 +1019,56 @@ export class GameAudio {
     o.stop(t + 0.035);
   }
 
+  /** One-shot: play a decoded sample through gain (+ optional slight
+      repitch for variety) into `dest`. Returns the source's duration/rate. */
+  private playSample(
+    buf: AudioBuffer, gain: number, dest: AudioNode, rate = 1, delay = 0
+  ) {
+    const c = this.ctx, t = c.currentTime + delay;
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    const g = c.createGain();
+    g.gain.value = gain;
+    src.connect(g).connect(dest);
+    src.start(t);
+    return buf.duration / rate + delay;
+  }
+
   crash(intensity: number) {
     if (!this.ok) return;
     const c = this.ctx, t = c.currentTime;
     if (this.crashGain) return; // avoid stacking
+    /* Recorded path: a real crash one-shot picked by severity, layered with
+       a Kenney metal impact (randomized variant + slight repitch so repeat
+       hits don't sound stamped) and, for the big ones, breaking glass. All
+       through one shared gain that keeps the old anti-stacking contract. */
+    const sev = intensity >= 10 ? 2 : intensity >= 4.5 ? 1 : 0;
+    const mainBuf = this.samples.get(sev === 2 ? "crashHeavy" : sev === 1 ? "crashMed" : "crashDebris");
+    const metalBuf = this.samples.get(
+      (sev === 2 ? "metalH" : sev === 1 ? "metalM" : "metalL") + (Math.random() < 0.5 ? "0" : "1")
+    );
+    if (mainBuf) {
+      const g = c.createGain();
+      g.gain.value = Math.min(0.65, 0.22 + intensity * 0.035);
+      g.connect(this.master);
+      this.crashGain = g;
+      let dur = this.playSample(mainBuf, 1, g, 0.94 + Math.random() * 0.12);
+      if (metalBuf)
+        dur = Math.max(dur, this.playSample(metalBuf, 0.8, g, 0.92 + Math.random() * 0.16, 0.01));
+      const glassBuf = this.samples.get(Math.random() < 0.5 ? "glass0" : "glass1");
+      if (sev === 2 && glassBuf && Math.random() < 0.65)
+        dur = Math.max(dur, this.playSample(glassBuf, 0.5, g, 0.95 + Math.random() * 0.1, 0.04));
+      // release the anti-stacking latch when the longest layer ends
+      const release = c.createBufferSource();
+      release.buffer = c.createBuffer(1, 1, c.sampleRate);
+      release.connect(g);
+      release.start(t + dur);
+      release.onended = () => {
+        if (this.crashGain === g) this.crashGain = null;
+      };
+      return;
+    }
     const buf = c.createBuffer(1, c.sampleRate * 0.4, c.sampleRate);
     const d = buf.getChannelData(0);
     for (let i = 0; i < d.length; i++)
@@ -780,6 +1092,38 @@ export class GameAudio {
   hornSet(on: boolean) {
     if (!this.ok) return;
     const c = this.ctx;
+    /* Recorded path: the Alfa horn one-shot with its real attack, looping a
+       zero-crossing-snapped window of the sustain while the key is held
+       (press-and-hold works even though the recording is finite), then a
+       quick release fade on the natural tail. Falls back to the synth
+       two-tone below until the sample is decoded. */
+    const hornBuf = this.samples.get("hornPlayer");
+    if (on && hornBuf && !this.hornSample && !this.hornOsc) {
+      const t = c.currentTime;
+      const src = c.createBufferSource();
+      src.buffer = hornBuf;
+      src.loop = true;
+      src.loopStart = this.zeroCrossAt(hornBuf, 0.16);
+      src.loopEnd = this.zeroCrossAt(hornBuf, 0.42);
+      const g = c.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(0.16, t + 0.015);
+      src.connect(g).connect(this.master);
+      src.start(t);
+      this.hornSample = { src, g };
+      return;
+    }
+    if (!on && this.hornSample) {
+      const t = c.currentTime;
+      const { src, g } = this.hornSample;
+      this.hornSample = null;
+      g.gain.cancelScheduledValues(t);
+      g.gain.setValueAtTime(g.gain.value, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.07);
+      try { src.stop(t + 0.09); } catch {}
+      return;
+    }
+    if (on && this.hornSample) return;
     if (on && !this.hornOsc) {
       const o1 = c.createOscillator(), o2 = c.createOscillator(), g = c.createGain();
       o1.type = "square";
@@ -834,6 +1178,15 @@ export class GameAudio {
     this.limDepth.gain.value = 0;
     this.engG.gain.cancelScheduledValues(this.ctx.currentTime);
     this.engG.gain.value = 0;
+    this.sampBus.gain.cancelScheduledValues(this.ctx.currentTime);
+    this.sampBus.gain.value = 0;
+    this.sampLimDepth.gain.value = 0;
+    if (this.idleG) this.idleG.gain.value = 0;
+    if (this.skidG) this.skidG.gain.value = 0;
+    if (this.convWet) {
+      this.convWet.gain.cancelScheduledValues(this.ctx.currentTime);
+      this.convWet.gain.value = 0;
+    }
     this.reverbWet.gain.value = 0;
     this.scrapeG.gain.value = 0;
     this.lastScrapeTarget = 0;
@@ -906,14 +1259,68 @@ export class GameAudio {
     const load = 0.18 + thr * 0.82;
     const cutMul = cut ? 0.3 : 1;
 
+    /* Sampled vs synth: in sampled mode the recorded rpm-ladder REPLACES the
+       tonal oscillator body (driveTrim -> 0 mutes the osc/waveshaper path
+       specifically), while the intake/exhaust noise beds stay LAYERED under
+       the samples at half gain — spectral call: the ladder loops carry pitch
+       and firing texture but, being fixed recordings, lose the throttle-
+       open/closed contrast; the beds are exactly that load character and at
+       -6dB they tuck under the recording instead of reading as hiss. engG
+       still gates the beds, so bodyLevel keeps shaping them. */
+    const sampled = this.sampledActive();
+    const bedMix = sampled ? 0.5 : 1;
     this.sp(this.drivePre.gain, 0.9 + load * 2.6 + (lim ? 1.4 : 0), 0.04);
-    this.sp(this.driveTrim.gain, 1 / (0.9 + load * 1.2), 0.04);
+    this.sp(this.driveTrim.gain, (sampled ? 0 : 1) / (0.9 + load * 1.2), 0.04);
 
     const bodyLevel =
       (0.055 + thr * 0.075 + rn * 0.05) *
       (1 - overrun * 0.45) * cutMul * p.level * (lim ? 0.62 : 1);
-    this.sp(this.engG.gain, bodyLevel, 0.02);
-    this.sp(this.limDepth.gain, lim ? -bodyLevel * 0.85 : 0, 0.005);
+    this.sp(this.engG.gain, bodyLevel * bedMix, 0.02);
+    this.sp(this.limDepth.gain, lim ? -bodyLevel * bedMix * 0.85 : 0, 0.005);
+
+    /* ---- sampled engine ----
+       Equal-power crossfade over the rpm ladder: inside band [A_i, A_i+1]
+       with x = (rpm-A_i)/(A_i+1 - A_i), loop i gets cos(x*pi/2) and loop
+       i+1 gets sin(x*pi/2) (gains sum to 1 in power, so the fade centre
+       doesn't dip); every loop's playbackRate = rpm/anchor (clamped) so
+       pitch moves continuously within the band and the crossfade only
+       morphs timbre. The idle bed fades in below ~2000rpm at closed
+       throttle and sits on top of loop_0. Level shaping mirrors the synth
+       bodyLevel model (throttle/revs up, overrun/cut/limiter down) and the
+       sampLP "airbox" lowpass opens with throttle exactly like engLP, so
+       the recording still breathes with load. */
+    if (this.engReady) {
+      const A = RPM_ANCHORS;
+      let g0 = 0, g1 = 0, band = 0;
+      if (rpm <= A[0]) { band = 0; g0 = 1; }
+      else if (rpm >= A[3]) { band = 2; g1 = 1; }
+      else {
+        band = rpm < A[1] ? 0 : rpm < A[2] ? 1 : 2;
+        const x = clamp01((rpm - A[band]) / (A[band + 1] - A[band]));
+        g0 = Math.cos((x * Math.PI) / 2);
+        g1 = Math.sin((x * Math.PI) / 2);
+      }
+      for (let i = 0; i < 4; i++) {
+        const g = !sampled ? 0 : i === band ? g0 : i === band + 1 ? g1 : 0;
+        this.sp(this.loopGains[i].gain, g, 0.045);
+        this.sp(this.loopSrcs[i].playbackRate, clampRange(rpm / A[i], 0.45, 2.2), 0.02);
+      }
+      const sampLevel = !sampled
+        ? 0
+        : (0.07 + thr * 0.11 + rn * 0.05) *
+          (1 - overrun * 0.35) * cutMul * p.level * (lim ? 0.65 : 1);
+      this.sp(this.sampBus.gain, sampLevel, 0.02);
+      this.sp(this.sampLimDepth.gain, lim && sampled ? -sampLevel * 0.8 : 0, 0.005);
+      this.sp(
+        this.sampLP.frequency,
+        Math.min(10000, 500 + rpm * 0.5 + thr * 3000 - overrun * 700),
+        0.03
+      );
+      if (this.idleG) {
+        const idleMix = (1 - smoothstep(950, 2000, rpm)) * (1 - thr * 0.6);
+        this.sp(this.idleG.gain, sampled ? idleMix * 0.55 : 0, 0.06);
+      }
+    }
 
     // Airbox / cabin lowpass: opens with throttle and revs, closes on overrun.
     this.sp(
@@ -1045,8 +1452,26 @@ export class GameAudio {
 
     // Layer 3: full screech, broadband and amplitude-modulated, only once
     // slip is sustained and severe. Also demandEnv-driven, same reasoning.
+    // In sampled mode the recorded qubodup skid loop carries this role and
+    // the synth screech drops to a 25% under-layer (its AM chaos keeps the
+    // 1s recording from reading as a static loop); the sing layer above
+    // stays as-is in both modes — it is the tonal pitch-rise the recording
+    // doesn't have. Gains are slip-gated from silence, so nothing sounds at
+    // rest, and the same speed/wet scaling applies.
+    const skidSampled = sampled && this.skidG !== null;
     const screechMix = smoothstep(0.4, 0.85, this.demandEnv);
-    const screechBase = screechMix * 0.15 * speedGate * wetLevel;
+    const screechBase = screechMix * (skidSampled ? 0.04 : 0.15) * speedGate * wetLevel;
+    if (this.skidG && this.skidSrc) {
+      const skidMix = skidSampled ? smoothstep(0.35, 0.8, this.demandEnv) : 0;
+      this.sp(this.skidG.gain, skidMix * 0.3 * speedGate * wetLevel, 0.05);
+      // slight pitch rise with slip + a wet-road brightening nudge, so the
+      // loop tracks the slide instead of droning at one pitch
+      this.sp(
+        this.skidSrc.playbackRate,
+        0.85 + this.demandEnv * 0.3 + (raining ? 0.06 : 0),
+        0.06
+      );
+    }
     this.sp(this.screechF.frequency, 900 + this.demandEnv * 500, 0.06);
     this.sp(this.screechF.Q, 2.2 * (raining ? 0.5 : 1), 0.08);
     this.sp(this.screechG.gain, screechBase, 0.04);
@@ -1177,6 +1602,22 @@ export class GameAudio {
   setReverb(t: number) {
     if (!this.ok) return;
     const tt = clamp01(t);
+    this.lastReverbT = tt;
+    /* Recorded-IR path: once the underpass impulse response is wired, it IS
+       the tunnel reverb — the FDN stays parked at zero (wireConvolver()
+       killed it) and only the convolver wet level moves. Kept deliberately
+       subtle: 0.3 max wet, engine+tire sends only. Same hard-kill-at-zero
+       contract as the FDN path so pausing/exiting can't leave a tail
+       feeding itself. */
+    if (this.convWet) {
+      if (tt < 1e-4) {
+        this.convWet.gain.cancelScheduledValues(this.ctx.currentTime);
+        this.convWet.gain.value = 0;
+        return;
+      }
+      this.sp(this.convWet.gain, tt * 0.3, 0.15);
+      return;
+    }
     if (tt < 1e-4) {
       const now = this.ctx.currentTime;
       this.reverbWet.gain.cancelScheduledValues(now);
@@ -1270,10 +1711,6 @@ export class GameAudio {
     px: number, pz: number, pvx: number, pvz: number, ph: number
   ) {
     if (!this.ok) return;
-    /* User call (after the noise-branch removal still wasn't enough): NPC
-       traffic makes no engine sound at all. The pool stays built and horns
-       still work; this guard just keeps every voice silent and releases any
-       that were sounding when the flag flipped. */
     if (!GameAudio.NPC_VOICES_ENABLED) {
       // Listener pose must still track the player or npcHorn/npcChirp
       // (kept enabled) spatialize against a stale origin and fall silent.
@@ -1417,11 +1854,26 @@ export class GameAudio {
       chord doesn't have — the old version snapped on at full gain and
       immediately exponential-decayed, which read as a synthetic beep
       rather than a horn. */
-  npcHorn(x: number, z: number) {
+  npcHorn(x: number, z: number, heavy = false) {
     if (!this.ok) return;
-    const { pan, gain } = this.npcSpatial(x, z, 0.1);
+    const { pan, gain } = this.npcSpatial(x, z, heavy ? 0.13 : 0.1);
     if (gain <= 0) return;
     const c = this.ctx, t = c.currentTime;
+    /* Recorded path: real horns, round-robined across three car variants
+       (Alfa double-honk, polite double-beep, Alfa short) with a slight
+       random repitch; trucks/buses get the recorded truck horn. Positioned
+       with the same pan/attenuation as the synth version. */
+    const key = heavy
+      ? "hornTruck"
+      : ["hornA", "hornB", "hornC"][this.npcHornRR++ % 3];
+    const hb = this.samples.get(key);
+    if (hb) {
+      const pn = c.createStereoPanner();
+      pn.pan.value = pan;
+      pn.connect(this.master);
+      this.playSample(hb, gain * (heavy ? 1.1 : 1), pn, 0.96 + Math.random() * 0.08);
+      return;
+    }
     const o1 = c.createOscillator(), o2 = c.createOscillator(), g = c.createGain(), pn = c.createStereoPanner();
     o1.type = "square";
     o2.type = "square";

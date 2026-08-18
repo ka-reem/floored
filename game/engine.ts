@@ -1000,7 +1000,7 @@ export class Game {
     this.audio.updateNpcs(feed, car.x, car.z, car.wvx, car.wvz, car.h);
     for (const n of this.traffic.closeCalls()) {
       if (n.ccKind === "chirp") this.audio.npcChirp(n.x, n.z);
-      else this.audio.npcHorn(n.x, n.z);
+      else this.audio.npcHorn(n.x, n.z, n.type === "truck" || n.type === "bus");
     }
   }
 
