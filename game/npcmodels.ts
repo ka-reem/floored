@@ -4,27 +4,27 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 /* Real bodyshells for the NPC fleet.
 
    public/models/cars/<style>.glb holds one merged, indexed body mesh per
-   traffic style, baked by tools/build-npc-models.mjs from a CC0 vehicle pack
-   (see ATTRIBUTIONS.md). They are baked into exactly the conventions
-   traffic.ts already renders with, so a loaded model drops into the existing
-   InstancedMesh with no reshaping at runtime:
+   traffic style, baked by tools/build-orchids-models.mjs from the CC-BY
+   Orchids Simulator Traffic Car Pack (see ATTRIBUTIONS.md). They are baked
+   into exactly the conventions traffic.ts renders with, so a loaded model
+   drops into the existing InstancedMesh with no reshaping at runtime:
 
    - +Z forward, origin on the ground between the wheels, already scaled to
      that style's L/W/H from the tables in traffic.ts;
    - a baked `color` per vertex plus the `paintable` mask the NPC shader
-     reads, so the body panels take the per-instance paint colour while glass,
-     lamps, trim and liveries stay put. A model may additionally carry small
-     base-colour and metallic-roughness textures; the four Orchids passenger
-     cars do this to preserve their authored detail;
+     reads. The Orchids bakes keep their authored paint and carry small
+     base-colour (and usually metallic-roughness) textures, so their
+     paintable mask is zero and the per-instance paint channel is inert;
    - no wheels — traffic.ts instances one wheel across the whole fleet — but
      the arches' centres and radii ride along in `wheels` so those shared
      wheels land where the bodywork expects them;
    - lamp cluster centroids in `lamps`, so the light sprites sit on the actual
      lamps instead of at a guessed offset from the bumper.
 
-   Loading is best-effort and per style: traffic.ts starts on its procedural
-   shells and swaps each style in as it arrives, so a missing, corrupt or
-   slow file costs nothing but the procedural look. */
+   Loading is per style and never throws: traffic.ts holds a style out of the
+   spawn rotation until its model lands (there is no procedural fallback body
+   any more — an unloaded style is simply absent), so a missing or corrupt
+   file thins the roster rather than putting a placeholder on the road. */
 
 export type Vec3 = [number, number, number];
 

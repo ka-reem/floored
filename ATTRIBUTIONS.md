@@ -7,52 +7,6 @@ auditable.
 
 ## NPC vehicle bodyshells — `public/models/cars/*.glb`
 
-### Original six traffic styles
-
-| | |
-|---|---|
-| Asset | Free Low Poly Vehicles Pack |
-| Author | Raphael Gonçalves (rgsdev) |
-| Licence | **CC0 1.0 (Public Domain)** — "Public domain and free to use on any project, even commercial. Credit is not required." (`License.txt`, included in the download) |
-| Source | https://opengameart.org/content/free-low-poly-vehicles-pack |
-| Download | https://opengameart.org/sites/default/files/free_low_poly_vehicles_pack_by_rgsdev.zip |
-| Mirror | https://rgsdev.itch.io/free-low-poly-vehicles-pack |
-| Author's site | https://www.patreon.com/rgsdev |
-
-The rgsdev pack contains generic, unbranded vehicle silhouettes — no
-real-world manufacturer, model, badge or trade dress is depicted or implied.
-
-Six of the pack's twenty-one vehicles remain in use:
-
-| style | source model | notes |
-|---|---|---|
-| `kei` | Van | fitted to kei dimensions — reads as a kei van |
-| `van` | Van | |
-| `taxi` | Taxi | |
-| `police` | Police Sedan | black/white livery kept; white takes the paint slot |
-| `truck` | Truck | a bobtail cab; the cargo box is added by the bake |
-| `bus` | Bus | |
-
-`bike` has no model in the pack and stays procedural.
-
-### How the original six GLBs were produced
-
-The source pack is FBX. The committed GLBs were baked from it by
-`tools/build-npc-models.mjs`, which is run offline, not at build time:
-
-```sh
-unzip free_low_poly_vehicles_pack_by_rgsdev.zip
-node tools/build-npc-models.mjs "Free Low Poly Vehicles Pack by Rgsdev"
-```
-
-The bake fits each vehicle to the L/W/H the game already uses (the source
-proportions are cartoonish — a 2.8 m wide sedan), drops the wheels in favour of
-the fleet's shared instanced wheel, collapses the material slots into a baked
-vertex colour plus the `paintable` mask the NPC shader reads, and records the
-lamp and wheel anchors. See the header comment in that file for the details.
-
-### Four everyday passenger styles
-
 | | |
 |---|---|
 | Asset | Orchids Simulator Traffic Car Pack |
@@ -60,18 +14,27 @@ lamp and wheel anchors. See the header comment in that file for the details.
 | Licence | **CC BY 4.0** — commercial use and modification permitted with credit |
 | Source | https://sketchfab.com/3d-models/orchids-simulator-traffic-car-pack-2fc5970d5ba2415fa98ec98b8801e794 |
 
-Four ordinary passenger vehicles from the pack replace the `hybrid`, `suv`,
-`compact`, and `sedan` styles. The 26 MB source scene is not shipped. The
-offline `tools/build-orchids-models.mjs` bake selects only those four unnamed
-nodes, removes their wheel geometry in favor of the fleet's shared instanced
-wheels, resizes each source 1K color texture to an embedded 512px JPEG (and its
-metallic-roughness map to 256px), and fits each body to the game's existing
-dimensions. Tail-light glow anchors are sampled from each texture's actual red
-lens regions. Each style still uses its existing single instanced draw call.
+The entire NPC roster ships from this one pack — nine styles: `hybrid`,
+`sedan`, `compact`, `suv`, `taxi`, `police`, `van`, `truck`, `bus`. The 26 MB
+source scene is not shipped. The offline `tools/build-orchids-models.mjs` bake
+selects the nine unnamed source nodes by index, removes their wheel geometry
+in favor of the fleet's shared instanced wheels, resizes each source 1K color
+texture to an embedded 512px JPEG (metallic-roughness, where the source has
+one, to 256px), and fits each body to the game's existing dimensions. The
+four passenger cars sample their tail-light glow anchors from the texture's
+actual red lens regions; the other five use configured anchors. The taxi is
+the pack's red sedan with a hue rotation baked into its texture. Each style
+is a single instanced draw call.
 
-The four baked models contain 5,452 triangles and total about 580 KB. Their
-base-colour and metallic-roughness maps occupy about 7 MB of uncompressed GPU
-memory at runtime including mipmaps.
+The nine baked models total about 1.3 MB on disk. Their base-colour and
+metallic-roughness maps occupy roughly 14 MB of uncompressed GPU memory at
+runtime including mipmaps.
+
+An earlier fleet used six additional bodyshells from rgsdev's CC0 "Free Low
+Poly Vehicles Pack" (https://opengameart.org/content/free-low-poly-vehicles-pack,
+baked by `tools/build-npc-models.mjs`); none of those remain in the shipped
+assets. There are no procedural NPC car bodies any more, and the `bike` and
+`kei` styles were retired.
 
 ## PBR road/ground textures — `public/assets/pbr/*`
 
