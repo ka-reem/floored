@@ -68,8 +68,8 @@ try {
 let lv = await page.evaluate(() => window.__audioDebug.getLevels());
 if (lv.engineMode === "sampled") pass("engineMode defaults to 'sampled'");
 else fail(`engineMode default is ${lv.engineMode}`);
-if (lv.samplesDecoded === 23) pass("all 23 manifest samples decoded");
-else fail(`only ${lv.samplesDecoded}/23 samples decoded`);
+if (lv.samplesDecoded === 33) pass("all 33 manifest samples decoded");
+else fail(`only ${lv.samplesDecoded}/33 samples decoded`);
 if (lv.sampledSkid !== null && lv.convolverWet !== null) pass("skid loop + convolver wired");
 else fail(`skid/convolver not wired (skid=${lv.sampledSkid}, conv=${lv.convolverWet})`);
 
