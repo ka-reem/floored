@@ -618,6 +618,7 @@ export class Game {
          this turns out to be is only known at 2 s (hiBeamHold) or at release,
          whichever comes first. `e.repeat` is already filtered above, so
          autorepeat can't re-arm the timer under a held key. */
+      if (!this.highBeam) this.audio.stalkClick(); // stalk click on the OFF→ON edge only (lane O)
       this.hiHeld = true;
       this.hiConsumed = false;
       this.hiDownAt = performance.now() / 1000;
