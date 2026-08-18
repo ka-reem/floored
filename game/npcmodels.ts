@@ -13,7 +13,9 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
      that style's L/W/H from the tables in traffic.ts;
    - a baked `color` per vertex plus the `paintable` mask the NPC shader
      reads, so the body panels take the per-instance paint colour while glass,
-     lamps, trim and liveries stay put;
+     lamps, trim and liveries stay put. A model may additionally carry small
+     base-colour and metallic-roughness textures; the four Orchids passenger
+     cars do this to preserve their authored detail;
    - no wheels — traffic.ts instances one wheel across the whole fleet — but
      the arches' centres and radii ride along in `wheels` so those shared
      wheels land where the bodywork expects them;
@@ -41,6 +43,10 @@ export interface NpcModel {
   style: string;
   /** position / normal / color / paintable — ready to hand to an InstancedMesh */
   geo: THREE.BufferGeometry;
+  /** Optional per-style detail texture loaded from the model's material. */
+  map: THREE.Texture | null;
+  roughnessMap: THREE.Texture | null;
+  metalnessMap: THREE.Texture | null;
   lamps: NpcLamps;
   wheels: NpcWheel[];
 }
@@ -107,6 +113,7 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
   geo.setAttribute("normal", src.attributes.normal);
   geo.setAttribute("color", color);
   geo.setAttribute("paintable", paint);
+  if (src.attributes.uv) geo.setAttribute("uv", src.attributes.uv);
   /* Which lamp each vertex belongs to (1 head, 2 tail, 0 none). An older model
      file without it still works — the shader reads 0 and simply emits nothing,
      leaving that style's lamps to the glow sprites alone. */
@@ -118,7 +125,19 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
   geo.computeBoundingSphere();
 
   const extras: any = (gltf.scene.userData as any) ?? {};
-  return { style, geo, lamps: readLamps(extras.lamps), wheels: readWheels(extras.wheels) };
+  const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  const material = materials.length === 1
+    ? materials[0] as THREE.MeshStandardMaterial
+    : null;
+  return {
+    style,
+    geo,
+    map: material?.map ?? null,
+    roughnessMap: material?.roughnessMap ?? null,
+    metalnessMap: material?.metalnessMap ?? null,
+    lamps: readLamps(extras.lamps),
+    wheels: readWheels(extras.wheels),
+  };
 }
 
 /** Load a bodyshell per style, calling `onModel` as each one lands. Never
