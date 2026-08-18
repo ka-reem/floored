@@ -24,10 +24,12 @@ export function poolGradientTex(): THREE.Texture {
   const cv = document.createElement("canvas");
   cv.width = cv.height = 128;
   const ctx = cv.getContext("2d")!;
+  // Brightened per user call — the sodium pools should visibly light the
+  // street: hotter core, fuller mid skirt; the zero edge stays.
   const g = ctx.createRadialGradient(64, 64, 2, 64, 64, 62);
-  g.addColorStop(0, "rgba(255,216,152,0.60)");
-  g.addColorStop(0.35, "rgba(255,205,140,0.34)");
-  g.addColorStop(0.7, "rgba(255,190,120,0.12)");
+  g.addColorStop(0, "rgba(255,219,158,0.78)");
+  g.addColorStop(0.35, "rgba(255,207,142,0.46)");
+  g.addColorStop(0.7, "rgba(255,192,122,0.17)");
   g.addColorStop(1, "rgba(255,190,120,0)");
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 128, 128);
