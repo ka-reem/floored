@@ -1,8 +1,5 @@
 import * as THREE from "three";
 import { clamp, lerp, rand, pick, TAU, angDiff, mulberry32 } from "./util";
-import { roundedBoxGeo, hullShape, glassShape, roofShape, shellExtrude } from "./carshape";
-import { mergeVertices } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import type { ShellParams } from "./carspecs";
 import { loadNpcModels, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
 import { HX, LANE_LAT } from "./world/const";
 import { getCorridor } from "./world/corridor";
@@ -33,48 +30,36 @@ import type { NpcHit } from "./collide";
    smoke, block traffic, then dissolve out. */
 
 /* ===================== NPC models =====================
-   Everyday city traffic: a hybrid hatch, a plain sedan, a compact, a kei box
-   van, a crossover, plus a delivery van, box truck, bus and bike. Each style is
-   baked once into a near and a far geometry and drawn as an InstancedMesh, so
-   the whole fleet costs a fixed ~20 draw calls however many cars are live.
-   Per-instance paint rides in a `paintCol` attribute and only reaches vertices
-   flagged `paintable`, which keeps glass, bumpers, lamps and tyres out of the
-   paint job.
+   Everyday city traffic, all of it real modelled bodyshells baked offline
+   from the Orchids Simulator Traffic Car Pack (tools/build-orchids-models.mjs
+   → public/models/cars/<style>.glb): four ordinary passenger cars (hybrid
+   hatch, sedan, compact wagon, crossover) plus taxi, police, delivery van,
+   box truck and city bus. Each style is one InstancedMesh, so the whole fleet
+   costs a fixed ~10 draw calls however many cars are live.
 
-   Both LODs start out procedural — the shells below — and the near tier is then
-   upgraded in place to a real modelled bodyshell per style as npcmodels.ts
-   loads them (see applyModel). The far tier stays procedural on purpose: past
-   70 m a car is a few dozen pixels, and the coarse shell is already cheaper
-   than anything worth decimating a model down to. Nothing here waits on that
-   load and nothing breaks without it, so a missing or slow model file costs the
-   look and nothing else. */
+   There is deliberately NO procedural fallback body and no procedural far
+   tier any more — the models are 0.3-2.6k triangles, cheap enough to draw at
+   every distance. A style spawns nothing until its GLB has landed (see
+   `ready` below): on a normal load that is well inside the first second, and
+   the corridor seeding frame is simply held back until the fleet is in — a
+   brief absence, never a placeholder polygon car. A file that is missing or
+   corrupt keeps only that style off the road and thins the mix; it can not
+   put an untextured shape on screen.
 
-const BODY: Record<string, ShellParams> = {
-  // long fastback greenhouse, low nose — the silhouette of a hybrid hatch
-  hybrid: { L: 4.54, W: 1.76, ride: 0.30, nose: 0.56, tail: 0.78, belt: 0.92, roof: 1.46, hood: 1.04, trunk: 0.40, rakeF: 0.98, rakeR: 1.12, archR: 0.40, wzF: 1.40, wzR: 1.34, wheelR: 0.32, wheelWidth: 0.21 },
-  sedan: { L: 4.44, W: 1.79, ride: 0.30, nose: 0.62, tail: 0.68, belt: 0.90, roof: 1.40, hood: 1.10, trunk: 0.98, rakeF: 0.80, rakeR: 0.64, archR: 0.40, wzF: 1.37, wzR: 1.37, wheelR: 0.32, wheelWidth: 0.22 },
-  compact: { L: 3.94, W: 1.71, ride: 0.30, nose: 0.60, tail: 0.72, belt: 0.90, roof: 1.45, hood: 0.88, trunk: 0.32, rakeF: 0.74, rakeR: 0.50, archR: 0.38, wzF: 1.24, wzR: 1.20, wheelR: 0.30, wheelWidth: 0.20 },
-  kei: { L: 3.42, W: 1.49, ride: 0.32, nose: 0.50, tail: 0.62, belt: 1.00, roof: 1.74, hood: 0.44, trunk: 0.22, rakeF: 0.44, rakeR: 0.26, archR: 0.36, wzF: 1.12, wzR: 1.08, wheelR: 0.28, wheelWidth: 0.18 },
-  suv: { L: 4.72, W: 1.90, ride: 0.40, nose: 0.80, tail: 0.88, belt: 1.06, roof: 1.74, hood: 1.00, trunk: 0.46, rakeF: 0.82, rakeR: 0.48, archR: 0.46, wzF: 1.46, wzR: 1.42, wheelR: 0.36, wheelWidth: 0.24 },
-  van: { L: 4.64, W: 1.78, ride: 0.33, nose: 0.74, tail: 0.94, belt: 1.06, roof: 1.86, hood: 0.66, trunk: 0.20, rakeF: 0.56, rakeR: 0.16, archR: 0.40, wzF: 1.50, wzR: 1.46, wheelR: 0.31, wheelWidth: 0.22 },
-  bus: { L: 9.4, W: 2.26, ride: 0.36, nose: 0.5, tail: 0.5, belt: 1.18, roof: 2.72, hood: 0.3, trunk: 0.25, rakeF: 0.32, rakeR: 0.18, archR: 0.5, wzF: 3.4, wzR: 3.4, wheelR: 0.44, wheelWidth: 0.3 },
-  cab: { L: 2.3, W: 2.0, ride: 0.4, nose: 0.8, tail: 1.1, belt: 1.35, roof: 2.4, hood: 0.42, trunk: 0.08, rakeF: 0.4, rakeR: 0.1, archR: 0.46, wzF: 0.5, wzR: -99, wheelR: 0.42, wheelWidth: 0.3 },
-};
-BODY.taxi = BODY.sedan;
-BODY.police = BODY.sedan;
+   The models keep their authored paint and textures (their `paintable` mask
+   is zero), so the per-instance `paintCol` attribute is inert on today's
+   fleet — the plumbing stays because the shader contract carries it. */
 
 const TYPE_DIM: Record<string, { L: number; W: number; wr: number; wz: number; mass: number }> = {
   hybrid: { L: 4.54, W: 1.84, wr: 0.32, wz: 1.4, mass: 1400 },
   sedan: { L: 4.44, W: 1.87, wr: 0.32, wz: 1.37, mass: 1380 },
   compact: { L: 3.94, W: 1.79, wr: 0.30, wz: 1.24, mass: 1080 },
-  kei: { L: 3.42, W: 1.57, wr: 0.28, wz: 1.12, mass: 860 },
   suv: { L: 4.72, W: 1.98, wr: 0.36, wz: 1.46, mass: 1950 },
   taxi: { L: 4.44, W: 1.87, wr: 0.32, wz: 1.37, mass: 1380 },
   police: { L: 4.44, W: 1.87, wr: 0.32, wz: 1.37, mass: 1450 },
   van: { L: 4.64, W: 1.86, wr: 0.31, wz: 1.5, mass: 1750 },
   truck: { L: 6.3, W: 2.1, wr: 0.42, wz: 2.3, mass: 4200 },
   bus: { L: 9.4, W: 2.36, wr: 0.44, wz: 3.4, mass: 9000 },
-  bike: { L: 2.1, W: 0.8, wr: 0.3, wz: 0.72, mass: 240 },
 };
 
 /* Town/side-street traffic is parked for now at the user's request: the whole
@@ -86,31 +71,10 @@ const NPC_COLORS = [
   0xd8dde6, 0x14161c, 0x9298a4, 0x5a1f26, 0x1d2f52, 0x27402c, 0x6b6154,
   0xc4c9d4, 0x2a2c34, 0x83202c, 0xe8eaee, 0x3b4250, 0x6e7684, 0x1a3a34,
 ];
-const GLASS_C = 0x0a0e18, TRIM_C = 0x101218, BUMP_C = 0x2b2f38;
-const LAMP_C = 0xdfe6f2, TAIL_C = 0x8e1620, PLATE_C = 0xd4d8e0, TYRE_C = 0x0b0b0f;
+const TYRE_C = 0x0b0b0f;
 
 /** `lamp`: 0 none, 1 headlight, 2 rear light — drives the emissive term. */
 type Part = { g: THREE.BufferGeometry; c: number; paint: number; lamp?: number };
-
-/* Bodyshell at two levels of detail. Near work gets curved, merged, smooth-shaded
-   panels; the far tier drops the roof cap and runs a coarse extrusion, since past
-   70 m a car is a few dozen pixels. Costs about 1.9k / 0.5k triangles. */
-function shell(P: ShellParams, hi: boolean) {
-  const cs = hi ? 13 : 5, bs = hi ? 3 : 1;
-  const hull = shellExtrude(hullShape(P), P.W, hi ? 0.085 : 0.07, hi ? 0.065 : 0.05, bs, cs);
-  const glass = shellExtrude(glassShape(P), P.W - 0.18, hi ? 0.055 : 0.05, hi ? 0.045 : 0.04, bs, cs);
-  const smooth = (g: THREE.BufferGeometry) => {
-    const m = mergeVertices(g, 1e-4);
-    m.computeVertexNormals();
-    g.dispose();
-    return m;
-  };
-  return {
-    hull: hi ? smooth(hull) : hull,
-    glass: hi ? smooth(glass) : glass,
-    roof: hi ? smooth(shellExtrude(roofShape(P), P.W - 0.34, 0.05, 0.035, 2, cs)) : null,
-  };
-}
 
 /** Merge parts into one geometry carrying vertex colour + a paintable mask. */
 function mergeParts(parts: Part[]) {
@@ -153,166 +117,6 @@ function mergeParts(parts: Part[]) {
   out.setIndex(new THREE.BufferAttribute(idx, 1));
   out.computeBoundingSphere();
   return out;
-}
-
-/** Passenger bodywork: shell + greenhouse + all the small stuff that reads as
-    a real car up close (bumpers, lamps, mirrors, arch lips, shutlines). */
-function passengerGeo(type: string, hi: boolean) {
-  const P = BODY[type];
-  const S = shell(P, hi);
-  const parts: Part[] = [];
-  const add = (g: THREE.BufferGeometry, c: number, paint: number, lamp = 0) =>
-    parts.push({ g, c, paint, lamp });
-  const box = (
-    w: number, h: number, d: number, x: number, y: number, z: number,
-    c: number, paint: number, r = 0.05, lamp = 0
-  ) => {
-    // far bodies use plain boxes — a rounded one costs four times the triangles
-    const g = hi ? roundedBoxGeo(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d);
-    g.translate(x, y, z);
-    add(g, c, paint, lamp);
-  };
-  const L2 = P.L / 2, W2 = P.W / 2;
-  const livery = type === "taxi" ? 1 : type === "police" ? 1 : 1;
-
-  add(S.hull, 0xffffff, livery);
-  add(S.glass, GLASS_C, 0);
-  if (S.roof) add(S.roof, type === "police" ? 0x15171d : 0xffffff, type === "police" ? 0 : 1);
-
-  // bumpers, sill trim
-  box(P.W * 0.97, 0.21, 0.24, 0, P.ride + 0.11, L2 - 0.09, BUMP_C, 0, 0.09);
-  box(P.W * 0.97, 0.23, 0.24, 0, P.ride + 0.11, -L2 + 0.08, BUMP_C, 0, 0.09);
-  // lamps
-  for (const sx of [-1, 1]) {
-    box(0.32, 0.14, 0.12, sx * (W2 - 0.28), P.nose - 0.04, L2 - 0.09, LAMP_C, 0, 0.045, 1);
-    box(0.3, 0.16, 0.12, sx * (W2 - 0.27), P.tail - 0.1, -L2 + 0.08, TAIL_C, 0, 0.045, 2);
-  }
-  if (hi) {
-    box(P.W * 1.0, 0.12, P.L * 0.6, 0, P.ride - 0.04, 0, TRIM_C, 0, 0.05);
-    box(P.W * 0.5, 0.12, 0.07, 0, P.nose - 0.2, L2 - 0.02, 0x0b0d12, 0, 0.03);
-    box(0.3, 0.1, 0.05, 0, P.ride + 0.26, L2 - 0.01, PLATE_C, 0, 0.02);
-    box(0.3, 0.1, 0.05, 0, P.ride + 0.3, -L2 + 0.01, PLATE_C, 0, 0.02);
-    // mirrors on stalks
-    for (const sx of [-1, 1]) {
-      box(0.09, 0.05, 0.05, sx * (W2 + 0.03), P.belt + 0.07, L2 - P.hood + 0.02, 0x22252c, 0, 0.02);
-      box(0.12, 0.1, 0.06, sx * (W2 + 0.11), P.belt + 0.11, L2 - P.hood, 0xffffff, 1, 0.025);
-    }
-    // door shutlines + handles
-    for (const sx of [-1, 1]) {
-      for (const dz of [L2 - P.hood - 0.34, -P.L * 0.16]) {
-        box(0.024, (P.belt - P.ride) * 0.9, 0.02, sx * (W2 - 0.01), (P.ride + P.belt) / 2 + 0.03, dz, 0x0a0c10, 0, 0.006);
-      }
-      box(0.05, 0.045, 0.16, sx * (W2 - 0.01), P.belt - 0.11, L2 - P.hood - 0.62, 0x1a1d24, 0, 0.02);
-    }
-    // wheel arch lips
-    for (const sx of [-1, 1]) {
-      for (const wz of [P.wzF, -P.wzR]) {
-        const t = new THREE.TorusGeometry(P.archR + 0.035, 0.035, 4, 9, Math.PI);
-        t.rotateY(Math.PI / 2);
-        t.translate(sx * (W2 - 0.015), P.ride - 0.02, wz);
-        add(t, TRIM_C, 0);
-      }
-    }
-  }
-  // style signatures
-  if (!hi) {
-    if (type === "police") box(0.94, 0.13, 0.36, 0, P.roof + 0.11, -0.12, 0x15171d, 0, 0.05);
-    return mergeParts(parts);
-  }
-  if (type === "suv") {
-    for (const sx of [-1, 1])
-      box(0.07, 0.05, P.L * 0.44, sx * (P.W * 0.3), P.roof + 0.09, -0.15, 0x1c1f26, 0, 0.02);
-    box(P.W * 0.9, 0.1, 0.2, 0, P.ride + 0.02, L2 - 0.06, 0x3a3f49, 0, 0.04);
-  } else if (type === "hybrid" || type === "compact") {
-    box(P.W * 0.82, 0.07, 0.2, 0, P.belt + (P.roof - P.belt) * 0.86, -L2 + P.trunk * 0.5, 0xffffff, 1, 0.03);
-  } else if (type === "kei") {
-    box(P.W * 0.92, 0.06, 0.5, 0, P.roof + 0.06, 0.1, 0xffffff, 1, 0.03);
-  }
-  if (type === "police") {
-    box(0.94, 0.13, 0.36, 0, P.roof + 0.11, -0.12, 0x15171d, 0, 0.05);
-    for (const sx of [-1, 1])
-      box(0.06, (P.belt - P.ride) * 0.7, P.L * 0.42, sx * (W2 + 0.005), (P.ride + P.belt) / 2 + 0.06, -0.1, 0x1b1f28, 0, 0.02);
-  }
-  if (type === "taxi") box(0.42, 0.16, 0.22, 0, P.roof + 0.12, 0.2, 0xf0f2f6, 0, 0.05);
-  return mergeParts(parts);
-}
-
-/** Box truck: cab shell plus a cargo body. */
-function truckGeo(hi: boolean) {
-  const parts: Part[] = [];
-  const S = shell(BODY.cab, hi);
-  S.hull.translate(0, 0, 2.0);
-  S.glass.translate(0, 0, 2.0);
-  parts.push({ g: S.hull, c: 0xffffff, paint: 1 });
-  parts.push({ g: S.glass, c: GLASS_C, paint: 0 });
-  if (S.roof) {
-    S.roof.translate(0, 0, 2.0);
-    parts.push({ g: S.roof, c: 0xffffff, paint: 1 });
-  }
-  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06, lamp = 0) => {
-    const g = hi ? roundedBoxGeo(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d);
-    g.translate(x, y, z);
-    parts.push({ g, c, paint, lamp });
-  };
-  box(2.16, 2.24, 4.3, 0, 1.44, -1.05, 0xd6dae2, 0, 0.07);
-  box(2.2, 0.14, 4.32, 0, 2.58, -1.05, 0xb9bfc9, 0, 0.05);
-  box(2.12, 0.32, 0.5, 0, 0.36, 3.02, BUMP_C, 0, 0.06);
-  box(2.0, 0.26, 0.16, 0, 0.62, -3.2, TAIL_C, 0, 0.05, 2);
-  for (const sx of [-1, 1]) box(0.3, 0.16, 0.14, sx * 0.78, 0.86, 3.06, LAMP_C, 0, 0.05, 1);
-  if (hi) for (const sx of [-1, 1]) box(0.13, 0.24, 0.06, sx * 1.14, 1.72, 2.72, 0x22252c, 0, 0.03);
-  return mergeParts(parts);
-}
-
-/** City bus: long glasshouse with a window band. */
-function busGeo(hi: boolean) {
-  const parts: Part[] = [];
-  const S = shell(BODY.bus, hi);
-  parts.push({ g: S.hull, c: 0xffffff, paint: 1 });
-  parts.push({ g: S.glass, c: GLASS_C, paint: 0 });
-  if (S.roof) parts.push({ g: S.roof, c: 0xffffff, paint: 1 });
-  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06, lamp = 0) => {
-    const g = hi ? roundedBoxGeo(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d);
-    g.translate(x, y, z);
-    parts.push({ g, c, paint, lamp });
-  };
-  for (const sx of [-1, 1]) box(0.05, 0.86, 6.6, sx * 1.14, 1.72, -0.4, GLASS_C, 0, 0.03);
-  box(2.24, 0.3, 0.4, 0, 0.5, 4.6, BUMP_C, 0, 0.08);
-  box(2.24, 0.3, 0.4, 0, 0.5, -4.6, BUMP_C, 0, 0.08);
-  for (const sx of [-1, 1]) {
-    box(0.32, 0.18, 0.14, sx * 0.86, 0.78, 4.68, LAMP_C, 0, 0.05, 1);
-    box(0.3, 0.2, 0.14, sx * 0.86, 0.86, -4.68, TAIL_C, 0, 0.05, 2);
-  }
-  return mergeParts(parts);
-}
-
-/** Delivery van: tall box with a stubby nose. */
-function vanGeo(hi: boolean) {
-  return passengerGeo("van", hi);
-}
-
-function bikeGeo(hi: boolean) {
-  const parts: Part[] = [];
-  const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: number, paint: number, r = 0.06, lamp = 0) => {
-    const g = hi ? roundedBoxGeo(w, h, d, r, 1) : new THREE.BoxGeometry(w, h, d);
-    g.translate(x, y, z);
-    parts.push({ g, c, paint, lamp });
-  };
-  box(0.34, 0.5, 1.9, 0, 0.62, 0, 0xffffff, 1, 0.12);
-  box(0.42, 0.46, 0.4, 0, 1.06, -0.18, 0x14161c, 0, 0.13);
-  box(0.3, 0.27, 0.29, 0, 1.4, -0.12, 0x0d0f14, 0, 0.11);
-  box(0.52, 0.07, 0.09, 0, 0.96, 0.55, TRIM_C, 0, 0.03);
-  box(0.16, 0.12, 0.1, 0, 0.92, 0.92, LAMP_C, 0, 0.04, 1);
-  box(0.14, 0.1, 0.08, 0, 0.86, -0.94, TAIL_C, 0, 0.04, 2);
-  if (hi) box(0.5, 0.06, 0.5, 0, 1.18, -0.5, 0x1a1d24, 0, 0.03);
-  return mergeParts(parts);
-}
-
-function bodyGeoFor(type: string, hi: boolean) {
-  if (type === "truck") return truckGeo(hi);
-  if (type === "bus") return busGeo(hi);
-  if (type === "bike") return bikeGeo(hi);
-  if (type === "van") return vanGeo(hi);
-  return passengerGeo(type, hi);
 }
 
 /** Road wheel: tyre plus a rim face, vertex-coloured so one instanced mesh
@@ -486,8 +290,8 @@ export interface Driver {
       plaza's spread. */
   bias: number;
   /** Amplitude (m) of an ultra-slow sinusoidal wander on top of `bias`; 0 for
-      drivers who don't wander at all. Folded into the render-only `wob` path
-      alongside the bike's wobble, not into the driving offset itself. */
+      drivers who don't wander at all. Folded into the render-only `wob` path,
+      not into the driving offset itself. */
   driftAmp: number;
   /** Angular rate (rad/s) of that wander — TAU / period, period 20-40s. */
   driftRate: number;
@@ -568,7 +372,42 @@ type Lod = {
   lamp: THREE.InstancedBufferAttribute;
   n: number;
 };
-type StyleMesh = { near: Lod; far: Lod };
+
+/* ---- fake NPC headlight ground pools ----
+   Real per-NPC SpotLights are banned (each one multiplies the lit-shader cost
+   of every surface it touches; the player's own lamps are the entire dynamic
+   budget), so the road-lighting read comes from the standard fake: one
+   instanced, additive, depth-write-off quad per car, textured with an
+   elongated warm-white gradient and slid along the deck just ahead of the
+   bumper. Generated locally on a small canvas — deliberately not imported
+   from textures.ts, which other systems own. */
+const POOL_LEN = 8.6, POOL_W = 3.5, POOL_GAIN = 0.42, POOL_FADE_D = 240;
+function poolTexture(): THREE.Texture {
+  const c = document.createElement("canvas");
+  c.width = 64;
+  c.height = 128;
+  const g = c.getContext("2d")!;
+  g.fillStyle = "#000";
+  g.fillRect(0, 0, 64, 128);
+  /* additive: black is "off", so the falloff lives in RGB, not alpha. The hot
+     spot sits ~30% down from the top edge (the bumper end after the quad is
+     laid flat) and feathers out well before every border so instances never
+     show a seam. */
+  g.save();
+  g.translate(32, 40);
+  g.scale(1, 2.1);
+  const grad = g.createRadialGradient(0, 0, 2, 0, 0, 30);
+  grad.addColorStop(0, "rgba(255,242,214,0.85)");
+  grad.addColorStop(0.35, "rgba(214,198,168,0.5)");
+  grad.addColorStop(0.75, "rgba(96,88,72,0.16)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = grad;
+  g.fillRect(-32, -20, 64, 64);
+  g.restore();
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
 
 /** One slot of the doppler feed's reused result buffer — see Traffic.nearestNpcs. */
 export interface NpcAudioSample {
@@ -586,12 +425,25 @@ export class Traffic {
   private scene: THREE.Scene;
   private world: WorldData;
   private npcMat: THREE.MeshStandardMaterial;
-  private styles: StyleMesh[] = [];
+  private styles: Lod[] = [];
   private styleOf: Record<string, number> = {};
   /** per style, the loaded model's real lamp clusters; null until one lands */
   private lampsOf: (NpcLamps | null)[] = [];
+  /** per style: its Orchids bodyshell has landed and the style may spawn.
+      Nothing renders, spawns or sprites a style before this flips — there is
+      no placeholder body to fall back to, by design. */
+  private ready: boolean[] = [];
+  /** every style has been tried (loaded or failed) — until then the corridor
+      seeding frame is held open so the first fill happens with the fleet in */
+  private fleetReady = false;
   private wheelInst: THREE.InstancedMesh;
   private wheelCount = 0;
+  /** Fake headlight ground pools (one instanced additive quad per car).
+      Public switch so a quality tier can turn the whole draw off; while on it
+      costs a single draw call for the entire fleet. */
+  headlightPools = true;
+  private poolInst: THREE.InstancedMesh;
+  private poolColor: THREE.InstancedBufferAttribute;
   private clouds: Record<string, Cloud> = {};
   private pose: EdgePose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
   private pose2: EdgePose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
@@ -656,12 +508,13 @@ export class Traffic {
     npcShader(this.npcMat);
 
     /* Decide the fleet mix first: each style needs an instance buffer big
-       enough for every pool slot that could use it. */
+       enough for every pool slot that could use it. Deliberately small roster
+       (mobile memory): mostly regular cars, with vans/trucks/buses sprinkled
+       in, plus the two forced police cruisers below. */
     const roster: string[] = [];
     const mix: [string, number][] = [
-      ["hybrid", 0.21], ["sedan", 0.2], ["compact", 0.15], ["suv", 0.14],
-      ["kei", 0.08], ["van", 0.07], ["taxi", 0.06], ["truck", 0.05],
-      ["bus", 0.02], ["bike", 0.02],
+      ["sedan", 0.25], ["hybrid", 0.19], ["compact", 0.19], ["suv", 0.17],
+      ["taxi", 0.07], ["van", 0.06], ["truck", 0.05], ["bus", 0.02],
     ];
     for (let i = 0; i < N; i++) {
       let r = this.rng(), type = mix[mix.length - 1][0];
@@ -678,26 +531,28 @@ export class Traffic {
     for (const type in perStyle) {
       const cap = perStyle[type];
       this.styleOf[type] = this.styles.length;
-      const mk = (hi: boolean) => {
-        const m = new THREE.InstancedMesh(bodyGeoFor(type, hi), this.npcMat, cap);
-        m.castShadow = hi;
-        m.frustumCulled = false; // instances are culled by hand below
-        m.count = 0;
-        const paint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
-        const diss = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
-        const lamp = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
-        diss.array.fill(1);
-        paint.setUsage(THREE.DynamicDrawUsage);
-        diss.setUsage(THREE.DynamicDrawUsage);
-        lamp.setUsage(THREE.DynamicDrawUsage);
-        m.geometry.setAttribute("paintCol", paint);
-        m.geometry.setAttribute("dissolve", diss);
-        m.geometry.setAttribute("lampLvl", lamp);
-        scene.add(m);
-        return { mesh: m, paint, diss, lamp, n: 0 };
-      };
+      /* The mesh starts on an empty geometry — the style is invisible (and
+         barred from spawning) until applyModel installs its Orchids
+         bodyshell. There is no placeholder body on purpose. */
+      const m = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.npcMat, cap);
+      m.castShadow = true;
+      m.frustumCulled = false; // instances are culled by hand below
+      m.count = 0;
+      m.visible = false;
+      const paint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+      const diss = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+      const lamp = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
+      diss.array.fill(1);
+      paint.setUsage(THREE.DynamicDrawUsage);
+      diss.setUsage(THREE.DynamicDrawUsage);
+      lamp.setUsage(THREE.DynamicDrawUsage);
+      m.geometry.setAttribute("paintCol", paint);
+      m.geometry.setAttribute("dissolve", diss);
+      m.geometry.setAttribute("lampLvl", lamp);
+      scene.add(m);
       this.lampsOf.push(null);
-      this.styles.push({ near: mk(true), far: mk(false) });
+      this.ready.push(false);
+      this.styles.push({ mesh: m, paint, diss, lamp, n: 0 });
     }
 
     /* Sized for MAX_WHEELS rather than four: a modelled body may carry a
@@ -711,6 +566,29 @@ export class Traffic {
     this.wheelInst.frustumCulled = false;
     this.wheelInst.count = 0;
     scene.add(this.wheelInst);
+
+    /* Headlight ground pools: one quad per possible car, laid flat, additive,
+       never writing depth, drawn with the other transparents (after the
+       opaque road). Per-instance brightness rides in instanceColor, which is
+       the one per-instance channel MeshBasicMaterial already understands —
+       with additive blending, dimming the colour IS dimming the light. */
+    const poolGeo = new THREE.PlaneGeometry(1, 1);
+    poolGeo.rotateX(-Math.PI / 2); // face up; canvas "top" (hot end) → local -z
+    this.poolInst = new THREE.InstancedMesh(
+      poolGeo,
+      new THREE.MeshBasicMaterial({
+        map: poolTexture(), transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending, fog: false,
+      }),
+      N
+    );
+    this.poolColor = new THREE.InstancedBufferAttribute(new Float32Array(N * 3), 3);
+    this.poolColor.setUsage(THREE.DynamicDrawUsage);
+    this.poolInst.instanceColor = this.poolColor;
+    this.poolInst.frustumCulled = false;
+    this.poolInst.count = 0;
+    this.poolInst.visible = false;
+    scene.add(this.poolInst);
 
     const mkCloud = (color: number, size: number): Cloud => {
       const arr = new Float32Array(N * 2 * 3);
@@ -746,10 +624,7 @@ export class Traffic {
         id: i, active: false, type, style: this.styleOf[type],
         cr: C.r, cg: C.g, cb: C.b,
         L: d.L, W: d.W, wr: d.wr, wz: d.wz, mass: d.mass,
-        wheelOffs:
-          type === "bike"
-            ? [[d.wz, 0], [-d.wz, 0]]
-            : [[d.wz, hw2], [d.wz, -hw2], [-d.wz, hw2], [-d.wz, -hw2]],
+        wheelOffs: [[d.wz, hw2], [d.wz, -hw2], [-d.wz, hw2], [-d.wz, -hw2]],
         hw: true, edge: null, eDir: 1, segHint: { i: 0 }, nextEdgeId: -1,
         dir: 1, laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: this.cor.lanePitch(0) / 3, s: 0,
         v: 0, v0: 10,
@@ -765,23 +640,22 @@ export class Traffic {
       });
     }
 
-    /* Upgrade to the real bodyshells in the background. Everything above is
-       already a working fleet; each model that lands swaps one style's near
-       LOD in place, and any that never lands simply stays procedural. */
-    // bike ships no GLB (stays procedural) — requesting it just 404s every load
-    void loadNpcModels(
-      Object.keys(this.styleOf).filter((s) => s !== "bike"),
-      (m) => this.applyModel(m)
+    /* Load the bodyshells. Each model that lands makes its style live; the
+       fleetReady latch (set when every style has been tried) releases the
+       corridor seeding frame, so the opening fill happens with real cars.
+       A style whose file is missing or corrupt simply never spawns. */
+    void loadNpcModels(Object.keys(this.styleOf), (m) => this.applyModel(m)).then(
+      () => { this.fleetReady = true; }
     );
   }
 
-  /** Swap one style's near LOD over to a loaded bodyshell. Instance state —
-      matrices, paint colours, dissolve — is untouched, so this can land on any
-      frame, mid-drive, with cars of that style already on screen. */
+  /** Install a loaded bodyshell as its style's one and only geometry, and let
+      the style spawn. Instance state — matrices, paint colours, dissolve — is
+      untouched, so this can land on any frame, mid-drive. */
   private applyModel(m: NpcModel) {
     const si = this.styleOf[m.style];
     if (si === undefined) return;
-    const lod = this.styles[si].near;
+    const lod = this.styles[si];
     const old = lod.mesh.geometry;
     if (old === m.geo) return;
 
@@ -793,11 +667,10 @@ export class Traffic {
     m.geo.setAttribute("lampLvl", lod.lamp);
     lod.mesh.geometry = m.geo;
     if (m.map) {
-      /* The four detailed passenger bodies keep one resized texture each.
-         Their meshes are already separate instanced draw calls by style, so a
-         per-style material preserves the authored UV detail without changing
-         the fleet's draw-call count. Far LODs keep the shared untextured
-         material and procedural geometry. */
+      /* Each textured body keeps one resized texture. The meshes are already
+         separate instanced draw calls by style, so a per-style material
+         preserves the authored UV detail without changing the fleet's
+         draw-call count. */
       const material = this.npcMat.clone();
       material.map = m.map;
       material.roughnessMap = m.roughnessMap;
@@ -814,6 +687,7 @@ export class Traffic {
     old.dispose();
 
     this.lampsOf[si] = m.lamps;
+    this.ready[si] = true;
 
     /* Put the shared wheels in this body's own arches. wr/wz are visual only
        (wheel placement and roll rate), so this is safe to change under a car
@@ -941,6 +815,7 @@ export class Traffic {
   private trySpawnTown(
     n: Npc, player: CarState, camFx: number, camFz: number, hd: number
   ): boolean {
+    if (!this.ready[n.style]) return false; // no bodyshell yet, nothing to show
     const net = this.world.net;
     this.rollDriver(n);
     for (let attempt = 0; attempt < 14; attempt++) {
@@ -987,7 +862,7 @@ export class Traffic {
       n.wreck = null;
       n.fade = 1;
       n.blink = 0;
-      n.v0 = rand(8, 11.5) * (n.type === "bike" ? 1.15 : 1) * n.drv.spd;
+      n.v0 = rand(8, 11.5) * n.drv.spd;
       n.v = n.v0 * rand(0.6, 0.9);
       n.turnCd = rand(2, 6);
       this.placeTown(n);
@@ -1001,6 +876,7 @@ export class Traffic {
     n: Npc, player: CarState, playerUp: boolean,
     camFx: number, camFz: number, hd: number
   ): boolean {
+    if (!this.ready[n.style]) return false; // no bodyshell yet, nothing to show
     this.rollDriver(n);
     const cor = this.cor;
     const heavy = n.type === "truck" || n.type === "bus";
@@ -1036,7 +912,6 @@ export class Traffic {
       if (blocked) continue;
       let cruise = (rand(24, 30) + laneK * 1.1) * n.drv.spd;
       if (heavy) cruise = Math.min(cruise, 25);
-      if (n.type === "bike") cruise += 3;
       /* Nothing may be seeded behind the player, so a car quicker than them
          simply drives away and is never seen. Most of the stream is therefore
          pegged a little below the player's current pace: they get reeled in
@@ -1216,7 +1091,7 @@ export class Traffic {
   spawnObstacleAhead(car: CarState): boolean {
     const fx = Math.sin(car.h), fz = Math.cos(car.h);
     const tx = car.x + fx * 24, tz = car.z + fz * 24;
-    const n = this.npcs.find((m) => !m.active && m.type !== "bike");
+    const n = this.npcs.find((m) => !m.active && this.ready[m.style]);
     if (!n) return false;
     n.active = true;
     n.wreck = null;
@@ -1375,20 +1250,29 @@ export class Traffic {
     let spawnBudget = this.warpSeed ? cap : 5;
     while (spawnBudget > 0 && hwyCount < hwyTarget && (idleHwy.length || idleTown.length)) {
       const n = idleHwy.length ? idleHwy.pop()! : idleTown.pop()!;
+      // a style still waiting on its model costs no budget — otherwise a slow
+      // file at the head of the idle pool could starve the live styles
+      if (!this.ready[n.style]) continue;
       if (this.trySpawnHwy(n, player, playerUp, camFx, camFz, hd)) hwyCount++;
       spawnBudget--;
     }
     while (spawnBudget > 0 && townCount < townTarget && (idleTown.length || idleHwy.length)) {
       let n = idleTown.length ? idleTown.pop() : undefined;
       if (!n) {
-        const ix = idleHwy.findIndex((m) => m.type !== "truck" && m.type !== "bus");
+        const ix = idleHwy.findIndex(
+          (m) => m.type !== "truck" && m.type !== "bus" && this.ready[m.style]
+        );
         if (ix < 0) break;
         n = idleHwy.splice(ix, 1)[0];
       }
+      if (!this.ready[n.style]) continue;
       if (this.trySpawnTown(n, player, camFx, camFz, hd)) townCount++;
       spawnBudget--;
     }
-    this.warpSeed = false;
+    /* Keep the seeding frame open until every style has been tried, so the
+       opening fill happens with the whole fleet — not a corridor seeded thin
+       and topped up in dribbles as models land. */
+    if (this.fleetReady) this.warpSeed = false;
 
     const phase = signalPhase(now);
     const cfx = Math.sin(player.h), cfz = Math.cos(player.h);
@@ -1591,12 +1475,11 @@ export class Traffic {
       let dh = angDiff(targetH, n.hVis);
       n.hVis += clamp(dh, -6 * dt, 6 * dt);
       n.spin += (n.v / n.wr) * dt;
-      // ultra-subtle per-driver wander on top of the bike's own wobble —
-      // amplitude 0 for the ~40% of drivers who don't drift at all
-      const drift = n.drv.driftAmp > 0
+      // ultra-subtle per-driver wander — amplitude 0 for the ~40% of drivers
+      // who don't drift at all
+      n.wob = n.drv.driftAmp > 0
         ? Math.sin(now * n.drv.driftRate + n.drv.driftPhase) * n.drv.driftAmp
         : 0;
-      n.wob = (n.type === "bike" ? Math.sin(now * 0.9 + n.id * 2.1) * 0.28 : 0) + drift;
     }
 
     /* overlap resolution between NPCs sharing a lane (cheap, one pass) */
@@ -1624,7 +1507,7 @@ export class Traffic {
     }
 
     this.renderInstances(player, night);
-    this.updateLights(now, night);
+    this.updateLights(now, night, player);
   }
 
   /* town graph driving */
@@ -1858,24 +1741,22 @@ export class Traffic {
   }
 
   /* ---------------- instanced rendering ----------------
-     One pass builds every instance buffer: bodies go into a near or far LOD per
-     style and wheels only go on cars close enough to read as wheels. Nothing is
-     culled by view direction here — the scene is also rendered from the rear
-     camera for the mirrors and from the reflection camera for the road, and
-     both want the traffic behind the player. Nothing in here allocates. */
+     One pass builds every instance buffer: every body goes into its style's
+     single instanced mesh (the Orchids models are 0.3-2.6k triangles — cheap
+     enough that a separate coarse far tier stopped paying for itself), and
+     wheels only go on cars close enough to read as wheels. Nothing is culled
+     by view direction here — the scene is also rendered from the rear camera
+     for the mirrors and from the reflection camera for the road, and both
+     want the traffic behind the player. Nothing in here allocates. */
   private renderInstances(player: CarState, night: boolean) {
-    for (const st of this.styles) {
-      st.near.n = 0;
-      st.far.n = 0;
-    }
+    for (const st of this.styles) st.n = 0;
     let wk = 0;
-    const NEAR2 = 70 * 70, WHEEL2 = 150 * 150;
+    const WHEEL2 = 150 * 150;
     for (const n of this.npcs) {
       if (!n.active) continue;
       const dx = n.x - player.x, dz = n.z - player.z;
       const d2 = dx * dx + dz * dz;
-      const st = this.styles[n.style];
-      const lod = d2 < NEAR2 ? st.near : st.far;
+      const lod = this.styles[n.style];
       const i = lod.n++;
       const e = lod.mesh.instanceMatrix.array as Float32Array;
       const c = Math.cos(n.hVis), sn = Math.sin(n.hVis), o = i * 16;
@@ -1890,8 +1771,9 @@ export class Traffic {
       (lod.diss.array as Float32Array)[i] = n.fade;
       /* Emissive lamp levels. A wreck's lights are dead; otherwise the tails
          glow at a running level and jump on the brakes. These are radiance
-         multipliers on the lamp's own colour, so the tail values look large
-         against TAIL_C, which is a deliberately dark red. */
+         multipliers on lamp-flagged vertices (lampKind) — a model whose bake
+         carries no lamp flags simply leaves its lighting to the glow
+         sprites, which is where today's Orchids fleet reads its lights. */
       const la = lod.lamp.array as Float32Array;
       const lit = night && !n.wreck;
       la[i * 2] = lit ? 2.2 : 0;
@@ -1909,10 +1791,7 @@ export class Traffic {
         }
       }
     }
-    for (const st of this.styles) {
-      this.flushLod(st.near);
-      this.flushLod(st.far);
-    }
+    for (const st of this.styles) this.flushLod(st);
     this.wheelInst.count = wk;
     this.wheelCount = wk;
     if (wk) this.wheelInst.instanceMatrix.needsUpdate = true;
@@ -1928,10 +1807,14 @@ export class Traffic {
     lod.lamp.needsUpdate = true;
   }
 
-  /* light sprites */
-  private updateLights(now: number, night: boolean) {
+  /* light sprites + headlight ground pools */
+  private updateLights(now: number, night: boolean, player: CarState) {
     const SP = this.clouds;
     const blinkOn = now % 0.9 < 0.45;
+    const pools = this.headlightPools && night;
+    let pk = 0;
+    const pe = this.poolInst.instanceMatrix.array as Float32Array;
+    const pc = this.poolColor.array as Float32Array;
     let li = 0;
     const put = (cloud: Cloud, slot: number, x: number, y: number, z: number, show: boolean) => {
       const o = (li * 2 + slot) * 3, a = cloud.arr;
@@ -1968,10 +1851,40 @@ export class Traffic {
       bz = n.z;
       const wrecked = !!n.wreck;
       const running = night && !wrecked;
+      /* Headlight ground pool: a flat quad ahead of the bumper, yawed to the
+         heading and pitched to the corridor grade so it hugs a climbing deck,
+         faded by distance from the player (and by the wreck dissolve). Matrix
+         written by hand — column-major R_y(yaw)·R_x(pitch)·S — to keep this
+         allocation-free. */
+      if (pools && running) {
+        const dpx = n.x - player.x, dpz = n.z - player.z;
+        const fade = 1 - Math.hypot(dpx, dpz) / POOL_FADE_D;
+        if (fade > 0.01) {
+          const heavy = n.type === "truck" || n.type === "bus";
+          const sl = POOL_LEN * (heavy ? 1.15 : 1), sw = POOL_W * (heavy ? 1.3 : 1);
+          const ahead = n.L / 2 + sl * 0.42;
+          const grade = n.hw ? this.cor.pose(n.s, this.cpose).grade : 0;
+          const q = 1 / Math.sqrt(1 + grade * grade);
+          const sp = -grade * q, cp = q; // pitch that lays the quad on the slope
+          const o = pk * 16;
+          pe[o] = bfz * sw; pe[o + 1] = 0; pe[o + 2] = -bfx * sw; pe[o + 3] = 0;
+          pe[o + 4] = bfx * sp; pe[o + 5] = cp; pe[o + 6] = bfz * sp; pe[o + 7] = 0;
+          pe[o + 8] = bfx * cp * sl; pe[o + 9] = -sp * sl; pe[o + 10] = bfz * cp * sl; pe[o + 11] = 0;
+          pe[o + 12] = n.x + bfx * ahead;
+          pe[o + 13] = n.y + grade * ahead + 0.06;
+          pe[o + 14] = n.z + bfz * ahead;
+          pe[o + 15] = 1;
+          const I = POOL_GAIN * fade * (heavy ? 1.15 : 1) * n.fade;
+          pc[pk * 3] = I;
+          pc[pk * 3 + 1] = I;
+          pc[pk * 3 + 2] = I;
+          pk++;
+        }
+      }
       /* Where this style's lamps actually are. A loaded model reports its own
-         clusters; until then it is the bumper-relative guess the procedural
-         shells put their lamp boxes at. Slot 0 is always the -lateral side, so
-         the blinker still picks its side by the sign the driving code sets. */
+         clusters; until then it is the bumper-relative guess the light code
+         falls back on. Slot 0 is always the -lateral side, so the blinker
+         still picks its side by the sign the driving code sets. */
       const LM = this.lampsOf[n.style];
       const hl = n.L / 2, hw2 = n.W / 2 - 0.22;
       const hd = LM?.head, tl = LM?.tail;
@@ -2004,5 +1917,11 @@ export class Traffic {
       emit(SP.polB, 1, 0, -999, 0, false);
     }
     for (const key in SP) (SP[key].geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    this.poolInst.count = pk;
+    this.poolInst.visible = pk > 0;
+    if (pk) {
+      this.poolInst.instanceMatrix.needsUpdate = true;
+      this.poolColor.needsUpdate = true;
+    }
   }
 }

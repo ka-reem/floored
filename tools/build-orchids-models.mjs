@@ -4,13 +4,17 @@
      node tools/build-orchids-models.mjs <path-to-original-pack.glb>
 
    The downloaded pack is deliberately not shipped. It is one unnamed 26 MB
-   scene with 323 meshes and 77 embedded images. Four ordinary passenger cars
-   are selected by their stable glTF node indices, their UVs are preserved,
-   their 1K colour textures are resized to 512px JPEGs (metallic/roughness to
-   256px), wheel geometry is discarded, and the result is fitted to
-   traffic.ts's dimensions. Tail-light anchors are detected from the actual
-   red lens artwork instead of guessed from body dimensions. Each style remains
-   one instanced draw call.
+   scene with 323 meshes and 77 embedded images. The whole NPC roster — four
+   ordinary passenger cars plus the taxi, police car, delivery van, box truck
+   and city bus — is selected by stable glTF node indices, UVs are preserved,
+   the 1K colour textures are resized to 512px JPEGs (metallic/roughness to
+   256px), wheel geometry is discarded, and each body is fitted to
+   traffic.ts's dimensions. Each style remains one instanced draw call.
+
+   Lamp anchors: the four passenger cars detect their tail lights from the
+   actual red lens artwork. The five second-wave styles use configured
+   anchors instead — their rear artwork has too little red lens area for the
+   sampler (and the taxi's donor body is red all over, which would blind it).
 
    Source: "Orchids Simulator Traffic Car Pack" by SphereBall20, CC-BY 4.0.
    See ATTRIBUTIONS.md for the canonical URL and required credit. */
@@ -27,13 +31,32 @@ if (!SRC || !fs.existsSync(SRC)) {
   process.exit(1);
 }
 
-/* Body node + front/rear wheel-group nodes in the original GLB. The source has
-   no node names, so these indices are guarded by the expected triangle count. */
+/* Body node + wheel-group nodes in the original GLB. The source has no node
+   names, so these indices are guarded by the expected triangle count.
+
+   Optional per-style fields:
+   - `lamps`: configured lamp anchors as fractions of the fitted W/H/L —
+     head/tail are [x, y, z] mirrored to both sides, flashR/flashB single
+     points (police lightbar). Styles without it use the red-lens sampler.
+   - `hue`: degrees of hue rotation baked into the base-colour texture. Used
+     to turn the red donor sedan into the yellow taxi; glass, chrome and
+     tarmac shadows are unsaturated and unaffected. */
 const CARS = {
   hybrid:  { body: 216, wheels: [225, 235], tris: 1194, L: 4.54, W: 1.76, H: 1.51 },
   suv:     { body: 331, wheels: [333, 337], tris: 1410, L: 4.72, W: 1.90, H: 1.79 },
   compact: { body: 348, wheels: [352, 356], tris: 1434, L: 3.94, W: 1.71, H: 1.55 },
   sedan:   { body: 355, wheels: [221, 359], tris: 1414, L: 4.44, W: 1.79, H: 1.45 },
+  taxi:    { body: 258, wheels: [260, 266], tris: 1724, L: 4.44, W: 1.79, H: 1.45, hue: 62,
+             lamps: { head: [0.36, 0.42, 0.49], tail: [0.38, 0.50, -0.47] } },
+  police:  { body: 5,   wheels: [0, 10, 16, 20], tris: 2575, L: 4.44, W: 1.79, H: 1.52,
+             lamps: { head: [0.32, 0.45, 0.49], tail: [0.38, 0.35, -0.49],
+                      flashR: [-0.16, 1.0, 0.1], flashB: [0.16, 1.0, 0.1] } },
+  van:     { body: 272, wheels: [274, 280], tris: 1268, L: 4.64, W: 1.78, H: 1.91,
+             lamps: { head: [0.40, 0.40, 0.49], tail: [0.42, 0.42, -0.49] } },
+  truck:   { body: 231, wheels: [239, 251], tris: 1022, L: 6.30, W: 2.10, H: 3.10,
+             lamps: { head: [0.38, 0.28, 0.49], tail: [0.40, 0.17, -0.49] } },
+  bus:     { body: 25,  wheels: [36, 37, 38, 39], tris: 272, L: 9.40, W: 2.26, H: 3.00,
+             lamps: { head: [0.35, 0.22, 0.49], tail: [0.40, 0.25, -0.49] } },
 };
 
 function parseGlb(file) {
@@ -154,13 +177,15 @@ function sourceImageBytes(textureIndex) {
   };
 }
 
-async function imageForTexture(textureIndex, size, quality) {
+async function imageForTexture(textureIndex, size, quality, hue = 0) {
   const source = sourceImageBytes(textureIndex);
   if (!source) return null;
   const { imageIndex, bytes } = source;
-  const cacheKey = `${imageIndex}:${size}:${quality}`;
+  const cacheKey = `${imageIndex}:${size}:${quality}:${hue}`;
   if (imageCache.has(cacheKey)) return imageCache.get(cacheKey);
-  const value = await sharp(bytes)
+  let img = sharp(bytes);
+  if (hue) img = img.modulate({ hue });
+  const value = await img
     .resize({ width: size, height: size, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality, chromaSubsampling: "4:4:4" })
     .toBuffer();
@@ -185,10 +210,10 @@ async function sourcePixelsForTexture(textureIndex) {
   return value;
 }
 
-async function imagesForMaterial(materialIndex) {
+async function imagesForMaterial(materialIndex, hue = 0) {
   const pbr = doc.materials[materialIndex]?.pbrMetallicRoughness;
   return {
-    base: await imageForTexture(pbr?.baseColorTexture?.index, 512, 86),
+    base: await imageForTexture(pbr?.baseColorTexture?.index, 512, 86, hue),
     metallicRoughness: await imageForTexture(pbr?.metallicRoughnessTexture?.index, 256, 82),
     sourcePixels: await sourcePixelsForTexture(pbr?.baseColorTexture?.index),
   };
@@ -317,10 +342,8 @@ async function build(style, cfg) {
     throw new Error(`${style}: expected ${cfg.tris} triangles, found ${tris.length}`);
   for (const tri of tris) tri.p = tri.p.map(fit);
   const normals = creaseNormals(tris, Math.cos(THREE.MathUtils.degToRad(42)));
-  const images = await imagesForMaterial(meshRecord(cfg.body).material);
+  const images = await imagesForMaterial(meshRecord(cfg.body).material, cfg.hue || 0);
   if (!images.base) throw new Error(`${style}: source body has no base-colour texture`);
-  if (!images.metallicRoughness)
-    throw new Error(`${style}: source body has no metallic-roughness texture`);
   if (!images.sourcePixels)
     throw new Error(`${style}: source body texture could not be decoded`);
 
@@ -348,16 +371,24 @@ async function build(style, cfg) {
     }
   });
 
-  /* These four retain their authored paint and detail texture, so their paint
-     mask remains zero. Other fleet styles still use random per-instance paint,
-     keeping the overall stream varied. */
+  /* Every style retains its authored paint and detail texture, so the paint
+     mask stays zero across the fleet — variety comes from the roster mix. */
+  const pt = (f) => [f[0] * cfg.W, f[1] * cfg.H, f[2] * cfg.L];
+  const pair = (f) => [pt([-f[0], f[1], f[2]]), pt(f)];
   const frontY = cfg.H * 0.46;
-  const lamps = {
-    head: [[-cfg.W * 0.32, frontY, cfg.L * 0.49], [cfg.W * 0.32, frontY, cfg.L * 0.49]],
-    tail: tailLampPair(tris, images.sourcePixels, cfg),
-    flashR: null,
-    flashB: null,
-  };
+  const lamps = cfg.lamps
+    ? {
+        head: pair(cfg.lamps.head),
+        tail: pair(cfg.lamps.tail),
+        flashR: cfg.lamps.flashR ? pt(cfg.lamps.flashR) : null,
+        flashB: cfg.lamps.flashB ? pt(cfg.lamps.flashB) : null,
+      }
+    : {
+        head: [[-cfg.W * 0.32, frontY, cfg.L * 0.49], [cfg.W * 0.32, frontY, cfg.L * 0.49]],
+        tail: tailLampPair(tris, images.sourcePixels, cfg),
+        flashR: null,
+        flashB: null,
+      };
   const extras = {
     style,
     dims: { L: cfg.L, W: cfg.W, H: cfg.H },
@@ -434,7 +465,8 @@ function writeGlb(file, m) {
   });
   const aIdx = accessors.length - 1;
   const imageView = addView(m.image);
-  const metallicRoughnessImageView = addView(m.metallicRoughnessImage);
+  const metallicRoughnessImageView =
+    m.metallicRoughnessImage ? addView(m.metallicRoughnessImage) : null;
   const binary = Buffer.concat(chunks);
   const gltf = {
     asset: { version: "2.0", generator: "racing-game tools/build-orchids-models.mjs" },
@@ -458,16 +490,20 @@ function writeGlb(file, m) {
       pbrMetallicRoughness: {
         baseColorFactor: [1, 1, 1, 1],
         baseColorTexture: { index: 0, texCoord: 0 },
-        metallicRoughnessTexture: { index: 1, texCoord: 0 },
-        metallicFactor: 1,
-        roughnessFactor: 1,
+        ...(metallicRoughnessImageView !== null
+          ? { metallicRoughnessTexture: { index: 1, texCoord: 0 }, metallicFactor: 1, roughnessFactor: 1 }
+          : { metallicFactor: 0.2, roughnessFactor: 0.7 }),
       },
     }],
     samplers: [{ magFilter: 9729, minFilter: 9987, wrapS: 10497, wrapT: 10497 }],
-    textures: [{ sampler: 0, source: 0 }, { sampler: 0, source: 1 }],
+    textures: metallicRoughnessImageView !== null
+      ? [{ sampler: 0, source: 0 }, { sampler: 0, source: 1 }]
+      : [{ sampler: 0, source: 0 }],
     images: [
       { mimeType: "image/jpeg", bufferView: imageView },
-      { mimeType: "image/jpeg", bufferView: metallicRoughnessImageView },
+      ...(metallicRoughnessImageView !== null
+        ? [{ mimeType: "image/jpeg", bufferView: metallicRoughnessImageView }]
+        : []),
     ],
     accessors,
     bufferViews: views,
@@ -489,14 +525,15 @@ function writeGlb(file, m) {
 }
 
 fs.mkdirSync(OUT, { recursive: true });
-let bytes = 0;
+let bytes = 0, count = 0;
 for (const [style, cfg] of Object.entries(CARS)) {
   const model = await build(style, cfg);
   const result = writeGlb(path.join(OUT, `${style}.glb`), model);
   bytes += result.bytes;
+  count++;
   console.log(
     `${style.padEnd(8)} ${String(result.tris).padStart(4)} tris  ` +
     `${String(result.verts).padStart(4)} verts  ${(result.bytes / 1024).toFixed(1)} KB`
   );
 }
-console.log(`4 models, ${(bytes / 1024).toFixed(1)} KB total`);
+console.log(`${count} models, ${(bytes / 1024).toFixed(1)} KB total`);
