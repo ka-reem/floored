@@ -1065,6 +1065,72 @@ export class GameAudio {
     o.stop(t + 0.035);
   }
 
+  /* ---- stalk click (lane O) — self-contained one-shot, no samples ---- */
+  /** Rate limit + counter for stalkClick(). The 70ms floor is under any
+      humanly-repeatable G press (autorepeat is filtered at the key handler),
+      so a rapid flash-to-pass volley clicks once per press without ever
+      stacking two transients into a crackle. Counter is read by the headless
+      audio check via `__audioDebug.getStalkClickCount()`. */
+  private lastStalkClick = -1;
+  private stalkClickCount = 0;
+  getStalkClickCount() {
+    return this.stalkClickCount;
+  }
+
+  /** Mechanical column-stalk click for the high-beam OFF→ON edge. Fully
+      synthesized (zero bytes, no fetch): a 3ms bandpassed contact snap, a
+      damped plastic resonance falling 1.3k→0.9k, and a low ~330Hz "thock"
+      that gives it switchgear weight instead of UI-beep glassiness. Total
+      ring-out ~30ms, peak well under horn/crash levels. Routed into
+      `master`, so volume/duck/mute and the cabin EQ all apply unchanged. */
+  stalkClick() {
+    if (!this.ok) return;
+    const c = this.ctx, t = c.currentTime;
+    if (t - this.lastStalkClick < 0.07) return;
+    this.lastStalkClick = t;
+    this.stalkClickCount++;
+    // 1) contact snap: ~3ms noise transient through a bright bandpass
+    const n = Math.max(64, Math.floor(c.sampleRate * 0.004));
+    const buf = c.createBuffer(1, n, c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++)
+      d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * 0.0012));
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    const bp = c.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = 2600;
+    bp.Q.value = 1.8;
+    const ng = c.createGain();
+    ng.gain.value = 0.09;
+    src.connect(bp).connect(ng).connect(this.master);
+    src.start(t);
+    src.stop(t + 0.012);
+    // 2) plastic resonance: fast-damped sine with a small downward pitch dip
+    const o1 = c.createOscillator();
+    o1.type = "sine";
+    o1.frequency.setValueAtTime(1300, t);
+    o1.frequency.exponentialRampToValueAtTime(900, t + 0.014);
+    const g1 = c.createGain();
+    g1.gain.setValueAtTime(0.042, t);
+    g1.gain.exponentialRampToValueAtTime(0.0001, t + 0.018);
+    o1.connect(g1).connect(this.master);
+    o1.start(t);
+    o1.stop(t + 0.022);
+    // 3) low mechanical thock: the lever seating against its detent
+    const o2 = c.createOscillator();
+    o2.type = "sine";
+    o2.frequency.setValueAtTime(330, t);
+    o2.frequency.exponentialRampToValueAtTime(240, t + 0.02);
+    const g2 = c.createGain();
+    g2.gain.setValueAtTime(0.05, t);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + 0.028);
+    o2.connect(g2).connect(this.master);
+    o2.start(t);
+    o2.stop(t + 0.032);
+  }
+  /* ---- end stalk click (lane O) ---- */
+
   /** One-shot: play a decoded sample through gain (+ optional slight
       repitch for variety) into `dest`. Returns the source's duration/rate. */
   private playSample(
