@@ -1883,7 +1883,13 @@ export class Game {
       this.audio.update(
         this.car.rpm, this.car.thrEff, this.car.slipAmt, Math.abs(this.car.u), now,
         this.car.cut > 0 || this.car.shiftT > 0.1, this.rain, this.input.horn > 0,
-        this.car.gear, this.car.onLimiter, this.car.slipDemand
+        // NOTE: slipDemand used to be passed 11th, landing in the optional
+        // rainIntensity slot — realigned (rainIntensity has no source yet).
+        this.car.gear, this.car.onLimiter, undefined, this.car.slipDemand,
+        // lane U (interior trim creaks): smoothed body accels + grade, and
+        // whether the camera is an in-cabin view (cockpit/POV).
+        this.car.axS, this.car.ayS, this.car.slope,
+        this.camMode === CAM_COCKPIT || this.camMode === CAM_POV
       );
       this.npcAudioFeed();
       this.hud(now, dt);
