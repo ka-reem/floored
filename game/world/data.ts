@@ -1,5 +1,6 @@
 import type * as THREE from "three";
 import type { RoadNet } from "./roadnet";
+import type { RouteGraph } from "./routegraph";
 import type { Terrain } from "./terrain";
 
 export interface Aabb {
@@ -64,6 +65,9 @@ export interface WorldData {
   colliders: ColliderIndex;
   net: RoadNet;
   terrain: Terrain;
+  /** the route graph (routegraph.ts); optional until the stage-2 build-out
+      wires every consumer, so the old world builder keeps compiling */
+  routes?: RouteGraph;
   exits: ExitInfo[];
   chunks: { group: THREE.Group; cx: number; cz: number }[];
   // weather-dimmable references
