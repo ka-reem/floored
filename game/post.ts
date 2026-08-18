@@ -84,6 +84,10 @@ export class PostFX {
   private povA!: THREE.WebGLRenderTarget;
   private povB!: THREE.WebGLRenderTarget;
   private perf = false;
+  /** mobile-tier RT policy (see setMobile): half-size mirror, quarter-res
+      reflection allocation. Distinct from `perf`, which is the reactive
+      frame-time fallback and can fire on top of this on any tier. */
+  private mobile = false;
   private speedKmh = 0;
   private pov = false;
   /** false for one frame after a hard view change: the temporal blend is
@@ -531,9 +535,13 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.brightRT = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
     this.blurA = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
     this.blurB = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
+    // mobile tiers never render into the reflection RT (the engine's tier
+    // gate skips the pass entirely), so its allocation drops to the perf-mode
+    // quarter size there — it only exists to keep the material binding valid
+    const rShift = perfMode || this.mobile ? 2 : 1;
     this.reflectRT = new THREE.WebGLRenderTarget(
-      Math.max(220, w >> (perfMode ? 2 : 1)),
-      Math.max(124, h >> (perfMode ? 2 : 1)),
+      Math.max(220, w >> rShift),
+      Math.max(124, h >> rShift),
       { type: THREE.HalfFloatType }
     );
     this.ldrRT = new THREE.WebGLRenderTarget(w, h);
@@ -567,6 +575,20 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     // toggling V mid-drive never moves the timestamp
     this.povMat.uniforms.uOverPos.value.copy(this.dashMat.uniforms.uOverPos.value);
     this.povMat.uniforms.uOverSize.value.copy(this.dashMat.uniforms.uOverSize.value);
+  }
+
+  /** Mobile-tier render-target policy. The cockpit mirror drops to half
+   * resolution (160x64 — resized in place via setSize so the texture object
+   * the cockpit glass material holds stays valid), and makeTargets() reads
+   * the flag to shrink the reflection RT allocation. Returns true when the
+   * flag actually changed so the caller knows the screen-sized targets need
+   * a makeTargets() rebuild (the engine forces one through its lastPR path,
+   * which also re-binds the reflection texture on the road materials). */
+  setMobile(on: boolean): boolean {
+    if (on === this.mobile) return false;
+    this.mobile = on;
+    this.mirrorRT.setSize(on ? 160 : 320, on ? 64 : 128);
+    return true;
   }
 
   /** Per-frame speed feed for the speed-perception cues (peripheral radial

@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { clamp, lerp, mulberry32 } from "./util";
 import {
-  fogMultiplier, speedInUnits, unitLabel,
-  type GameSettings, type Profile,
+  fogMultiplier, speedInUnits, unitLabel, resolveRenderTier, TIER_CAPS,
+  type GameSettings, type Profile, type RenderTier, type TierCaps,
 } from "./settings";
 import { getCar, PAINTS, type CarSpec } from "./carspecs";
 import { buildMats, type Mats } from "./world/mats";
@@ -166,6 +166,15 @@ export class Game {
   time = 21.4;
   timeSpeed = 150;
   perfMode = false;
+  /** Device tier (settings.ts): what the hardware *is*, resolved from touch +
+      DPR + GPU sniff, a persisted override, or a `?tier=` test param. Sets the
+      quality ceiling the levers below start from. perfMode stays the reactive
+      safety net ON TOP of this — it watches what frame times *do* and can
+      still degrade any tier further; nothing here disables it. */
+  renderTier: RenderTier = "desktop";
+  /** the tier's caps on existing levers — public so the UI can show the
+      resolved tier and so other lanes (fence overdraw) can gate on it */
+  tierCaps: TierCaps = TIER_CAPS.desktop;
   lookBack = false;
   /* High beams. G is momentary (flash-to-pass) on a short press and toggles the
      latch when held past HI_HOLD, which is as close to a column stalk as one
@@ -284,7 +293,11 @@ export class Game {
     if (this.isTouch) document.body.classList.add("touch");
 
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.isTouch ? 1.35 : 1.75));
+    // resolved against the renderer's own GL context so the GPU sniff never
+    // has to spin up a throwaway canvas context of its own
+    this.renderTier = resolveRenderTier(this.settings, this.isTouch, this.renderer.getContext());
+    this.tierCaps = TIER_CAPS[this.renderTier];
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.tierCaps.dprCap));
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.toneMapping = THREE.NoToneMapping; // manual ACES in the composite pass
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -318,12 +331,18 @@ export class Game {
     this.scene.add(this.amb);
 
     this.post = new PostFX(this.renderer);
+    // mobile tiers run the cockpit mirror at half resolution; the reflection
+    // RT allocation follows in applySettings' makeTargets pass below
+    this.post.setMobile(this.tierCaps.mirrorHalf);
     /* On the low preset the photo scans are not fetched at all — some 60 MB of
        texture memory and a 5 MB download, on exactly the device that asked for
        less. The load is deferred rather than cancelled, so updatePbrDetail()
        turning detail back on when the preset is raised is also what starts it,
-       and the world upgrades in place. */
-    this.mats = buildMats({ pbr: profile.settings.preset !== "low" });
+       and the world upgrades in place. The mobile-base tier defers the fetch
+       the same way — a manual tier bump later still upgrades in place. */
+    this.mats = buildMats({
+      pbr: profile.settings.preset !== "low" && this.tierCaps.pbrDetail,
+    });
     // async: swaps a real night-city HDRI under the car bodywork when one is
     // on disk, otherwise the painted cube env above stays
     primeCarEnv(this.renderer, this.mats.envMap);
@@ -442,6 +461,7 @@ export class Game {
         chunksVisible: this.world.chunks.filter((c) => c.group.visible).length,
         chunksTotal: this.world.chunks.length,
         perfMode: this.perfMode,
+        renderTier: this.renderTier,
         errors: this.debug.errors,
         frames: this.debug.frames,
       }),
@@ -665,15 +685,28 @@ export class Game {
 
   /* ---------------- settings ---------------- */
   private lastPR = -1;
+  /** Planar road reflections, as actually rendered: user setting AND tier.
+      Mobile tiers never pay for the reflection RT; the material's uRefStr is
+      zeroed via setWet at the same call sites, so nothing samples stale data. */
+  private get reflectionsOn() {
+    return this.settings.reflections && this.tierCaps.reflections;
+  }
   applySettings(s: GameSettings) {
     this.settings = s;
+    // re-resolve the tier: the manual override lives in these settings, and a
+    // change has to land on the same frame the settings panel applies it
+    this.renderTier = resolveRenderTier(s, this.isTouch, this.renderer.getContext());
+    this.tierCaps = TIER_CAPS[this.renderTier];
+    // a tier flip changes the mirror/reflection RT policy even when the pixel
+    // ratio happens not to move — force the target rebuild path below
+    if (this.post.setMobile(this.tierCaps.mirrorHalf)) this.lastPR = -1;
+    /* DPR: perf mode floors everything at 1; otherwise the preset's own cap
+       (low 1, medium 1.5) combines with the tier ceiling — 1.1 mobile-base,
+       1.35 mobile-high, 1.75 desktop — and the lower one wins. */
+    const presetCap = s.preset === "low" ? 1 : s.preset === "medium" ? 1.5 : Infinity;
     const pr = this.perfMode
       ? 1
-      : s.preset === "low"
-        ? 1
-        : s.preset === "medium"
-          ? Math.min(devicePixelRatio, 1.5)
-          : Math.min(devicePixelRatio, this.isTouch ? 1.35 : 1.75);
+      : Math.min(devicePixelRatio, presetCap, this.tierCaps.dprCap);
     if (pr !== this.lastPR) {
       // render targets are only rebuilt when the resolution actually changes —
       // slider drags hit this path every input tick
@@ -686,7 +719,7 @@ export class Game {
         innerHeight * this.renderer.getPixelRatio()
       );
     }
-    this.mats.setWet(this.rain, s.reflections);
+    this.mats.setWet(this.rain, this.reflectionsOn);
     this.updatePbrDetail();
     this.timeSpeed = s.autoTime ? (this.timeSpeed === 0 ? 150 : this.timeSpeed) : 0;
     this.audio.setLevels(s.vol, this.running ? 1 : 0.12);
@@ -702,7 +735,8 @@ export class Game {
       the detail rather than building without the scans keeps them resident and
       lets the setting come back if the preset is raised again. */
   private updatePbrDetail() {
-    const want = !this.perfMode && this.settings.preset !== "low";
+    const want =
+      !this.perfMode && this.settings.preset !== "low" && this.tierCaps.pbrDetail;
     if (want === this.pbrDetail) return;
     this.pbrDetail = want;
     this.mats.setPbrDetail(want);
@@ -711,7 +745,7 @@ export class Game {
   setRain(on: boolean) {
     this.rain = on;
     this.rainFX.pts.visible = on;
-    this.mats.setWet(on, this.settings.reflections);
+    this.mats.setWet(on, this.reflectionsOn);
     this.ui.toast(on ? "RAIN — grip down" : "RAIN OFF");
   }
 
@@ -1104,7 +1138,10 @@ export class Game {
        commit message. Ground coverage is real but deliberately more modest
        than the first cut — that's the trade for cars in the next lane no
        longer blowing out regardless of range. */
-    const si2 = lamps
+    // tier gate: mobile-base drops the two fill cones entirely — two fewer
+    // live spotlights in every forward shader — and the main beams carry the
+    // scene alone, which they did for the game's whole life before the cones
+    const si2 = lamps && this.tierCaps.spreadCones
       ? hi ? (this.rain ? 3070 : 2370) : (this.rain ? 1840 : 1420)
       : 0;
     this.rig.spreadL.intensity = si2;
@@ -1279,7 +1316,11 @@ export class Game {
   }
 
   private chunksUpdate() {
-    const dd = this.perfMode ? Math.min(this.settings.drawDist, 520) : this.settings.drawDist;
+    // tier scales the user's draw distance down before the reactive perf cap
+    // bites — 0.65 mobile-base / 0.85 mobile-high / 1 desktop — so the two
+    // compose instead of fighting: the perf cap still wins when it is lower
+    const scaled = this.settings.drawDist * this.tierCaps.drawDistScale;
+    const dd = this.perfMode ? Math.min(scaled, 520) : scaled;
     for (const c of this.world.chunks) {
       const d = Math.hypot(c.cx - this.camera.position.x, c.cz - this.camera.position.z);
       c.group.visible = d < dd;
@@ -1820,7 +1861,11 @@ export class Game {
       (this.camMode === CAM_COCKPIT || this.camMode === CAM_POV)
     )
       this.renderMirror();
-    if (this.settings.reflections && (!this.perfMode || this.frameN % 2 === 0))
+    // reflectionsOn folds in the tier: on mobile tiers this is the ONLY call
+    // site that writes reflectRT, so gating it here means the RT genuinely
+    // never sees a per-frame render (setWet zeroes uRefStr at the same time,
+    // so no material samples it either)
+    if (this.reflectionsOn && (!this.perfMode || this.frameN % 2 === 0))
       this.renderReflection();
     this.camera.updateMatrixWorld();
     this.renderer.setRenderTarget(this.post.sceneRT);
@@ -1829,8 +1874,11 @@ export class Game {
     const f = this.dayFactor();
     this.post.setSpeed(Math.abs(this.car.u) * 3.6);
     // the extreme degrade is a property of the camera, not a user filter — the
-    // V-key `grade` below stays independent and keeps driving the mild look
-    this.post.setDashcamPov(this.camMode === CAM_POV);
+    // V-key `grade` below stays independent and keeps driving the mild look.
+    // Both dashcam passes are desktop-tier only: on mobile the POV camera
+    // still works as a clean hard-mounted view, it just skips the half-res
+    // degrade chain (and the forced frame blend that rides along with it).
+    this.post.setDashcamPov(this.camMode === CAM_POV && this.tierCaps.dashcam);
     this.post.process({
       // inside the tunnel the eye adapts to a much darker box: lift exposure
       // so the sodium strip and the walls read, instead of crushing to black
@@ -1838,11 +1886,12 @@ export class Game {
       // map: lifting it back here would simply undo the darkness. Only the
       // lamps and lit windows are above the bloom knee once it is this low.
       exposure: lerp(lerp(0.98, 0.9, f), 1.34, this.tunT),
-      grade: this.grade,
+      grade: this.grade && this.tierCaps.dashcam,
+      // bloom is untouched by the tier on purpose: it stays for every device
       bloom: this.settings.bloom,
       fxaa: this.settings.fxaa,
       mblur:
-        this.settings.mblur && this.running
+        this.settings.mblur && this.tierCaps.mblur && this.running
           ? clamp((Math.abs(this.car.u) * 3.6 - 70) / 170, 0, 0.42)
           : 0,
       time: now,
