@@ -838,9 +838,18 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       x0 = Math.min(x0, ux); x1 = Math.max(x1, ux);
       y0 = Math.min(y0, uy); y1 = Math.max(y1, uy);
     }
-    x0 = Math.max(0, x0); y0 = Math.max(0, y0);
-    x1 = Math.min(1, x1); y1 = Math.min(1, y1);
-    if (x1 - x0 < 1e-3 || y1 - y0 < 1e-3) return false; // fully offscreen
+    // offscreen test intersects with [0,1], but the uniforms keep the rect
+    // overhanging the screen (softly bounded): on wide shells the glass clips
+    // the right edge, and a rect clamped to 1 would put the feather ON the
+    // visible glass, leaving a degraded sliver at the edge — overhang parks
+    // the feather offscreen instead
+    if (
+      Math.min(x1, 1) - Math.max(x0, 0) < 1e-3 ||
+      Math.min(y1, 1) - Math.max(y0, 0) < 1e-3
+    )
+      return false;
+    x0 = Math.max(-0.25, x0); y0 = Math.max(-0.25, y0);
+    x1 = Math.min(1.25, x1); y1 = Math.min(1.25, y1);
     this.povMat.uniforms.uMirMin.value.set(x0, y0);
     this.povMat.uniforms.uMirMax.value.set(x1, y1);
     this.mbMat.uniforms.uMirMin.value.set(x0, y0);
