@@ -1225,9 +1225,24 @@ export class Game {
        material it reaches is unlit, so the ambient crush above never touches
        them: this is the only lever that dims night paint, and it is set here
        rather than in mats.ts because it is a night-look decision. */
+    /* The wedge must pitch with the car the same way the spotlights now do
+       (lampsG rides bodyG — see player.ts): its y is a gradient per metre of
+       forward run, exactly the units car.slope is measured in, so following
+       the deck is literally adding the deck's own gradient. pitchVis (nose
+       dive/squat, positive = nose down) is subtracted to match bodyG's
+       rotation; it is a small damped angle, so the small-angle tan is fine.
+       Without these terms the wedge stayed world-horizontal and diverged from
+       a 6-10% ramp deck by its full grade — 3.4-5.7 degrees — which is most
+       of the paint's fully-lit tolerance. The lamp-line origin also rides the
+       nose, which sits slope*2.05 above/below car.y on a grade. The dipped
+       -0.05 / high -0.012 aim offsets are unchanged (a89aac9 character). */
+    const bpitch = car.slope - Math.tan(this.pitchVis);
     this.beamPos.set(
-      car.x + Math.sin(car.h) * 2.05, car.y + 0.62, car.z + Math.cos(car.h) * 2.05);
-    this.beamDir.set(Math.sin(car.h), hi ? -0.012 : -0.05, Math.cos(car.h));
+      car.x + Math.sin(car.h) * 2.05,
+      car.y + 0.62 + car.slope * 2.05,
+      car.z + Math.cos(car.h) * 2.05);
+    this.beamDir.set(
+      Math.sin(car.h), bpitch + (hi ? -0.012 : -0.05), Math.cos(car.h));
     this.mats.setBeam(
       lamps, this.beamPos, this.beamDir, f, BEAM_FLOOR,
       (hi ? HL_THROW_HI : HL_THROW) / HL_PAINT_BASE);
