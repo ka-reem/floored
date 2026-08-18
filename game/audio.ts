@@ -74,15 +74,14 @@ const smoothstep = (e0: number, e1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
-/** One voice in the NPC doppler pool: a cheap oscillator + filtered-noise
-    pair (not the full player engine graph) routed through a StereoPanner.
-    Assigned to nearby traffic cars by updateNpcs() with simple
-    position-tracked voice stealing. */
+/** One voice in the NPC doppler pool: a cheap oscillator (not the full
+    player engine graph) routed through a StereoPanner. Assigned to nearby
+    traffic cars by updateNpcs() with simple position-tracked voice
+    stealing. A filtered-noise branch used to sit alongside the osc; it read
+    as white hiss whenever a car pulled close and was removed outright. */
 interface NpcVoice {
   osc: OscillatorNode;
   oscG: GainNode;
-  noiseF: BiquadFilterNode;
-  noiseG: GainNode;
   mixG: GainNode;
   panner: StereoPannerNode;
   active: boolean;
@@ -196,7 +195,7 @@ export class GameAudio {
   // continuing[voice] = this frame's claim is the SAME car it was already
   // tracking (matched by position in the tracking pass below), as opposed
   // to a fresh activation or a steal from a different car — used to give
-  // steals a brief mixG dip instead of gliding oscG/noiseG straight to the
+  // steals a brief mixG dip instead of gliding oscG straight to the
   // new car's values while staying at full volume throughout.
   private npcContinuing: boolean[] = new Array(GameAudio.NPC_POOL).fill(false);
 
@@ -621,26 +620,12 @@ export class GameAudio {
         oscG.gain.value = 0;
         osc.connect(oscG);
         osc.start();
-        // Lowpass, not bandpass: a distant car's noise should darken with
-        // range (air absorption rolls off highs, not lows), not sit at a
-        // fixed brightness until its gain hits zero. Q=0.7 is close to
-        // Butterworth (0.707) for lowpass — flat, no resonant peak; that
-        // same value was a bad, too-wide choice back when this was a
-        // bandpass (bandwidth = freq/Q ≈ 1000Hz at 700Hz center).
-        const noiseF = ctx.createBiquadFilter();
-        noiseF.type = "lowpass";
-        noiseF.frequency.value = 700;
-        noiseF.Q.value = 0.7;
-        const noiseG = ctx.createGain();
-        noiseG.gain.value = 0;
-        this.noiseNode().connect(noiseF).connect(noiseG);
         const mixG = ctx.createGain();
         mixG.gain.value = 0;
         oscG.connect(mixG);
-        noiseG.connect(mixG);
         const panner = ctx.createStereoPanner();
         mixG.connect(panner).connect(this.master);
-        this.npcVoices.push({ osc, oscG, noiseF, noiseG, mixG, panner, active: false, lastX: 0, lastZ: 0 });
+        this.npcVoices.push({ osc, oscG, mixG, panner, active: false, lastX: 0, lastZ: 0 });
       }
 
       /* ---- scrape/grind voice ----
@@ -692,18 +677,17 @@ export class GameAudio {
     // pasted snapshot show the pool's actual output and the closest voice's
     // character (distance/gain/cutoff) directly, rather than needing a
     // follow-up round-trip to ask for them.
-    let npcNoiseSum = 0, npcOscSum = 0;
-    let nearest: { dist: number; noiseG: number; cutoff: number } | null = null;
+    let npcOscSum = 0;
+    let nearest: { dist: number; oscG: number } | null = null;
     let nearestD2 = Infinity;
     for (const v of this.npcVoices) {
       if (!v.active) continue;
-      npcNoiseSum += v.noiseG.gain.value;
       npcOscSum += v.oscG.gain.value;
       const dx = v.lastX - this.lastPx, dz = v.lastZ - this.lastPz;
       const d2 = dx * dx + dz * dz;
       if (d2 < nearestD2) {
         nearestD2 = d2;
-        nearest = { dist: Math.sqrt(d2), noiseG: v.noiseG.gain.value, cutoff: v.noiseF.frequency.value };
+        nearest = { dist: Math.sqrt(d2), oscG: v.oscG.gain.value };
       }
     }
     return {
@@ -722,7 +706,6 @@ export class GameAudio {
       scrape: this.scrapeG.gain.value,
       reverbWet: this.reverbWet.gain.value,
       npcVoicesActive: this.npcVoices.filter((v) => v.active).length,
-      npcNoiseSum,
       npcOscSum,
       npcNearest: nearest,
       master: this.master.gain.value,
@@ -1378,7 +1361,7 @@ export class GameAudio {
       // A steal — an already-active voice reassigned to a DIFFERENT car
       // than the one it was tracking, as opposed to continuing the same
       // car (continuing[vi]) or waking up from silence (v.active was
-      // false) — gets a brief mixG dip instead of gliding oscG/noiseG/
+      // false) — gets a brief mixG dip instead of gliding oscG/
       // frequency straight to the new car's values while staying pinned at
       // full volume throughout; the dip makes the handoff read as a quick
       // fade rather than a pitch/timbre glitch.
@@ -1398,26 +1381,13 @@ export class GameAudio {
       const level = clampRange(1 - dist / 70, 0, 1);
       const g = Math.pow(level, 1.5) * (npc.heavy ? 0.09 : 0.06);
       const pan = clampRange(this.lateralOf(dx, dz, ph) / 10, -1, 1);
-      const speedMag = Math.hypot(npc.vx, npc.vz);
 
-      // Noise branch is lowpassed and DARKENS WITH DISTANCE (not just the
-      // car's own speed) — air absorption on a distant engine/road noise
-      // rolls off the highs long before the lows, same as any real distant
-      // vehicle. Was a bandpass with Q=0.7 (bandwidth ~1000Hz at 700Hz
-      // center — wide open) driven only by npc speed, so a far voice kept
-      // full brightness right up until its gain hit zero at 70m: bright,
-      // broadband, un-distance-varying noise sources are exactly what
-      // reads as "white hiss" to a listener. Now: 2000Hz at <=5m down to a
-      // 400Hz floor by 40m+, with a small secondary lift from the car's own
-      // speed on top (a fast car's engine has more high-frequency content
-      // than an idling one, but distance dominates).
-      const distDarken = clampRange((dist - 5) / 35, 0, 1);
-      const cutoff = clampRange(2000 - distDarken * 1600 + Math.min(1, speedMag / 30) * 150, 400, 2000);
-
+      // The osc carries the whole voice now that the noise branch is gone
+      // (its darken-with-distance tune never stopped it reading as hiss up
+      // close); 0.55 -> 0.75 gives back some of the removed body without
+      // reaching the old two-branch combined level.
       this.sp(v.osc.frequency, baseFreq * dopplerFactor, 0.05);
-      this.sp(v.oscG.gain, g * 0.55, 0.08);
-      this.sp(v.noiseF.frequency, cutoff, 0.08);
-      this.sp(v.noiseG.gain, g * 0.5, 0.08);
+      this.sp(v.oscG.gain, g * 0.75, 0.08);
       this.sp(v.mixG.gain, stolen ? 0.15 : 1, stolen ? 0.05 : 0.08);
       this.sp(v.panner.pan, pan, 0.08);
     }
