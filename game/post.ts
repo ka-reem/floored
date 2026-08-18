@@ -47,12 +47,21 @@ declare global {
   interface Window {
     __povTune?: {
       gainFloor: number; shadowGrain: number; lampProtect: number; sensorGain: number;
-      skyCrush: number;
+      skyCrush: number; mirrorShield: number;
     };
   }
 }
+/** POV mirror shield clarity, 0..1. Inside the rear-view glass's projected
+ * screen quad the dashcam degrade is swapped back toward the clean pre-degrade
+ * frame by this factor (and the POV frame-blend/edge-darkening are attenuated
+ * in step) so the live mirror stays legible; 0.85 leaves a 15% whisper of the
+ * grade so the glass still reads as part of the footage. 0 disables the
+ * shield entirely (exact pre-shield frame — also the live A/B via
+ * `window.__povTune.mirrorShield = 0`). */
+const MIRROR_SHIELD = 0.85;
 const POV_TUNE_DEFAULT = {
   gainFloor: 0.4, shadowGrain: 1, lampProtect: 1, sensorGain: 1.25, skyCrush: 0.6,
+  mirrorShield: MIRROR_SHIELD,
 };
 
 /* ---- Cinematic night look (desktop tier only — engine wires tierCaps
@@ -102,6 +111,7 @@ function readPovTune() {
     lampProtect: c01(t.lampProtect, POV_TUNE_DEFAULT.lampProtect),
     skyCrush: c01(t.skyCrush, POV_TUNE_DEFAULT.skyCrush),
     sensorGain: cGain(t.sensorGain),
+    mirrorShield: c01(t.mirrorShield, POV_TUNE_DEFAULT.mirrorShield),
   };
 }
 
@@ -141,6 +151,13 @@ export class PostFX {
   private overCv: HTMLCanvasElement;
   private overTex: THREE.CanvasTexture;
   private overAt = -1;
+  // POV mirror shield state (setPovMirror / mirrorShieldRect): the cockpit's
+  // rear-view glass mesh + the main camera, handed over by engine.buildRig on
+  // every rig build so a car swap can never leave a disposed mesh here.
+  private mirMesh: THREE.Mesh | null = null;
+  private mirCam: THREE.Camera | null = null;
+  private mirCorners: THREE.Vector3[] | null = null;
+  private mirV = new THREE.Vector3();
   // dashcam impact-glitch event (see dashcamHit()): hitAt/-Dur/-Seed/-Intensity
   // describe at most one in-flight burst. hitAt sits far in the past so the
   // envelope in process() reads 0 before the first real hit ever lands.
@@ -310,10 +327,17 @@ void main(){ vec2 px=1.0/uRes;
       uniforms: {
         tCur: { value: null }, tPrev: { value: null }, uMB: { value: 0 },
         uPeriph: { value: 0 },
+        // POV mirror shield (see MIRROR_SHIELD / mirrorShieldRect below):
+        // uShield is nonzero only while the dashcam POV runs, so every other
+        // mode's blend is bit-identical to before
+        uMirMin: { value: new THREE.Vector2(2, 2) },
+        uMirMax: { value: new THREE.Vector2(-1, -1) },
+        uShield: { value: 0 },
       },
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv;
 uniform sampler2D tCur,tPrev; uniform float uMB,uPeriph;
+uniform vec2 uMirMin,uMirMax; uniform float uShield;
 // approx vanishing point: the horizon sits a little above true screen
 // centre in both chase and cockpit cams (hood/dash eats the lower half),
 // so streaks converging here read as "receding into the road" rather than
@@ -342,8 +366,19 @@ void main(){
  }
  c/=wsum;
  vec3 p=texture2D(tPrev,vUv).rgb;
- vec3 col=mix(c,p,uMB);
- col*=1.0-uMB*.55*smoothstep(.42,.95,r);
+ // POV mirror shield: the dashcam POV pins uMB at .66 (a long night
+ // exposure), which turns the live mirror feed into an unreadable smear.
+ // Inside the projected glass quad the blend drops to a quarter and the
+ // edge darkening below lifts, so the mirror stays a readable instrument
+ // while the world around it keeps dragging. Feather scales with the rect
+ // so it is resolution-independent; uShield=0 (every non-POV frame) makes
+ // shield exactly 0 and both lines collapse to the originals.
+ vec2 fth=max((uMirMax-uMirMin)*.08,vec2(1e-4));
+ vec2 s1=smoothstep(uMirMin-fth,uMirMin+fth,vUv);
+ vec2 s2=vec2(1.)-smoothstep(uMirMax-fth,uMirMax+fth,vUv);
+ float shield=s1.x*s1.y*s2.x*s2.y*uShield;
+ vec3 col=mix(c,p,uMB*(1.-shield*.75));
+ col*=1.0-uMB*.55*smoothstep(.42,.95,r)*(1.-shield);
  gl_FragColor=vec4(col,1.0);}`,
     });
     this.overCv = document.createElement("canvas");
@@ -428,6 +463,16 @@ void main(){ vec3 s=vec3(0.); float wsum=0.;
     this.povMat = new THREE.ShaderMaterial({
       uniforms: {
         tLow: { value: null }, tSmear: { value: null }, tOver: { value: this.overTex },
+        // POV mirror shield: tFull is the pre-degrade full-res frame (the
+        // same mbRT the half-res chain resamples), uMirMin/uMirMax the
+        // projected rear-view glass quad in screen UV (see
+        // mirrorShieldRect()), uShield the clarity factor (MIRROR_SHIELD
+        // while the rect is live, 0 otherwise — 0 makes the whole pass
+        // bit-identical to the unshielded shader).
+        tFull: { value: null },
+        uMirMin: { value: new THREE.Vector2(2, 2) },
+        uMirMax: { value: new THREE.Vector2(-1, -1) },
+        uShield: { value: 0 },
         uLow: { value: new THREE.Vector2(1, 1) }, uTime: { value: 0 },
         uOverPos: { value: new THREE.Vector2(0.022, 0.925) },
         uOverSize: { value: new THREE.Vector2(0.3, 0.03) },
@@ -448,12 +493,22 @@ void main(){ vec3 s=vec3(0.); float wsum=0.;
       },
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv;
-uniform sampler2D tLow,tSmear,tOver; uniform vec2 uLow,uOverPos,uOverSize;
+uniform sampler2D tLow,tSmear,tOver,tFull; uniform vec2 uLow,uOverPos,uOverSize;
 uniform float uTime,uOverAmt,uHitEnv,uHitSeed,uHitT;
 uniform float uGainFloor,uShadowGrain,uLampProtect,uSkyCrush;
+uniform vec2 uMirMin,uMirMax; uniform float uShield;
 float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
 void main(){
  vec2 d=vUv-.5; float r2=dot(d,d);
+ // mirror shield mask: soft-feathered box over the projected rear-view
+ // glass (feather scales with the rect, so it stays a constant fraction of
+ // the glass at any resolution). Scaled down by the impact envelope on
+ // purpose — a struck camera should rattle the mirror along with the rest
+ // of the frame, or the glass reads as a sticker on the lens.
+ vec2 fth=max((uMirMax-uMirMin)*.08,vec2(1e-4));
+ vec2 ms1=smoothstep(uMirMin-fth,uMirMin+fth,vUv);
+ vec2 ms2=vec2(1.)-smoothstep(uMirMax-fth,uMirMax+fth,vUv);
+ float shield=ms1.x*ms1.y*ms2.x*ms2.y*uShield*(1.-uHitEnv*.85);
  // noise clock: 15 Hz, so grain boils well below frame rate like real footage.
  // Wrapped short because it is multiplied into the hash's sin argument, and a
  // free-running one drives that into the range where mobile GPUs stop
@@ -562,11 +617,21 @@ void main(){
  float gainTarget=.055*uGainFloor;
  float lift=max(0.,gainTarget-dot(col,vec3(.299,.587,.114)));
  col+=lift*vec3(1.02,1.05,.98)*(.72+.56*n1);
+ // mirror shield: swap the accumulated degrade (gain, wobble/tear, half-res
+ // snap, CA, smear, crush, red bleed, grain — everything above in one go)
+ // back toward the untouched full-res frame inside the glass quad. tFull is
+ // sampled at the *undistorted* vUv, so the mirror also stops wobbling.
+ // MIRROR_SHIELD=.85 leaves a 15% whisper of the grade so the glass still
+ // sits in the footage rather than looking pasted on.
+ col=mix(col,texture2D(tFull,vUv).rgb,shield);
  // interlace comb, then (e) the bit-crush. Quantising last is what makes the
  // banding survive; the uneven per-channel level counts tint the bands.
- col*=1.-.085*step(.5,fract(vUv.y*uLow.y*.5));
+ // Both are shield-attenuated the same way — 19/23/17-level banding across
+ // a 0.1-UV-tall mirror would undo everything the clean mix just recovered.
+ col*=1.-.085*step(.5,fract(vUv.y*uLow.y*.5))*(1.-shield);
  vec3 lv=vec3(19.,23.,17.);
- gl_FragColor=vec4(floor(clamp(col,0.,1.)*lv+.5)/lv,1.); }`,
+ col=clamp(col,0.,1.);
+ gl_FragColor=vec4(mix(floor(col*lv+.5)/lv,col,shield),1.); }`,
     });
     /* Sensor auto-gain: the dashcam POV source is dark twice over — the
        night exposure upstream, then this degrade's own crush — and the
@@ -727,6 +792,71 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.histValid = false;
   }
 
+  /** Hand over the cockpit's rear-view glass mesh and the main camera for the
+   * POV mirror shield. engine.buildRig calls this on construction and again on
+   * every car swap; the mirror's projected quad is then derived fresh each POV
+   * frame in mirrorShieldRect(), so nothing here hardcodes screen pixels. */
+  setPovMirror(mesh: THREE.Mesh | null, cam: THREE.Camera | null) {
+    this.mirMesh = mesh;
+    this.mirCam = cam;
+    this.mirCorners = null;
+  }
+
+  /** Project the rear-view glass's corners through the active camera and write
+   * the resulting screen-UV rect into the povMat + mbMat shield uniforms.
+   * Returns false (shield off) when the glass is hidden (mirror setting off),
+   * unset, or off/behind the frustum. Called once per POV frame, after the
+   * scene render, so mesh.matrixWorld and camera.matrixWorldInverse are both
+   * current: the POV bracket and the glass are rigid on the same body shell,
+   * making the rect static frame-to-frame, but deriving it live means resizes,
+   * DPR/FOV changes, car swaps and future mirror moves are all tracked for
+   * free (cost: four Vector3 projects). */
+  private mirrorShieldRect(): boolean {
+    const mesh = this.mirMesh, cam = this.mirCam;
+    if (!mesh || !cam) return false;
+    for (let o: THREE.Object3D | null = mesh; o; o = o.parent)
+      if (!o.visible) return false;
+    if (!this.mirCorners) {
+      const g = mesh.geometry;
+      if (!g.boundingBox) g.computeBoundingBox();
+      const b = g.boundingBox!;
+      // the glass is a plane; its four bounding-box corners are the quad
+      this.mirCorners = [
+        new THREE.Vector3(b.min.x, b.min.y, b.min.z),
+        new THREE.Vector3(b.max.x, b.min.y, b.min.z),
+        new THREE.Vector3(b.min.x, b.max.y, b.max.z),
+        new THREE.Vector3(b.max.x, b.max.y, b.max.z),
+      ];
+    }
+    let x0 = 2, y0 = 2, x1 = -1, y1 = -1;
+    for (const c of this.mirCorners) {
+      const v = this.mirV.copy(c).applyMatrix4(mesh.matrixWorld).project(cam);
+      // outside the depth range ⇒ behind/at the near plane (projection has
+      // flipped) — never true from the POV mount, but don't shield garbage
+      if (!(v.z > -1 && v.z < 1)) return false;
+      const ux = v.x * 0.5 + 0.5, uy = v.y * 0.5 + 0.5;
+      x0 = Math.min(x0, ux); x1 = Math.max(x1, ux);
+      y0 = Math.min(y0, uy); y1 = Math.max(y1, uy);
+    }
+    // offscreen test intersects with [0,1], but the uniforms keep the rect
+    // overhanging the screen (softly bounded): on wide shells the glass clips
+    // the right edge, and a rect clamped to 1 would put the feather ON the
+    // visible glass, leaving a degraded sliver at the edge — overhang parks
+    // the feather offscreen instead
+    if (
+      Math.min(x1, 1) - Math.max(x0, 0) < 1e-3 ||
+      Math.min(y1, 1) - Math.max(y0, 0) < 1e-3
+    )
+      return false;
+    x0 = Math.max(-0.25, x0); y0 = Math.max(-0.25, y0);
+    x1 = Math.min(1.25, x1); y1 = Math.min(1.25, y1);
+    this.povMat.uniforms.uMirMin.value.set(x0, y0);
+    this.povMat.uniforms.uMirMax.value.set(x1, y1);
+    this.mbMat.uniforms.uMirMin.value.set(x0, y0);
+    this.mbMat.uniforms.uMirMax.value.set(x1, y1);
+    return true;
+  }
+
   /** Register a physical impact for the dashcam-glitch burst: a short,
    * randomized "physically struck camera" flourish layered on top of the POV
    * degrade (frame-jump snaps, tear lines, a dropped frame, an exposure
@@ -872,6 +1002,17 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     u.uFilmDirt.value = FILM_DIRT && this.dirtTex ? film : 0;
     u.uSpeedT.value = speedT;
     const pov = this.pov;
+    // POV mirror shield: project the rear-view glass into screen UV for this
+    // frame (scene render has already run, so matrixWorld/matrixWorldInverse
+    // are current). Off-POV frames force uShield to 0, which collapses both
+    // shielded shaders to their original, bit-identical arithmetic.
+    const shieldOn = pov && this.mirrorShieldRect();
+    // clarity is live-tunable (window.__povTune.mirrorShield, default
+    // MIRROR_SHIELD) — at 0 both shielded shaders collapse to their original
+    // arithmetic, which is also the console A/B for before/after comparison
+    const shieldStr = shieldOn ? readPovTune().mirrorShield : 0;
+    this.mbMat.uniforms.uShield.value = shieldStr;
+    this.povMat.uniforms.uShield.value = shieldStr;
     // POV forces the frame blend on even with motion blur switched off in
     // settings — the smear is part of the camera, not a quality option
     const doMbSetting = opts.mblur > 0.001 || pov;
@@ -976,6 +1117,11 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.povMat.uniforms.uOverAmt.value = dash ? 0 : 1;
       this.povMat.uniforms.tLow.value = this.povA.texture;
       this.povMat.uniforms.tSmear.value = this.povB.texture;
+      // the mirror shield's clean layer: the full-res pre-degrade frame (cur
+      // is always mbRT here — POV forces doFinal on). Live even on holdFrame
+      // frames, which is right: the DVR "drops a frame" but the shielded
+      // glass is presented as unmangled optics, not part of the encode.
+      this.povMat.uniforms.tFull.value = cur.texture;
       // wrapped: the noise clock is floor(t*15) and float precision in the
       // hash falls apart once the session has been up for a few hours
       this.povMat.uniforms.uTime.value = opts.time % 60;
