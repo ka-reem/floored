@@ -546,6 +546,9 @@ export class Game {
       this.mats.envMap, this.mats.glowTex, this.post.mirrorRT.texture
     );
     this.rig.cockpit.setMirrorVis(this.mirror);
+    // POV mirror shield: re-handed on every rig build so a car swap never
+    // leaves post.ts projecting a disposed mesh
+    this.post.setPovMirror(this.rig.cockpit.mirrorGlass, this.camera);
   }
 
   setCar(carId: string, paintIx: number) {

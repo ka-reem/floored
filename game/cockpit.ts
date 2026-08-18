@@ -30,6 +30,11 @@ export interface Cockpit {
   wiperA: THREE.Group;
   wiperB: THREE.Group;
   mirrorParts: THREE.Mesh[];
+  /** The rear-view glass plane specifically (also mirrorParts[0]): post.ts
+   * projects its corners through the POV camera to shield the mirror from the
+   * dashcam degrade, so it needs the mesh — geometry + live matrixWorld — by
+   * name rather than by array position. */
+  mirrorGlass: THREE.Mesh;
   setMirrorVis(v: boolean): void;
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
   drawScreen(x: number, z: number, h: number, time: number, world?: NavWorld): void;
@@ -1594,6 +1599,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     wiperA,
     wiperB,
     mirrorParts,
+    mirrorGlass: mirrorMesh,
     setMirrorVis: (v) => mirrorParts.forEach((m) => (m.visible = v)),
     drawGauges,
     drawScreen,
