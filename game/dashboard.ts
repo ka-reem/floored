@@ -138,17 +138,13 @@ export function buildInstrumentCluster(
   const needleMat = new THREE.MeshBasicMaterial({ color: 0xff5058 });
   const capMat = new THREE.MeshStandardMaterial({ color: 0x14161e, roughness: 0.45, metalness: 0.6 });
 
-  // housing: a shallow box the dials sit in, plus a brow above them (the kei
-  // car's cheap cluster skips the brow — a flat moulded face, no cowl)
+  /* housing: a shallow box the dials sit in. No brow/hood on any trim — the
+     dials sit in an open recess like the reference car's, because from the
+     fixed dashcam POV a brow is a featureless black bar laid across the frame
+     right where the road hands over to the cluster. */
   const shell = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.25, 0.05), shellMat);
   shell.position.z = -0.03;
   group.add(shell);
-  if (!cheap) {
-    const brow = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.03, 0.1), shellMat);
-    brow.position.set(0, 0.14, 0.03);
-    brow.rotation.x = 0.34;
-    group.add(brow);
-  }
 
   const S = 320;
   type Dial = {

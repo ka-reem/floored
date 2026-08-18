@@ -843,9 +843,11 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      same depression whatever the seating position is.
 
      The pod's vertical bulk is the constraint: anything stacked on top of the
-     dials — a deep bezel, a cowl, a hood — eats into the road ahead, so this
-     uses a shallow ring and a lip rather than a proper cowl and keeps the pod's
-     top edge ~7 degrees below the eye line. 15.5 degrees of depression is a
+     dials — a deep bezel, a cowl, a hood — eats into the road ahead, and from
+     the fixed dashcam POV it reads as a dead black bar across mid-frame, so
+     this uses a shallow open ring (no lip, no brow — dashboard.ts's hood is
+     gone for the same reason) and keeps the pod's top edge ~7 degrees below
+     the eye line. 15.5 degrees of depression is a
      real car's cluster angle; it only fits because the eye now sits 0.9 m back
      from the dash instead of 0.5 m. */
   const POD_Z = 0.6;
@@ -860,11 +862,6 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     put(bezel(0.68, 0.262, 0.05, 0.06, 0.023), soft, [x, y, z - 0.012], [-tilt, 0, 0], 2.2);
     // thin bright ring inside the bezel
     put(bezel(0.63, 0.232, 0.009, 0.05, 0.006), trimStripMat, [x, y, z - 0.032], [-tilt, 0, 0], [6, 1]);
-    // lip along the top of the ring — a hood's worth of shading, no extra height
-    put(rbox(0.69, 0.016, 0.07, 0.007), soft, [x, y + 0.125, z - 0.038], [-tilt - 0.3, 0, 0], [4, 1]);
-    // stitch row along the leading edge of the lip: the binnacle hood is
-    // leather-wrapped on the reference car, so its edge is sewn like the pad's
-    put(box(0.64, 0.006, 0.008), stitch, [x, y + 0.118, z - 0.062], [-tilt - 0.3, 0, 0]);
     // matte throat behind the cluster so nothing shows through the gaps
     put(box(0.62, 0.28, 0.01), shadow, [x, y, z + 0.035], [-tilt, 0, 0]);
   }
@@ -1250,32 +1247,56 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const scrTex = new THREE.CanvasTexture(scrCv);
   /* Dash-top tablet, per the user's reference: the head unit stands proud
      of the pad at the centre of the dash — clearly visible from the seat
-     and the POV dashcam — instead of sunk low into the stack. It sits just
-     behind the pad crest (crest ~y1.0 at z0.695), leans back a touch and
-     yaws gently toward the driver's eye at x0.36. */
-  const SCR = { x: -0.10, y: 1.10, z: 0.72, tilt: 0.10, yaw: -0.08 };
-  const scrMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.36, 0.225),
-    new THREE.MeshBasicMaterial({ map: scrTex, transparent: true })
-  );
+     AND from the fixed dashcam mount — instead of sunk low into the stack.
+     Placement is solved against the POV camera at cockpit-local
+     (0.28, 1.32, 0.31) pitched down 0.227 (engine.ts POV_MOUNT/POV_TILT,
+     which do not move): at x -0.03, y 1.13 the glass lands mid-frame in the
+     band the bonnet otherwise leaves black (~62-80% across, ~46-63% down,
+     measured), clear of the open binnacle to its screen-left, below the road
+     scene and above the cluster. From the seat its top edge stays just under
+     the horizon line. It sits just behind the pad crest (crest
+     ~y1.0 at z0.695), leans back a touch and yaws toward the driver's eye at
+     x0.36. Yaw sign, verified against THREE's XYZ euler (glass normal x =
+     sin(PI - yaw)): POSITIVE yaw turns the face toward the driver. At -0.08
+     it actually faced the passenger, so both interior cameras saw the LCD
+     ~44 degrees off-normal — foreshortened to a sliver whose dark map read
+     as a black slab. +0.25 puts the dashcam ~26 degrees off-normal and the
+     driver's eye ~8, and the glass finally reads. */
+  const SCR = { x: -0.03, y: 1.13, z: 0.72, tilt: 0.10, yaw: 0.25 };
+  const scrMat = new THREE.MeshBasicMaterial({ map: scrTex, transparent: true });
+  /* An LCD is a light source: left tone-mapped it crushes into the night and
+     the whole unit reads as a black slab (exactly the dead-space complaint the
+     dashcam view had). Same treatment as the mirror glass — exempt it, with
+     a modest lift: the dashcam post pass (bloom + CA) blooms anything hot,
+     and brighter multipliers wash the hot pixels (road ribbon, cards) out to
+     white in POV while the map bg stays black either way. */
+  scrMat.toneMapped = false;
+  scrMat.color.setScalar(1.3);
+  const scrMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.36, 0.225), scrMat);
   scrMesh.position.set(SCR.x, SCR.y, SCR.z);
   scrMesh.rotation.set(SCR.tilt, Math.PI - SCR.yaw, 0);
   interiorG.add(scrMesh);
-  // tablet body: slim piano-black slab + bezel lip around the glass
+  /* Tablet body: slim piano-black slab + bezel lip around the glass. The
+     body pieces face +z (away from the seat) while the glass faces -z, so
+     the rotation that keeps a body piece coplanar with the glass at
+     (tilt, PI - yaw) is (tilt, -yaw) — the old (-tilt, +yaw) form is only an
+     approximation that falls apart once yaw is more than a few degrees. */
   put(bezel(0.395, 0.26, 0.017, 0.017, 0.016), piano,
-    [SCR.x, SCR.y, SCR.z + 0.005], [-SCR.tilt, SCR.yaw, 0]);
+    [SCR.x, SCR.y, SCR.z + 0.005], [SCR.tilt, -SCR.yaw, 0]);
   put(rbox(0.395, 0.26, 0.024, 0.012), shadow,
-    [SCR.x, SCR.y, SCR.z + 0.018], [-SCR.tilt, SCR.yaw, 0]);
+    [SCR.x, SCR.y, SCR.z + 0.018], [SCR.tilt, -SCR.yaw, 0]);
   // a faint backlight ring behind the bezel, so the head unit reads as lit
   // rather than a screen bolted to a dead panel
   const navGlow = new THREE.MeshStandardMaterial({
-    color: 0x05070c, emissive: trimAccent, emissiveIntensity: 0.4, roughness: 0.6,
+    color: 0x05070c, emissive: trimAccent, emissiveIntensity: 0.5, roughness: 0.6,
   });
   put(bezel(0.404, 0.269, 0.006, 0.02, 0.004), navGlow,
-    [SCR.x, SCR.y, SCR.z + 0.010], [-SCR.tilt, SCR.yaw, 0]);
-  // mount foot rooting the tablet into the pad top so it doesn't float
-  put(rbox(0.09, 0.13, 0.035, 0.012), piano,
-    [SCR.x, SCR.y - 0.115, SCR.z + 0.028], [-SCR.tilt * 1.6, SCR.yaw, 0]);
+    [SCR.x, SCR.y, SCR.z + 0.010], [SCR.tilt, -SCR.yaw, 0]);
+  /* Mount foot rooting the tablet into the pad top so it doesn't float — it
+     runs from inside the pad (~y1.0 surface here) up behind the bezel's lower
+     edge, so the unit reads as clamped to the dash top. */
+  put(rbox(0.10, 0.20, 0.04, 0.012), piano,
+    [SCR.x, SCR.y - 0.15, SCR.z + 0.03], [SCR.tilt * 1.6, -SCR.yaw, 0]);
 
   const NAV_R = 95; // metres of road drawn around the car
   const CX = 128, CY = 116; // car sits low on the screen so more road ahead is visible
@@ -1421,8 +1442,14 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     uv.needsUpdate = true;
   }
   /* Sized and placed for the eye at ~0.65 m: a 0.5 m glass this close filled a
-     quarter of the screen. */
-  const MIR = { y: Math.min(EYE.y + 0.12, 1.58), z: 0.6 };
+     quarter of the screen. Height is a two-camera compromise: at EYE.y+0.12
+     the glass cleared the cockpit sightline generously but sat entirely above
+     the dashcam frame (engine.ts POV mount, pitched down 0.227 — only an
+     unlit sliver of housing crossed the top edge, i.e. invisible at night).
+     EYE.y+0.085 hangs the lit glass into the POV frame's top-right (~rows
+     0-20%) while its underside still clears the cockpit eye line by ~2
+     degrees, above the horizon. */
+  const MIR = { y: Math.min(EYE.y + 0.085, 1.545), z: 0.6 };
   const mirrorMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.096), mirrorMat);
   mirrorMesh.position.set(0, MIR.y, MIR.z - 0.012);
   mirrorMesh.rotation.x = -0.07;
@@ -1431,9 +1458,11 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   // housing: rounded shell + a stalk up to the header, not a floating slab
   put(bezel(0.335, 0.13, 0.036, 0.045, 0.02), piano, [0, MIR.y, MIR.z], [-0.07, 0, 0]);
   put(rbox(0.32, 0.115, 0.05, 0.04), piano, [0, MIR.y, MIR.z + 0.024], [-0.07, 0, 0]);
-  // the screen leans back as it rises, so the stalk has to run up and rearward
-  put(cyl(0.014, 0.018, 0.16, 10), piano, [0, MIR.y + 0.08, MIR.z - 0.035], [-0.5, 0, 0]);
-  put(rbox(0.06, 0.03, 0.05, 0.012), piano, [0, MIR.y + 0.152, MIR.z - 0.078], [-0.3, 0, 0]);
+  /* The screen leans back as it rises, so the stalk has to run up and
+     rearward — longer than it was, because the housing now hangs ~3.5 cm
+     lower while the header it grows from did not move. */
+  put(cyl(0.014, 0.018, 0.22, 10), piano, [0, MIR.y + 0.105, MIR.z - 0.05], [-0.5, 0, 0]);
+  put(rbox(0.06, 0.03, 0.05, 0.012), piano, [0, MIR.y + 0.185, MIR.z - 0.095], [-0.3, 0, 0]);
 
   const sideMirLGeo = new THREE.PlaneGeometry(0.19, 0.115);
   cropUV(sideMirLGeo, 0.58, 1.0);
