@@ -1169,6 +1169,222 @@ export class GameAudio {
   }
   /* ---- end stalk click (lane O) ---- */
 
+  /* ---- interior trim creaks (lane U) ----
+     Research notes (automotive: when does cabin trim actually creak?):
+     Interior plastic creaks are stick-slip friction at trim interfaces —
+     dashboard-to-A-pillar joints, door cards, the center console, parcel
+     shelf — micro-shifting as the body-in-white flexes under changing load.
+     The realities this model encodes:
+       - Creaks fire on LOAD TRANSIENTS, not sustained states: the onset of
+         hard braking (nose dive), hard acceleration (squat), roll build-up
+         at turn-in, and sharp grade breaks (ramp gores / crest transitions)
+         that twist the shell. A car settled into a steady corner or a held
+         constant brake mostly goes quiet — the panels have already slipped
+         to their new equilibrium and re-stuck.
+       - Occurrence is stochastic (stick-slip): the same input does not
+         always creak — whether a joint slips depends on temperature and
+         where it last re-stuck — so triggers are probabilistic (~30-60% per
+         qualifying transient) with a randomized refractory (0.8-2.5s) so it
+         never machine-guns.
+       - Different components have distinct characters: a dash joint "ticks"
+         (short, bright, 2.2-3.5kHz), a door card "creaks" (grainy midrange
+         crick, 1.2-2.2kHz with a sweeping resonance), and the structure
+         "groans" (lower 400-800Hz, longer). Three synthesized voices below,
+         each randomized per event so no two creaks stamp out the same sound.
+       - Cabin creaks are QUIET — just above the noise floor, more felt than
+         heard — and wind/road noise masks them at highway pace: you hear
+         trim at parking-lot speeds, not at 140 km/h. Level scales down with
+         speed and is a whisper even at its loudest.
+     Inputs arrive additively through update() (axS/ayS smoothed body accel
+     + slope from CarState); per-frame derivatives are maintained here.
+     pitchDyn/rollDyn are deliberately NOT separate inputs — physics.ts
+     derives both from axS/ayS by first-order lag, so their derivatives
+     carry no information the axS/ayS jerks don't already have.
+     Camera: the only existing camera-aware audio is setInterior()'s
+     cockpit-only cabin EQ — there is no per-layer exterior ducking to
+     mirror — so a cabinCam flag (cockpit OR POV; both are in-cabin views)
+     is passed additively from the existing update() call site; exterior
+     cameras duck creaks to 25% rather than mute (trim is still faintly
+     audible from outside a car, and a hard mute would make camera cycling
+     mid-creak read as a dropout). */
+  /** Hard ceiling on any single creak event's gain — well under the
+      engine's ~0.16-0.18 full-song level and under wind at speed. The
+      headless check asserts every logged fire stays at or below this. */
+  private static readonly CREAK_GAIN_CAP = 0.06;
+  private creakPrevAx = 0;
+  private creakPrevAy = 0;
+  private creakPrevSlope = 0;
+  /** Internally-smoothed slope (first-order, ~8/s — matching the smoothing
+      physics.ts applies to axS/ayS/pitchDyn). CarState.slope itself is
+      recomputed each frame from raw terrain heights with NO smoothing, so a
+      single-frame step at a geometry seam would read as an enormous fake
+      derivative; differentiating the smoothed copy turns a step of D into a
+      jerk of ~8*D — a real ramp-gore grade break (D~0.08+) still qualifies
+      strongly, per-frame height-sampling noise stays silent. */
+  private creakSlopeS = 0;
+  private creakHavePrev = false;
+  /** No trigger rolls before this time: 0.5s after a failed roll (the joint
+      "stuck" for this transient), 0.8-2.5s randomized after a fire. */
+  private creakGateT = 0;
+  private creakCount = 0;
+  private creakLog: {
+    t: number;
+    kind: "roll" | "fire";
+    axis: "long" | "lat" | "vert";
+    strength: number;
+    p: number;
+    voice?: string;
+    gain?: number;
+    cabin?: boolean;
+  }[] = [];
+  getCreakCount() {
+    return this.creakCount;
+  }
+  /** Last ~64 trigger rolls/fires — consumed by test/audio-creak-check.mjs
+      via __audioDebug to assert the probabilistic model headlessly. */
+  getCreakLog() {
+    return this.creakLog;
+  }
+
+  /** Stick-slip grain buffer: a few randomly-spaced, randomly-damped noise
+      micro-grains rather than one smooth burst — the "crick" texture of a
+      plastic joint slipping in discrete jumps. First grain at t=0 so the
+      event lands on the transient that caused it. */
+  private creakGrainBuf(dur: number, grains: number, grainDecay: number) {
+    const c = this.ctx;
+    const n = Math.max(128, Math.floor(c.sampleRate * dur));
+    const buf = c.createBuffer(1, n, c.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let gi = 0; gi < grains; gi++) {
+      const start = gi === 0 ? 0 : Math.floor(Math.random() * n * 0.7);
+      const amp = 0.5 + Math.random() * 0.5;
+      const tau = c.sampleRate * grainDecay * (0.7 + Math.random() * 0.6);
+      for (let i = start; i < n; i++) {
+        const e = Math.exp(-(i - start) / tau);
+        if (e < 0.001) break;
+        d[i] += (Math.random() * 2 - 1) * amp * e;
+      }
+    }
+    return buf;
+  }
+
+  /** Synthesize one creak event: grain buffer through a resonant bandpass
+      whose peak SWEEPS slightly over the event (stick-slip resonance shifts
+      as the joint moves), with an exponential release. Everything routed
+      into `master`, so volume/duck/mute and the cabin EQ apply unchanged.
+      `mask` is the combined speed-masking x camera factor (0..1). */
+  private creakFire(now: number, axis: "long" | "lat" | "vert", mask: number, strength: number, p: number, cabin: boolean) {
+    const c = this.ctx, t = c.currentTime;
+    // Weighted voice pick, biased by what moved: longitudinal dive/squat
+    // rattles the dash, roll works the door cards, chassis twist groans.
+    const r = Math.random();
+    const voice =
+      axis === "long"
+        ? r < 0.4 ? "tick" : r < 0.85 ? "creak" : "groan"
+        : axis === "lat"
+          ? r < 0.2 ? "tick" : r < 0.65 ? "creak" : "groan"
+          : r < 0.15 ? "tick" : r < 0.5 ? "creak" : "groan";
+    let dur: number, f0: number, sweep: number, q: number, grains: number, gDecay: number, lvl: number;
+    if (voice === "tick") {
+      // dash joint: one or two short bright ticks
+      dur = 0.03 + Math.random() * 0.025;
+      f0 = 2200 + Math.random() * 1300; // 2.2-3.5kHz plastic range
+      sweep = 0.86 + Math.random() * 0.1; // slight downward settle
+      q = 8;
+      grains = Math.random() < 0.4 ? 2 : 1;
+      gDecay = 0.008;
+      lvl = 0.55;
+    } else if (voice === "creak") {
+      // door card / console: grainy midrange crick with a wandering peak
+      dur = 0.06 + Math.random() * 0.06;
+      f0 = 1200 + Math.random() * 1000; // 1.2-2.2kHz
+      sweep = Math.random() < 0.5 ? 0.82 + Math.random() * 0.1 : 1.08 + Math.random() * 0.12;
+      q = 6 + Math.random() * 4;
+      grains = 3 + Math.floor(Math.random() * 3);
+      gDecay = 0.014;
+      lvl = 1.0;
+    } else {
+      // structural groan: lower, longer, rarer
+      dur = 0.09 + Math.random() * 0.06;
+      f0 = 420 + Math.random() * 380; // 400-800Hz
+      sweep = 0.78 + Math.random() * 0.1;
+      q = 4;
+      grains = 2 + Math.floor(Math.random() * 2);
+      gDecay = 0.026;
+      lvl = 1.15;
+    }
+    const gain = Math.min(
+      GameAudio.CREAK_GAIN_CAP,
+      0.04 * lvl * mask * (0.8 + Math.random() * 0.4)
+    );
+    const src = c.createBufferSource();
+    src.buffer = this.creakGrainBuf(dur, grains, gDecay);
+    const bp = c.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.setValueAtTime(f0, t);
+    bp.frequency.exponentialRampToValueAtTime(f0 * sweep, t + dur);
+    bp.Q.value = q;
+    const g = c.createGain();
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.03);
+    src.connect(bp).connect(g).connect(this.master);
+    src.start(t);
+    src.stop(t + dur + 0.05);
+    this.creakCount++;
+    this.creakLog.push({ t: now, kind: "fire", axis, strength, p, voice, gain, cabin });
+    if (this.creakLog.length > 64) this.creakLog.shift();
+  }
+
+  /** Per-frame trigger model, driven from update(). Maintains jerk
+      (d/dt of the smoothed accelerations + slope) and rolls a probabilistic
+      trigger when a transient qualifies. Thresholds are set against
+      physics.ts's axS/ayS smoothing (first-order at 9/s): a max-effort
+      brake from speed peaks around |jerk| ~ 80 m/s^3, a moderate one ~45,
+      a gentle one ~18 — so gentle driving never rolls at all. */
+  private trimCreaks(
+    now: number, dt: number, speed: number,
+    axS: number, ayS: number, slope: number, cabinCam: boolean
+  ) {
+    const h = Math.max(dt, 1 / 240);
+    this.creakSlopeS += (slope - this.creakSlopeS) * Math.min(1, 8 * h);
+    const jx = (axS - this.creakPrevAx) / h;
+    const jy = (ayS - this.creakPrevAy) / h;
+    const js = (this.creakSlopeS - this.creakPrevSlope) / h;
+    const had = this.creakHavePrev;
+    this.creakPrevAx = axS;
+    this.creakPrevAy = ayS;
+    this.creakPrevSlope = this.creakSlopeS;
+    this.creakHavePrev = true;
+    if (!had) return; // no derivative on the first sample
+    if (now < this.creakGateT) return; // stuck/refractory
+    // Lateral threshold is a touch lower (roll build-up works the door
+    // cards more readily than pitch works the dash); slope transients are
+    // grade-break jolts — only sharp gore/crest crossings qualify.
+    const sLong = smoothstep(28, 70, Math.abs(jx));
+    const sLat = smoothstep(22, 60, Math.abs(jy));
+    const sVert = smoothstep(0.15, 0.5, Math.abs(js));
+    const strength = Math.max(sLong, sLat, sVert);
+    if (strength <= 0) return;
+    const axis: "long" | "lat" | "vert" =
+      strength === sLong ? "long" : strength === sLat ? "lat" : "vert";
+    const p = 0.3 + strength * 0.3; // stick-slip: 30-60% per qualifying transient
+    const fired = Math.random() < p;
+    this.creakLog.push({ t: now, kind: "roll", axis, strength, p });
+    if (this.creakLog.length > 64) this.creakLog.shift();
+    if (!fired) {
+      // The joint stuck this time. Short gate so the SAME continuing
+      // transient doesn't get re-rolled every frame (it was one event).
+      this.creakGateT = now + 0.5;
+      return;
+    }
+    this.creakGateT = now + 0.8 + Math.random() * 1.7; // randomized refractory
+    // Masking-aware level: full at parking-lot speeds, tucked well under
+    // wind/road by highway pace; exterior cameras duck to 25%.
+    const mask = (1 - 0.55 * smoothstep(8, 30, speed)) * (cabinCam ? 1 : 0.25);
+    this.creakFire(now, axis, mask, strength, p, cabinCam);
+  }
+  /* ---- end interior trim creaks (lane U) ---- */
+
   /** One-shot: play a decoded sample through gain (+ optional slight
       repitch for variety) into `dest`. Returns the source's duration/rate. */
   private playSample(
@@ -1577,11 +1793,21 @@ export class GameAudio {
    *                  (skid chirp, ABS tick, road hum damping) still uses —
    *                  omitting it reproduces today's behavior exactly, since
    *                  max(slip, 0) === slip.
+   * @param axS/ayS  optional (lane U), CarState.axS/ayS — smoothed body-frame
+   *                  longitudinal/lateral acceleration, m/s^2. Drives ONLY
+   *                  the interior trim creak one-shots (see the fenced lane-U
+   *                  block); omitted -> derivatives stay 0 -> creaks silent.
+   * @param slope    optional (lane U), CarState.slope — road grade; its
+   *                  derivative is the creak model's ramp-gore/grade-break
+   *                  jolt input. Same omitted->silent behavior.
+   * @param cabinCam optional (lane U): true for in-cabin cameras (cockpit or
+   *                  POV). Exterior cameras duck the creaks to 25%.
    */
   update(
     rpm: number, thr: number, slip: number, speed: number, now: number,
     cut: boolean, raining: boolean, horn: boolean,
-    gear?: number, onLimiter?: boolean, rainIntensity?: number, slipDemand?: number
+    gear?: number, onLimiter?: boolean, rainIntensity?: number, slipDemand?: number,
+    axS?: number, ayS?: number, slope?: number, cabinCam?: boolean
   ) {
     if (!this.ok) return;
     const p = this.prof;
@@ -1971,6 +2197,10 @@ export class GameAudio {
     } else {
       this.nextDroplet = now; // fire promptly next time it starts raining, not after a stale delay
     }
+
+    // interior trim creaks (lane U): per-frame drive call into the fenced
+    // block near tick() — one-shot triggers only, no sustained voice.
+    this.trimCreaks(now, dt, speed, axS ?? 0, ayS ?? 0, slope ?? 0, cabinCam ?? false);
 
     this.hornSet(horn);
   }
