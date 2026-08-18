@@ -226,7 +226,16 @@ export function buildPlayerCar(
   carGroup.add(bodyG);
   const exteriorG = new THREE.Group(), lampsG = new THREE.Group();
   bodyG.add(exteriorG);
-  carGroup.add(lampsG);
+  /* Lamps ride the BODY, not the yaw-only carGroup: bodyG is what engine.ts
+     pitches to the road slope (and rolls/dives), and headlights are bolted to
+     that body. Parented to carGroup they stayed world-horizontal, so on a 6%
+     ramp climb the dipped cut-off (aimed 0.4% below horizontal) met the rising
+     deck at ~10 m and everything beyond — road, paint, barriers — sat outside
+     the cone entirely; over a crest the pool overshot instead. On flat road
+     bodyG's rotation is just the tiny damped squat/dive transient, so nothing
+     changes there. Aim math in engine.ts works in lampsG-local space and is
+     untouched by this. */
+  bodyG.add(lampsG);
 
   /* The world's painted cube env is the floor, not the ceiling: when a real
      equirect HDRI is on disk, carenv swaps it under these materials a moment
