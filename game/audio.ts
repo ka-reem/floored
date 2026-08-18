@@ -218,6 +218,27 @@ export class GameAudio {
   private lastBurbleTrigger = -10;
   private burbleCount = 0;
   private burbleNext = 0;
+  /* engine-mix state + debug (cruise-hum fix / growl-under-load tuning).
+     whineLiftEnv charges to 1 on an actual throttle lift-off edge and
+     decays; whineDecelEnv is a smoothed actual-deceleration estimate — both
+     gate the overrun gear-whine boost so it reads as a lift-off event, not
+     a steady state (see the whine block in update()). lastMix snapshots the
+     engine-mix targets computed by the most recent update() so the headless
+     mix test can assert on the exact model values rather than smoothed
+     approximations. */
+  private whineLiftEnv = 0;
+  private whineDecelEnv = 0;
+  private prevWhineSpeed = 0;
+  private lastWhineT = 0;
+  private lastMix: {
+    thr: number; rn: number; overrun: number; whineBoost: number;
+    turboTarget: number; whineTarget: number; sampLevelTarget: number;
+    bedMix: number; profTurbo: number; profLevel: number;
+  } | null = null;
+  /* lazy read-only tap on the final output for the headless clipping check
+     (getOutputPeak()) — an AnalyserNode fan-out, no audible routing change */
+  private peakAnalyser: AnalyserNode | null = null;
+  private peakBuf: Float32Array<ArrayBuffer> | null = null;
 
   /* tires */
   private tireRoadF!: BiquadFilterNode; private tireRoadG!: GainNode;
@@ -1016,7 +1037,31 @@ export class GameAudio {
       npcOscSum,
       npcNearest: nearest,
       master: this.master.gain.value,
+      /** exact engine-mix targets computed by the most recent update() —
+          unsmoothed model values, for the headless mix test */
+      mix: this.lastMix,
     };
+  }
+
+  /** Instantaneous |peak| of the final output (post cabin EQ, i.e. what the
+      speakers get), via a lazily-created read-only AnalyserNode tap — no
+      audible routing change. Poll repeatedly to track a windowed max; used
+      by the headless mix test to verify the growl tuning doesn't clip. */
+  getOutputPeak(): number | null {
+    if (!this.ok) return null;
+    if (!this.peakAnalyser) {
+      this.peakAnalyser = this.ctx.createAnalyser();
+      this.peakAnalyser.fftSize = 2048;
+      this.cabinPeak.connect(this.peakAnalyser);
+      this.peakBuf = new Float32Array(this.peakAnalyser.fftSize);
+    }
+    this.peakAnalyser.getFloatTimeDomainData(this.peakBuf!);
+    let m = 0;
+    for (let i = 0; i < this.peakBuf!.length; i++) {
+      const a = Math.abs(this.peakBuf![i]);
+      if (a > m) m = a;
+    }
+    return m;
   }
 
   /** Smoothed param write — per-frame .value writes zipper badly on filters. */
@@ -1567,11 +1612,14 @@ export class GameAudio {
        specifically), while the intake/exhaust noise beds stay LAYERED under
        the samples at half gain — spectral call: the ladder loops carry pitch
        and firing texture but, being fixed recordings, lose the throttle-
-       open/closed contrast; the beds are exactly that load character and at
-       -6dB they tuck under the recording instead of reading as hiss. engG
-       still gates the beds, so bodyLevel keeps shaping them. */
+       open/closed contrast; the beds are exactly that load character, so
+       their trim now rides the throttle: -6dB closed (tucked under the
+       recording instead of reading as hiss) opening to ~-1.4dB wide open —
+       the intake/exhaust roar is most of the "growl under acceleration" the
+       fixed recordings can't provide. engG still gates the beds, so
+       bodyLevel keeps shaping them. */
     const sampled = this.sampledActive();
-    const bedMix = sampled ? 0.5 : 1;
+    const bedMix = sampled ? 0.5 + thr * 0.35 : 1;
     this.sp(this.drivePre.gain, 0.9 + load * 2.6 + (lim ? 1.4 : 0), 0.04);
     this.sp(this.driveTrim.gain, (sampled ? 0 : 1) / (0.9 + load * 1.2), 0.04);
 
@@ -1592,6 +1640,7 @@ export class GameAudio {
        bodyLevel model (throttle/revs up, overrun/cut/limiter down) and the
        sampLP "airbox" lowpass opens with throttle exactly like engLP, so
        the recording still breathes with load. */
+    let sampLevelTarget = 0;
     if (this.engReady) {
       const A = RPM_ANCHORS;
       let g0 = 0, g1 = 0, band = 0;
@@ -1608,15 +1657,23 @@ export class GameAudio {
         this.sp(this.loopGains[i].gain, g, 0.045);
         this.sp(this.loopSrcs[i].playbackRate, clampRange(rpm / A[i], 0.45, 2.2), 0.02);
       }
+      // thr coefficient 0.17 (was 0.11): +2.0dB on the ladder at wide-open
+      // throttle while closed-throttle cruise level is untouched — paired
+      // with the bed trim above and the faster-opening airbox below, this is
+      // the "elevate the engine growl when accelerating" change.
       const sampLevel = !sampled
         ? 0
-        : (0.07 + thr * 0.11 + rn * 0.05) *
+        : (0.07 + thr * 0.17 + rn * 0.05) *
           (1 - overrun * 0.35) * cutMul * p.level * (lim ? 0.65 : 1);
+      sampLevelTarget = sampLevel;
       this.sp(this.sampBus.gain, sampLevel, 0.02);
       this.sp(this.sampLimDepth.gain, lim && sampled ? -sampLevel * 0.8 : 0, 0.005);
+      // throttle term 4200 (was 3000): the airbox opens faster under load,
+      // brightening the recording on the gas without moving the closed-
+      // throttle / overrun tone at all (thr=0 leaves the curve unchanged).
       this.sp(
         this.sampLP.frequency,
-        Math.min(10000, 500 + rpm * 0.5 + thr * 3000 - overrun * 700),
+        Math.min(10000, 500 + rpm * 0.5 + thr * 4200 - overrun * 700),
         0.03
       );
       if (this.idleG) {
@@ -1648,23 +1705,51 @@ export class GameAudio {
     this.sp(this.exF.frequency, 220 + rn * 900, 0.04);
     this.sp(this.exG.gain, (0.008 + load * 0.03) * (0.3 + rn) * p.level, 0.04);
 
-    // Turbo spool follows boost, i.e. throttle held at revs.
+    // Turbo spool follows boost, i.e. throttle held at revs. Peak level
+    // coefficient 0.007 (was 0.01, -30%/-3.1dB): still audible on hard
+    // boost, subtle at part throttle — "slightly lower the turbo sound".
+    const turboTarget = p.turbo * thr * rn * rn * 0.007;
     this.sp(this.turboOsc.frequency, 2200 + rn * 4400, 0.08);
-    this.sp(this.turboG.gain, p.turbo * thr * rn * rn * 0.01, 0.12);
+    this.sp(this.turboG.gain, turboTarget, 0.12);
 
     // Gearbox whine: constant-mesh gears spin at output-shaft speed, which
     // for a fixed final drive is set by road speed alone — the same at a
     // given speed no matter which gear is selected — so pitch tracks speed,
     // not rpm/gear. Level is quiet under load (loaded gear teeth are damped
-    // by torque) and boosted on overrun/lift-off, the classic immersion cue;
-    // reverse/1st still carry a bit more base whine (shorter, whinier gearsets).
+    // by torque) and boosted on overrun/lift-off, the classic immersion cue.
+    // The boost is an EVENT now, not a state: this physics has no engine-
+    // braking force, so a no-gas constant-speed cruise holds `overrun` at a
+    // steady 0.3-0.8 forever, and the old always-on x(1+overrun*2.4) pinned
+    // the whine at ~0.018 — ~2x the turbo's own full-boost ceiling — as a
+    // fixed-pitch drone (the reported "turbo is humming" at cruise; the
+    // actual turbo is silent at thr=0 by construction). The boost now
+    // charges to full on a genuine throttle lift-off edge and decays over
+    // ~1.1s of steady speed, and a smoothed actual-deceleration term keeps
+    // it alive during genuine hard engine-braking (decel well beyond the
+    // ~0.35-0.7 m/s^2 of a drag-only coast); steady gas-off cruise settles
+    // at base whine. Reverse/1st still carry more base whine (shorter,
+    // whinier gearsets).
+    const wdt = this.lastWhineT ? clampRange(now - this.lastWhineT, 0, 0.1) : 0.016;
+    this.lastWhineT = now;
+    const wDecel = (this.prevWhineSpeed - speed) / Math.max(wdt, 1 / 240);
+    this.prevWhineSpeed = speed;
+    this.whineDecelEnv +=
+      (clampRange(wDecel, 0, 10) - this.whineDecelEnv) * (1 - Math.exp(-wdt / 0.2));
+    if (thr - this.prevThr < -0.25 && this.prevThr > 0.35) this.whineLiftEnv = 1;
+    this.whineLiftEnv *= Math.exp(-wdt / 1.1);
+    const whineBoost = Math.max(this.whineLiftEnv, smoothstep(1.1, 3.2, this.whineDecelEnv));
     const g = gear ?? 2;
     const whineBase = g < 0 ? 0.026 : g === 1 ? 0.013 : 0.009;
     const whineLoad = 1 - thr * 0.65;
-    const whineOverrun = 1 + overrun * 2.4;
+    const whineOverrun = 1 + overrun * 2.4 * whineBoost;
     const whineSpeedGate = clamp01(speed / 3);
+    const whineTarget = whineBase * whineLoad * whineOverrun * whineSpeedGate;
     this.sp(this.whineOsc.frequency, 260 + Math.min(1, speed / 55) * 1900, 0.04);
-    this.sp(this.whineG.gain, whineBase * whineLoad * whineOverrun * whineSpeedGate, 0.06);
+    this.sp(this.whineG.gain, whineTarget, 0.06);
+    this.lastMix = {
+      thr, rn, overrun, whineBoost, turboTarget, whineTarget,
+      sampLevelTarget, bedMix, profTurbo: p.turbo, profLevel: p.level,
+    };
 
     /* Transients. A shift is the rising edge of the fuel cut: a gain dip (via
        cutMul above) plus a chuff out of the pipe. Reverse/1st engagement gets
