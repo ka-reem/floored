@@ -8,7 +8,9 @@
    are selected by their stable glTF node indices, their UVs are preserved,
    their 1K colour textures are resized to 512px JPEGs (metallic/roughness to
    256px), wheel geometry is discarded, and the result is fitted to
-   traffic.ts's dimensions. Each style remains one instanced draw call.
+   traffic.ts's dimensions. Tail-light anchors are detected from the actual
+   red lens artwork instead of guessed from body dimensions. Each style remains
+   one instanced draw call.
 
    Source: "Orchids Simulator Traffic Car Pack" by SphereBall20, CC-BY 4.0.
    See ATTRIBUTIONS.md for the canonical URL and required credit. */
@@ -138,20 +140,48 @@ function boundsOfNodes(nodes) {
 }
 
 const imageCache = new Map();
-async function imageForTexture(textureIndex, size, quality) {
+const sourcePixelCache = new Map();
+
+function sourceImageBytes(textureIndex) {
   const imageIndex = doc.textures[textureIndex]?.source;
   if (imageIndex === undefined) return null;
-  const cacheKey = `${imageIndex}:${size}:${quality}`;
-  if (imageCache.has(cacheKey)) return imageCache.get(cacheKey);
   const image = doc.images[imageIndex];
   if (image.uri) throw new Error("external source images are not supported");
   const view = doc.bufferViews[image.bufferView];
-  const encoded = bin.subarray(view.byteOffset || 0, (view.byteOffset || 0) + view.byteLength);
-  const value = await sharp(encoded)
+  return {
+    imageIndex,
+    bytes: bin.subarray(view.byteOffset || 0, (view.byteOffset || 0) + view.byteLength),
+  };
+}
+
+async function imageForTexture(textureIndex, size, quality) {
+  const source = sourceImageBytes(textureIndex);
+  if (!source) return null;
+  const { imageIndex, bytes } = source;
+  const cacheKey = `${imageIndex}:${size}:${quality}`;
+  if (imageCache.has(cacheKey)) return imageCache.get(cacheKey);
+  const value = await sharp(bytes)
     .resize({ width: size, height: size, fit: "inside", withoutEnlargement: true })
     .jpeg({ quality, chromaSubsampling: "4:4:4" })
     .toBuffer();
   imageCache.set(cacheKey, value);
+  return value;
+}
+
+async function sourcePixelsForTexture(textureIndex) {
+  const source = sourceImageBytes(textureIndex);
+  if (!source) return null;
+  if (sourcePixelCache.has(source.imageIndex)) return sourcePixelCache.get(source.imageIndex);
+  const decoded = await sharp(source.bytes)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const value = {
+    data: decoded.data,
+    width: decoded.info.width,
+    height: decoded.info.height,
+  };
+  sourcePixelCache.set(source.imageIndex, value);
   return value;
 }
 
@@ -160,6 +190,7 @@ async function imagesForMaterial(materialIndex) {
   return {
     base: await imageForTexture(pbr?.baseColorTexture?.index, 512, 86),
     metallicRoughness: await imageForTexture(pbr?.metallicRoughnessTexture?.index, 256, 82),
+    sourcePixels: await sourcePixelsForTexture(pbr?.baseColorTexture?.index),
   };
 }
 
@@ -184,6 +215,64 @@ function bodyTriangles(nodeIndex) {
     out.push({ p, uv: texcoord });
   }
   return out;
+}
+
+function texturePixel(image, u, v) {
+  u = ((u % 1) + 1) % 1;
+  v = ((v % 1) + 1) % 1;
+  const x = Math.min(image.width - 1, Math.floor(u * image.width));
+  const y = Math.min(image.height - 1, Math.floor(v * image.height));
+  const o = (y * image.width + x) * 4;
+  return [image.data[o], image.data[o + 1], image.data[o + 2]];
+}
+
+/** Locate the actual red lamp artwork on the fitted rear body. Sampling the
+ * original 1K texture over rear-facing geometry is more reliable than a
+ * dimension-based guess, and keeps each glow sprite centered on its lens. */
+function tailLampPair(tris, image, cfg) {
+  const sides = [
+    { x: 0, y: 0, z: 0, w: 0, samples: 0 },
+    { x: 0, y: 0, z: 0, w: 0, samples: 0 },
+  ];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const ab = new THREE.Vector3(), ac = new THREE.Vector3();
+  const steps = 10;
+  const samplesPerTri = ((steps + 1) * (steps + 2)) / 2;
+
+  for (const tri of tris) {
+    const z = (tri.p[0][2] + tri.p[1][2] + tri.p[2][2]) / 3;
+    if (z > -cfg.L * 0.34) continue;
+    a.set(...tri.p[0]); b.set(...tri.p[1]); c.set(...tri.p[2]);
+    const area = ab.subVectors(b, a).cross(ac.subVectors(c, a)).length() * 0.5;
+    const weight = area / samplesPerTri;
+    for (let i = 0; i <= steps; i++) {
+      for (let j = 0; j <= steps - i; j++) {
+        const wa = i / steps, wb = j / steps, wc = 1 - wa - wb;
+        const x = tri.p[0][0] * wa + tri.p[1][0] * wb + tri.p[2][0] * wc;
+        const y = tri.p[0][1] * wa + tri.p[1][1] * wb + tri.p[2][1] * wc;
+        const pz = tri.p[0][2] * wa + tri.p[1][2] * wb + tri.p[2][2] * wc;
+        if (Math.abs(x) < cfg.W * 0.12 || y < cfg.H * 0.27) continue;
+        const u = tri.uv[0][0] * wa + tri.uv[1][0] * wb + tri.uv[2][0] * wc;
+        const v = tri.uv[0][1] * wa + tri.uv[1][1] * wb + tri.uv[2][1] * wc;
+        const [r, g, blue] = texturePixel(image, u, v);
+        if (r < 65 || r < g * 1.3 || r < blue * 1.18 || r - g < 22) continue;
+        const side = sides[x < 0 ? 0 : 1];
+        side.x += x * weight;
+        side.y += y * weight;
+        side.z += pz * weight;
+        side.w += weight;
+        side.samples++;
+      }
+    }
+  }
+
+  if (sides.some((side) => side.samples < 8 || side.w <= 0))
+    throw new Error(`${cfg.body}: could not identify both textured tail-light clusters`);
+  return sides.map((side) => [
+    side.x / side.w,
+    side.y / side.w,
+    side.z / side.w - 0.055,
+  ]);
 }
 
 /** Smooth panels without melting actual body creases. */
@@ -232,6 +321,8 @@ async function build(style, cfg) {
   if (!images.base) throw new Error(`${style}: source body has no base-colour texture`);
   if (!images.metallicRoughness)
     throw new Error(`${style}: source body has no metallic-roughness texture`);
+  if (!images.sourcePixels)
+    throw new Error(`${style}: source body texture could not be decoded`);
 
   const wheels = wheelNodes.map((node) => {
     const b = boundsOfNodes([node]);
@@ -260,10 +351,10 @@ async function build(style, cfg) {
   /* These four retain their authored paint and detail texture, so their paint
      mask remains zero. Other fleet styles still use random per-instance paint,
      keeping the overall stream varied. */
-  const frontY = cfg.H * 0.46, rearY = cfg.H * 0.42;
+  const frontY = cfg.H * 0.46;
   const lamps = {
     head: [[-cfg.W * 0.32, frontY, cfg.L * 0.49], [cfg.W * 0.32, frontY, cfg.L * 0.49]],
-    tail: [[-cfg.W * 0.32, rearY, -cfg.L * 0.49], [cfg.W * 0.32, rearY, -cfg.L * 0.49]],
+    tail: tailLampPair(tris, images.sourcePixels, cfg),
     flashR: null,
     flashB: null,
   };
