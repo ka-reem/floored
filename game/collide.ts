@@ -1,6 +1,7 @@
 import type { CarState } from "./physics";
 import type { WorldData } from "./world/data";
 import { parapetGap } from "./world/ramps";
+import { BYPASS, type RouteGraph, type RoutePose } from "./world/routegraph";
 
 /* Player collision: the corridor's parapets (analytic, from the same
    half-width the walls are swept from), static AABBs (piers, toll islands,
@@ -15,6 +16,21 @@ export interface NpcHit {
 }
 
 const tmpN = { x: 0, z: 0 };
+
+/* newParapetGaps() walks every bypass station, so resolve it once per graph
+   rather than once per frame. */
+let _gapsFor: RouteGraph | null = null;
+let _newGaps: { z0: number; z1: number; side: 1 | -1 }[] = [];
+function newGaps(routes: RouteGraph) {
+  if (_gapsFor !== routes) {
+    _gapsFor = routes;
+    _newGaps = routes.newParapetGaps();
+  }
+  return _newGaps;
+}
+const _byPose: RoutePose = {
+  x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0, bank: 0,
+};
 
 function collideAABB(car: CarState, px: number, pz: number, rr: number, bb: any): boolean {
   if (bb.y0 !== undefined && (car.y + 1.4 < bb.y0 || car.y > bb.y1)) return false;
@@ -141,6 +157,17 @@ export function collidePlayer(
       const ry = world.terrain.onRamp(car.x, car.z);
       if (ry !== null && Math.abs(ry - car.y) < 2.6) guarded = false;
     }
+    /* the bypass gores cut the parapet too — west at the diverge, and the
+       east wall's first-ever gap at the merge — and a car on bypass pavement
+       at deck height (the shared gore wedges) is likewise exempt */
+    if (world.routes) {
+      for (const gp of newGaps(world.routes))
+        if (car.z > gp.z0 && car.z < gp.z1 && side === gp.side) guarded = false;
+      if (guarded) {
+        const sf = world.routes.surfaceAt(car.x, car.z, 1.0);
+        if (sf !== null && Math.abs(sf.y - car.y) < 2.6) guarded = false;
+      }
+    }
     if (guarded && Math.abs(lat) > lim) {
       const pen = Math.abs(lat) - lim;
       const m = cor.slopeX(zc), inv = 1 / Math.hypot(m, 1);
@@ -153,6 +180,40 @@ export function collidePlayer(
         car.wvz -= nz * vn * 1.07;
       }
       hit = true;
+    }
+  }
+
+  /* Bypass parapets: the same analytic clamp, in the bypass's own station
+     frame. Skipped on a side whose half-width is gore-clipped (the wedge is
+     shared pavement — the deck's own edge continues there), and only while
+     the car is actually at the bypass surface, so nothing under the viaduct
+     ever feels it. */
+  if (world.routes) {
+    const by = world.routes.bypass;
+    const bHit = by.project(car.x, car.z, BYPASS.half + 6);
+    if (bHit) {
+      const p = by.poseAt(bHit.s, _byPose);
+      const surfY = p.y + bHit.lat * p.bank;
+      if (Math.abs(car.y - surfY) < 2.6) {
+        const { hwL, hwR } = by.halfWidths(bHit.s);
+        const hwSide = bHit.lat >= 0 ? hwL : hwR;
+        if (hwSide > BYPASS.half - 0.05) {
+          const lim = hwSide + 0.06 - halfW;
+          if (Math.abs(bHit.lat) > lim) {
+            const pen = Math.abs(bHit.lat) - lim;
+            const sgn = bHit.lat >= 0 ? 1 : -1;
+            const nx = sgn * p.nx, nz = sgn * p.nz; // outward wall normal
+            car.x -= nx * pen;
+            car.z -= nz * pen;
+            const vn = car.wvx * nx + car.wvz * nz;
+            if (vn > 0) {
+              car.wvx -= nx * vn * 1.07;
+              car.wvz -= nz * vn * 1.07;
+            }
+            hit = true;
+          }
+        }
+      }
     }
   }
 

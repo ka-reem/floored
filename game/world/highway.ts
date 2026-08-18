@@ -4,6 +4,7 @@ import { type Rng } from "../util";
 import { makeTex, asphalt, signTexF, exitSignTexF, warnTexF, roadWordTexF } from "../textures";
 import { RAMP_W, CONNECT_Z } from "./const";
 import { parapetGap } from "./ramps";
+import { BYPASS, DIVERGE_Z, MERGE_Z, type RouteGraph } from "./routegraph";
 import {
   getCorridor, assertPitches, signPlan, PITCH, PHASE, SIGN, TUNNEL, TOLL, TOLL_PLAZA,
   type Station,
@@ -239,11 +240,20 @@ export function buildHighway(
   const WALL_H = 1.05, WALL_T = 0.34, DECK_TH = 1.15;
   /** stations where a parapet must not be drawn (the ramp divergence zones) */
   const gapZ = terrain.ramps.map(parapetGap);
+  /** the bypass gores cut the parapet too — west at the diverge, and the
+      east wall's first-ever gap at the merge (routegraph.ts computes both) */
+  const newGaps = world.routes ? world.routes.newParapetGaps() : [];
   const wallOk = (z: number, east: boolean) => {
+    for (const g of newGaps)
+      if ((east ? g.side > 0 : g.side < 0) && z > g.z0 && z < g.z1) return false;
     if (east) return true; // ramps only ever leave on the west side
     for (const g of gapZ) if (z > g.z0 && z < g.z1) return false;
     return true;
   };
+  /** z's the bypass gores keep clear of long deck furniture */
+  const nearNewGore = (z: number, r: number) =>
+    world.routes !== undefined &&
+    (Math.abs(z - DIVERGE_Z) < r || Math.abs(z - MERGE_Z) < r);
   /** the tunnel supplies its own walls, so skip the parapet through it */
   const inTube = (z: number) => z > TUNNEL.z0 - 3 && z < TUNNEL.z1 + 3;
 
@@ -643,6 +653,18 @@ export function buildHighway(
     board(s.z, s.w, s.h, tex);
   }
 
+  /* ---------------- the bypass viaduct (route graph, stage 2) --------------
+     Swept from routegraph.ts's stations exactly the way the main deck is
+     swept from the corridor's: pavement with the per-station asymmetric
+     half-widths (the gore wedges) and banked cross-fall, the 1.1 m box girder
+     the bridge clearance numbers assume, parapets that yield to a steel
+     railing over the crossing span, centre dash + edge lines in the same
+     retroreflective paint, piers with caps (and colliders), and the gore kit
+     the ramps already use — chevrons, beacons, signs, kerb-lane arrows. */
+  if (world.routes) buildBypassViaduct(scene, mats, world, terrain, {
+    add, board, decal, word, wordMat, arrowMat, goreMat,
+  });
+
   /* ---------------- deck dressing ---------------- */
   /* Edge reflectors, on top of the parapet rather than 40 cm inside the
      pavement edge — where they were, they were below the barrier's top and so
@@ -696,6 +718,8 @@ export function buildHighway(
     for (const z of cor.lattice(PITCH.gantry)) {
       if (cor.inTunnel(z) || cor.inToll(z)) continue;
       if (CONNECT_Z.some((cz) => Math.abs(z - cz) < 220)) continue;
+      // the bypass gores: a gantry lands exactly on the diverge nose otherwise
+      if (nearNewGore(z, 220)) continue;
       const p = cor.pose(z);
       const hw = cor.halfWidth(z);
       const g = new THREE.Group();
@@ -789,6 +813,7 @@ export function buildHighway(
         const mid = z0 + SEG / 2;
         if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
         if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
+        if (nearNewGore(mid, 260)) continue;
         const i0 = Math.round((z0 - cor.ZB0) / 4);
         const i1 = Math.min(ST.length - 1, Math.round((z0 + SEG - cor.ZB0) / 4));
         for (let i = i0; i < i1; i++) {
@@ -841,6 +866,7 @@ export function buildHighway(
         const mid = z0 + SEG / 2;
         if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
         if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
+        if (nearNewGore(mid, 260)) continue;
         const i0 = Math.round((z0 - cor.ZB0) / 4);
         const i1 = Math.min(ST.length - 1, Math.round((z0 + SEG - cor.ZB0) / 4));
         for (let i = i0; i < i1; i++) {
@@ -864,7 +890,25 @@ export function buildHighway(
     // half a pitch off the lattice origin: the gantry pitch is a multiple of
     // this one, so on phase 0 every gantry would have a light pole inside its leg
     const zs = cor.lattice(PITCH.light, PHASE.light);
-    const NP = zs.length;
+    /* The bypass viaduct's lights ride the SAME instanced meshes (poles,
+       arms, heads, lenses, cones, pools — one draw call each for deck AND
+       viaduct). Its lattice is edge-local: the bypass never crosses the
+       seam, so there is no LOOP-phase constraint to honour. The gore wedges
+       are skipped (the deck's own lights carry those), as is any station
+       whose outer half-width is gore-clipped. */
+    const byLamps: { s: number; flip: number }[] = [];
+    if (world.routes) {
+      const byE = world.routes.bypass;
+      let k2 = 0;
+      for (const s of byE.sLattice(PITCH.light, 25)) {
+        if (s < 40 || s > byE.len - 40) continue;
+        const flip = k2++ % 2 ? 1 : -1;
+        const hws = byE.halfWidths(s);
+        if ((flip > 0 ? hws.hwL : hws.hwR) < BYPASS.half - 0.02) continue;
+        byLamps.push({ s, flip });
+      }
+    }
+    const NP = zs.length + byLamps.length;
     const poles = new THREE.InstancedMesh(poleG, mats.pole, NP);
     const arms = new THREE.InstancedMesh(armG, mats.pole, NP);
     /* The head that was always missing: a cobra housing over an emissive lens
@@ -969,6 +1013,10 @@ export function buildHighway(
          sides of the splice would alternate out of step. */
       const li = cor.latticeIndex(z, PITCH.light, PHASE.light);
       const flip = li % 2 ? 1 : -1;
+      // a pole standing in a bypass parapet gap, on the gap's side, would be
+      // a mast planted in the gore's open pavement
+      if (newGaps.some((g) => z > g.z0 && z < g.z1 && (g.side > 0) === (flip > 0)))
+        continue;
       const p = cor.pose(z);
       // mounted on the parapet, not inside the shoulder where a car scraping
       // the barrier would drive through the pole
@@ -1026,6 +1074,63 @@ export function buildHighway(
         poolUv.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
       }
       n++;
+    }
+    /* the viaduct's lights: same fittings, bypass station frame, cross-fall
+       (bank) folded into every mount height so the pole bases sit on the
+       banked pavement rather than floating over it */
+    if (world.routes && byLamps.length) {
+      const byE = world.routes.bypass;
+      let bi = 0;
+      for (const { s, flip } of byLamps) {
+        const p = byE.poseAt(s);
+        const hws = byE.halfWidths(s);
+        const hw = flip > 0 ? hws.hwL : hws.hwR;
+        const lat = flip * (hw + 0.23);
+        const sy = (l: number) => p.y + l * p.bank;
+        E.set(0, p.h, 0);
+        Q.setFromEuler(E);
+        V.set(p.x + lat * p.nx, sy(lat) + 3.8, p.z + lat * p.nz);
+        M.compose(V, Q, S);
+        poles.setMatrixAt(n, M);
+        const armLat = lat - flip * 0.8;
+        V.set(p.x + armLat * p.nx, sy(armLat) + 7.5, p.z + armLat * p.nz);
+        M.compose(V, Q, S);
+        arms.setMatrixAt(n, M);
+        const lampLat = lat - flip * 1.55;
+        const lx = p.x + lampLat * p.nx, lz = p.z + lampLat * p.nz;
+        const ly = sy(lampLat);
+        lightPts.push(lx, ly + 7.45, lz);
+        V.set(lx, ly + 7.5, lz);
+        M.compose(V, Q, S);
+        heads.setMatrixAt(n, M);
+        V.set(lx, ly + 7.39, lz);
+        M.compose(V, Q, S);
+        lens.setMatrixAt(n, M);
+        const idx = bi++;
+        if (cones && idx % coneEvery === 0) {
+          V.set(lx, ly + 7.45 - 3.55, lz);
+          M.compose(V, Q, S);
+          cones.setMatrixAt(nc++, M);
+        }
+        if (wantPools && idx % poolEvery === 0) {
+          const cLat = lampLat - flip * 0.8;
+          const cx = p.x + cLat * p.nx, cz = p.z + cLat * p.nz;
+          const cy = sy(cLat) + 0.055;
+          const g = p.grade, tn = 1 / Math.hypot(1, g);
+          const tX = p.tx * tn, tY = g * tn, tZ = p.tz * tn;
+          const A = 3.9, B = 5.6;
+          const corner = (sa: number, sb: number): [number, number, number] => [
+            cx + sa * A * p.nx + sb * B * tX,
+            cy + sb * B * tY,
+            cz + sa * A * p.nz + sb * B * tZ,
+          ];
+          const c00 = corner(-1, -1), c10 = corner(1, -1),
+            c11 = corner(1, 1), c01 = corner(-1, 1);
+          poolPos.push(...c00, ...c10, ...c11, ...c00, ...c11, ...c01);
+          poolUv.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
+        }
+        n++;
+      }
     }
     poles.count = arms.count = heads.count = lens.count = n;
     poles.computeBoundingSphere();
@@ -1828,6 +1933,234 @@ function buildRampMeshes(
   const wm = new THREE.Mesh(wallS.geom(false), mats.barrierDouble);
   wm.castShadow = true;
   scene.add(wm);
+}
+
+/* ============================ bypass viaduct ============================ */
+
+function buildBypassViaduct(
+  scene: THREE.Scene,
+  mats: Mats,
+  world: WorldData,
+  terrain: Terrain,
+  kit: {
+    add: (b: { x0: number; x1: number; z0: number; z1: number; y0: number; y1: number }) => void;
+    board: (z: number, w: number, h: number, tex: THREE.Texture) => THREE.Group | null;
+    decal: (z: number, lat: number, w: number, l: number, mat: THREE.Material) => THREE.Mesh;
+    word: (z: number, lat: number, mat: THREE.Material, chars: number) => THREE.Mesh;
+    wordMat: (word: string) => THREE.Material;
+    arrowMat: THREE.Material;
+    goreMat: THREE.Material;
+  }
+) {
+  const routes: RouteGraph = world.routes!;
+  const cor = getCorridor();
+  const by = routes.bypass;
+  const st = by.stations;
+  const { add, board, decal, word, wordMat, arrowMat, goreMat } = kit;
+  const WALL_H = 1.05, WALL_T = 0.34, WALL_EVERY_B = 2, TILE = 7;
+  const FULL = BYPASS.half - 0.02;
+
+  /** station point at lateral `lat`, cross-fall (bank) folded into y */
+  const bpt = (i: number, lat: number, dy = 0): Vec3 => {
+    const p = st[i];
+    return [p.x + p.nx * lat, p.y + lat * p.bank + dy, p.z + p.nz * lat];
+  };
+  const inCross = (z: number) =>
+    routes.crossings.some((cr) => z > cr.z0 - 10 && z < cr.z1 + 10);
+
+  /* ---- deck sweep: pavement, girder fascia, parapets, bridge railing ---- */
+  const bSurf = new Soup(), bFas = new Soup(), bWall = new Soup(),
+    bMark = new Soup(), bRail = new Soup();
+  for (let i = 0; i < st.length - 1; i++) {
+    const a = st[i], b = st[i + 1];
+    if (a.hwL + a.hwR < 0.5 && b.hwL + b.hwR < 0.5) continue;
+    const la = bpt(i, -a.hwR), ra = bpt(i, a.hwL);
+    const lb = bpt(i + 1, -b.hwR), rb = bpt(i + 1, b.hwL);
+    bSurf.quadUv(
+      la, lb, rb, ra,
+      [0, a.s / TILE], [0, b.s / TILE],
+      [(b.hwL + b.hwR) / TILE, b.s / TILE], [(a.hwL + a.hwR) / TILE, a.s / TILE]
+    );
+    /* the box girder: BYPASS.deckT (1.1 m) is the structural depth every
+       clearance number in the graph assumes — nothing may hang below it */
+    const lad = bpt(i, -a.hwR - 0.5, -BYPASS.deckT), rad = bpt(i, a.hwL + 0.5, -BYPASS.deckT);
+    const lbd = bpt(i + 1, -b.hwR - 0.5, -BYPASS.deckT), rbd = bpt(i + 1, b.hwL + 0.5, -BYPASS.deckT);
+    bFas.quad(la, lb, lbd, lad);
+    bFas.quad(ra, rad, rbd, rb);
+    bFas.quad(lad, lbd, rbd, rad);
+    if (i % WALL_EVERY_B === 0 && i + WALL_EVERY_B < st.length) {
+      const e = st[i + WALL_EVERY_B];
+      for (const sgn of [-1, 1] as const) {
+        const hwA = sgn > 0 ? a.hwL : a.hwR;
+        const hwE = sgn > 0 ? e.hwL : e.hwR;
+        // gore wedges: the deck's own edge continues there — no wall
+        if (hwA < FULL || hwE < FULL) continue;
+        if (inCross(a.z)) {
+          /* the crossing span carries a steel three-band railing instead of
+             the concrete parapet — the visual cue, from the main deck below
+             as much as from up here, that this piece is a bridge */
+          const a0 = bpt(i, sgn * (hwA + 0.1)), b0 = bpt(i + WALL_EVERY_B, sgn * (hwE + 0.1));
+          for (const [y0, t] of [[0, 0.3], [0.6, 0.08], [1.0, 0.1]] as const) {
+            bRail.quad(
+              [a0[0], a0[1] + y0, a0[2]], [b0[0], b0[1] + y0, b0[2]],
+              [b0[0], b0[1] + y0 + t, b0[2]], [a0[0], a0[1] + y0 + t, a0[2]]
+            );
+          }
+          continue;
+        }
+        const lo = sgn * (hwA + WALL_T / 2 + 0.06), hi = sgn * (hwE + WALL_T / 2 + 0.06);
+        const a0 = bpt(i, lo - (sgn * WALL_T) / 2), a1 = bpt(i, lo + (sgn * WALL_T) / 2);
+        const b0 = bpt(i + WALL_EVERY_B, hi - (sgn * WALL_T) / 2);
+        const b1 = bpt(i + WALL_EVERY_B, hi + (sgn * WALL_T) / 2);
+        const up = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
+        const dn = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
+        bWall.quad(dn(a0), dn(b0), up(b0), up(a0));
+        bWall.quad(dn(a1), dn(b1), up(b1), up(a1));
+        bWall.quad(up(a0), up(b0), up(b1), up(a1));
+      }
+    }
+  }
+
+  /* ---- markings: centre dash on the 16 m lattice, edge lines ---- */
+  const bstripe = (s0: number, s1: number, lat0: number, lat1: number, wd: number) => {
+    const p0 = by.worldOf(s0, lat0 - wd / 2), p1 = by.worldOf(s0, lat0 + wd / 2);
+    const p2 = by.worldOf(s1, lat1 + wd / 2), p3 = by.worldOf(s1, lat1 - wd / 2);
+    const Y = 0.022;
+    bMark.quadUv(
+      [p0.x, p0.y + Y, p0.z], [p3.x, p3.y + Y, p3.z],
+      [p2.x, p2.y + Y, p2.z], [p1.x, p1.y + Y, p1.z],
+      [0, 0], [0, 1], [1, 1], [1, 0]
+    );
+  };
+  for (const s of by.sLattice(16)) {
+    if (s + 6 > by.len) continue;
+    bstripe(s, s + 6, by.laneEdge(1, s), by.laneEdge(1, s + 6), 0.16);
+  }
+  for (const s of by.sLattice(8)) {
+    if (s + 8 > by.len) continue;
+    const h0 = by.halfWidths(s), h1 = by.halfWidths(s + 8);
+    for (const sgn of [1, -1] as const) {
+      const e0 = sgn > 0 ? h0.hwL : h0.hwR, e1 = sgn > 0 ? h1.hwL : h1.hwR;
+      if (e0 < FULL || e1 < FULL) continue;
+      bstripe(s, s + 8, sgn * (e0 - 0.45), sgn * (e1 - 0.45), 0.2);
+    }
+  }
+
+  const railMat = new THREE.MeshStandardMaterial({
+    color: 0x4a5262, roughness: 0.5, metalness: 0.7, side: THREE.DoubleSide,
+  });
+  for (const [S2, m, uv, shadow, noRef] of [
+    [bSurf, mats.hwy, true, false, true],
+    [bFas, mats.concDouble, false, true, false],
+    [bWall, mats.barrierDouble, false, true, false],
+    [bRail, railMat, false, false, false],
+    [bMark, mats.markMat, true, false, true],
+  ] as const) {
+    if (S2.empty) continue;
+    const mesh = new THREE.Mesh(S2.geom(uv), m as THREE.Material);
+    mesh.castShadow = shadow;
+    mesh.receiveShadow = true;
+    if (noRef) mesh.layers.set(LAYER_NOREF);
+    scene.add(mesh);
+  }
+
+  /* ---- piers + caps, instanced, with colliders on the frontage strip ---- */
+  {
+    const { piers } = routes.piers(terrain.h);
+    if (piers.length) {
+      const pierM = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(1.5, 1, 1.5), mats.concDark, piers.length);
+      const capM = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(1, 0.65, 2.0), mats.concDark, piers.length);
+      const M = new THREE.Matrix4(), V = new THREE.Vector3(),
+        Q = new THREE.Quaternion(), E = new THREE.Euler(), S = new THREE.Vector3();
+      piers.forEach((p, i) => {
+        const gy = terrain.h(p.x, p.z);
+        const hgt = Math.max(1.5, p.topY - gy);
+        E.set(0, by.poseAt(p.s).h, 0);
+        Q.setFromEuler(E);
+        V.set(p.x, gy + hgt / 2, p.z);
+        S.set(1, hgt, 1);
+        M.compose(V, Q, S);
+        pierM.setMatrixAt(i, M);
+        V.set(p.x, p.topY - 0.32, p.z);
+        S.set(BYPASS.half * 2 + 1.0, 1, 1);
+        M.compose(V, Q, S);
+        capM.setMatrixAt(i, M);
+        add({
+          x0: p.x - 1.0, x1: p.x + 1.0, z0: p.z - 1.0, z1: p.z + 1.0,
+          y0: gy, y1: p.topY - 0.6,
+        });
+      });
+      pierM.castShadow = true;
+      pierM.computeBoundingSphere();
+      capM.computeBoundingSphere();
+      scene.add(pierM, capM);
+    }
+  }
+
+  /* ---- gore treatment: HUD exit, paint, beacons, noses, signs ---- */
+  world.exits.push({ z: DIVERGE_Z, no: 3, name: "湾岸 Bypass" });
+
+  // painted chevrons + amber beacons at both noses — the ramps' own kit
+  const gore = (z: number, lat: number, flipRot: boolean) => {
+    const gp = cor.worldOf(z + (flipRot ? -4 : 4), lat);
+    const m = new THREE.Mesh(flatQuad(3.2, 6.4), goreMat);
+    m.rotation.y = cor.pose(z).h + (flipRot ? Math.PI : 0);
+    m.position.set(gp.x, gp.y + 0.03, gp.z);
+    m.layers.set(LAYER_NOREF);
+    scene.add(m);
+    const bp = cor.worldOf(z, Math.sign(lat) * (cor.halfWidth(z) - 0.5));
+    const bea = new THREE.Sprite(world.goreBeaconMat!);
+    bea.scale.set(1.9, 1.9, 1);
+    bea.position.set(bp.x, bp.y + 1.9, bp.z);
+    scene.add(bea);
+  };
+  const latD = -(cor.halfWidth(DIVERGE_Z) - 1.9);
+  gore(DIVERGE_Z, latD, false);
+  gore(MERGE_Z, cor.halfWidth(MERGE_Z) - 1.9, true);
+
+  // kerb-lane guidance on the approach: three arrows + 分岐 road text
+  for (let k = 0; k < 3; k++) decal(DIVERGE_Z - 34 - k * 26, latD + 0.5, 1.6, 3.4, arrowMat);
+  word(DIVERGE_Z - 122, latD + 0.5, wordMat("分岐"), 2);
+
+  /* wedge-tip noses: where the parapets begin, a chevron board over a low
+     concrete block (collider included — the nose is never a ghost) */
+  const nose = (x: number, y: number, z: number, h: number) => {
+    const blk = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.8, 1.3), mats.concDark);
+    blk.position.set(x, y + 0.4, z);
+    blk.rotation.y = h;
+    blk.castShadow = true;
+    scene.add(blk);
+    const bd = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.9),
+      new THREE.MeshBasicMaterial({ map: mats.chevTex }));
+    bd.position.set(x, y + 1.35, z);
+    bd.rotation.y = h + Math.PI; // face the oncoming stream
+    scene.add(bd);
+    add({ x0: x - 0.6, x1: x + 0.6, z0: z - 0.8, z1: z + 0.8, y0: y - 0.5, y1: y + 1.1 });
+  };
+  {
+    // diverge: first station where the deck-side (+lat) width is fully open
+    const iDiv = st.findIndex((p) => p.hwL >= FULL && p.s > 8);
+    if (iDiv > 0) {
+      const tp = bpt(iDiv, st[iDiv].hwL + 0.55);
+      nose(tp[0], tp[1], tp[2], by.poseAt(st[iDiv].s).h);
+    }
+    // merge: the deck's east parapet ends at the gap — cap it the same way
+    const mrgGap = routes.newParapetGaps().find((g) => g.side > 0);
+    if (mrgGap) {
+      const w = cor.worldOf(mrgGap.z0 - 1, cor.halfWidth(mrgGap.z0 - 1) + 0.23);
+      nose(w.x, w.y, w.z, cor.pose(mrgGap.z0 - 1).h);
+    }
+  }
+
+  /* cantilever boards: exit-count run for the diverge, and a merge warning
+     ahead of the gore. The doc suggested MERGE_Z − 150 ≈ 1430, but that mast
+     would stand under the toll canopy (and its 1240 fallback is still inside
+     the tunnel, z1 = 1260) — 80 m of notice from z = 1500 clears both. */
+  for (const d of [400, 200]) board(DIVERGE_Z - d, 7.4, 2.8, exitSignTexF(3, d + " m", "湾岸"));
+  board(DIVERGE_Z - 40, 7.4, 2.8, exitSignTexF(3, "出口", "湾岸"));
+  board(MERGE_Z - 80, 6.6, 2.5, warnTexF("合流注意", "MERGING TRAFFIC"));
 }
 
 /** Exit HUD helper: the nearest exit ahead, measured along the one-way
