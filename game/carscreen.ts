@@ -5,9 +5,10 @@ import { TAU } from "./util";
 import type { NavWorld, NavEdge, NavRamp } from "./cockpit";
 
 /* CarPlay-style head unit for the cockpit's centre-stack screen: a split UI on
-   the existing 256x160 canvas — a live nav map on the left (~60%), a music
-   player card on the right (~40%), thin bezel and a glass reflection over the
-   lot.
+   the existing 256x160 canvas — a live nav map on the right (~60%), a music
+   player card on the left (~40%), thin bezel and a glass reflection over the
+   lot. (Map on the RIGHT: in the dashcam POV the left edge of the tablet is
+   partially occluded by dash geometry, so the important pane lives right.)
 
    Cost model (this repaints on cockpit.ts's ~45 ms drawScreen cadence):
    - The NAV PANE redraws fully every call — it pans and rotates with the car,
@@ -25,12 +26,13 @@ import type { NavWorld, NavEdge, NavRamp } from "./cockpit";
 /* ------------------------------------------------------------- geometry -- */
 
 const W = 256, H = 160;
-const NAV_W = 154;                 // split: left 60% map, right 40% music
-const NCX = 77, NCY = 100;         // chevron centre — low, so more road ahead shows
+const NAV_W = 154;                 // split: right 60% map, left 40% music
+const NAV_X = W - NAV_W;           // nav pane spans NAV_X..W; music pane 0..NAV_X
+const NCX = NAV_X + 77, NCY = 100; // chevron centre — low, so more road ahead shows
 const SC = 1.45;                   // px per metre
 const R = 95;                      // metres of world drawn around the car
-const CARD = { x: 159, y: 6, w: 91, h: 148 };
-const BAR_X = 168, BAR_W = 73, BAR_Y = 128; // progress bar, inside the card
+const CARD = { x: 6, y: 6, w: 91, h: 148 };
+const BAR_X = 15, BAR_W = 73, BAR_Y = 128; // progress bar, inside the card
 
 /* ------------------------------------------------------------ tracklist -- */
 
@@ -111,10 +113,13 @@ const _p = { x: 0, y: 0, z: 0 }; // corridor.worldOf output
 const _s = { x: 0, y: 0 };       // world→screen output
 let _cx = 0, _cz = 0, _sin = 0, _cos = 0; // view params for the current call
 
-/** Heading-up world→screen into _s: car-forward maps to screen-up. */
+/** Heading-up world→screen into _s: car-forward maps to screen-up, and the
+    car's right-hand side to screen-right. With forward = (sin h, cos h) and
+    y-up right-handed world axes, right = forward × up = (-cos h, sin h), so
+    the screen-x component of a delta is -(dx*cos - dz*sin). */
 function toS(wx: number, wz: number) {
   const dx = wx - _cx, dz = wz - _cz;
-  _s.x = NCX + (dx * _cos - dz * _sin) * SC;
+  _s.x = NCX - (dx * _cos - dz * _sin) * SC;
   _s.y = NCY - (dx * _sin + dz * _cos) * SC;
 }
 
@@ -194,10 +199,11 @@ function paintArt(mg: CanvasRenderingContext2D, t: Track, x: number, y: number, 
 
 /** Repaint the whole card into the offscreen canvas. Only called when the
     track flips or the progress bar grows a pixel. Coordinates here are in the
-    card's own canvas space (origin at screen x = NAV_W). */
+    card's own canvas space (origin at screen x = 0 — the music pane is the
+    left pane, blitted at 0). */
 function paintMusic(st: ScreenState, px: number) {
   const mg = st.mg, t = TRACKS[st.trackIdx];
-  const x0 = CARD.x - NAV_W, y0 = CARD.y, cw = CARD.w, ch = CARD.h;
+  const x0 = CARD.x, y0 = CARD.y, cw = CARD.w, ch = CARD.h;
   const cx = x0 + cw / 2;
   mg.clearRect(0, 0, st.music.width, st.music.height);
   // pane ground behind the floating card
@@ -239,7 +245,7 @@ function paintMusic(st: ScreenState, px: number) {
   mg.font = "8px sans-serif";
   mg.fillText(t.artist, cx, ay + as + 25);
   // progress bar
-  const bx = BAR_X - NAV_W;
+  const bx = BAR_X;
   rr(mg, bx, BAR_Y, BAR_W, 3, 1.5);
   mg.fillStyle = "rgba(255,255,255,.16)";
   mg.fill();
@@ -272,10 +278,10 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
   x: number, z: number, h: number, timeH: number, world?: NavWorld) {
   g.save();
   g.beginPath();
-  g.rect(0, 0, NAV_W, H);
+  g.rect(NAV_X, 0, NAV_W, H);
   g.clip();
   g.fillStyle = st.bg;
-  g.fillRect(0, 0, NAV_W, H);
+  g.fillRect(NAV_X, 0, NAV_W, H);
 
   _cx = x; _cz = z; _sin = Math.sin(h); _cos = Math.cos(h);
 
@@ -330,7 +336,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
         let started = false;
         for (let i = 0; i <= n; i += 2) {
           toS(e.pts[i * 3], e.pts[i * 3 + 2]);
-          if (_s.x < -20 || _s.x > NAV_W + 20 || _s.y < -20 || _s.y > H + 20) { started = false; continue; }
+          if (_s.x < NAV_X - 20 || _s.x > W + 20 || _s.y < -20 || _s.y > H + 20) { started = false; continue; }
           if (!started) { g.moveTo(_s.x, _s.y); started = true; } else g.lineTo(_s.x, _s.y);
         }
         g.stroke();
@@ -453,7 +459,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
       let started = false;
       for (const p of r.pts) {
         toS(p.x, p.z);
-        if (_s.x < -20 || _s.x > NAV_W + 20 || _s.y < -20 || _s.y > H + 20) { started = false; continue; }
+        if (_s.x < NAV_X - 20 || _s.x > W + 20 || _s.y < -20 || _s.y > H + 20) { started = false; continue; }
         if (!started) { g.moveTo(_s.x, _s.y); started = true; } else g.lineTo(_s.x, _s.y);
       }
       g.stroke();
@@ -467,7 +473,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
       if (Math.abs(ex.z - z) > R) continue;
       cor.worldOf(ex.z, -(cor.halfWidth(ex.z) + 14), _p);
       toS(_p.x, _p.z);
-      if (_s.x < -6 || _s.x > NAV_W - 4 || _s.y < 26 || _s.y > H - 22) continue;
+      if (_s.x < NAV_X - 6 || _s.x > W - 4 || _s.y < 26 || _s.y > H - 22) continue;
       g.fillStyle = "#8fd9b5";
       g.beginPath();
       g.arc(_s.x, _s.y, 2, 0, TAU);
@@ -491,7 +497,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
   g.fill();
 
   // status strip: clock (the game's in-game clock, hours 0-24) + GPS glyphs
-  rr(g, 5, 5, 88, 15, 7.5);
+  rr(g, NAV_X + 5, 5, 88, 15, 7.5);
   g.fillStyle = "rgba(8,11,18,.78)";
   g.fill();
   g.strokeStyle = "rgba(255,255,255,.07)";
@@ -501,51 +507,51 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState,
   g.fillStyle = "#dde4f0";
   g.font = "700 9px sans-serif";
   g.textAlign = "left";
-  g.fillText((hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm, 12, 16);
+  g.fillText((hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm, NAV_X + 12, 16);
   // signal bars
   g.fillStyle = "#9aa6bc";
-  for (let b = 0; b < 3; b++) g.fillRect(60 + b * 4, 15 - b * 2.4, 2.6, 2.6 + b * 2.4);
+  for (let b = 0; b < 3; b++) g.fillRect(NAV_X + 60 + b * 4, 15 - b * 2.4, 2.6, 2.6 + b * 2.4);
   // GPS arrow
   g.beginPath();
-  g.moveTo(84, 8);
-  g.lineTo(87.5, 16.5);
-  g.lineTo(84, 14.5);
-  g.lineTo(80.5, 16.5);
+  g.moveTo(NAV_X + 84, 8);
+  g.lineTo(NAV_X + 87.5, 16.5);
+  g.lineTo(NAV_X + 84, 14.5);
+  g.lineTo(NAV_X + 80.5, 16.5);
   g.closePath();
   g.fill();
 
   // route banner along the bottom, with a lane-guidance arrow
-  rr(g, 5, H - 20, 96, 15, 7.5);
+  rr(g, NAV_X + 5, H - 20, 96, 15, 7.5);
   g.fillStyle = "rgba(8,11,18,.78)";
   g.fill();
   g.strokeStyle = "rgba(255,255,255,.07)";
   g.stroke();
   g.fillStyle = "#6fb2ff";
   g.beginPath();
-  g.moveTo(14, H - 16);
-  g.lineTo(17.5, H - 8.5);
-  g.lineTo(14, H - 10.5);
-  g.lineTo(10.5, H - 8.5);
+  g.moveTo(NAV_X + 14, H - 16);
+  g.lineTo(NAV_X + 17.5, H - 8.5);
+  g.lineTo(NAV_X + 14, H - 10.5);
+  g.lineTo(NAV_X + 10.5, H - 8.5);
   g.closePath();
   g.fill();
   g.fillStyle = "#cfd8e8";
   g.font = "600 8px sans-serif";
-  g.fillText(st.wasBy ? "湾岸 Bypass ルート" : "首都高 C1 環状線", 23, H - 9);
+  g.fillText(st.wasBy ? "湾岸 Bypass ルート" : "首都高 C1 環状線", NAV_X + 23, H - 9);
 
   // compass: north needle, correct under the heading-up rotation
   g.fillStyle = "rgba(8,11,18,.7)";
-  g.beginPath(); g.arc(NAV_W - 14, H - 13, 8, 0, TAU); g.fill();
-  const nx = -_sin, ny = -_cos; // screen direction of world north (+z)
+  g.beginPath(); g.arc(W - 14, H - 13, 8, 0, TAU); g.fill();
+  const nx = _sin, ny = -_cos; // screen direction of world north (+z), matching toS
   g.strokeStyle = "#e26a5a";
   g.lineWidth = 2;
   g.beginPath();
-  g.moveTo(NAV_W - 14, H - 13);
-  g.lineTo(NAV_W - 14 + nx * 5.5, H - 13 + ny * 5.5);
+  g.moveTo(W - 14, H - 13);
+  g.lineTo(W - 14 + nx * 5.5, H - 13 + ny * 5.5);
   g.stroke();
   g.strokeStyle = "#8b93a5";
   g.beginPath();
-  g.moveTo(NAV_W - 14, H - 13);
-  g.lineTo(NAV_W - 14 - nx * 4, H - 13 - ny * 4);
+  g.moveTo(W - 14, H - 13);
+  g.lineTo(W - 14 - nx * 4, H - 13 - ny * 4);
   g.stroke();
 
   g.restore();
@@ -579,11 +585,11 @@ export function drawCarScreen(
     st.paintedPx = px;
   }
 
-  // ---- left: nav map (full redraw — it pans/rotates every frame) ----------
+  // ---- right: nav map (full redraw — it pans/rotates every frame) ---------
   drawNav(g, st, x, z, h, timeH, world);
 
-  // ---- right: cached music card, one blit ---------------------------------
-  g.drawImage(st.music, NAV_W, 0, W - NAV_W, H);
+  // ---- left: cached music card, one blit ----------------------------------
+  g.drawImage(st.music, 0, 0, W - NAV_W, H);
 
   // ---- glass: bezel, reflection sweep, vignette ---------------------------
   g.fillStyle = st.reflect;

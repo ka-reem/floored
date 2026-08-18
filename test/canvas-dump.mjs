@@ -35,30 +35,36 @@ await page.evaluate(() => {
   b?.click();
 });
 await sleep(2500);
-await page.evaluate(() => {
+const DECK_Z = Number(process.env.SHOT_Z ?? -1300); // e.g. 150 = the corridor curve
+await page.evaluate((z) => {
   const c = window.__neonx.game.terrain.corridor;
-  const p = c.worldOf(-1300, c.laneOffset(0, -1300));
-  window.__neonx.teleport(p.x, p.z, p.y + 0.2, c.pose(-1300).h, 25);
+  const p = c.worldOf(z, c.laneOffset(0, z));
+  window.__neonx.teleport(p.x, p.z, p.y + 0.2, c.pose(z).h, 25);
   window.__neonx.setCam(1);
   window.__neonx.setInput({ th: 0.5 });
-});
+}, DECK_Z);
 await sleep(2500);
 
 async function dump(name) {
   const data = await page.evaluate(() => {
-    const cvs = window.__cvs.filter((c) => c.width === 256 && c.height === 160);
+    // 256x160 logical space at any integer backing-store scale (cockpit now
+    // raises the head unit to 512x320 for sharpness)
+    const cvs = window.__cvs.filter((c) =>
+      c.width > 0 && c.width % 256 === 0 && c.width / 256 === c.height / 160);
     return cvs.map((cv) => {
       const up = document.createElement("canvas");
       up.width = 256 * 3; up.height = 160 * 3;
       const g = up.getContext("2d");
       g.imageSmoothingEnabled = false;
       g.drawImage(cv, 0, 0, up.width, up.height);
-      return up.toDataURL("image/png");
+      return { x1: cv.toDataURL("image/png"), x3: up.toDataURL("image/png") };
     });
   });
   if (!data.length) { errors.push("no 256x160 canvases"); return; }
-  data.forEach((d, i) =>
-    writeFileSync(path.join(OUT, `${name}-c${i}-3x.png`), Buffer.from(d.split(",")[1], "base64")));
+  data.forEach((d, i) => {
+    writeFileSync(path.join(OUT, `${name}-c${i}-1x.png`), Buffer.from(d.x1.split(",")[1], "base64"));
+    writeFileSync(path.join(OUT, `${name}-c${i}-3x.png`), Buffer.from(d.x3.split(",")[1], "base64"));
+  });
   console.log("dumped", name, data.length, "candidates");
 }
 
