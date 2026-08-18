@@ -6,3 +6,5 @@ next-env.d.ts
 test/artifacts/
 .DS_Store
 .vercel
+public/assets-staging/
+.claude/worktrees/
