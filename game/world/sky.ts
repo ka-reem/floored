@@ -1,14 +1,17 @@
 import * as THREE from "three";
 import { rand, TAU } from "../util";
 import { skyCanvas, skylineTexF } from "../textures";
+import { worldTierCaps } from "../settings";
 
 /* Sky dome, stars, moon, distant skyline ring, mountains, and the two
    landmarks (broadcast tower west, ferris wheel east). Ported from v2.
    Lane A adds the layered point-cloud city (buildCityGlow) and the airport
    control tower landmark. */
 
-/** Perf gate for the layered distant-city point clouds (3 draw calls, ~9k
-    points). Exported for the renderTier system to wire at merge time. */
+/** Master kill-switch for the layered distant-city point clouds (3 draw
+    calls, ~9k points). The live per-device depth of the stack comes from
+    TierCaps.cityRings (settings.worldTierCaps()): mobile-base keeps the two
+    nearest rings, everything else gets all three. */
 export const FX_CITY_LAYERS = true;
 
 export interface Sky {
@@ -90,13 +93,17 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
      a real skyline mixes streetlight bounce with office fluorescents.
      Downtown density comes from seeding more towers into two narrow arc
      bands, so the horizon has composition instead of uniform speckle. */
-  if (FX_CITY_LAYERS) {
+  const cityRings = Math.max(0, Math.min(3, worldTierCaps().cityRings ?? 3));
+  if (FX_CITY_LAYERS && cityRings > 0) {
     const layers: [number, number, number, number, number][] = [
       // r0, r1, towers, point size, opacity
       [1350, 1650, 60, 2.4, 0.85],
       [1750, 2050, 95, 2.0, 0.7],
       [2130, 2380, 130, 1.7, 0.55],
-    ];
+      /* tiers thin the stack from the BACK: the near ring carries the
+         composition (it is the one with readable towers), the far rings only
+         add depth haze — so mobile-base keeps [0..cityRings). */
+    ].slice(0, cityRings) as [number, number, number, number, number][];
     // two "downtown" arcs shared by every ring so the density lines up in depth
     const downtown = [rand(0, TAU), rand(0, TAU)];
     for (const [r0, r1, nTow, size, op] of layers) {
