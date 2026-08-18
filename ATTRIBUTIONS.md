@@ -129,6 +129,19 @@ opacity maps.
 | `plates/` | MetalPlates003 | https://ambientcg.com/a/MetalPlates003 | albedo, normal, rough, metal | toll canopy fascia |
 | `walkway/` | MetalWalkway012 | https://ambientcg.com/a/MetalWalkway012 | albedo, alpha, normal, rough | gantry catwalk decking (alphaTest cutout) |
 
+## Cockpit interior leather PBR textures — `public/assets/pbr/leather*`
+
+All sourced from **ambientCG.com**, **CC0 1.0 (Public Domain)** — no
+attribution legally required. Recompressed to JPEG for the size budget:
+albedo and normal ship at 1K (1024×1024), roughness reduced to 512×512
+(roughness is low-frequency). Normal maps are the OpenGL/+Y "NormalGL"
+variant, per the loader's filename contract.
+
+| Directory | ambientCG asset | Item page | Maps kept | Used for |
+|---|---|---|---|---|
+| `leather/` | Leather037 | https://ambientcg.com/a/Leather037 | albedo, normal, rough | dash pad + seat/door leather |
+| `leather_quilt/` | Leather034C | https://ambientcg.com/a/Leather034C | albedo, normal, rough | quilted door inserts + armrests |
+
 ## Photoscanned world props — `public/assets/props/*`
 
 Sourced from **Poly Haven**, **CC0 1.0 (Public Domain)**, no attribution

@@ -1,9 +1,9 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { rand, randi, TAU } from "./util";
-import { makeTex } from "./textures";
+import { makeTex, loadPbrSet } from "./textures";
 import { buildInstrumentCluster } from "./dashboard";
-import { loadProfile, type SpeedUnits } from "./settings";
+import { loadProfile, resolveRenderTier, TIER_CAPS, type SpeedUnits } from "./settings";
 import { HX } from "./world/const";
 import { getCorridor, TUNNEL, TOLL } from "./world/corridor";
 
@@ -334,6 +334,60 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     }
   }, true);
 
+  /** Diamond-quilted leather for the door inserts and armrest lids on the
+      leather trims (cloth cars keep their woven inserts). Puffed cells shaded
+      toward the seams, cross stitching in the accent thread — the procedural
+      stand-in for the photo-scanned quilt that replaces it when the PBR set
+      lands (see the async upgrade below). */
+  const quiltTex = style.cloth ? null : makeTex(256, 256, (c, w, h) => {
+    const cell = 64; // px between quilt seams (diagonal pitch)
+    c.fillStyle = css(style.leatherBase);
+    c.fillRect(0, 0, w, h);
+    const [fr, fg, fb] = new THREE.Color(style.leatherFleck).toArray().map((v) => Math.round(v * 255));
+    for (let i = 0; i < 1400; i++) {
+      const r = rand(2, 5), v = randi(-10, 10);
+      c.fillStyle = `rgba(${fr + v},${fg + v},${fb + v},.4)`;
+      c.beginPath();
+      c.ellipse(rand(0, w), rand(0, h), r, r * rand(0.6, 1), rand(0, 3.14), 0, TAU);
+      c.fill();
+    }
+    // puffiness: a soft highlight in the middle of every diamond cell
+    for (let gy = 0; gy <= h; gy += cell) {
+      for (let gx = ((gy / cell) % 2) * (cell / 2); gx <= w + cell / 2; gx += cell) {
+        const cx2 = gx, cy2 = gy;
+        const puff = c.createRadialGradient(cx2, cy2 - cell * 0.1, 2, cx2, cy2, cell * 0.52);
+        puff.addColorStop(0, `rgba(${fr + 26},${fg + 26},${fb + 28},.5)`);
+        puff.addColorStop(0.75, "rgba(0,0,0,0)");
+        puff.addColorStop(1, "rgba(0,0,0,.42)");
+        c.fillStyle = puff;
+        c.fillRect(cx2 - cell / 2, cy2 - cell / 2, cell, cell);
+      }
+    }
+    // seam grooves along both diagonals, then the stitch dashes over them
+    const th = new THREE.Color(trimAccent);
+    const threadC = "#" + th.clone().lerp(new THREE.Color(1, 1, 1), 0.25).getHexString();
+    c.lineCap = "round";
+    for (const dir of [1, -1]) {
+      for (let k = -h; k <= w + h; k += cell) {
+        c.strokeStyle = "rgba(0,0,0,.5)";
+        c.lineWidth = 4.5;
+        c.beginPath();
+        c.moveTo(k, dir > 0 ? 0 : h);
+        c.lineTo(k + dir * h, dir > 0 ? h : 0);
+        c.stroke();
+        c.strokeStyle = threadC;
+        c.lineWidth = 1.3;
+        const L = Math.SQRT1_2;
+        for (let s = 3; s < h * 1.414; s += 7) {
+          c.beginPath();
+          c.moveTo(k + dir * s * L, dir > 0 ? s * L : h - s * L);
+          c.lineTo(k + dir * (s + 3.4) * L, dir > 0 ? (s + 3.4) * L : h - (s + 3.4) * L);
+          c.stroke();
+        }
+      }
+    }
+  }, true);
+
   /** Brushed aluminium for the trim inlays and switch bezels — tint/finish
       vary per trim (bright chrome for the sedan, dull for the kei car). */
   const aluTex = makeTex(128, 64, (c, w, h) => {
@@ -435,18 +489,47 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     }
   }, true);
 
-  /** Contrast stitching, painted in the car's accent colour. */
-  const stitchTex = makeTex(64, 8, (c, w, h) => {
-    c.fillStyle = "#0f1015";
+  /** Contrast stitching, painted in the car's accent colour. Double-row saddle
+      stitch in a pressed seam channel: each stitch is a dark understroke, the
+      thread itself, then a catchlight along its top — three strokes that make
+      the thread read as round under the cabin light instead of as a decal. */
+  const stitchTex = makeTex(128, 16, (c, w, h) => {
+    c.fillStyle = "#0c0d12";
     c.fillRect(0, 0, w, h);
-    c.strokeStyle = accentCss;
-    c.lineWidth = 2.2;
+    // the channel: leather rolls up to the light at both edges, presses dark
+    // in the middle where the seam is sunk
+    const gr = c.createLinearGradient(0, 0, 0, h);
+    gr.addColorStop(0, "rgba(255,255,255,.07)");
+    gr.addColorStop(0.5, "rgba(0,0,0,.55)");
+    gr.addColorStop(1, "rgba(255,255,255,.05)");
+    c.fillStyle = gr;
+    c.fillRect(0, 0, w, h);
+    const th = new THREE.Color(trimAccent);
+    const hiC = "#" + th.clone().lerp(new THREE.Color(1, 1, 1), 0.4).getHexString();
+    const loC = "#" + th.clone().multiplyScalar(0.3).getHexString();
     c.lineCap = "round";
-    for (let i = 0; i < 8; i++) {
-      c.beginPath();
-      c.moveTo(i * 8 + 1.6, h * 0.5 - 1.5);
-      c.lineTo(i * 8 + 5.4, h * 0.5 + 1.5);
-      c.stroke();
+    for (const ry of [h * 0.3, h * 0.7]) {
+      for (let i = 0; i < 16; i++) {
+        const x0 = i * 8 + 1.4;
+        c.strokeStyle = loC; // shadow the thread casts into the groove
+        c.lineWidth = 3.2;
+        c.beginPath();
+        c.moveTo(x0, ry + 1.3);
+        c.lineTo(x0 + 4.4, ry + 2.1);
+        c.stroke();
+        c.strokeStyle = accentCss; // the thread
+        c.lineWidth = 2.2;
+        c.beginPath();
+        c.moveTo(x0, ry - 0.4);
+        c.lineTo(x0 + 4.4, ry + 0.5);
+        c.stroke();
+        c.strokeStyle = hiC; // catchlight
+        c.lineWidth = 0.8;
+        c.beginPath();
+        c.moveTo(x0 + 0.6, ry - 1.0);
+        c.lineTo(x0 + 3.4, ry - 0.4);
+        c.stroke();
+      }
     }
   }, true);
   stitchTex.repeat.set(24, 1);
@@ -464,6 +547,14 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const perf = new THREE.MeshStandardMaterial({
     map: perfTex, bumpMap: perfTex, bumpScale: style.leatherBump * 0.8, roughness: style.leatherRough - 0.04,
   });
+  /* Quilted panels merge into their own bucket (one extra draw call on the
+     leather trims); cloth cars alias it to `perf` so nothing else branches. */
+  const quilt = quiltTex
+    ? new THREE.MeshStandardMaterial({
+        map: quiltTex, bumpMap: quiltTex, bumpScale: style.leatherBump * 1.5,
+        roughness: style.leatherRough - 0.06, metalness: 0.03,
+      })
+    : perf;
   const liner = new THREE.MeshStandardMaterial({ map: linerTex, roughness: 0.98 });
 
   const carpet = new THREE.MeshStandardMaterial({ map: carpetTex, roughness: 1 });
@@ -479,10 +570,14 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     style.trimKind === "plastic" ? { map: plasticTex, metalness: 0.05, roughness: 0.58 } :
     { map: aluTex, color: style.aluTint, metalness: style.aluMetal, roughness: style.aluRough }
   );
-  const piano = new THREE.MeshStandardMaterial({ color: 0x0a0b0f, roughness: 0.14, metalness: 0.4 });
+  // piano black: tighter clearcoat-style highlight so the console reads as
+  // polished lacquer under the cabin light rather than semi-gloss plastic
+  const piano = new THREE.MeshStandardMaterial({ color: 0x0a0b0f, roughness: 0.1, metalness: 0.42 });
   const shadow = new THREE.MeshStandardMaterial({ color: 0x05060a, roughness: 0.96 });
   const grille = new THREE.MeshStandardMaterial({ map: meshTex, roughness: 0.85 });
-  const stitch = new THREE.MeshStandardMaterial({ map: stitchTex, roughness: 0.7 });
+  const stitch = new THREE.MeshStandardMaterial({
+    map: stitchTex, bumpMap: stitchTex, bumpScale: 0.25, roughness: 0.68,
+  });
   /* Lathe UVs sweep round the axis, and the leather bump map read across them
      blows the shading out to near-white — the shifter needs a flat material. */
   const bootMat = new THREE.MeshStandardMaterial({ color: 0x0f1116, roughness: 0.92 });
@@ -493,6 +588,99 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const warn = new THREE.MeshStandardMaterial({
     color: 0x2a0806, emissive: 0xff3020, emissiveIntensity: 0.85,
   });
+
+  /* --- photo-scanned leather (async, fail-soft) ----------------------------
+     Real full-grain scans from public/assets/pbr (see ATTRIBUTIONS.md) land a
+     few hundred ms in and upgrade the leather materials in place: albedo
+     tinted back to each trim's authored colour (mean-preserving, so the cabin
+     keeps its night brightness), a real normal map instead of the canvas bump,
+     and the scan's roughness rescaled so the *average* stays the tuned value.
+     Cloth trims (kei/rally soft goods) keep their woven canvases; a missing or
+     failed fetch changes nothing. Gated on the tier's pbrDetail cap like the
+     road scans, so mobile-base never pays the fetch. */
+  {
+    let wantPbr = true;
+    try {
+      const isTouch = typeof matchMedia !== "undefined" &&
+        "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
+      wantPbr = TIER_CAPS[resolveRenderTier(loadProfile().settings, isTouch)].pbrDetail;
+    } catch {
+      /* no DOM (tests) — keep procedural */
+    }
+    /** Per-channel linear means of a scan's albedo. A scalar-luminance tint
+        preserves brightness but lets the scan's hue win — Leather037's warm
+        red-brown swamped the coupe's near-black blue-grey. Dividing the trim
+        colour by the scan's per-channel mean makes the *rendered mean* land on
+        the authored colour exactly, hue included. */
+    const chanMeans = (img: CanvasImageSource): [number, number, number] | null => {
+      try {
+        const N = 8;
+        const c = document.createElement("canvas");
+        c.width = c.height = N;
+        const x = c.getContext("2d", { willReadFrequently: true });
+        if (!x) return null;
+        x.drawImage(img, 0, 0, N, N);
+        const d = x.getImageData(0, 0, N, N).data;
+        const s2l = (v: number) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+        let r = 0, g = 0, b = 0;
+        for (let i = 0; i < N * N; i++) {
+          r += s2l(d[i * 4] / 255);
+          g += s2l(d[i * 4 + 1] / 255);
+          b += s2l(d[i * 4 + 2] / 255);
+        }
+        const n = N * N;
+        return [r / n, g / n, b / n];
+      } catch {
+        return null; // tainted canvas — fall back to the scalar mean
+      }
+    };
+    /** Tint the scan back to the trim colour without changing mean brightness. */
+    const tintTo = (m: THREE.MeshStandardMaterial, base: number, set: { albedo: THREE.Texture | null; albedoMean: number }) => {
+      const ch = set.albedo?.image ? chanMeans(set.albedo.image as CanvasImageSource) : null;
+      m.color.setHex(base);
+      if (ch) {
+        m.color.r /= Math.max(ch[0], 0.02);
+        m.color.g /= Math.max(ch[1], 0.02);
+        m.color.b /= Math.max(ch[2], 0.02);
+      } else {
+        m.color.multiplyScalar(1 / Math.max(set.albedoMean, 0.04));
+      }
+      const mx = Math.max(m.color.r, m.color.g, m.color.b);
+      if (mx > 1) m.color.multiplyScalar(1 / mx);
+    };
+    const apply = (
+      m: THREE.MeshStandardMaterial, set: Awaited<ReturnType<typeof loadPbrSet>>,
+      base: number, targetRough: number, normalScale: number
+    ) => {
+      if (!set.albedo) return;
+      m.map = set.albedo;
+      m.bumpMap = null;
+      if (set.normal) {
+        m.normalMap = set.normal;
+        m.normalScale.set(normalScale, normalScale);
+      }
+      if (set.rough) {
+        m.roughnessMap = set.rough;
+        m.roughness = targetRough / Math.max(set.roughMean, 0.05);
+      }
+      tintTo(m, base, set);
+      m.needsUpdate = true;
+    };
+    if (wantPbr) void (async () => {
+      // fine grain: dash pad + the main seat/door leather
+      const fine = await loadPbrSet("leather", new THREE.Vector2(2.2, 2.2));
+      if (!style.cloth) apply(leather, fine, style.leatherBase, style.leatherRough - 0.12, 0.9);
+      // the dash pad is soft-touch on every car but the kei's hard plastic;
+      // roughness comes down further than the seats' so the glass light can
+      // draw a broad sheen across the pad top at night
+      if (TRIM !== "kei") apply(soft, fine, style.softBase, style.softRough - 0.32, 1.0);
+      // quilted scan (diamond stitched) for the inserts, leather trims only
+      if (quiltTex) {
+        const q = await loadPbrSet("leather_quilt", new THREE.Vector2(1.5, 1.5));
+        apply(quilt, q, style.leatherBase, style.leatherRough - 0.14, 1.0);
+      }
+    })();
+  }
 
   /* --- static-geometry accumulator ---------------------------------------- */
 
@@ -591,6 +779,20 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   put(rbox(1.56, 0.022, 0.016, 0.006), trimStripMat, [0, 0.9, FACIA_Z - 0.012], [0, 0, 0], [10, 1]);
   put(box(1.5, 0.011, 0.007), stitch, [0, 0.936, FACIA_Z - 0.006]);
 
+  /* Piped seam along the pad's rolled crest — the reference car's signature
+     line. A round bead laid along the crest, flanked by a saddle-stitch row on
+     the roll (driver side of the crest) and one on the pad top behind it.
+     Placement is on the roll's actual quadratic (see dashProfile): at
+     z = F+0.02 the surface sits at y 0.963 with its normal ~55° back toward
+     the seat, which is where the front row drapes; the rear row rides the
+     padY/padTilt fit like everything else on the pad top. */
+  put(cyl(0.0055, 0.0055, 1.5, 8), soft, [0, 1.002, F + 0.072], [0, 0, Math.PI / 2], [8, 1]);
+  put(box(1.48, 0.006, 0.011), stitch, [0, 0.9655, F + 0.0175], [-0.955, 0, 0]);
+  {
+    const sz = F + 0.115;
+    put(box(1.48, 0.006, 0.011), stitch, [0, padY(sz) + 0.003, sz], [padTilt(sz), 0, 0]);
+  }
+
   /* Pad top. From the seat this is the single biggest interior surface, so it
      carries the defroster slots, the centre speaker and the airbag shut line
      rather than being left as a bare plateau. */
@@ -661,6 +863,9 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     put(bezel(0.63, 0.232, 0.009, 0.05, 0.006), trimStripMat, [x, y, z - 0.032], [-tilt, 0, 0], [6, 1]);
     // lip along the top of the ring — a hood's worth of shading, no extra height
     put(rbox(0.69, 0.016, 0.07, 0.007), soft, [x, y + 0.125, z - 0.038], [-tilt - 0.3, 0, 0], [4, 1]);
+    // stitch row along the leading edge of the lip: the binnacle hood is
+    // leather-wrapped on the reference car, so its edge is sewn like the pad's
+    put(box(0.64, 0.006, 0.008), stitch, [x, y + 0.118, z - 0.062], [-tilt - 0.3, 0, 0]);
     // matte throat behind the cluster so nothing shows through the gaps
     put(box(0.62, 0.28, 0.01), shadow, [x, y, z + 0.035], [-tilt, 0, 0]);
   }
@@ -810,8 +1015,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     put(rbox(0.03, 0.03, 0.2, 0.014), alu, [0.115, 0.945, -0.14], [0.72, 0, 0], [4, 1]);
     put(rbox(0.036, 0.042, 0.11, 0.018), leather, [0.115, 1.0, -0.21], [0.72, 0, 0], [2, 1]);
     put(cyl(0.011, 0.011, 0.014, 10), piano, [0.115, 1.028, -0.245], [0.72, 0, 0]);
-    // rear armrest lid with a stitched seam
-    put(rbox(0.28, 0.05, 0.34, 0.024), leather, [0, 0.9, -0.45], [0, 0, 0], [2, 2]);
+    // rear armrest lid: quilted on the leather trims, with stitched seams
+    put(rbox(0.28, 0.05, 0.34, 0.024), quilt, [0, 0.9, -0.45], [0, 0, 0], [1.2, 1.2]);
     put(box(0.005, 0.006, 0.3), stitch, [0.115, 0.926, -0.45]);
     put(box(0.005, 0.006, 0.3), stitch, [-0.115, 0.926, -0.45]);
   }
@@ -825,11 +1030,15 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     put(rbox(0.05, 0.56, 1.3, 0.03), soft, [X + s * 0.02, 0.855, -0.08], [0, 0, 0], [1, 3]);
     put(rbox(0.062, 0.045, 1.3, 0.016), soft, [X + s * 0.012, 1.125, -0.08], [0, 0, 0], [1, 6]);
     put(rbox(0.058, 0.014, 1.26, 0.006), trimStripMat, [X + s * 0.008, 1.096, -0.08], [0, 0, 0], [1, 14]);
-    // upper leather pad, proud of the card
+    // upper leather pad, proud of the card: piped top edge + double stitching,
+    // mirroring the dash pad's seam treatment
     put(rbox(0.045, 0.14, 1.16, 0.02), leather, [X - s * 0.006, 1.01, -0.06], [0, 0, 0], [1, 3]);
-    put(box(0.004, 0.005, 1.1), stitch, [X - s * 0.03, 1.075, -0.06], [0, Math.PI / 2, 0]);
-    // perforated centre insert with an accent sweep above it
-    put(rbox(0.03, 0.2, 0.72, 0.03), perf, [X - s * 0.012, 0.87, -0.1], [0, 0, 0], [1, 3]);
+    put(cyl(0.005, 0.005, 1.14, 8), leather, [X - s * 0.024, 1.072, -0.06], [Math.PI / 2, 0, 0], [6, 1]);
+    put(box(0.004, 0.005, 1.1), stitch, [X - s * 0.0295, 1.058, -0.06], [0, Math.PI / 2, 0]);
+    put(box(0.004, 0.005, 1.1), stitch, [X - s * 0.0295, 0.955, -0.06], [0, Math.PI / 2, 0]);
+    // quilted centre insert on the leather trims (cloth cars keep the weave),
+    // with an accent sweep above it
+    put(rbox(0.03, 0.2, 0.72, 0.03), quilt, [X - s * 0.012, 0.87, -0.1], [0, 0, 0], [1, 3]);
     put(rbox(0.024, 0.016, 0.78, 0.007), trimStripMat, [X - s * 0.02, 0.982, -0.1], [s * 0.06, 0, 0], [1, 12]);
     // armrest with a moulded pull cup
     put(rbox(0.11, 0.1, 0.66, 0.038), leather, [X - s * 0.05, 0.905, -0.05], [0, 0, 0], [2, 3]);
@@ -978,6 +1187,27 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     put(box(0.5, 0.005, 0.005), ledDim, [0.38, 0.5, 0.5]);
     put(box(0.5, 0.005, 0.005), ledDim, [-0.38, 0.5, 0.5]);
   }
+
+  /* One real light to go with the emissive strips: a dim warm point light up
+     by the windscreen header, raking BACK across the pad top and down the door
+     caps. Emissive-only cabins go flat because ambient light has no direction
+     — the leather grain, the stitch relief and the quilt normal map only exist
+     where light arrives at an angle, and this is the light that provides the
+     angle. Physical units (the renderer runs physical lights — headlights are
+     hundreds of candela): ~0.5 cd at 0.5-1 m gives the pad a soft 1-2 lux
+     wash, well under the exterior street lighting. distance clamps it inside
+     the cabin; it lives in interiorG so chase view never pays for it. */
+  const cabinLight = new THREE.PointLight(0xffd2a4, 0.45, 3.0, 2);
+  cabinLight.position.set(0, 1.42, 0.28);
+  interiorG.add(cabinLight);
+  /* And its counterpart: a faint cool wash from the base of the windscreen
+     raking BACK across the pad toward the seat — the "city light through the
+     glass" that gives the pad top its grazing sheen in the reference photo.
+     Without it the pad's upward face sees only ambient and reads as a flat
+     navy sheet however good its leather maps are. */
+  const glassLight = new THREE.PointLight(0xbfd0ff, 0.5, 2.4, 2);
+  glassLight.position.set(0, 1.14, 1.0);
+  interiorG.add(glassLight);
 
   /* ---------------------------------------------------- window openings */
 
@@ -1509,6 +1739,13 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
 
   flush();
   interiorG.traverse((o) => o.layers.set(1));
+  /* The traverse above put the light on layer 1 only, which would make its
+     collection differ between the main camera (layers 0+1) and the mirror /
+     reflection cameras — and diverging light counts between passes means
+     program-hash churn every frame. All-layers keeps the light state identical
+     for every camera; its reach is bounded by `distance`, not by layers. */
+  cabinLight.layers.enableAll();
+  glassLight.layers.enableAll();
 
   return {
     group: interiorG,
