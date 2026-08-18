@@ -1262,7 +1262,10 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      ~44 degrees off-normal — foreshortened to a sliver whose dark map read
      as a black slab. +0.25 puts the dashcam ~26 degrees off-normal and the
      driver's eye ~8, and the glass finally reads. */
-  const SCR = { x: -0.03, y: 1.13, z: 0.72, tilt: 0.10, yaw: 0.25 };
+  /* x -0.065: measured port from the candidate-B pass — at -0.03 the glass's
+     left ~8 cm still tucked behind the binnacle corner from the POV lens;
+     -0.11 overshot the right frame edge. This clears both. */
+  const SCR = { x: -0.065, y: 1.13, z: 0.72, tilt: 0.10, yaw: 0.25 };
   const scrMat = new THREE.MeshBasicMaterial({ map: scrTex, transparent: true });
   /* An LCD is a light source: left tone-mapped it crushes into the night and
      the whole unit reads as a black slab (exactly the dead-space complaint the
@@ -1449,7 +1452,10 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      EYE.y+0.085 hangs the lit glass into the POV frame's top-right (~rows
      0-20%) while its underside still clears the cockpit eye line by ~2
      degrees, above the horizon. */
-  const MIR = { y: Math.min(EYE.y + 0.085, 1.545), z: 0.6 };
+  /* z 0.63 (candidate-B port): 3 cm forward cuts the housing's apparent
+     width ~10% from the 105-degree POV lens and shows glass rather than
+     housing underside at the frame top. */
+  const MIR = { y: Math.min(EYE.y + 0.085, 1.545), z: 0.63 };
   const mirrorMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.096), mirrorMat);
   mirrorMesh.position.set(0, MIR.y, MIR.z - 0.012);
   mirrorMesh.rotation.x = -0.07;
