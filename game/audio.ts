@@ -2040,8 +2040,10 @@ export class GameAudio {
     this.demandEnv += (clamp01(Math.max(slip, (slipDemand ?? 0) * 1.7)) - this.demandEnv) * envK;
 
     // Wheelspin off the line happens at near-zero car speed, so the sustained
-    // layers only fade partway with speed rather than muting entirely.
-    const speedGate = 0.3 + 0.7 * Math.min(1, speed / 6);
+    // layers only fade partway with speed rather than muting entirely. The
+    // ramp is /10 not /6: at /6 the gate hit full by ~13 mph, so crawling
+    // through a turn got the same screech level as a highway slide.
+    const speedGate = 0.3 + 0.7 * Math.min(1, speed / 10);
     const wetLevel = raining ? 0.55 : 1;
     const wetQ = raining ? 0.6 : 1; // lower Q = broader/hissier, not just quieter
 
@@ -2058,7 +2060,7 @@ export class GameAudio {
     // demandEnv (see update()'s slipDemand doc), not slipEnv — identical to
     // before whenever slipDemand is 0/omitted.
     const singMix =
-      smoothstep(0.12, 0.45, this.demandEnv) * (1 - smoothstep(0.55, 0.92, this.demandEnv) * 0.7);
+      smoothstep(0.22, 0.52, this.demandEnv) * (1 - smoothstep(0.6, 0.95, this.demandEnv) * 0.7);
     this.sp(this.singF.frequency, 1200 + this.demandEnv * 1500, 0.05);
     this.sp(this.singF.Q, (9 + this.demandEnv * 4) * wetQ, 0.08);
     this.sp(this.singLfoDepth.gain, 15 + this.demandEnv * 40, 0.1);
@@ -2073,10 +2075,10 @@ export class GameAudio {
     // doesn't have. Gains are slip-gated from silence, so nothing sounds at
     // rest, and the same speed/wet scaling applies.
     const skidSampled = sampled && this.skidG !== null;
-    const screechMix = smoothstep(0.4, 0.85, this.demandEnv);
+    const screechMix = smoothstep(0.55, 0.92, this.demandEnv);
     const screechBase = screechMix * (skidSampled ? 0.04 : 0.15) * speedGate * wetLevel;
     if (this.skidG && this.skidSrc) {
-      const skidMix = skidSampled ? smoothstep(0.35, 0.8, this.demandEnv) : 0;
+      const skidMix = skidSampled ? smoothstep(0.5, 0.88, this.demandEnv) : 0;
       this.sp(this.skidG.gain, skidMix * 0.3 * speedGate * wetLevel, 0.05);
       // slight pitch rise with slip + a wet-road brightening nudge, so the
       // loop tracks the slide instead of droning at one pitch

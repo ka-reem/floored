@@ -14,13 +14,13 @@ import { buildTown } from "./world/townmesh";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
 import { DECKY } from "./world/const";
-import { getCorridor, TUNNEL } from "./world/corridor";
+import { getCorridor, TUNNEL, PITCH, PHASE } from "./world/corridor";
 import { getRouteGraph, BYPASS_EDGE } from "./world/routegraph";
 import { spawnZ } from "./world/ramps";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
 import { buildPlayerCar, type PlayerRig } from "./player";
-import { COCKPIT_REF, EYE as COCKPIT_EYE, type GaugeFlags } from "./cockpit";
+import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, type GaugeFlags } from "./cockpit";
 import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
 import { RainFX, SmokeFX } from "./fx";
@@ -58,10 +58,98 @@ THREE.ColorManagement.enabled = false;
 
 const LAYER_NOREF = 1;
 
-/** Headlight throw, metres: dipped and main. These set the spotlight distance
-    and, as a ratio, how far down the road the retroreflective paint answers —
-    one pair of numbers so the light pool and the paint cannot disagree. */
+/** Sodium for the cabin wash — the colour the interior trim goes as a lamp
+    head passes overhead. Deliberately NOT the lamps' own 0xffa235: that hex
+    was picked for additive glow points over near-black, and as a diffuse light
+    on PBR trim it comes through the composite's ACES curve at hue ~40 with the
+    saturation already falling off, i.e. pale yellow-white. Same lesson as the
+    lamp cones in highway.ts — the grade walks a warm source up the hue wheel
+    and desaturates it as it brightens, so the source has to start deeper and
+    more saturated than the colour you want to end up with. This one lands
+    around hue 15-25 at cabin levels and holds sat > 0.9 even through the
+    dashcam POV's own desaturation. */
+const LAMP_SODIUM = new THREE.Color(0xff7a10);
+
+/** The cabin lamp wash falls off on two independent axes, each expressed as a
+    hand-tunable table of "pressure points" — [distance in METRES, strength] —
+    rather than a formula, so the stops can be read off and nudged one at a
+    time. Distances are absolute metres from the lamp head, and both tables
+    must end at strength 0 so the wash has somewhere to land.
+
+    Why tables and not a curve: the physical law here is illuminance from a
+    point source onto a roughly horizontal surface, E is proportional to
+    h/r^3 with the head 7.45 m up and the cabin trim ~1.1 m, i.e. an effective
+    h of about 6.4 m. That gives 1.00 / 0.74 / 0.41 / 0.20 at 0 / 3 / 5.8 /
+    9 m of lateral offset. The near stops track that; the outer ones bend
+    BELOW it, because inverse-cube alone never reaches zero (it is still at
+    ~0.10 twelve metres out) and the cabin's own roof shadows the trim once
+    the light is arriving that obliquely. The last third is a long shallow
+    creep rather than a straight line to zero, so the POV black crush gets a
+    fade to eat instead of a hard radius. */
+const WASH_LAT: [number, number][] = [
+  [0, 1],      // directly beneath the head
+  [1.5, 0.92], // still inside the lamp's own lane (its centre is 2.1 m out)
+  [3, 0.72],   // straddling the line out of the lamp's lane (edge at 3.9 m)
+  [6, 0.38],   // centre lane, 5.8 m from a parapet head: clearly weaker
+  [9, 0.14],   // the far lane, 9.5 m out: barely a tint
+  [12, 0],     // far shoulder, lamp on the opposite parapet: nothing
+];
+/** Longitudinal falloff, same units. Deliberately about twice as long-tailed
+    as the lateral table: a cobra head is a directional fixture that throws
+    down the road, not across it, and the windscreen is an aperture facing
+    that way, so light arrives well before the car is under the head and
+    lingers after. The old cut had no lateral term at all and a flat top out
+    to +/-4 m, which is why a lamp read the same from the far lane as from
+    directly under it. Ends at 25 m = half of PITCH.light, so the wash is
+    exactly zero at the midpoint between two lamps and never steps. */
+const WASH_LONG: [number, number][] = [
+  [0, 1],
+  [3, 0.9],
+  [7, 0.58],
+  [12, 0.24],
+  [18, 0.06],
+  [25, 0],
+];
+/** Sample a pressure-point table, linearly between stops, clamped at both
+    ends. Linear is intentional: the stops carry the shape, so interpolation
+    should not invent any of its own. */
+function washStops(table: [number, number][], d: number): number {
+  if (d <= table[0][0]) return table[0][1];
+  for (let i = 1; i < table.length; i++) {
+    const [d1, v1] = table[i];
+    if (d <= d1) {
+      const [d0, v0] = table[i - 1];
+      return lerp(v0, v1, (d - d0) / (d1 - d0));
+    }
+  }
+  return table[table.length - 1][1];
+}
+
+/** Headlight throw, metres: dipped and main. This is the beam's INTENDED
+    reach — how far down the road the retroreflective paint answers, as a ratio
+    against HL_PAINT_BASE below. It is deliberately no longer the spotlight's
+    `distance`; see HL_CLIP. */
 const HL_THROW = 130, HL_THROW_HI = 200;
+
+/** Where the spotlight's own falloff window is allowed to close, metres.
+    `SpotLight.distance` is NOT a reach setting: three multiplies the 1/r^decay
+    term by pow2(saturate(1 - (d/distance)^4)), which is ~1 until about 0.6 of
+    the way out and then dives to exactly zero at `distance`. Setting it equal
+    to the intended throw therefore prints the last third of the throw as a
+    darkening band ending in a terminator line across the road — and the dipped
+    beam is the worst case, because its decay is only 1.0 (see below), so it is
+    still strong when the window starts closing.
+
+    So the window is pushed out past anything the eye can find. The dipped
+    cone's upper edge sits ~1% below horizontal off a ~0.6 m lamp, so it stops
+    touching tarmac around 60 m; at 190 the window is still 0.98 there and the
+    ground pool is pure 1/r all the way out. Main beam is aimed a hair up and
+    runs decay 1.5, so at 290 it has 5400/250^1.5 ~= 1.4 units left at 250 m
+    against a ~4.0 knee ceiling — dim, small on screen, and fading on its own
+    curve rather than on the clip's. Do not pull these back to HL_THROW to
+    "shorten the beam": shorten the beam with intensity or angle, because this
+    knob can only make it stop. */
+const HL_CLIP = 190, HL_CLIP_HI = 290;
 
 /** The throw the per-material retro near/far bands (mats addBeam 18/62 etc.)
     were originally tuned against. setBeam's range multiplier is derived
@@ -1062,7 +1150,7 @@ export class Game {
     const g = this.world.glowPts?.material as THREE.PointsMaterial | undefined;
     if (g) {
       g.color.setHex(0xffa235);
-      g.size = 9;
+      g.size = 9.8;
       g.blending = THREE.AdditiveBlending;
       g.needsUpdate = true;
     }
@@ -1270,7 +1358,9 @@ export class Game {
        four shells mount their lamps between 0.50 m and 0.62 m and a hardcoded
        y would mean a different cut-off in each of them. */
     for (const sp of [this.rig.spotL, this.rig.spotR]) {
-      sp.distance = hi ? HL_THROW_HI : HL_THROW;
+      // HL_CLIP, not HL_THROW: this is where three's falloff window shuts off
+      // the light entirely, and it has to land past the lit road, not on it
+      sp.distance = hi ? HL_CLIP_HI : HL_CLIP;
       /* The cut-off constraint pins the axis pitch to the half-angle, so a
          wide cone is forced to point steeply down and its hot spot lands on
          the bumper. These angles put the hot spot ~1.6 m ahead on dipped and
@@ -1281,7 +1371,12 @@ export class Game {
          (below) feathers the disc into a spread instead of a hard-edged
          pool. */
       sp.angle = hi ? 0.23 : 0.36;
-      sp.penumbra = hi ? 0.4 : 0.68;
+      // dipped penumbra up from 0.68: with the distance clip moved out of the
+      // way the cone's lateral edge is the only hard boundary left in the
+      // pool, and 0.85 feathers the outer ~85% of the half-angle instead of
+      // the outer ~68%. Main beam keeps its harder 0.4 — a tight, defined
+      // edge is what reads as main beam.
+      sp.penumbra = hi ? 0.4 : 0.85;
       // decay is per-mode, not a fixed ctor value (see player.ts) — low
       // stays shallow for the carpet, high goes steeper so distant cars
       // fall back out of the knee's ceiling instead of staying pinned white
@@ -1428,6 +1523,7 @@ export class Game {
     const inside = this.camMode === CAM_COCKPIT || this.camMode === CAM_POV;
     rig.cockpit.group.visible = inside;
     rig.exteriorG.visible = !inside;
+    this.lampWash(inside);
     // the cockpit now has its own nav screen (drawScreen above), so the
     // external HUD minimap is redundant in that view — hide it. POV keeps the
     // HUD: the head unit is a long way down-frame there, and the map is the
@@ -1491,6 +1587,114 @@ export class Game {
   /** deterministic 1D hash in [0,1) — same input always gives the same
       output, so road texture is a fixed property of a position, not a
       per-frame random draw. */
+  /* Sodium amber sweeping through the cabin, once per lamp pitch.
+
+     The deck streetlights are fake — instanced heads plus additive cones and
+     ground pools, no real lights anywhere — so nothing they do reaches the
+     cockpit's PBR trim. What sells "driving under streetlights" from inside is
+     not the lamp you can see through the glass, it is the highlight racing
+     back over the pad and the door caps as you pass under one. The cabin
+     already owns a real point light for exactly that read (the cool "city
+     light through the glass"); it was just static. Drive it off the lamp
+     lattice and one light does the whole effect for free — no new light, no
+     shadow map, nothing added to the chase view.
+
+     A uniform brighten-and-dim would read as a flicker, not as a lamp, so the
+     light TRAVELS: it starts ahead of the windscreen, arrives at its rest pose
+     as the car passes under the head, and carries on back over the seat. */
+  private lampWash(inside: boolean) {
+    const gl = this.rig.cockpit.glassLight;
+    /* Every gate that stops the lamps being drawn has to stop the wash too:
+       the interior not being on screen, daylight (the pools and glow fade out
+       on the same factor — amber strobing at noon is the tell), a tier that
+       sheds the cones and pools, and tunnel/toll stretches, whose lamps the
+       generator skips outright. */
+    const caps = this.tierCaps;
+    const cones = caps.lampCones !== false;
+    const pools = (caps.lampPoolEvery ?? 1) !== 0;
+    const night = inside && (cones || pools) ? 1 - this.dayFactor() : 0;
+    const z = this.cor.zAt(this.car.x, this.car.z);
+    if (night <= 0.01 || this.cor.inTunnel(z) || this.cor.inToll(z)) {
+      gl.position.set(0, GLASS_REST.y, GLASS_REST.z);
+      gl.intensity = GLASS_REST.intensity;
+      gl.color.setHex(GLASS_REST.color);
+      return;
+    }
+    /* Low tiers thin the lamps in PAIRS on the folded lattice index (see
+       keepNth in highway.ts) — the same test here, so the wash fires under the
+       lamps that actually got a cone/pool and stays quiet under the bare
+       poles. Cones lead: they are the taller half of the fixture's light. */
+    const every = Math.max(1, (cones ? caps.lampConeEvery : caps.lampPoolEvery) ?? 1);
+    const li = this.cor.latticeIndex(z, PITCH.light, PHASE.light);
+    if (li % (2 * every) >= 2) {
+      gl.intensity = GLASS_REST.intensity;
+      gl.color.setHex(GLASS_REST.color);
+      return;
+    }
+    /* Signed position within the pitch: 0 directly under the head, -0.5 half a
+       pitch before it, +0.5 half a pitch after. */
+    const u = ((((z - PHASE.light) % PITCH.light) + PITCH.light) % PITCH.light) / PITCH.light;
+    const s = u < 0.5 ? u : u - 1;
+    /* The pulse, as the product of two pressure-point tables (WASH_LAT and
+       WASH_LONG above) — one per axis, both in metres from the lamp head.
+
+       The lateral term is the whole point of this pass. Lamps do not stand on
+       the centreline: they alternate sides on the folded lattice, and the head
+       hangs 1.55 m in from a parapet that is itself 0.23 m outside the deck
+       edge, so its lateral offset is flip * (halfWidth - 1.32) — about 5.8 m
+       on a 3-lane stretch. `flip` comes from the parity of the SAME lattice
+       index the tier-thinning test above already computed (highway.ts:1135
+       picks the side the identical way), so the side costs nothing to know.
+       Without this term a car hugging the far shoulder sat 12 m away from the
+       lamp and still got the full wash; that was the defect.
+
+       A product rather than one elliptical distance metric: the two axes have
+       genuinely different physics (inverse-cube sideways, a directional throw
+       plus the windscreen aperture down-road) and a product lets each table be
+       retuned without disturbing the other. It also yields the oval footprint
+       the ellipse would have given — longer along the road than across it —
+       because the long table simply has stops further out. */
+    const dLong = Math.abs(s) * PITCH.light;
+    const lampLat = (li % 2 ? 1 : -1) * (this.cor.halfWidth(z) - 1.32);
+    const dLat = Math.abs(this.cor.latAt(this.car.x, this.car.z) - lampLat);
+    const w = washStops(WASH_LONG, dLong) * washStops(WASH_LAT, dLat) * night;
+    /* The sweep travels front-to-back so a lamp reads as light passing THROUGH
+       the cabin rather than as a bulb nodding inside it.
+
+       Both offsets are scaled by the wash, and that is load-bearing rather than
+       tidiness: this light is ALSO the cabin's standing "city light through the
+       glass" (GLASS_REST, cool 0xbfd0ff at 0.5 cd), which is what lights the pad
+       when no lamp is near. An earlier cut displaced it by -s * 1.6 outright, so
+       at the midpoint between two lamps — where the sodium term is correctly
+       zero — the cool light still sat up to 0.8 m off its designed spot, raking
+       trim it was never aimed at and reading as a white wash through the cabin.
+       Scaling by `sweep` returns it exactly to its rest pose as the wash fades,
+       so the standing light stays the fixed thing it is supposed to be and only
+       the lamp contribution moves.
+
+       `sweep` saturates at w >= 0.5 so a close pass gets the full travel, while
+       a distant one (far lane, w ~ 0.12) barely moves the light at all — which
+       is the correct read: that lamp is not doing anything to this cabin. */
+    const sweep = Math.min(1, w * 2);
+    gl.position.set(0, GLASS_REST.y + 0.22 * w, GLASS_REST.z - s * 1.6 * sweep);
+    /* Peak level is a HUE budget, not a brightness one. The composite runs a
+       fitted ACES curve and then drops its vibrance boost to 1.0 in the
+       highlights, so lit trim above roughly 0.8 output luma loses its colour
+       and the brightest, most-noticeable moment of the sweep goes white — the
+       first cut peaked at 1.15 and read as a white flash for exactly that
+       reason. 0.82 keeps the pad inside the range where the amber survives,
+       and a saturated orange at a moderate level reads far more "streetlight"
+       than a blown hotspot does. The trough stays where it was, just under the
+       resting 0.5 cd, so the cabin is never darker than with a static light. */
+    gl.intensity = lerp(GLASS_REST.intensity, lerp(0.46, 0.82, w), night);
+    /* Hue is decoupled from level: the colour saturates to full sodium well
+       before the intensity peak (w * 2.2) and stays there for the whole time a
+       lamp is influencing the cabin. Tying the blend to the brightness
+       envelope was the other half of the white read — at half pulse the light
+       was still mostly the cool 0xbfd0ff. */
+    gl.color.setHex(GLASS_REST.color).lerp(LAMP_SODIUM, Math.min(1, w * 2.2));
+  }
+
   private static hash1(n: number): number {
     const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
     return s - Math.floor(s);

@@ -24,13 +24,32 @@ export function poolGradientTex(): THREE.Texture {
   const cv = document.createElement("canvas");
   cv.width = cv.height = 128;
   const ctx = cv.getContext("2d")!;
-  // Brightened per user call — the sodium pools should visibly light the
-  // street: hotter core, fuller mid skirt; the zero edge stays.
+  /* Sampled from a smooth curve rather than set as a few hand-placed knees.
+     Two reasons the old four-stop version stopped working once the deck pools
+     grew to span the carriageway (POOL_A in highway.ts):
+       - four linear segments stretched over ~14 m print their own knees as
+         visible rings, where over ~8 m they read as one fade;
+       - the POV dashcam pass crushes blacks hard (`col - .06` in post.ts), so
+         a LINEAR outer ramp crosses that floor at a definite radius and clips
+         to a circular edge — the pool looked scoped rather than faded.
+     So: many stops, monotone and decelerating, with a deliberately long low
+     tail. The tail spends most of its length near the crush floor instead of
+     diving through it, which is what turns the cut-off into a fade. The skirt
+     is also fuller than before at the same core level — more ground covered
+     without a brighter hotspot. */
   const g = ctx.createRadialGradient(64, 64, 2, 64, 64, 62);
-  g.addColorStop(0, "rgba(255,219,158,0.78)");
-  g.addColorStop(0.35, "rgba(255,207,142,0.46)");
-  g.addColorStop(0.7, "rgba(255,192,122,0.17)");
-  g.addColorStop(1, "rgba(255,190,120,0)");
+  const STOPS: [number, number][] = [
+    [0.00, 0.78], [0.10, 0.735], [0.20, 0.665], [0.30, 0.585],
+    [0.40, 0.505], [0.50, 0.425], [0.60, 0.350], [0.68, 0.293],
+    [0.76, 0.236], [0.83, 0.183], [0.89, 0.132], [0.94, 0.086],
+    [0.97, 0.050], [0.99, 0.022], [1.00, 0.0],
+  ];
+  /* Core is the warmest; the skirt cools slightly toward the edge the way a
+     real sodium pool does as it thins out over grey tarmac. */
+  for (const [t, a] of STOPS) {
+    const r = Math.round(255), gg = Math.round(219 - 29 * t), b = Math.round(158 - 38 * t);
+    g.addColorStop(t, `rgba(${r},${gg},${b},${a})`);
+  }
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 128, 128);
   const tex = new THREE.CanvasTexture(cv);
