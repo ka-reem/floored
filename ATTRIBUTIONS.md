@@ -112,6 +112,35 @@ public/assets/pbr/<set>/ao.jpg       (optional, present but unused — see above
 public/assets/pbr/<set>/metal.jpg    (optional — guardrail/ only)
 ```
 
+## Highway world-dressing PBR textures — `public/assets/pbr/*` (wave 2)
+
+All sourced from **ambientCG.com**, **CC0 1.0 (Public Domain)** — no
+attribution legally required. Recompressed to JPEG for the size budget; the
+two hero sets seen closest to the camera (fence albedo/opacity, tunnel tile
+and canopy corrugation albedo/normal) ship at 2K, everything else at 1K or
+512. Same filename contract as the road sets, plus `alpha.jpg` for cutout
+opacity maps.
+
+| Directory | ambientCG asset | Item page | Maps kept | Used for |
+|---|---|---|---|---|
+| `fence/` | Fence007A | https://ambientcg.com/a/Fence007A | albedo, alpha, normal, rough, metal | perforated-steel sound-barrier panels on the parapets (alphaTest cutout) |
+| `tile/` | Tiles036 | https://ambientcg.com/a/Tiles036 | albedo, normal, rough | tunnel wall tiling |
+| `corrugated/` | CorrugatedSteel009 | https://ambientcg.com/a/CorrugatedSteel009 | albedo, normal, rough, metal | toll canopy roof |
+| `plates/` | MetalPlates003 | https://ambientcg.com/a/MetalPlates003 | albedo, normal, rough, metal | toll canopy fascia |
+| `walkway/` | MetalWalkway012 | https://ambientcg.com/a/MetalWalkway012 | albedo, alpha, normal, rough | gantry catwalk decking (alphaTest cutout) |
+
+## Photoscanned world props — `public/assets/props/*`
+
+Sourced from **Poly Haven**, **CC0 1.0 (Public Domain)**, no attribution
+required. glTF (1K texture variants), textures recompressed to 512 for the
+size budget. Source: https://polyhaven.com/
+
+| Directory | Asset | Item page | Used for |
+|---|---|---|---|
+| `concrete-road-barrier/` | Concrete Road Barrier | https://polyhaven.com/a/concrete_road_barrier | jersey barriers at the toll island noses / shoulders (instanced, variant A) |
+| `concrete-road-barrier-02/` | Concrete Road Barrier 02 | https://polyhaven.com/a/concrete_road_barrier_02 | jersey barrier variant B, alternated with A to break repetition |
+| `security-light/` | Security Light | https://polyhaven.com/a/security_light | floodlight heads on the toll canopy fascia |
+
 ## Night-city HDRI — `public/hdri/*`
 
 Sourced from **Poly Haven**, **CC0 1.0 (Public Domain)**, no attribution

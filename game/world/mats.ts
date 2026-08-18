@@ -2,7 +2,7 @@ import * as THREE from "three";
 import {
   roadTex, hwyTexF, rampTexF, windowsTexF, storefrontTexF, vendingTexF, glowTexF,
   streakTexF, smokeTexF, envFaceCanvas, chevTexF, goreTexF, xingTexF, studTexF,
-  loadPbrSet, type PbrSet,
+  fenceTexF, loadPbrSet, type PbrSet,
 } from "../textures";
 
 /* Shared materials + textures. Planar-reflection sampling is injected into the
@@ -78,6 +78,16 @@ export interface Mats {
   /** tunnel tube lining */
   tunnelWall: THREE.MeshStandardMaterial;
   tunnelCeil: THREE.MeshStandardMaterial;
+  /** perforated-steel sound-barrier panelling — alphaTest cutout, never blend.
+      Beam-responsive: headlights catch the mesh the way they catch real
+      galvanised panels. Fed by the Fence007A scan when it lands. */
+  fence: THREE.MeshStandardMaterial;
+  /** corrugated-steel toll canopy roof (CorrugatedSteel009 when it lands) */
+  canopyRoof: THREE.MeshStandardMaterial;
+  /** brushed-panel canopy fascia (MetalPlates003 when it lands) */
+  canopyFascia: THREE.MeshStandardMaterial;
+  /** grated-catwalk decking for gantry walkways — alphaTest cutout */
+  catwalk: THREE.MeshStandardMaterial;
   /** additive sprite material for retroreflective raised pavement markers */
   studMat: THREE.PointsMaterial;
   /** as studMat, for the tunnel span — never daylight-dimmed, see mats.ts */
@@ -523,6 +533,32 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   const tunnelCeil = new THREE.MeshStandardMaterial({
     color: 0x2a2d36, roughness: 0.85, side: THREE.DoubleSide,
   });
+  /* Sound-barrier mesh panelling. alphaTest, never alpha-blend: cutout keeps
+     the depth buffer honest (no sorting artifacts against the glow sprites)
+     and costs nothing when the holes are discarded early. The procedural
+     canvas carries its own alpha; the photo scan that replaces it splits the
+     same data across albedo + alphaMap, and alphaTest composes both. The
+     faint emissive floor is skyglow — a panel the headlights haven't reached
+     should read as a dim silhouette against the night, not a hole in it. */
+  const fence = new THREE.MeshStandardMaterial({
+    map: fenceTexF("perf"), color: 0xaeb4bd, roughness: 0.5, metalness: 0.72,
+    envMap, envMapIntensity: 0.5, alphaTest: 0.45, side: THREE.DoubleSide,
+    emissive: 0x0d1118, emissiveIntensity: 1,
+  });
+  /* Toll canopy skins. Procedural placeholders; the corrugated/brushed scans
+     replace the art in ensurePbr with the same tints multiplied over them. */
+  const canopyRoof = new THREE.MeshStandardMaterial({
+    color: 0x494e58, roughness: 0.55, metalness: 0.6, envMap, envMapIntensity: 0.35,
+  });
+  const canopyFascia = new THREE.MeshStandardMaterial({
+    color: 0x666d7a, roughness: 0.35, metalness: 0.8, envMap, envMapIntensity: 0.5,
+  });
+  const catwalk = new THREE.MeshStandardMaterial({
+    map: fenceTexF("grate"), color: 0x878c96, roughness: 0.6, metalness: 0.7,
+    alphaTest: 0.45, side: THREE.DoubleSide,
+    emissive: 0x0b0e14, emissiveIntensity: 1,
+  });
+
   /* Street furniture metal: lamp masts, signal poles, gantry legs. Real
      galvanised steel is anisotropic — it streaks along the roll direction —
      which MeshStandardMaterial cannot express. The scan's roughness map fakes
@@ -606,6 +642,13 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   addBeam(markMat, { near: 18, far: 62, spread: 0.95 });
   addBeam(studMat, { near: 40, far: 190, spread: 0.42 });
   addBeam(studMatTunnel, { near: 40, far: 190, spread: 0.3 });
+  /* The fence runs beside the road, well off the beam axis, so it gets a wide
+     cone and a short throw: panels light up as the car sweeps past them and
+     die away behind, which is exactly how a headlight rakes a real barrier.
+     This multiplies the *albedo* under the standard lighting model, so inside
+     the beam the panel simply shows its true material lit by the real
+     headlight SpotLights, and outside it falls to the emissive skyglow floor. */
+  addBeam(fence, { near: 24, far: 85, spread: 0.5 });
 
   const mats: Mats = {
     envMap, glowTex, streakTex, smokeTex, chevTex, goreTex, xingTex, studTex,
@@ -622,6 +665,10 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     barrierDouble,
     tunnelWall,
     tunnelCeil,
+    fence,
+    canopyRoof,
+    canopyFascia,
+    catwalk,
     studMat,
     studMatTunnel,
     markMat,
@@ -772,6 +819,9 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       mat.roughness = (o.roughness ?? mat.roughness) / Math.max(set.roughMean, 0.05);
     }
     if (set.metal) mat.metalnessMap = retile(set.metal, rep);
+    // cutout sets: the scan's opacity map replaces the alpha baked into the
+    // procedural canvas; alphaTest carries over unchanged
+    if (set.alpha) mat.alphaMap = retile(set.alpha, rep);
     mat.needsUpdate = true;
   }
 
@@ -796,13 +846,23 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
        resolves, and an absent set has a null albedo which every upgrade path
        returns early on. A missing assets directory costs four 404s and leaves
        the procedural look untouched. */
-    const [asphaltSet, wornSet, concreteSet, metalSet] = await Promise.all([
+    const [
+      asphaltSet, wornSet, concreteSet, metalSet,
+      fenceSet, tileSet, corrSet, plateSet, walkSet,
+    ] = await Promise.all([
       loadPbrSet("asphalt"),
       loadPbrSet("asphalt_worn"),
       loadPbrSet("concrete"),
       // the directory keeps ambientCG's "guardrail" name (see ATTRIBUTIONS.md);
       // this world has no guardrails, so the metal goes on the street furniture
       loadPbrSet("guardrail", undefined, true),
+      // Lane A world dressing (all CC0 — ambientCG): perforated fence,
+      // tunnel tile, corrugated canopy roof, brushed fascia, grated catwalk
+      loadPbrSet("fence", undefined, true, true),
+      loadPbrSet("tile"),
+      loadPbrSet("corrugated", undefined, true),
+      loadPbrSet("plates", undefined, true),
+      loadPbrSet("walkway", undefined, false, true),
     ]);
 
     /* Repeats are expressed in the mesh's own UV space, which differs per
@@ -840,13 +900,47 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     if (concreteSet.albedo)
       for (const m of [
         conc, concDouble, concDark, concDarkDouble,
-        barrier, barrierDouble, tunnelWall, tunnelCeil,
+        barrier, barrierDouble, tunnelCeil,
       ]) {
         projectedUv(m, 0.45);
         upgradeSurface(m, concreteSet, {
           repeat: [1, 1], normalScale: 0.65, roughness: m.roughness,
         });
       }
+    /* Tunnel walls get real ceramic tile (the classic urban-tunnel band) in
+       preference to bare concrete; concrete remains the fallback so a partial
+       asset drop still upgrades the tube. Roughness sits well below the
+       concrete's: a glazed tile wall is what lets the headlights and the
+       batten glow streak along the tube, which is most of the AC night read.
+       0.6 projection scale ≈ a 1.7 m tile course — close to life size. */
+    {
+      const wallSet = tileSet.albedo ? tileSet : concreteSet;
+      if (wallSet.albedo) {
+        projectedUv(tunnelWall, tileSet.albedo ? 0.6 : 0.45);
+        upgradeSurface(tunnelWall, wallSet, {
+          repeat: [1, 1], normalScale: 0.9,
+          roughness: tileSet.albedo ? 0.24 : tunnelWall.roughness,
+        });
+        if (tileSet.albedo) {
+          tunnelWall.envMapIntensity = 0.35;
+          // let the grout lines carry contrast: the flat self-illumination is
+          // only the floor that keeps the tube from going black
+          tunnelWall.emissive.setHex(0x111520);
+        }
+      }
+    }
+    /* Lane A dressing materials — straight art replacement, tuned tints kept
+       as multipliers exactly like the concrete family above. */
+    if (fenceSet.albedo)
+      upgradeSurface(fence, fenceSet, { repeat: [1, 1], normalScale: 0.8, roughness: 0.5 });
+    if (corrSet.albedo) {
+      projectedUv(canopyRoof, 0.55);
+      upgradeSurface(canopyRoof, corrSet, { repeat: [1, 1], normalScale: 0.85, roughness: 0.55 });
+    }
+    if (plateSet.albedo)
+      upgradeSurface(canopyFascia, plateSet, { repeat: [3, 1], normalScale: 0.5, roughness: 0.35 });
+    if (walkSet.albedo)
+      upgradeSurface(catwalk, walkSet, { repeat: [1, 1], normalScale: 0.7, roughness: 0.6 });
     /* Poles are cylinders and boxes with real UVs, so no projection here — and
        none is possible anyway, since an InstancedMesh's modelMatrix is the
        batch's transform, not the per-instance one, and every pole would end up

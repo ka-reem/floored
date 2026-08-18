@@ -3,7 +3,13 @@ import { rand, TAU } from "../util";
 import { skyCanvas, skylineTexF } from "../textures";
 
 /* Sky dome, stars, moon, distant skyline ring, mountains, and the two
-   landmarks (broadcast tower west, ferris wheel east). Ported from v2. */
+   landmarks (broadcast tower west, ferris wheel east). Ported from v2.
+   Lane A adds the layered point-cloud city (buildCityGlow) and the airport
+   control tower landmark. */
+
+/** Perf gate for the layered distant-city point clouds (3 draw calls, ~9k
+    points). Exported for the renderTier system to wire at merge time. */
+export const FX_CITY_LAYERS = true;
 
 export interface Sky {
   skyMat: THREE.MeshBasicMaterial;
@@ -76,6 +82,98 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
       scene.add(m);
     }
   }
+  /* The distant city, as three staggered rings of window-lights between the
+     mountains and the skyline ring. The load-bearing trick is CLUSTERING:
+     random points read as noise, but points stacked into implied vertical
+     columns — floors of a building — read as a city even at two pixels per
+     window. Each ring mixes sodium-orange and cool-white per window, the way
+     a real skyline mixes streetlight bounce with office fluorescents.
+     Downtown density comes from seeding more towers into two narrow arc
+     bands, so the horizon has composition instead of uniform speckle. */
+  if (FX_CITY_LAYERS) {
+    const layers: [number, number, number, number, number][] = [
+      // r0, r1, towers, point size, opacity
+      [1350, 1650, 60, 2.4, 0.85],
+      [1750, 2050, 95, 2.0, 0.7],
+      [2130, 2380, 130, 1.7, 0.55],
+    ];
+    // two "downtown" arcs shared by every ring so the density lines up in depth
+    const downtown = [rand(0, TAU), rand(0, TAU)];
+    for (const [r0, r1, nTow, size, op] of layers) {
+      const pos: number[] = [], col: number[] = [];
+      const C = new THREE.Color();
+      for (let t = 0; t < nTow; t++) {
+        let a = rand(0, TAU);
+        // pull roughly half the towers into the downtown arcs
+        if (t % 2 === 0) a = downtown[t % downtown.length] + rand(-0.5, 0.5);
+        const r = rand(r0, r1);
+        const cx = Math.cos(a) * r, cz = Math.sin(a) * r;
+        const near = downtown.some((d) => Math.abs(Math.atan2(Math.sin(a - d), Math.cos(a - d))) < 0.55);
+        const hgt = near ? rand(60, 210) : rand(24, 90);
+        const floors = Math.max(3, Math.floor(hgt / 7));
+        const wide = rand(4, 14);
+        for (let f = 0; f < floors; f++) {
+          // 1-3 lit windows per floor, jittered inside the tower footprint
+          const lit = 1 + (Math.random() < 0.4 ? 1 : 0) + (Math.random() < 0.15 ? 1 : 0);
+          for (let w = 0; w < lit; w++) {
+            pos.push(cx + rand(-wide, wide), 4 + f * 7 + rand(-1.5, 1.5), cz + rand(-wide, wide));
+            const warm = Math.random() < 0.55;
+            const b = rand(0.5, 1);
+            C.set(warm ? 0xff9a44 : 0xbfd6ff).multiplyScalar(b);
+            col.push(C.r, C.g, C.b);
+          }
+        }
+        // a red obstruction beacon on the tall ones
+        if (hgt > 150) {
+          pos.push(cx, hgt + 6, cz);
+          C.set(0xff4048);
+          col.push(C.r, C.g, C.b);
+        }
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+      g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col), 3));
+      const m = new THREE.PointsMaterial({
+        size, sizeAttenuation: false, vertexColors: true, map: glowTex,
+        transparent: true, opacity: op, fog: false, depthWrite: false,
+      });
+      const pts = new THREE.Points(g, m);
+      pts.renderOrder = -8; // over the skyline ring, under everything real
+      scene.add(pts);
+    }
+
+    /* Airport control tower on the east horizon: flared cab on a slim shaft,
+       green-white glazing, red beacon — unmistakable in silhouette. */
+    {
+      const tg = new THREE.Group();
+      tg.position.set(1680, 0, 980);
+      const shaftM = new THREE.MeshBasicMaterial({ color: 0x141a26, fog: false });
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(7, 11, 118, 8), shaftM);
+      shaft.position.y = 59;
+      tg.add(shaft);
+      const flare = new THREE.Mesh(new THREE.CylinderGeometry(16, 8, 14, 8), shaftM);
+      flare.position.y = 125;
+      tg.add(flare);
+      const cab = new THREE.Mesh(
+        new THREE.CylinderGeometry(14, 16, 10, 8),
+        new THREE.MeshBasicMaterial({ color: 0x9fe8d8, fog: false })
+      );
+      cab.position.y = 137;
+      tg.add(cab);
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(2, 15, 7, 8), shaftM);
+      cap.position.y = 145;
+      tg.add(cap);
+      const bea = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: glowTex, color: 0xff3038, transparent: true,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+      }));
+      bea.scale.set(18, 18, 1);
+      bea.position.y = 152;
+      tg.add(bea);
+      scene.add(tg);
+    }
+  }
+
   const towersMat = new THREE.PointsMaterial({
     size: 3, map: glowTex, color: 0xff5060, transparent: true,
     sizeAttenuation: false, depthWrite: false,
