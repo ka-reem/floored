@@ -77,7 +77,9 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
   "mobile-base": {
     tier: "mobile-base", dprCap: 1.1, pbrDetail: false, spreadCones: false,
     fenceOverdraw: false, drawDistScale: 0.65, mirrorHalf: true,
-    reflections: false, mblur: false, dashcam: false,
+    // dashcam stays ON for every tier — the POV filter is core to the game's
+    // look (user call); mblur (chase-cam motion blur) remains the perf cut.
+    reflections: false, mblur: false, dashcam: true,
     dualBloom: false, filmLook: false,
     lampCones: false, lampConeEvery: 2, jetFans: false, catwalks: false,
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
@@ -86,7 +88,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
     fenceOverdraw: true, drawDistScale: 0.85, mirrorHalf: true,
-    reflections: false, mblur: false, dashcam: false,
+    reflections: false, mblur: false, dashcam: true,
     dualBloom: false, filmLook: false,
     lampCones: true, lampConeEvery: 2, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
