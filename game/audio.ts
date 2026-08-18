@@ -1700,10 +1700,12 @@ export class GameAudio {
        any speed is a low rumble/mid whoosh, not a bright hiss, so the
        lowpass ceiling keeps that true regardless of how fast the car goes. */
     const windRise = smoothstep(15, 60, speed);
-    const windLevel = windRise * 0.32 + (raining ? 0.02 : 0);
+    // 0.32 -> 0.27 (user call): at top speed the wind was drowning the whole
+    // mix; the low-speed onset is untouched, only the ceiling comes down.
+    const windLevel = windRise * 0.27 + (raining ? 0.02 : 0);
     this.sp(this.wF.frequency, Math.min(1400, 300 + speed * 26), 0.15);
     this.sp(this.wG.gain, windLevel, 0.12);
-    this.sp(this.windFlutterDepth.gain, windRise * 0.045, 0.15);
+    this.sp(this.windFlutterDepth.gain, windRise * 0.04, 0.15);
 
     /* Rain: reworked for character, not just level, after smoothing the old
        flat highpass hiss alone wasn't enough — it still fundamentally read
