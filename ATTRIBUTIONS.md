@@ -113,13 +113,21 @@ Source: https://polyhaven.com/
 
 | File | Asset | Item page |
 |---|---|---|
-| `cobblestone_street_night_2k.hdr` | Cobblestone Street Night | https://polyhaven.com/a/cobblestone_street_night |
+| `cobblestone_street_night_2k.hdr` | **Shanghai Bund** (see note) | https://polyhaven.com/a/shanghai_bund |
 | `modern_evening_street_2k.hdr` | Modern Evening Street | https://polyhaven.com/a/modern_evening_street |
 
 Used as an environment map (PMREM) for car-paint specular reflections, not as
-a visible skybox — 2K is sufficient at that role. `cobblestone_street_night`
-is the recommended default (higher-contrast lamp highlights read better on
-curved metal at speed); `modern_evening_street` is a softer alternate.
+a visible skybox — 2K is sufficient at that role.
+
+**Note on the filename:** the bytes at `cobblestone_street_night_2k.hdr` are
+the **Shanghai Bund** night-city panorama (CC0, Poly Haven). The world-dressing
+wave replaced the original cobblestone street with the dense city-skyline glow,
+but the loader probes a fixed URL list in `game/carenv.ts` (owned by another
+lane at the time), so the swap was done at the file path the loader already
+prefers. A follow-up may rename the file and the URL together. The 4K Shanghai
+Bund master stays in `public/assets-staging/hdri-night/` as a future
+desktop-lazy upgrade; `modern_evening_street` remains the softer fallback the
+loader falls to when the primary is missing.
 
 ## Sourcing notes / other candidates evaluated but not shipped
 

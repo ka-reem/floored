@@ -7,6 +7,8 @@ import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
 import type { REdge, EdgePose } from "./roadnet";
+import { takeDeckPoolGeometry } from "./highway";
+import { poolGradientTex } from "./decaltex";
 
 /* Town geometry: curved road ribbons that follow the terrain, raised
    sidewalks, intersection patches, dense buildings placed along each street
@@ -383,7 +385,9 @@ export function buildTown(
     arms.computeBoundingSphere();
     scene.add(poles, arms);
   }
-  // merge deck lights into the pooled glow + ground pools
+  // merge deck lights into the pooled glow (+ ground pools, unless the
+  // highway shipped its own oriented pool quads for them — see below)
+  const nTownLamps = lightPts.length;
   for (let i = 0; i < deckLightPts.length; i += 3)
     lightPts.push([deckLightPts[i], deckLightPts[i + 1], deckLightPts[i + 2], deckLightPts[i + 1] - 7.42]);
   {
@@ -407,11 +411,18 @@ export function buildTown(
     );
     world.glowPts.frustumCulled = false;
     scene.add(world.glowPts);
-    // warm light pools on the ground under each lamp
-    const pool = new Float32Array(lightPts.length * 18);
-    const uv = new Float32Array(lightPts.length * 12);
+    /* warm light pools on the ground under each lamp.
+
+       The deck lamps get purpose-built pools from highway.ts — elliptical,
+       yaw+grade aligned, elongated down the road — so when that geometry
+       exists the axis-aligned squares here cover the TOWN lamps only (a flat
+       grid town is the one place an unrotated square is actually fine). */
+    const deckGeo = takeDeckPoolGeometry();
+    const poolLamps = deckGeo ? lightPts.slice(0, nTownLamps) : lightPts;
+    const pool = new Float32Array(poolLamps.length * 18);
+    const uv = new Float32Array(poolLamps.length * 12);
     const half = 5.4;
-    lightPts.forEach((l, i) => {
+    poolLamps.forEach((l, i) => {
       const o = i * 18;
       const y = l[3] + 0.06;
       const vs = [
@@ -432,13 +443,9 @@ export function buildTown(
     const pg = new THREE.BufferGeometry();
     pg.setAttribute("position", new THREE.BufferAttribute(pool, 3));
     pg.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
-    const poolTex = makeTex(128, 128, (ctx, w, h) => {
-      const g2 = ctx.createRadialGradient(64, 64, 4, 64, 64, 62);
-      g2.addColorStop(0, "rgba(255,214,150,.5)");
-      g2.addColorStop(1, "rgba(255,214,150,0)");
-      ctx.fillStyle = g2;
-      ctx.fillRect(0, 0, w, h);
-    });
+    // two-knee sodium gradient shared with the deck pools (decaltex.ts) —
+    // brighter core, wider soft skirt than the old single-stop fade
+    const poolTex = poolGradientTex();
     world.pools = new THREE.Mesh(
       pg,
       // colour likewise comes from tintLampsSodium(), and the opacity is
@@ -451,6 +458,16 @@ export function buildTown(
     world.pools.layers.set(1);
     world.pools.frustumCulled = false;
     scene.add(world.pools);
+    /* Deck lamp pools ride the SAME material instance: engine.ts drives
+       world.pools.material's opacity every frame (day/night/rain) and
+       tintLampsSodium() sets its colour, so parenting the highway geometry to
+       that material keeps all of it in sync with zero engine changes. */
+    if (deckGeo) {
+      const dp = new THREE.Mesh(deckGeo, world.pools.material);
+      dp.layers.set(1);
+      dp.frustumCulled = false;
+      scene.add(dp);
+    }
   }
 
   /* ---------- utility poles + wires ---------- */

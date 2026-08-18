@@ -11,6 +11,8 @@ import {
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
+import { worldTierCaps } from "../settings";
+import { buildRoadDecals } from "./decals";
 
 const EXIT_NAMES = ["中野 Nakano", "本町 Honchō"];
 const LAYER_NOREF = 1;
@@ -34,12 +36,14 @@ const WALL_EVERY = 2;
 
 /* ---- perf gates -----------------------------------------------------------
    Each flag guards something additive and purely cosmetic: flipping one off
-   removes the feature cleanly with no knock-on effects. They exist so the
-   renderTier system (built concurrently in settings/engine/post by another
-   lane) can wire them to quality presets at merge time — do NOT import
-   settings from here. Everything they guard is instanced or merged, so the
-   costs are bounded: the flags mainly trade overdraw (cones, cutout panels)
-   and a handful of draw calls. */
+   removes the feature cleanly with no knock-on effects.
+
+   These are the master KILL-SWITCHES. The live per-device decision is made by
+   the renderTier caps (settings.worldTierCaps(), resolved once at world-build
+   time — same ?tier= override the engine honours): a feature builds only when
+   its FX_* flag AND its TierCaps field agree. Everything gated is instanced
+   or merged, so the flags mainly trade overdraw (cones, cutout panels) and a
+   handful of draw calls. */
 /** additive light cones under the streetlight heads (overdraw) */
 export const FX_LAMP_CONES = true;
 /** procedural jet fans hung from the tunnel ceiling (3 instanced meshes) */
@@ -50,10 +54,15 @@ export const FX_FENCE_PANELS = true;
 /** gantry catwalk decking + floodlight fittings (a few meshes per gantry) */
 export const FX_CATWALKS = true;
 /** photoscanned GLB props: jersey barriers + toll floodlights (async loads,
-    ~2 MB of textures; skipping them skips the download too) */
+    ~2 MB of textures; skipping them also skips the download and swaps in
+    procedural stand-ins — the colliders are identical either way) */
 export const FX_PROP_MODELS = true;
 /** toll canopy underside lighting (glow points + emissive strips) */
 export const FX_TOLL_GLOW = true;
+/** road-realism decal overlays: cracks, oil stains, covers, wall streaks */
+export const FX_ROAD_DECALS = true;
+/** per-lamp sodium ground pools on the deck under the cobra heads */
+export const FX_LAMP_POOLS = true;
 
 /** Load a photoscan prop and hand back its meshes (geometry still in the
     file's local space). Failure-tolerant like the PBR sets: a missing file
@@ -193,6 +202,9 @@ export function buildHighway(
 ) {
   const cor = getCorridor();
   assertPitches();
+  /* per-device world-dressing caps; every FX_* flag below is ANDed with its
+     cap so the FX_ constants stay usable as master kill-switches */
+  const caps = worldTierCaps();
   const { concDark, soundwall, hwy } = mats;
   const add = (b: { x0: number; x1: number; z0: number; z1: number; y0: number; y1: number }) =>
     world.colliders.addAabb(b);
@@ -716,7 +728,7 @@ export function buildHighway(
         new THREE.MeshStandardMaterial({ color: 0x555c68, roughness: 0.8 }));
       sBack.position.set(0, 5.5, -0.35 + SIGN.BACK_GAP);
       g.add(sBack);
-      if (FX_CATWALKS) {
+      if (FX_CATWALKS && caps.catwalks !== false) {
         /* Maintenance catwalk along the beam — the detail that makes a gantry
            read as a structure someone climbs rather than a floating goalpost —
            plus a pair of floodlights washing the board. The "light" itself is
@@ -767,7 +779,9 @@ export function buildHighway(
      size. */
   {
     const SEG = 120, H = 3.0, PANEL_W = 2.4;
-    if (FX_FENCE_PANELS) {
+    /* the fenceOverdraw cap finally gets its consumer: mobile-base falls back
+       to the old translucent slab, shedding the alphaTest overdraw */
+    if (FX_FENCE_PANELS && caps.fenceOverdraw) {
       const S = new Soup();
       const postAt: { x: number; y: number; z: number; h: number }[] = [];
       for (const z0 of cor.lattice(PITCH.soundwall)) {
@@ -864,21 +878,37 @@ export function buildHighway(
     const lensMat = new THREE.MeshBasicMaterial({ color: 0xffe2b4 });
     const lens = new THREE.InstancedMesh(lensG, lensMat, NP);
     /* Fake volumetric cone under each head: additive, alpha baked into the
-       texture (top bright, hem gone), so the overdraw is cheap and the sodium
-       pool connects lamp to road the way humid night air does. Gated — it is
-       pure overdraw and the first thing a low tier should shed. */
-    /* Canvas top lands on the cylinder's TOP (v=1 up there), so the bright
-       stop goes first: the shaft is brightest at the lamp and dies before it
-       reaches the road, like light through night air actually does. */
+       texture, pure overdraw — gated by tier, and the first thing a low tier
+       sheds (mobile-high keeps every other one).
+
+       This is the second pass at these. The first pass drew a hard-edged
+       orange ribbon — playtest feedback: "you can literally see the lines".
+       Three separate hard edges had to die:
+       - the START: the old gradient opened at full alpha flush with the
+         head, printing a bright horizontal seam. It now fades IN from zero
+         over the top ~18% before falling away to the hem;
+       - the HEM: brought to zero well above the deck (the ground pools own
+         the deck; the cone is only the haze above them);
+       - the SILHOUETTE: a cylinder's profile edge shows the mesh outline no
+         matter what the texture does, because every ray near the profile
+         grazes the same amount of cone. The fresnel-style term in the shader
+         patch below zeroes alpha as the view direction goes tangent to the
+         surface, which is what dissolves the straight-line outline (and the
+         u-seam with it — the seam only ever showed AT the silhouette). */
     const coneTex = makeTex(64, 128, (ctx, w, h) => {
       const g = ctx.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0, "rgba(255,214,150,0.30)");
+      g.addColorStop(0, "rgba(255,214,150,0)");
+      g.addColorStop(0.18, "rgba(255,214,150,0.30)");
+      g.addColorStop(0.55, "rgba(255,214,150,0.12)");
+      g.addColorStop(0.88, "rgba(255,214,150,0)");
       g.addColorStop(1, "rgba(255,214,150,0)");
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, w, h);
     });
-    const coneG = new THREE.CylinderGeometry(0.28, 2.05, 7.1, 10, 1, true);
+    // wider than the first pass (hem 2.05 → 3.0) and peak opacity down: the
+    // read is hazy air around the lamp, not a solid shaft
+    const coneG = new THREE.CylinderGeometry(0.5, 3.0, 7.1, 14, 1, true);
     /* fog stays ON: with additive blending the night fog colour is near
        black, so fogging is what fades a cone out with distance instead of
        leaving a full-brightness pyramid on the horizon. BackSide only — a
@@ -886,36 +916,59 @@ export function buildHighway(
        camera passes through it, and the far wall alone gives the same read
        from outside at half the overdraw. */
     const coneMat = new THREE.MeshBasicMaterial({
-      map: coneTex, color: 0xff9e50, transparent: true, opacity: 0.42,
+      // warm sodium amber. The old 0xff9e50 came through the ACES grade as
+      // salmon — red survives tone-mapping better than green, so the source
+      // has to sit further toward yellow than the target colour does.
+      map: coneTex, color: 0xffb56a, transparent: true, opacity: 0.26,
       blending: THREE.AdditiveBlending, depthWrite: false,
       side: THREE.BackSide,
     });
-    /* And a view-distance fade: driving under a lamp puts the camera inside
-       its cone, and even the back wall alone washes half the frame orange.
-       Fading the fragment out inside ~18 m keeps the shafts a mid-distance
-       effect, which is the only place the fake ever reads as light anyway. */
+    /* Two shader-side fades:
+       - a view-distance fade: driving under a lamp puts the camera inside
+         its cone, and even the back wall alone washes half the frame orange;
+         fading out inside ~18 m keeps the shafts a mid-distance effect;
+       - the fresnel term described above: alpha ∝ |view·normal|^1.5, full
+         face-on, zero at the profile edge, so the silhouette has no line to
+         draw. (three prepends the normal attribute + normalMatrix uniform to
+         every built-in material, so basic can use them.) */
     coneMat.onBeforeCompile = (sh) => {
       sh.vertexShader = sh.vertexShader
-        .replace("#include <common>", "#include <common>\nvarying float vConeDist;")
+        .replace("#include <common>",
+          "#include <common>\nvarying float vConeDist;\nvarying vec3 vConeN;\nvarying vec3 vConeV;")
         .replace("#include <project_vertex>",
-          "#include <project_vertex>\nvConeDist = -mvPosition.z;");
+          "#include <project_vertex>\nvConeDist = -mvPosition.z;\n" +
+          "vConeN = normalMatrix * normal;\nvConeV = -mvPosition.xyz;");
       sh.fragmentShader = sh.fragmentShader
-        .replace("#include <common>", "#include <common>\nvarying float vConeDist;")
+        .replace("#include <common>",
+          "#include <common>\nvarying float vConeDist;\nvarying vec3 vConeN;\nvarying vec3 vConeV;")
         .replace("#include <map_fragment>",
-          "#include <map_fragment>\ndiffuseColor.a *= smoothstep(7.0, 19.0, vConeDist);");
+          "#include <map_fragment>\ndiffuseColor.a *= smoothstep(7.0, 19.0, vConeDist);\n" +
+          "diffuseColor.a *= pow(abs(dot(normalize(vConeV), normalize(vConeN))), 1.5);");
     };
-    coneMat.customProgramCacheKey = () => "lampcone";
-    const cones = FX_LAMP_CONES ? new THREE.InstancedMesh(coneG, coneMat, NP) : null;
+    coneMat.customProgramCacheKey = () => "lampcone2";
+    const wantCones = FX_LAMP_CONES && caps.lampCones !== false;
+    const coneEvery = Math.max(1, caps.lampConeEvery ?? 1);
+    const cones = wantCones ? new THREE.InstancedMesh(coneG, coneMat, NP) : null;
+    /* Ground pools under the cobra heads — the deck-level half of the lamp
+       light, and the answer to "spread the lamp light out more". Emitted as
+       world-space quads (yaw + grade aligned, elongated down the road) and
+       handed to townmesh, which renders them through the SAME material
+       instance as the town lamp pools — so the engine's per-frame day/night
+       opacity write and sodium tint drive these for free. */
+    const wantPools = FX_LAMP_POOLS && caps.lampPoolEvery !== 0;
+    const poolEvery = Math.max(1, caps.lampPoolEvery ?? 1);
+    const poolPos: number[] = [], poolUv: number[] = [];
     const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
       E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
-    let n = 0;
+    let n = 0, nc = 0;
     for (const z of zs) {
       if (cor.inTunnel(z) || cor.inToll(z)) continue;
       /* Which side a pole stands on has to be a function of *where* it is, not
          of how many poles have been emitted so far: skipping the tunnel would
          otherwise flip the phase of everything downstream of it, and the two
          sides of the splice would alternate out of step. */
-      const flip = cor.latticeIndex(z, PITCH.light, PHASE.light) % 2 ? 1 : -1;
+      const li = cor.latticeIndex(z, PITCH.light, PHASE.light);
+      const flip = li % 2 ? 1 : -1;
       const p = cor.pose(z);
       // mounted on the parapet, not inside the shoulder where a car scraping
       // the barrier would drive through the pole
@@ -935,13 +988,42 @@ export function buildHighway(
       V.set(lx, p.y + 7.5, lz);
       M.compose(V, Q, S);
       heads.setMatrixAt(n, M);
-      V.set(lx, p.y + 7.41, lz);
+      // 7.39, not 7.41: at 7.41 the lens top (7.435) sat inside the head
+      // bottom (7.425) and the coplanar overlap z-fought as blue/red banding
+      V.set(lx, p.y + 7.39, lz);
       M.compose(V, Q, S);
       lens.setMatrixAt(n, M);
-      if (cones) {
+      /* Thinning uses the folded lattice index (not the emit counter) so the
+         choice survives the loop splice — and it works in PAIRS: lamp sides
+         alternate with li's parity, so a bare li % 2 would strip every cone
+         from one side of the road and keep every one on the other. Keeping
+         li % (2N) < 2 drops whole pole-pairs instead. */
+      const keepNth = (every: number) => li % (2 * every) < 2;
+      if (cones && keepNth(coneEvery)) {
         V.set(lx, p.y + 7.45 - 3.55, lz);
         M.compose(V, Q, S);
-        cones.setMatrixAt(n, M);
+        cones.setMatrixAt(nc++, M);
+      }
+      if (wantPools && keepNth(poolEvery)) {
+        /* ellipse centred a stride inboard of the head, long axis down the
+           road; grade-aligned via the vertical tangent component so neither
+           end lifts off a climbing deck */
+        const cLat = lampLat - flip * 0.8;
+        const cx = p.x + cLat * p.nx, cz = p.z + cLat * p.nz;
+        const cy = p.y + 0.055;
+        const g = p.grade, tn = 1 / Math.hypot(1, g);
+        const tX = p.tx * tn, tY = g * tn, tZ = p.tz * tn; // unit tangent w/ grade
+        const A = 3.9;  // lateral half axis
+        const B = 5.6;  // longitudinal half axis (elongated along the road)
+        const corner = (sa: number, sb: number): [number, number, number] => [
+          cx + sa * A * p.nx + sb * B * tX,
+          cy + sb * B * tY,
+          cz + sa * A * p.nz + sb * B * tZ,
+        ];
+        const c00 = corner(-1, -1), c10 = corner(1, -1),
+          c11 = corner(1, 1), c01 = corner(-1, 1);
+        poolPos.push(...c00, ...c10, ...c11, ...c00, ...c11, ...c01);
+        poolUv.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
       }
       n++;
     }
@@ -952,12 +1034,34 @@ export function buildHighway(
     lens.computeBoundingSphere();
     scene.add(poles, arms, heads, lens);
     if (cones) {
-      cones.count = n;
+      cones.count = nc;
       cones.computeBoundingSphere();
       scene.add(cones);
     }
+    if (poolPos.length) {
+      const pg = new THREE.BufferGeometry();
+      pg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(poolPos), 3));
+      pg.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(poolUv), 2));
+      deckPoolGeo = pg;
+    }
   }
+
+  /* ---------------- road-realism decals ---------------- */
+  if (FX_ROAD_DECALS && caps.roadDecals !== false) buildRoadDecals(scene);
+
   return { deckLightPts: lightPts };
+}
+
+/* Handoff for the deck lamp pools. buildTown runs right after buildHighway in
+   the same startup call; it takes this geometry and renders it through the
+   world.pools material instance so the engine's day/night opacity pass and
+   sodium tint reach the deck pools with zero engine changes. One-shot: taking
+   it clears it. */
+let deckPoolGeo: THREE.BufferGeometry | null = null;
+export function takeDeckPoolGeometry(): THREE.BufferGeometry | null {
+  const g = deckPoolGeo;
+  deckPoolGeo = null;
+  return g;
 }
 
 /* ============================ tunnel ==================================== */
@@ -1155,7 +1259,7 @@ function buildTunnel(
      dark blade disc, ceiling bracket — instanced, three draw calls for all of
      them. At 200 km/h they are silhouettes strobing past the battens, which
      is exactly what they are in life. */
-  if (FX_JET_FANS) {
+  if (FX_JET_FANS && worldTierCaps().jetFans !== false) {
     const fanZ: number[] = [];
     for (let z = TUNNEL.z0 + 50; z < TUNNEL.z1 - 30; z += 84) fanZ.push(z);
     const NF = fanZ.length * 2;
@@ -1380,7 +1484,7 @@ function buildToll(
      glow — a real plaza is a pool of flat white light under a dark roof, and
      that read is the whole reason to slow down for it. Not registered in
      neonMats: the canopy shades its own soffit, so these stay lit by day. */
-  if (FX_TOLL_GLOW) {
+  if (FX_TOLL_GLOW && worldTierCaps().tollGlow !== false) {
     const troffMat = new THREE.MeshBasicMaterial({ color: 0xf4f6ff, fog: false });
     const NTR = 2 * 7;
     const troff = new THREE.InstancedMesh(new THREE.BoxGeometry(1.9, 0.09, 0.55), troffMat, NTR);
@@ -1503,7 +1607,7 @@ function buildToll(
      channelising run down each outer shoulder through the gates. Colliders
      go in immediately so the props are never ghosts; the meshes stream in
      when the GLBs land. */
-  if (FX_PROP_MODELS) {
+  {
     interface Slot { lat: number; dz: number; }
     const slotsA: Slot[] = [], slotsB: Slot[] = [];
     for (let k = 1; k < lanes; k++) {
@@ -1527,50 +1631,86 @@ function buildToll(
         y0: p0.y - 0.5, y1: p0.y + 1.4,
       });
     }
-    const place = (slots: Slot[]) => (meshes: { geo: THREE.BufferGeometry; mat: THREE.Material }[]) => {
-      const { geo, mat } = meshes[0];
-      const im = new THREE.InstancedMesh(geo, mat, slots.length);
-      const M = new THREE.Matrix4(), V = new THREE.Vector3(),
-        Q = new THREE.Quaternion(), E = new THREE.Euler(0, Math.PI / 2, 0),
-        S = new THREE.Vector3(1.05, 1.05, 1.05);
-      Q.setFromEuler(E); // the scans run along x; the plaza runs along z
-      slots.forEach((sl, i) => {
-        V.set(sl.lat, 0, sl.dz);
-        M.compose(V, Q, S);
-        im.setMatrixAt(i, M);
-      });
-      im.castShadow = true;
-      im.computeBoundingSphere();
-      plaza.add(im);
-    };
-    loadProp("/assets/props/concrete-road-barrier/concrete_road_barrier_1k.gltf", place(slotsA));
-    loadProp("/assets/props/concrete-road-barrier-02/concrete_road_barrier_02_1k.gltf", place(slotsB));
+    const floodSpots = [-CW / 3, -CW / 9, CW / 9, CW / 3];
+    if (FX_PROP_MODELS && worldTierCaps().propModels !== false) {
+      const place = (slots: Slot[]) => (meshes: { geo: THREE.BufferGeometry; mat: THREE.Material }[]) => {
+        const { geo, mat } = meshes[0];
+        const im = new THREE.InstancedMesh(geo, mat, slots.length);
+        const M = new THREE.Matrix4(), V = new THREE.Vector3(),
+          Q = new THREE.Quaternion(), E = new THREE.Euler(0, Math.PI / 2, 0),
+          S = new THREE.Vector3(1.05, 1.05, 1.05);
+        Q.setFromEuler(E); // the scans run along x; the plaza runs along z
+        slots.forEach((sl, i) => {
+          V.set(sl.lat, 0, sl.dz);
+          M.compose(V, Q, S);
+          im.setMatrixAt(i, M);
+        });
+        im.castShadow = true;
+        im.computeBoundingSphere();
+        plaza.add(im);
+      };
+      loadProp("/assets/props/concrete-road-barrier/concrete_road_barrier_1k.gltf", place(slotsA));
+      loadProp("/assets/props/concrete-road-barrier-02/concrete_road_barrier_02_1k.gltf", place(slotsB));
 
-    /* Security floodlights along the canopy fascia — the photoscanned heads
-       aimed down the approach, with the glow sprites doing the "light". */
-    loadProp("/assets/props/security-light/security_light_1k.gltf", (meshes) => {
-      const spots = [-CW / 3, -CW / 9, CW / 9, CW / 3];
-      const g = new THREE.Group();
-      for (const x of spots) {
-        for (const { geo, mat } of meshes) {
-          const m = mat as THREE.MeshStandardMaterial;
-          if (m.name && /glass|bulb/i.test(m.name)) {
-            m.emissive = new THREE.Color(0xcfe0ff);
-            m.emissiveIntensity = 1.4;
+      /* Security floodlights along the canopy fascia — the photoscanned heads
+         aimed down the approach, with the glow sprites doing the "light". */
+      loadProp("/assets/props/security-light/security_light_1k.gltf", (meshes) => {
+        const g = new THREE.Group();
+        for (const x of floodSpots) {
+          for (const { geo, mat } of meshes) {
+            const m = mat as THREE.MeshStandardMaterial;
+            if (m.name && /glass|bulb/i.test(m.name)) {
+              m.emissive = new THREE.Color(0xcfe0ff);
+              m.emissiveIntensity = 1.4;
+            }
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.scale.setScalar(2.2);
+            mesh.rotation.set(-2.35, 0, 0);
+            mesh.position.set(x, 6.55, -CL / 2 - 0.1);
+            g.add(mesh);
           }
-          const mesh = new THREE.Mesh(geo, mat);
-          mesh.scale.setScalar(2.2);
-          mesh.rotation.set(-2.35, 0, 0);
-          mesh.position.set(x, 6.55, -CL / 2 - 0.1);
-          g.add(mesh);
+          const halo = new THREE.Sprite(sigHaloWhite);
+          halo.scale.set(2.2, 2.2, 1);
+          halo.position.set(x, 6.35, -CL / 2 - 0.35);
+          g.add(halo);
         }
+        plaza.add(g);
+      });
+    } else {
+      /* Tier stand-ins: the colliders above are identical, so the plaza plays
+         the same — these just make the physics visible without the ~2 MB GLB
+         download or the photoscan's texture binds. A jersey barrier is a
+         trapezoid to the eye; base slab + narrower cap sells it at speed. */
+      const slots = slotsA.concat(slotsB);
+      const baseG = new THREE.BoxGeometry(0.62, 0.44, 1.58);
+      const capG = new THREE.BoxGeometry(0.28, 0.5, 1.58);
+      const base = new THREE.InstancedMesh(baseG, kerbMat, slots.length);
+      const cap = new THREE.InstancedMesh(capG, kerbMat, slots.length);
+      const M = new THREE.Matrix4(), V = new THREE.Vector3(),
+        Q = new THREE.Quaternion(), S = new THREE.Vector3(1, 1, 1);
+      slots.forEach((sl, i) => {
+        V.set(sl.lat, 0.22, sl.dz);
+        M.compose(V, Q, S);
+        base.setMatrixAt(i, M);
+        V.set(sl.lat, 0.69, sl.dz);
+        M.compose(V, Q, S);
+        cap.setMatrixAt(i, M);
+      });
+      base.computeBoundingSphere();
+      cap.computeBoundingSphere();
+      plaza.add(base, cap);
+      // floodlight stand-ins: dark housing box + the same halo sprite
+      for (const x of floodSpots) {
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.4), steel);
+        body.position.set(x, 6.55, -CL / 2 - 0.1);
+        body.rotation.x = -0.6;
+        plaza.add(body);
         const halo = new THREE.Sprite(sigHaloWhite);
         halo.scale.set(2.2, 2.2, 1);
         halo.position.set(x, 6.35, -CL / 2 - 0.35);
-        g.add(halo);
+        plaza.add(halo);
       }
-      plaza.add(g);
-    });
+    }
   }
   // the approach boards are cantilevers like the exit ones, so they are placed
   // with the rest of the signage from corridor.signPlan()

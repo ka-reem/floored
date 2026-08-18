@@ -46,6 +46,31 @@ export interface TierCaps {
       black toe — each individually killable via post.ts's FILM_* flags. */
   filmLook?: boolean;
   /* bloom is deliberately absent: it stays on for every tier. */
+
+  /* -- world-dressing caps (Lane H). Consumed at world-BUILD time by
+        game/world/{highway,sky,townmesh,decals}.ts via worldTierCaps(); the
+        FX_* constants in those files remain the master kill-switches, these
+        only gate further down. All optional so older saved caps objects and
+        the other lanes' TIER_CAPS edits merge cleanly. -- */
+  /** fake volumetric cones under the streetlight heads (pure overdraw) */
+  lampCones?: boolean;
+  /** emit a cone under every Nth lamp only (1 = all of them) */
+  lampConeEvery?: number;
+  /** procedural jet fans under the tunnel crown (3 instanced draws) */
+  jetFans?: boolean;
+  /** gantry catwalk decking + floodlight fittings */
+  catwalks?: boolean;
+  /** photoscan GLB props (toll barriers/floodlights, ~2 MB async download);
+      false swaps in cheap procedural stand-ins — colliders are identical */
+  propModels?: boolean;
+  /** toll canopy underside troffers + glow points */
+  tollGlow?: boolean;
+  /** distant-city point-cloud rings in sky.ts, 0..3 (3 = full depth stack) */
+  cityRings?: number;
+  /** road-realism decal overlays: cracks, oil, covers, wall streaks */
+  roadDecals?: boolean;
+  /** sodium ground pool under every Nth deck streetlight (1 = all) */
+  lampPoolEvery?: number;
 }
 
 export const TIER_CAPS: Record<RenderTier, TierCaps> = {
@@ -54,18 +79,27 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     fenceOverdraw: false, drawDistScale: 0.65, mirrorHalf: true,
     reflections: false, mblur: false, dashcam: false,
     dualBloom: false, filmLook: false,
+    lampCones: false, lampConeEvery: 2, jetFans: false, catwalks: false,
+    propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
+    lampPoolEvery: 2,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
     fenceOverdraw: true, drawDistScale: 0.85, mirrorHalf: true,
     reflections: false, mblur: false, dashcam: false,
     dualBloom: false, filmLook: false,
+    lampCones: true, lampConeEvery: 2, jetFans: true, catwalks: true,
+    propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
+    lampPoolEvery: 1,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
     fenceOverdraw: true, drawDistScale: 1, mirrorHalf: false,
     reflections: true, mblur: true, dashcam: true,
     dualBloom: true, filmLook: true,
+    lampCones: true, lampConeEvery: 1, jetFans: true, catwalks: true,
+    propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
+    lampPoolEvery: 1,
   },
 };
 
@@ -267,6 +301,32 @@ export function loadProfile(): Profile {
   } catch {
     return base;
   }
+}
+
+/** Caps resolved for world-CONSTRUCTION time (additive; Lane H).
+ *
+ *  The engine resolves its tier once at startup, but the world builders in
+ *  game/world/* run inside that same startup call and cannot reach the engine
+ *  instance mid-build — so they resolve the identical answer independently
+ *  here: same precedence (?tier= URL param > saved override > device sniff),
+ *  same inputs. Touch detection mirrors engine.ts. Cached: the world is built
+ *  once, and detectRenderTier may probe a WebGL context.
+ *
+ *  SSR-safe: with no window it lands on desktop caps, which only matters for
+ *  code paths that never render anyway. */
+let worldCaps: TierCaps | null = null;
+export function worldTierCaps(): TierCaps {
+  if (worldCaps) return worldCaps;
+  try {
+    const isTouch =
+      typeof window !== "undefined" &&
+      "ontouchstart" in window &&
+      matchMedia("(pointer:coarse)").matches;
+    worldCaps = TIER_CAPS[resolveRenderTier(loadProfile().settings, isTouch, null)];
+  } catch {
+    worldCaps = TIER_CAPS.desktop;
+  }
+  return worldCaps;
 }
 
 export function saveProfile(p: Profile) {
