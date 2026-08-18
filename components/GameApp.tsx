@@ -420,6 +420,20 @@ function SettingsPanel({
             <option value="high">High</option>
           </select>
         </Row>
+        {/* device tier: caps DPR / reflections / cones etc per hardware class.
+            "Auto" shows what detection resolved; the override persists with
+            the profile. A `?tier=` URL param (testing) beats both. */}
+        <Row label={`Device tier — ${game.renderTier}`}>
+          <select
+            value={s.tierOverride}
+            onChange={(e) => upd((x) => (x.tierOverride = e.target.value as any))}
+          >
+            <option value="auto">Auto</option>
+            <option value="mobile-base">Mobile base</option>
+            <option value="mobile-high">Mobile high</option>
+            <option value="desktop">Desktop</option>
+          </select>
+        </Row>
         <Check label="Road reflections" checked={s.reflections} onChange={(v) => upd((x) => (x.reflections = v))} />
         <Check label="Bloom" checked={s.bloom} onChange={(v) => upd((x) => (x.bloom = v))} />
         <Check label="Day shadows" checked={s.shadows} onChange={(v) => upd((x) => (x.shadows = v))} />

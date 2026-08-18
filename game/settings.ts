@@ -1,6 +1,143 @@
 export type SpeedUnits = "mph" | "kmh";
 export type FogLevel = "off" | "light" | "medium" | "heavy";
 
+/* ---------------- render tier ----------------
+ *
+ * A device tier derived once from what the hardware *is*, as opposed to
+ * perfMode, which reacts to what the frame times *do*. The two stack: the tier
+ * sets the starting quality ceiling, and the auto perf drop still fires on top
+ * of it if the device underdelivers anyway.
+ */
+export type RenderTier = "mobile-base" | "mobile-high" | "desktop";
+/** Persisted manual override; "auto" defers to detection. */
+export type TierOverride = RenderTier | "auto";
+
+const isRenderTier = (v: unknown): v is RenderTier =>
+  v === "mobile-base" || v === "mobile-high" || v === "desktop";
+
+/** Per-tier caps on EXISTING quality levers — the tier never invents a new
+ *  rendering feature, it only decides which of the levers the engine already
+ *  has are worth paying for on this class of device. User settings can still
+ *  turn any of these off; the caps only ever gate them further down. */
+export interface TierCaps {
+  tier: RenderTier;
+  /** hard ceiling on renderer pixel ratio (presets may lower it further) */
+  dprCap: number;
+  /** scanned-road PBR detail layers (mats.setPbrDetail / deferred fetch) */
+  pbrDetail: boolean;
+  /** headlight lateral fill cones (engine weather()) */
+  spreadCones: boolean;
+  /** fence overdraw passes — no consumer yet; the fence lane gates on this */
+  fenceOverdraw: boolean;
+  /** multiplier on settings.drawDist for town chunk culling */
+  drawDistScale: number;
+  /** cockpit/POV mirror RT at half resolution (160x64 instead of 320x128) */
+  mirrorHalf: boolean;
+  /** planar road-reflection RT may be rendered into at all */
+  reflections: boolean;
+  /** frame-blend motion blur allowed */
+  mblur: boolean;
+  /** dashcam degrade passes (V-key grade + POV evidence-footage chain) */
+  dashcam: boolean;
+  /* bloom is deliberately absent: it stays on for every tier. */
+}
+
+export const TIER_CAPS: Record<RenderTier, TierCaps> = {
+  "mobile-base": {
+    tier: "mobile-base", dprCap: 1.1, pbrDetail: false, spreadCones: false,
+    fenceOverdraw: false, drawDistScale: 0.65, mirrorHalf: true,
+    reflections: false, mblur: false, dashcam: false,
+  },
+  "mobile-high": {
+    tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
+    fenceOverdraw: true, drawDistScale: 0.85, mirrorHalf: true,
+    reflections: false, mblur: false, dashcam: false,
+  },
+  desktop: {
+    tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
+    fenceOverdraw: true, drawDistScale: 1, mirrorHalf: false,
+    reflections: true, mblur: true, dashcam: true,
+  },
+};
+
+/** Conservative device sniff: touch + devicePixelRatio + the
+ *  WEBGL_debug_renderer_info renderer string. "Conservative" means every
+ *  unknown lands on mobile-base — a flagship misread as base is a visual
+ *  downgrade, a budget phone misread as high is an unplayable frame rate.
+ *
+ *  Buckets (renderer strings as observed in the wild):
+ *  - non-touch → desktop (a touchscreen laptop's primary pointer is still
+ *    fine, so matchMedia("(pointer:coarse)") keeps it here).
+ *  - touch with dpr < 2 → mobile-base outright: every recent flagship ships
+ *    at 2.6+, so a low ratio means old or budget hardware.
+ *  - Adreno ("Adreno (TM) 740"): 730+ (Snapdragon 8 Gen 1 era) → high.
+ *  - ARM Mali ("Mali-G715"): G710+ → high; "Immortalis" is the flagship
+ *    branding above those → high.
+ *  - Samsung Xclipse (RDNA2, S22+) → high.
+ *  - Apple: explicit "Apple A15"+ or any M-series → high. iOS Safari masks
+ *    the string to plain "Apple GPU", so that case falls back to dpr: the
+ *    3x-screen phones (Pro/Plus bodies) → high, 2x (SE, older, iPads that
+ *    slipped past the M check) → base.
+ *  - anything else (PowerVR, unknown, sniff blocked) → base.
+ */
+export function detectRenderTier(
+  isTouch: boolean,
+  gl?: WebGLRenderingContext | WebGL2RenderingContext | null
+): RenderTier {
+  if (!isTouch) return "desktop";
+  const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+  if (dpr < 2) return "mobile-base";
+  let r = "";
+  try {
+    let ctx = gl ?? undefined;
+    if (!ctx) {
+      const cv = document.createElement("canvas");
+      ctx = (cv.getContext("webgl2") || cv.getContext("webgl")) as
+        | WebGLRenderingContext
+        | WebGL2RenderingContext
+        | undefined;
+    }
+    if (ctx) {
+      const ext = ctx.getExtension("WEBGL_debug_renderer_info");
+      r = String(ctx.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : ctx.RENDERER) ?? "");
+    }
+  } catch {
+    /* sniff blocked ⇒ unknown GPU ⇒ base */
+  }
+  const s = r.toLowerCase();
+  const adreno = s.match(/adreno[^0-9]*(\d{3,4})/);
+  if (adreno) return +adreno[1] >= 730 ? "mobile-high" : "mobile-base";
+  if (/immortalis/.test(s)) return "mobile-high";
+  const mali = s.match(/mali-g(\d+)/);
+  if (mali) return +mali[1] >= 710 ? "mobile-high" : "mobile-base";
+  if (/xclipse/.test(s)) return "mobile-high";
+  const appleA = s.match(/apple a(\d+)/);
+  if (appleA) return +appleA[1] >= 15 ? "mobile-high" : "mobile-base";
+  if (/apple m\d/.test(s)) return "mobile-high";
+  if (/apple/.test(s)) return dpr >= 3 ? "mobile-high" : "mobile-base";
+  return "mobile-base";
+}
+
+/** Effective tier: `?tier=` URL param (testing) > persisted manual override >
+ *  detection. The URL param is read-only and never persisted, so a test link
+ *  can't quietly rewrite someone's saved profile. */
+export function resolveRenderTier(
+  s: GameSettings,
+  isTouch: boolean,
+  gl?: WebGLRenderingContext | WebGL2RenderingContext | null
+): RenderTier {
+  try {
+    if (typeof location !== "undefined") {
+      const q = new URLSearchParams(location.search).get("tier");
+      if (isRenderTier(q)) return q;
+    }
+  } catch {
+    /* ignore malformed URLs */
+  }
+  if (isRenderTier(s.tierOverride)) return s.tierOverride;
+  return detectRenderTier(isTouch, gl);
+}
+
 /** Density multiplier applied to the engine's base time-of-day fog curve. */
 const FOG_MULT: Record<FogLevel, number> = {
   off: 0,
@@ -34,6 +171,8 @@ export interface GameSettings {
   fovBase: number;
   vol: number;
   autoTime: boolean;
+  /** manual render-tier override; "auto" defers to device detection */
+  tierOverride: TierOverride;
 }
 
 export interface Profile {
@@ -61,6 +200,7 @@ export const defaultSettings = (): GameSettings => ({
   fovBase: 67,
   vol: 1,
   autoTime: true,
+  tierOverride: "auto",
 });
 
 export const defaultProfile = (): Profile => ({
@@ -112,6 +252,8 @@ export function loadProfile(): Profile {
     }
     if (settings.units !== "mph" && settings.units !== "kmh") settings.units = "mph";
     settings.dashcam = settings.dashcam === true;
+    if (settings.tierOverride !== "auto" && !isRenderTier(settings.tierOverride))
+      settings.tierOverride = "auto";
     return { ...base, ...p, settings };
   } catch {
     return base;
