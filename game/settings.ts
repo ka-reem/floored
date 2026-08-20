@@ -253,7 +253,13 @@ export const defaultProfile = (): Profile => ({
   carId: "kaze",
   paintIx: 0,
   seed: 1987,
-  camMode: 0, // chase
+  /* DASHCAM. The POV camera is the view this game is played in — AGENTS.md is
+     explicit that the other three exist for debugging — so a first-run profile
+     has to start there. It defaulted to chase, which meant every new visitor
+     landed in third person and never saw the interior at all unless they went
+     looking for the camera control. Only affects first run: an existing
+     profile keeps whatever camera it was last left on. */
+  camMode: 3,
 });
 
 /** Preset side-effects (ported from legacy applyPreset). */
