@@ -51,8 +51,9 @@ import type { NpcHit } from "./collide";
    put an untextured shape on screen.
 
    The models keep their authored paint and textures (their `paintable` mask
-   is zero), so the per-instance `paintCol` attribute is inert on today's
-   fleet — the plumbing stays because the shader contract carries it. */
+   is zero), so per-instance colour does not come from that mask: the styles
+   whose bodywork can plausibly be any colour are recoloured in the shader
+   from the albedo texel instead. See PAINT_TINT. */
 
 const TYPE_DIM: Record<string, { L: number; W: number; wr: number; wz: number; mass: number }> = {
   hybrid: { L: 4.54, W: 1.84, wr: 0.32, wz: 1.4, mass: 1400 },
@@ -76,6 +77,73 @@ const NPC_COLORS = [
   0xc4c9d4, 0x2a2c34, 0x83202c, 0xe8eaee, 0x3b4250, 0x6e7684, 0x1a3a34,
 ];
 const TYRE_C = 0x0b0b0f;
+
+/* ---- per-instance paint on the modelled fleet ----------------------------
+   The Orchids bakes are photographs: one authored body colour per style, with
+   the studio highlights, panel gaps, glass, lamps and plates all living in the
+   same 512px atlas. So the whole roster used to drive past in exactly nine
+   colours, and the random `paintCol` picked below never showed.
+
+   There is no per-vertex paint mask to key off — the bakes ship `paintable`
+   zero throughout — so the paint region is found per fragment from the texel:
+
+   - `hue` < 0 marks a style whose authored paint is neutral (the silver and
+     white bodies): paint is whatever is desaturated and above tyre-black,
+     which excludes the red lamps and the yellow plate.
+   - otherwise the paint is chromatic (the green hybrid, the blue SUV) and is
+     picked out by hue proximity instead, which additionally leaves the
+     neutral chrome, glass and plates alone.
+
+   `refLum` is the mean linear luminance of that region in the authored bake,
+   so `lum / refLum` is the panel's shading with its own paint divided out.
+   Multiplying the instance colour by it re-lights the new paint under the
+   baked highlights rather than flattening the body to a flat swatch. Well
+   above the reference the texel is a specular hit or glass rather than paint,
+   so it fades back to neutral: a red car keeps white highlights and its
+   windscreen stays a pale reflection instead of turning red.
+
+   Taxi, police and bus are deliberately absent — their liveries are the
+   point, and a lilac police cruiser is not traffic. */
+const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
+  sedan:   { hue: -1,    refLum: 0.675 },
+  compact: { hue: -1,    refLum: 0.636 },
+  van:     { hue: -1,    refLum: 0.697 },
+  truck:   { hue: -1,    refLum: 0.668 },
+  hybrid:  { hue: 0.311, refLum: 0.481 }, // authored green
+  suv:     { hue: 0.594, refLum: 0.106 }, // authored blue
+};
+
+/* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
+   is the decoded albedo texel and nothing has been lit yet. The two numbers
+   ride in as a uniform rather than baked literals so the whole fleet still
+   shares one compiled program — three keys its program cache on
+   `onBeforeCompile.toString()`, so per-style GLSL would mean per-style
+   programs (and a per-style compile hitch) for no gain. `uPaintRef.y` of zero
+   is a style that keeps its livery. */
+const PAINT_TINT_GLSL = `
+        if (uPaintRef.y > 0.0) {
+          vec3 c = diffuseColor.rgb;
+          float mx = max(max(c.r, c.g), c.b);
+          float d = mx - min(min(c.r, c.g), c.b);
+          float sat = mx > 0.0 ? d / mx : 0.0;
+          float m;
+          if (uPaintRef.x < 0.0) {
+            // neutral paint: desaturated, and brighter than tyres and shadow
+            m = (1.0 - smoothstep(0.16, 0.30, sat)) * smoothstep(0.045, 0.10, mx);
+          } else {
+            // chromatic paint: hue-matched. Branchless RGB->hue, in turns.
+            vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+            vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+            vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+            float hu = abs(q.z + (q.w - q.y) / (6.0 * d + 1.0e-10));
+            float dh = abs(hu - uPaintRef.x);
+            dh = min(dh, 1.0 - dh);
+            m = (1.0 - smoothstep(0.067, 0.117, dh)) * smoothstep(0.05, 0.14, sat);
+          }
+          float k = dot(c, vec3(0.2126, 0.7152, 0.0722)) / uPaintRef.y;
+          vec3 paint = mix(vPaintCol * k, vec3(mx), smoothstep(1.15, 1.90, k));
+          diffuseColor.rgb = mix(c, paint, m);
+        }`;
 
 /** `lamp`: 0 none, 1 headlight, 2 rear light — drives the emissive term. */
 type Part = { g: THREE.BufferGeometry; c: number; paint: number; lamp?: number };
@@ -143,7 +211,9 @@ function wheelGeo() {
 /* The NPC shader does three jobs on top of MeshStandard:
 
    - Per-instance paint. `paintCol` (instanced) replaces the baked vertex colour
-     wherever the `paintable` mask is 1, so one geometry serves every colour.
+     wherever the `paintable` mask is 1, and on a PAINT_TINT style additionally
+     recolours the paint region of the albedo texture, so one geometry and one
+     bodyshell texture serve every colour on the road.
    - Per-instance dissolve. Wrecks fade out through an ordered-dither discard
      rather than alpha blending, which keeps the material opaque — no transparent
      sorting, and no per-wreck material clones to allocate and dispose.
@@ -162,8 +232,11 @@ function wheelGeo() {
      reaches the threshold and passes through untouched. */
 const SPEC_MAX = 1.0;
 const KNEE = 1.3, KNEE_MAX = 4.0;
-function npcShader(mat: THREE.MeshStandardMaterial) {
+function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
+  const tint = PAINT_TINT[style];
+  const paintRef = new THREE.Vector2(tint ? tint.hue : 0, tint ? tint.refLum : 0);
   mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uPaintRef = { value: paintRef };
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
@@ -200,7 +273,8 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
         varying float vDissolve;
         varying float vLampKind;
         varying vec2 vLampLvl;
-        varying vec3 vWashCol;`
+        varying vec3 vWashCol;
+        uniform vec2 uPaintRef;`
       )
       .replace(
         "#include <clipping_planes_fragment>",
@@ -214,7 +288,7 @@ function npcShader(mat: THREE.MeshStandardMaterial) {
       .replace(
         "#include <color_fragment>",
         `#include <color_fragment>
-        diffuseColor.rgb = mix(diffuseColor.rgb, vPaintCol, vPaintable);`
+        diffuseColor.rgb = mix(diffuseColor.rgb, vPaintCol, vPaintable);${PAINT_TINT_GLSL}`
       )
       /* Lamps light themselves. The lamp quads are ordinary dark paint
          otherwise, so they only showed when something else lit them, and a
@@ -957,7 +1031,7 @@ export class Traffic {
       if (m.roughnessMap) material.roughness = 1;
       if (m.metalnessMap) material.metalness = 1;
       material.needsUpdate = true;
-      npcShader(material);
+      npcShader(material, m.style);
       lod.mesh.material = material;
     }
     old.deleteAttribute("paintCol");

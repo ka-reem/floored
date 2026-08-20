@@ -14,7 +14,8 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
    - a baked `color` per vertex plus the `paintable` mask the NPC shader
      reads. The Orchids bakes keep their authored paint and carry small
      base-colour (and usually metallic-roughness) textures, so their
-     paintable mask is zero and the per-instance paint channel is inert;
+     paintable mask is zero — per-instance colour on these bodies comes from
+     traffic.ts's PAINT_TINT recolour of the texture instead;
    - no wheels — traffic.ts instances one wheel across the whole fleet — but
      the arches' centres and radii ride along in `wheels` so those shared
      wheels land where the bodywork expects them;
