@@ -764,7 +764,7 @@ export class Traffic {
     this.poolInst.visible = false;
     scene.add(this.poolInst);
 
-    const mkCloud = (color: number, size: number): Cloud => {
+    const mkCloud = (color: number | THREE.Color, size: number): Cloud => {
       const arr = new Float32Array(N * 2 * 3);
       arr.fill(-999);
       const geo = new THREE.BufferGeometry();
@@ -786,15 +786,52 @@ export class Traffic {
        bright") in the one place NPC head glow is authored. Only the near field
        is affected by SPRITE_MAX — the cap now engages inside ~15 m rather than
        ~12 m, and everything beyond that is pure 1/z as before.
-       Tail/brake get the size nudge (0.85 → 0.96, 1.5 → 1.62) and NO dim: their
-       luma sits below the bright-pass floor (post.ts) so they get no bloom at
-       all, and the .299/.587/.114 weighting already costs saturated red about
-       3.2× against white — taking peak out of them would cost visibility
-       without buying any softness. All of a red lamp's softness has to come
-       from the sprite texture, i.e. from its size. */
+       Tail/brake keep the size nudge (0.85 → 0.96, 1.5 → 1.62) from that pass.
+
+       Tail/brake TINTS are HDR triples, not hexes, because a hex cannot express
+       what these lamps need. Worked arithmetic, all of it against the post
+       chain rather than in isolation:
+
+       - The additive sprite core lands in sceneRT at `color × opacity(0.95) ×
+         texel(1)`, and the bloom bright-pass floor is `T - K = 0.40` post-
+         exposure (night uExp 0.98). Old tail 0xff3344 → luma 0.416, weight
+         0.0003. Old brake 0xff2233 → luma 0.372, weight 0.0000. So neither red
+         lamp bloomed AT ALL, which is why "brighter" never landed: a lamp with
+         no bloom is a flat coloured polygon, not a light source. Worse, brake
+         was the DARKER of the two in luma (0.372 < 0.416) despite being the
+         "bright" state — 0xff2233 is more saturated than 0xff3344 and the
+         .299/.587/.114 weighting charges saturated red about 3.2× against
+         white, so the extra saturation cost more luma than the size gained.
+       - sceneRT is HalfFloat (post.ts) and the bright pass only clamps at 14,
+         so components above 1.0 survive: the multiplier has to come from the
+         colour, since opacity is shared with every other cloud and caps at 1.
+       - Levels chosen: tail luma 0.676 (weight 0.0512, ~190× the old), brake
+         luma 0.947 — right at T, where the soft knee hands over to the hard
+         threshold — for weight 0.1435, 2.8× the tail's. Brake is a clear step
+         above tail in BOTH core level (red 3.05 vs 2.05) and bloom.
+       - Red carries almost all of it and g/b stay LOW on purpose. Two reasons.
+         The .299 weight means luma has to come from red anyway; and the POV
+         blown-highlight clip (post.ts, toward flat white above 0.72 luma) is
+         gated off by lampProtect for saturated pixels, so keeping saturation is
+         what buys the headroom. Pushing all three channels up uniformly would
+         have desaturated through ACES, dropped lampProtect and handed the lamp
+         to the clip. Checked, not assumed: through ACES + the 1/2.2 encode +
+         the vibrance term the tail arrives at luma 0.611 / saturation 0.610 →
+         lampProtect 1.00, and brake at 0.676 / 0.530 → 0.804; both are under
+         the 0.72 knee, so the clip contributes exactly 0.0 even before the
+         protection, and it stays 0.0 when the bloom is fed back in at up to 3×.
+       - The rendered hue barely moves even though the source is much redder:
+         ACES desaturates the high red on its way out, so post-grade the tail
+         reads (1.04, 0.43, 0.45) against the old (0.85, 0.39, 0.45) — the same
+         pinkish red, brighter. Picking the source against the grade rather than
+         by eye is the whole trick here.
+       sig/roof/police tints are deliberately untouched — no complaint about
+       them, and the amber already clears the floor (luma 0.638). */
     this.clouds = {
-      head: mkCloud(0xa9b7d1, 1.35), tail: mkCloud(0xff3344, 0.96),
-      brake: mkCloud(0xff2233, 1.62), sig: mkCloud(0xffa028, 1.05),
+      head: mkCloud(0xa9b7d1, 1.35),
+      tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.96),
+      brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.62),
+      sig: mkCloud(0xffa028, 1.05),
       roof: mkCloud(0xffb040, 0.95), polR: mkCloud(0xff3040, 1.5),
       polB: mkCloud(0x3d74ff, 1.5),
     };
@@ -2372,11 +2409,30 @@ export class Traffic {
          glow at a running level and jump on the brakes. These are radiance
          multipliers on lamp-flagged vertices (lampKind) — a model whose bake
          carries no lamp flags simply leaves its lighting to the glow
-         sprites, which is where today's Orchids fleet reads its lights. */
+         sprites, which is where today's Orchids fleet reads its lights.
+
+         And that is in fact ALL of the fleet: verified by dumping the `_LAMP`
+         accessor out of every public/models/cars/*.glb — min..max is 0..0 in
+         all nine files, because tools/build-orchids-models.mjs allocates
+         `lampKind` and then writes zeros into the GLB without ever tagging a
+         vertex. So this whole emissive path is inert today and the rear levels
+         below have no visual effect; the red lamps are 100% glow sprite (which
+         is why the tail/brake fix lives in the tint of those clouds).
+
+         The rear levels are still set to values that would be RIGHT the moment
+         a rebuild tags the lenses, rather than left at ones known to be wrong.
+         Emissive is `diffuseColor.rgb * lvl`, i.e. albedo-proportional, and a
+         red lens texel is roughly (0.62, 0.055, 0.06), luma ~0.22; the bloom
+         bright-pass floor is 0.40 post-exposure (uExp 0.98 at night). So the
+         old 1.5 gave luma 0.33 — BELOW the floor, a lamp that could not bloom —
+         and 3.4 gave 0.75. Matching the sprite targets (tail 0.68, brake 0.95)
+         wants 3.1 and 4.4. The lens albedo is an estimate from the source
+         artwork, not a measurement, so treat these as a starting point for
+         whoever tags the geometry. */
       const la = lod.lamp.array as Float32Array;
       const lit = night && !n.wreck;
       la[i * 2] = lit ? 2.2 : 0;
-      la[i * 2 + 1] = n.wreck ? 0 : n.brake ? 3.4 : lit ? 1.5 : 0;
+      la[i * 2 + 1] = n.wreck ? 0 : n.brake ? 4.4 : lit ? 3.1 : 0;
       if (d2 < WHEEL2) {
         const fx = sn, fz = c, rx = fz, rz = -fx;
         for (const [lo, so] of n.wheelOffs) {

@@ -403,6 +403,11 @@ body.touch .tc {
 #tcG { right: 16px; bottom: 104px; }
 #tcB { right: 16px; }
 #tcC { right: 104px; width: 56px; height: 56px; font-size: 16px; bottom: 26px; }
+/* Flash sits directly above CAM, horn to their left — same 56px puck and the
+   same 8px gutter, so the three read as one cluster under the right thumb and
+   none of them reach the ▲/▼ pedals on the far right. */
+#tcF { right: 104px; width: 56px; height: 56px; font-size: 16px; bottom: 90px; }
+#tcH { right: 168px; width: 56px; height: 56px; font-size: 13px; bottom: 26px; }
 /* phones: shrink the fixed 172px canvas to a small corner map above the pedals */
 body.touch #mmap {
   width: 84px;

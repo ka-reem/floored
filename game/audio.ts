@@ -1849,8 +1849,12 @@ export class GameAudio {
     this.sp(this.drivePre.gain, 0.9 + load * 2.6 + (lim ? 1.4 : 0), 0.04);
     this.sp(this.driveTrim.gain, (sampled ? 0 : 1) / (0.9 + load * 1.2), 0.04);
 
+    /* Growl raised on the THROTTLE term only (0.075 -> 0.105, +2.9dB at wide
+       open) so accelerating gets meatier while idle and closed-throttle cruise
+       stay exactly where they were — the same split the sampled ladder below
+       uses, and the reason a growl raise does not turn into a louder idle. */
     const bodyLevel =
-      (0.055 + thr * 0.075 + rn * 0.05) *
+      (0.055 + thr * 0.105 + rn * 0.05) *
       (1 - overrun * 0.45) * cutMul * p.level * (lim ? 0.62 : 1);
     this.sp(this.engG.gain, bodyLevel * bedMix, 0.02);
     this.sp(this.limDepth.gain, lim ? -bodyLevel * bedMix * 0.85 : 0, 0.005);
@@ -1883,13 +1887,13 @@ export class GameAudio {
         this.sp(this.loopGains[i].gain, g, 0.045);
         this.sp(this.loopSrcs[i].playbackRate, clampRange(rpm / A[i], 0.45, 2.2), 0.02);
       }
-      // thr coefficient 0.17 (was 0.11): +2.0dB on the ladder at wide-open
+      // thr coefficient 0.23 (0.11 -> 0.17 -> 0.23): +3.2dB on the ladder at WOT
       // throttle while closed-throttle cruise level is untouched — paired
       // with the bed trim above and the faster-opening airbox below, this is
       // the "elevate the engine growl when accelerating" change.
       const sampLevel = !sampled
         ? 0
-        : (0.07 + thr * 0.17 + rn * 0.05) *
+        : (0.07 + thr * 0.23 + rn * 0.05) *
           (1 - overrun * 0.35) * cutMul * p.level * (lim ? 0.65 : 1);
       sampLevelTarget = sampLevel;
       this.sp(this.sampBus.gain, sampLevel, 0.02);
@@ -1931,10 +1935,22 @@ export class GameAudio {
     this.sp(this.exF.frequency, 220 + rn * 900, 0.04);
     this.sp(this.exG.gain, (0.008 + load * 0.03) * (0.3 + rn) * p.level, 0.04);
 
-    // Turbo spool follows boost, i.e. throttle held at revs. Peak level
-    // coefficient 0.007 (was 0.01, -30%/-3.1dB): still audible on hard
-    // boost, subtle at part throttle — "slightly lower the turbo sound".
-    const turboTarget = p.turbo * thr * rn * rn * 0.007;
+    /* Turbo spool follows boost, i.e. throttle held at revs. Peak level
+       coefficient 0.0042 (0.01 -> 0.007 -> 0.0042, a clean -40% on the last
+       value and -58%/-7.5dB on the original) after a second "lower the
+       whistling" call. Worth knowing why
+       this needs to sit so low: turboOsc is a bare sine sweeping 2200-6600 Hz,
+       and a pure tone up there is perceptually piercing at an amplitude where
+       broadband noise would be inaudible — equal-loudness puts 4 kHz near the
+       ear's most sensitive point, so this coefficient is not comparable to the
+       noise-bed gains elsewhere in this file and should not be "corrected" to
+       match them.
+
+       It also lands harder than intended in POV specifically: setInterior()'s
+       cabin lowpass (5200 Hz) is only applied in the cockpit camera, so in POV
+       the top of this sweep is not rolled off at all. If that gate is ever
+       widened to POV this can likely come back up. */
+    const turboTarget = p.turbo * thr * rn * rn * 0.0042;
     this.sp(this.turboOsc.frequency, 2200 + rn * 4400, 0.08);
     this.sp(this.turboG.gain, turboTarget, 0.12);
 
@@ -2047,11 +2063,23 @@ export class GameAudio {
     const wetLevel = raining ? 0.55 : 1;
     const wetQ = raining ? 0.6 : 1; // lower Q = broader/hissier, not just quieter
 
-    // Layer 1: rolling hum, speed only, gently damped while sliding hard.
+    /* Layer 1: rolling hum, speed only, gently damped while sliding hard.
+       This is the contact-patch band (150-370Hz) and, with the road rumble
+       bed below, it carries the "tyres on road" character of the cabin at
+       cruising speed. Ceiling 0.045 -> 0.085 (user call: at highway pace
+       the cabin read as wind roar with almost no road presence; wind's
+       mid-range came down in the same pass, see the wind block below, so
+       the combined level at 70mph is unchanged and only the character
+       shifts). The slide duck deepens 0.3 -> 0.45 to hold the same ratio
+       against the screech layer as before the raise (full slip now leaves
+       0.085*0.55 = 0.047, close to the old 0.045*0.7 = 0.032, rather than
+       the 0.060 a 0.3 duck would leave). The rain adder is deliberately
+       left at 0.015 — the rain mix was balanced separately and is not part
+       of this call. */
     this.sp(this.tireRoadF.frequency, 150 + Math.min(1, speed / 50) * 220, 0.06);
     this.sp(
       this.tireRoadG.gain,
-      Math.min(1, speed / 45) * 0.045 * (1 - this.slipEnv * 0.3) + (raining ? 0.015 : 0),
+      Math.min(1, speed / 45) * 0.085 * (1 - this.slipEnv * 0.45) + (raining ? 0.015 : 0),
       0.06
     );
 
@@ -2142,27 +2170,54 @@ export class GameAudio {
     this.sp(this.brakeSqF.frequency, 1400 + stopCloseness * 1400, 0.08);
     this.sp(this.brakeSqG.gain, brakeSqTarget, brakeSqActive ? 0.08 : 0.15);
 
-    // Road texture bed: low rumble tied to speed, distinct from wind/tyre-hum.
-    // Ducked while the tyre screech layer is active so the two low-mid
-    // layers don't stack into mud.
+    /* Road texture bed: low rumble (55-125Hz) tied to speed, deliberately a
+       separate band from the tyre hum above (150-370Hz) and from wind — the
+       split is what makes road noise read as texture rather than as one
+       noise blob. Ceiling 0.05 -> 0.07 as the other half of the same
+       "bring in road noise, take wind out of the mid-range" call.
+       Ducked while the tyre screech layer is active so the two low-mid
+       layers don't stack into mud; that duck deepens 0.45 -> 0.55 to keep
+       the pre-raise ratio against screech (full screech now leaves
+       0.07*0.45 = 0.032 vs the old 0.05*0.55 = 0.028, against a screech
+       gain of ~0.15). This matters more than it used to: the screech
+       thresholds were recently raised so screechMix sits at 0 far more of
+       the time, i.e. this bed is unducked more often than when 0.05 was
+       tuned. */
     const roadRise = Math.min(1, speed / 40);
     this.sp(this.roadRumbleF.frequency, 55 + roadRise * 70, 0.1);
-    this.sp(this.roadRumbleG.gain, roadRise * 0.05 * (1 - screechMix * 0.45), 0.1);
+    this.sp(this.roadRumbleG.gain, roadRise * 0.07 * (1 - screechMix * 0.55), 0.1);
 
     /* ---- environment ----
        Wind roar opens (cutoff + level) with speed and is deliberately mixed
-       under the engine at low speed but past it by ~140 km/h (~39 m/s),
-       matching a real cockpit where wind becomes the dominant sound well
-       before the engine is at high load. The flutter depth scales with the
+       under the engine at low speed but past it by ~185 km/h (~51 m/s;
+       this crossover was ~39 m/s before the curve reshape below pushed the
+       mid-range down), matching a real cockpit where wind becomes the
+       dominant sound well before the engine is at high load. The flutter depth scales with the
        wind level itself so a stationary car has a dead-still cabin. Cutoff
        is capped at 1400Hz — uncapped it kept climbing with speed (2380Hz+
        by 288km/h) into hissy-bright territory; real in-cabin wind noise at
        any speed is a low rumble/mid whoosh, not a bright hiss, so the
        lowpass ceiling keeps that true regardless of how fast the car goes. */
-    const windRise = smoothstep(15, 60, speed);
-    // 0.32 -> 0.27 (user call): at top speed the wind was drowning the whole
-    // mix; the low-speed onset is untouched, only the ceiling comes down.
-    const windLevel = windRise * 0.27 + (raining ? 0.02 : 0);
+    /* Curve reshape (user call): wind at highway pace was too loud, but the
+       genuinely-extreme top end wanted to be more dramatic. Both come from
+       the SHAPE, not the ceiling — the knee moves out (60 -> 75 m/s, i.e.
+       full wind only in the last stretch before the ~80 m/s top speed) and
+       the normalised rise is raised to the power 1.3, making the curve
+       convex so the mid-range falls away faster than the top. At 31.3 m/s
+       (70 mph) the rise goes 0.299 -> 0.109, so the level goes 0.081 ->
+       0.033: still clearly audible, no longer the dominant voice. The
+       cruise-to-flat-out contrast widens from 3.4x to 9.2x.
+       Ceiling 0.27 -> 0.30. The earlier 0.32 -> 0.27 cut (user call: "at
+       top speed the wind was drowning the whole mix") was made against a
+       curve that hit full wind by 60 m/s and therefore sat at or near the
+       ceiling through most of the usable fast range; with the knee at 75
+       the car is only near the ceiling when genuinely flat out, so peak
+       wind is now brief rather than a plateau. 0.30 also stays under the
+       0.32 that drew the original complaint, and wind is a smaller share
+       of the top-speed total than before (0.30 of 0.455 summed vs 0.27 of
+       0.365) because road/tyre came up in the same pass. */
+    const windRise = Math.pow(smoothstep(15, 75, speed), 1.3);
+    const windLevel = windRise * 0.30 + (raining ? 0.02 : 0);
     this.sp(this.wF.frequency, Math.min(1400, 300 + speed * 26), 0.15);
     this.sp(this.wG.gain, windLevel, 0.12);
     this.sp(this.windFlutterDepth.gain, windRise * 0.04, 0.15);

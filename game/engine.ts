@@ -165,11 +165,21 @@ const HL_SPREAD_THROW = 36, HL_SPREAD_THROW_HI = 48;
 
 /** Lateral fill-cone pitch, radians below horizontal, edge-pinned the same
     way as the main beam (see the loop below): this is the AXIS angle, not
-    the cutoff, and for a cone this wide the axis has to point down by
-    nearly its own half-angle before the upper edge clears horizontal. Tuned
-    against the vertical-panel knee check, not against reach — a shallower
-    pitch reaches further but re-opens the whiteout this replaced. */
-const HL_SPREAD_PITCH = (27.1 * Math.PI) / 180, HL_SPREAD_PITCH_HI = (29.1 * Math.PI) / 180;
+    the cutoff, and a wide cone has to point down by nearly its own half-angle
+    before the upper edge clears horizontal.
+
+    Dipped drops 27.1 deg -> 7.61 deg, which is NOT a relaxation of the edge
+    pin — it is the same pin applied to a much narrower cone. The upper edge
+    is what the pin protects and it stays exactly where it was, 2.70 deg above
+    horizontal (7.61 - deg(0.18) = 27.1 - deg(0.52)), so the glare envelope
+    against oncoming traffic is unchanged to two decimals. What changes is
+    where the axis lands: pitching 27 deg down off a 0.44 m mount crossed the
+    road 0.86 m from the lamp, which is why these cones — not the main beam —
+    were the brightest thing in the whole night scene. Shallow-and-narrow puts
+    the crossing ~2.3 m out instead, and the lateral coverage comes from
+    yawing the cone outward (`kick`) rather than from opening its angle. High
+    beam keeps 29.1 deg with its own wide cone, untouched. */
+const HL_SPREAD_PITCH = (11.05 * Math.PI) / 180, HL_SPREAD_PITCH_HI = (29.1 * Math.PI) / 180;
 
 /** Headlight aim, as the slope of the beam's upper edge — the cut-off — not
     of its axis. Positive is downward.
@@ -703,30 +713,39 @@ export class Game {
       this.ui.toast("MAP " + (this.mmap ? "ON" : "OFF"));
     }
     if (k === "b") this.lookBack = true;
-    if (k === "g") {
-      /* Momentary while held; a long hold toggles the latch instead. Nothing
-         is decided here beyond starting the clock — which of the two gestures
-         this turns out to be is only known at 2 s (hiBeamHold) or at release,
-         whichever comes first. `e.repeat` is already filtered above, so
-         autorepeat can't re-arm the timer under a held key. */
-      if (!this.highBeam) this.audio.stalkClick(); // stalk click on the OFF→ON edge only (lane O)
-      this.hiHeld = true;
-      this.hiConsumed = false;
-      this.hiDownAt = performance.now() / 1000;
-    }
+    if (k === "g") this.hiBeamDown();
   };
+
+  /* The G gesture, factored out of the key handlers so the touch button can
+     drive the identical path. It cannot go through bindHold(): that only sets
+     keydown[], and everything about this gesture — the stalk click on the
+     OFF→ON edge, the flash-vs-latch decision — lives here, not in a per-frame
+     read of the key state. */
+  private hiBeamDown() {
+    /* Momentary while held; a long hold toggles the latch instead. Nothing
+       is decided here beyond starting the clock — which of the two gestures
+       this turns out to be is only known at 2 s (hiBeamHold) or at release,
+       whichever comes first. `e.repeat` is already filtered above, so
+       autorepeat can't re-arm the timer under a held key. */
+    if (!this.highBeam) this.audio.stalkClick(); // stalk click on the OFF→ON edge only (lane O)
+    this.hiHeld = true;
+    this.hiConsumed = false;
+    this.hiDownAt = performance.now() / 1000;
+  }
   private onKeyUp = (e: KeyboardEvent) => {
     const k = e.key.toLowerCase();
     this.keydown[k] = 0;
     if (k === "b") this.lookBack = false;
-    if (k === "g") {
-      // A release that ends a latch toggle is not also a flash: the gesture was
-      // already spent at the 2 s mark, and without this the beams would blink
-      // back on for the instant between the toggle and letting go.
-      this.hiHeld = false;
-      this.hiConsumed = false;
-    }
+    if (k === "g") this.hiBeamUp();
   };
+
+  private hiBeamUp() {
+    // A release that ends a latch toggle is not also a flash: the gesture was
+    // already spent at the 2 s mark, and without this the beams would blink
+    // back on for the instant between the toggle and letting go.
+    this.hiHeld = false;
+    this.hiConsumed = false;
+  }
 
   /** Resolve a held G once it passes the hold threshold. Runs off the frame
       clock rather than a timer, so it cannot fire after the key is released or
@@ -762,6 +781,21 @@ export class Game {
     bindHold("tcR", "d");
     bindHold("tcG", "w");
     bindHold("tcB", "s");
+    /* Horn rides bindHold because input.horn is a per-frame read of keydown["f"]
+       (see the input block in frame()), so a held button is all it needs. */
+    bindHold("tcH", "f");
+    /* Flash cannot: see hiBeamDown/hiBeamUp. Same press/release pair as G, so
+       tap = flash and a 2 s hold = latch, identical to the keyboard. */
+    const flashBtn = document.getElementById("tcF");
+    if (flashBtn) {
+      flashBtn.addEventListener("pointerdown", (e) => {
+        flashBtn.setPointerCapture((e as PointerEvent).pointerId);
+        this.hiBeamDown();
+      });
+      const up = () => this.hiBeamUp();
+      flashBtn.addEventListener("pointerup", up);
+      flashBtn.addEventListener("pointercancel", up);
+    }
     const camBtn = document.getElementById("tcC");
     if (camBtn)
       camBtn.addEventListener("pointerdown", () => {
@@ -1266,8 +1300,28 @@ export class Game {
        so cars stop saturating past ~25-30 m even though its candela is much
        higher than low beam's — see the per-distance table in the retune
        commit message for the numbers this was solved against. */
+    /* Dipped candela is deliberately tiny next to main beam's: 150 (wet 195,
+       the same ~1.3x wet boost), down from 780 in two steps. It reads as far
+       too low a number on its own and it is not — see the angle/decay block
+       below for the whole argument, but the short version is that ground
+       illuminance goes as I*h/r^(decay+1) and the near strip of tarmac is
+       only ~0.7 m from the lamp, so the pool's own dynamic range is what was
+       blowing it out, not its level. Cutting I is what buys the room to
+       flatten decay and widen the cone back out, which is what the user
+       actually asked for ("less bright but cover more space and have more
+       gradient"). At 30 m this costs only ~9% against the previous cut.
+       High beam is untouched — its 5400/7000 pair is solved against the
+       traffic knee described above.
+
+       Now 60 (wet 80), down from 130, because the cones are no longer the
+       light — the carpet decal is (see the drive further down, and the build
+       comment in player.ts). Their job shrank to what only a real light can
+       do: shade car bodies, barriers and signs with a direction, and put a
+       soft gradient across the road that a flat decal cannot. At this level
+       no individual cone is separable from the wash it sits in, which is the
+       point — you should not be able to see where one lamp ends. */
     const si = lamps
-      ? hi ? (this.rain ? 7000 : 5400) : (this.rain ? 1010 : 780)
+      ? hi ? (this.rain ? 7000 : 5400) : (this.rain ? 80 : 60)
       : 0;
     this.rig.spotL.intensity = si;
     this.rig.spotR.intensity = si;
@@ -1287,8 +1341,31 @@ export class Game {
     // tier gate: mobile-base drops the two fill cones entirely — two fewer
     // live spotlights in every forward shader — and the main beams carry the
     // scene alone, which they did for the game's whole life before the cones
+    /* THE DIPPED FILL CONES WERE THE WHITE SLAB, not the main beam. Every
+       earlier pass here reasoned about ground illuminance as I*h/r^(decay+1)
+       and left out the cone's own angular term, which flattered the main beam
+       and hid these: modelling three's actual `spotAttenuation` smoothstep
+       put the flank cones' peak at ~291 units against the main beam's ~62.
+       They were five times brighter than the beam they were filling for,
+       because a 27 deg pitch off a 0.44 m mount lands the axis 0.86 m from
+       the lamp — all of their output was going into the strip of tarmac
+       beside the front wheels, which is exactly the blown patch in the POV
+       shot, and almost none of it was reaching the adjacent lane it exists
+       to light (0.36 units at 4 m out, 10 m ahead).
+
+       So they are re-solved rather than trimmed: 320 -> 110 cd, decay
+       0.8 -> 0.45, angle 0.52 -> 0.24 rad, penumbra -> 1.0, pitch re-pinned
+       (see HL_SPREAD_PITCH) and yawed further out via `kick`. Narrow, shallow,
+       soft and aimed outward beats wide, steep and bright for the one thing
+       these exist to do: at 14 m ahead the cone axis passes through x = 3.8 m
+       with a half-angle spanning roughly 0.4-7.2 m, so the neighbouring lane
+       centre at 3.7 m sits in the middle of the footprint instead of off its
+       edge. Judging the angle on its own understates the coverage — these are
+       YAWED cones, so narrowing them moved the pattern outward rather than
+       shrinking it inward. High beam's cones are untouched, as its main beam
+       is. */
     const si2 = lamps && this.tierCaps.spreadCones
-      ? hi ? (this.rain ? 3070 : 2370) : (this.rain ? 1840 : 1420)
+      ? hi ? (this.rain ? 3070 : 2370) : (this.rain ? 145 : 110)
       : 0;
     this.rig.spreadL.intensity = si2;
     this.rig.spreadR.intensity = si2;
@@ -1296,6 +1373,15 @@ export class Game {
        most of why the pool on the tarmac looks like light rather than like a
        grey texture that got brighter. Main beam runs whiter, the way a boosted
        filament (or the HID/LED it is imitating) actually does. */
+    /* Dipped stays at its long-standing 0xffeeda. A previous pass warmed this
+       to 0xffe0b0 on the theory that the tint would survive the grade once
+       the level came down — it did survive, and that was the problem: warm
+       source plus the sodium-tinted texture the carpet first borrowed made
+       the whole road read orange, as if the streetlights had been changed.
+       Halogen is warm-WHITE. The sodium hue belongs to LAMP_SODIUM and the
+       lamps overhead, and the car has to stay a different colour from them
+       or the two light sources stop being distinguishable. High beam keeps
+       its whiter 0xfff4e6. */
     const beamC = hi ? 0xfff4e6 : 0xffeeda;
     this.rig.spotL.color.setHex(beamC);
     this.rig.spotR.color.setHex(beamC);
@@ -1363,24 +1449,105 @@ export class Game {
       sp.distance = hi ? HL_CLIP_HI : HL_CLIP;
       /* The cut-off constraint pins the axis pitch to the half-angle, so a
          wide cone is forced to point steeply down and its hot spot lands on
-         the bumper. These angles put the hot spot ~1.6 m ahead on dipped and
-         ~2.7 m on main, closer than earlier tunes — deliberately: with decay
-         (see the SpotLight ctor in player.ts) dropped well below the inverse-
-         square norm, the pool no longer depends on a bright near hotspot to
-         read as "on", so the axis is allowed to sit closer while penumbra
-         (below) feathers the disc into a spread instead of a hard-edged
-         pool. */
-      sp.angle = hi ? 0.23 : 0.36;
-      // dipped penumbra up from 0.68: with the distance clip moved out of the
-      // way the cone's lateral edge is the only hard boundary left in the
-      // pool, and 0.85 feathers the outer ~85% of the half-angle instead of
-      // the outer ~68%. Main beam keeps its harder 0.4 — a tight, defined
-      // edge is what reads as main beam.
-      sp.penumbra = hi ? 0.4 : 0.85;
-      // decay is per-mode, not a fixed ctor value (see player.ts) — low
-      // stays shallow for the carpet, high goes steeper so distant cars
-      // fall back out of the knee's ceiling instead of staying pinned white
-      sp.decay = hi ? 1.5 : 1.0;
+         the bumper. That is what made the dipped pool read as a flat white
+         slab against the hood in POV, and the hard edge around that slab was
+         NEVER the beam's falloff — it is the composite's blown-highlight clip
+         (post.ts, `smoothstep(.72,1.02,luma)` toward flat white; lampProtect
+         only shields *saturated* lamps, and a headlight pool is near-white by
+         construction). Everything above ~0.72 luma is pushed to the same
+         constant, so the gradient inside the blob is erased and the 0.72
+         iso-luma contour prints as a boundary. The fix is therefore to get
+         the pool's area under that threshold, not to soften a falloff that
+         was already fine. Do not "restore" this by brightening.
+
+         Ground illuminance is E = I*h / r^(decay+1): the Lambert cosine on a
+         flat road is h/r, so the plane contributes one power of r on top of
+         `decay` no matter how shallow decay is. The nearest lit strip sits
+         ~0.7 m from a 0.60 m lamp and 30 m of road sits at r=30, so at the
+         old decay 1.0 (an effective inverse square) the pool spanned about
+         1100:1 from its near edge to 30 m out. No exposure holds that: the
+         near end is forced past the clip and the far end sits near black,
+         which is exactly why there was no visible gradient between them. The
+         pool's own dynamic range was the defect.
+
+         Two levers, and the ORDER matters. First `decay` 1.0 -> 0.6, which
+         attacks the ratio directly (1100:1 -> 271:1, i.e. 4x flatter) — this
+         is the "more gradient" half and nothing else in the block can do it.
+         Then intensity down far enough (see `si` above) that the whole
+         compressed range fits under the 0.72 clip. Only once the near strip
+         is no longer blowing out does width become free: an earlier pass had
+         to narrow to 0.26 rad to keep the hottest tarmac outside the cone at
+         all, and with the near edge now at ~105 units instead of ~570 that
+         constraint is gone, so 0.36 comes back. Widening never dims a point
+         that stays inside the cone (E depends on I, h and r, not on angle) —
+         it only moves the cone's lower edge and adds flanks.
+
+         WIDENING THE CONE MAKES ALL OF THIS WORSE, which is the opposite of
+         what it looks like and cost several passes to find. The reason is the
+         cone's own angular term: three multiplies by smoothstep(cos(angle),
+         cos(angle*(1-penumbra)), cosAngleToAxis), and once the upper edge is
+         pinned just below horizontal the axis necessarily points down by a
+         full half-angle — so a WIDE cone aims its bright axis at the tarmac
+         right in front of the car and leaves the road at 10-30 m sitting in
+         the last few degrees before its rim, where that smoothstep is nearly
+         zero. Model the angular term and the numbers invert (penumbra 1.0,
+         decay 0.45, I 150, on-road centreline):
+
+           angle   axis lands   peak    E@10m   peak:E@10
+           0.46 rad   1.20 m    84.5     0.41     205:1
+           0.36 rad   1.57 m    62.0     0.63      99:1
+           0.30 rad   1.91 m    48.7     0.84      58:1
+           0.24 rad   2.41 m    36.0     1.17      31:1
+           0.18 rad   3.22 m    24.2     1.71      14:1
+
+         Narrowing is 3.5x cooler at the peak AND 4x brighter at 10 m and 15x
+         flatter overall. There was never a width-vs-gradient trade on the
+         main cone; the earlier passes only believed in one because their
+         model had no angular term. 0.22 rad is the settled value: axis ~2.7 m
+         out, and it is the lateral cones (yawed outward, see `kick`) that
+         spread light left and right — a bumper-height cone pinned near
+         horizontal cannot do that itself at any half-angle, because azimuthal
+         offset adds to the total off-axis angle, so even 0.46 rad contributes
+         nothing 4 m to the side.
+
+         The cut-off itself is untouched and is INDEPENDENT of angle — the
+         upper edge stays at atan(LOW_DIP), 0.229 deg below horizontal, so
+         the reach is still ~150 m and the glare limit is unchanged. Do not
+         "restore" any of this by brightening. Main beam unchanged. */
+      sp.angle = hi ? 0.23 : 0.26;
+      /* Dipped penumbra is 1.0 — the maximum — and that is a deliberate end
+         state, not a value to keep nudging. At 1.0 the inner cutoff collapses
+         onto the axis, so the angular term becomes one continuous smoothstep
+         from full on the axis to zero at the rim: there is no plateau, hence
+         no rim to print. Every intermediate value (0.68, then 0.85) still had
+         a hard-edged core disc feathered at its border, which is precisely
+         the "hard line" being chased through all of these passes.
+
+         It also removes the near-field spike for free, because the hottest
+         geometry — tarmac a metre from the lamp, at the cone's lower rim — is
+         exactly where the smoothstep evaluates to zero. Softness and a cool
+         near field are the same lever here, not a trade.
+
+         Main beam keeps its harder 0.4: a tight, defined edge is what reads
+         as main beam, and none of this applies to it. */
+      sp.penumbra = hi ? 0.4 : 1.0;
+      /* decay is per-mode, not a fixed ctor value (see player.ts). Dipped
+         runs 0.45 — well below inverse-square — purely to compress the
+         pool's near/far ratio; the road plane already contributes one power
+         of r through the Lambert cosine, so 0.45 still falls off faster than
+         inverse-square in practice. High beam stays steep at 1.5 so distant
+         cars fall back out of the traffic knee's ceiling instead of staying
+         pinned white, and that split is now 0.45/1.5.
+
+         The knee risk of a shallower dipped decay is real but bounded, and
+         it is bounded by the cut-off rather than by the level: a flatter
+         curve does hand distant surfaces relatively more light (a vertical
+         panel crosses over the old 640/1.0 config at ~38 m), but the dipped
+         cone's upper edge is only (0.60 - 0.004*d) m above the road, so past
+         that crossover it is lighting a sub-0.45 m band of valance and tyre,
+         and in absolute terms 150/d^0.6 out there (9-17) is far below what
+         640/d^1.0 already put on close cars (64-213) without complaint. */
+      sp.decay = hi ? 1.5 : 0.45;
       sp.target.position.z = hi ? 46 : 26;
       const pitch = hi
         ? sp.angle - Math.atan(HI_RISE)
@@ -1400,15 +1567,107 @@ export class Game {
        symmetric cone needs to keep its topmost ray fixed. */
     for (const [sp, side] of [[this.rig.spreadL, -1], [this.rig.spreadR, 1]] as const) {
       sp.distance = hi ? HL_SPREAD_THROW_HI : HL_SPREAD_THROW;
-      sp.angle = hi ? 0.55 : 0.52;
-      sp.penumbra = 0.5;
-      sp.decay = hi ? 1.3 : 1.2;
-      const kick = hi ? 4.0 : 3.0, tz = hi ? 22 : 14;
+      /* Dipped 0.52 -> 0.18 rad with penumbra 1.0, for the reason the main
+         cone above is narrow and soft: with the upper edge pinned, a wide
+         cone must aim its axis into the near tarmac, and its angular
+         smoothstep then starves everything further out. Narrow + shallow +
+         yawed outward reaches the next lane; wide + steep only lit the
+         wheel arch. Angle and HL_SPREAD_PITCH move together — the pin is
+         (pitch - angle), so neither can be edited alone. */
+      sp.angle = hi ? 0.55 : 0.24;
+      sp.penumbra = hi ? 0.5 : 1.0;
+      /* Dipped 1.2 -> 0.45, matching the main cone so the pool and its
+         flanks fall off on the same curve instead of the flanks dying while
+         the pool carries on. Safe against the traffic knee by construction:
+         a flatter curve only ever overtakes the old one at long range, and
+         HL_SPREAD_THROW clips these cones at 36 m, so the crossover sits
+         outside the cone and no car can see more light than it did before. */
+      sp.decay = hi ? 1.3 : 0.45;
+      // dipped kick 3.0 -> 3.5: with the cone narrow, lateral coverage is
+      // bought with yaw rather than half-angle. 3.5 at tz 14 aims it 14 deg
+      // out — enough to reach the next lane, little enough that its skirt
+      // still overlaps the main cone's and leaves no dark seam between them
+      const kick = hi ? 4.0 : 3.2, tz = hi ? 22 : 14;
       const spitch = hi ? HL_SPREAD_PITCH_HI : HL_SPREAD_PITCH;
       const horizDist = Math.hypot(kick, tz);
       sp.target.position.set(
         side * kick, sp.position.y - horizDist * Math.tan(spitch), tz);
     }
+    /* The carpet — the wide soft wash on the road, and after this pass the
+       thing the player actually reads as "the headlights are on". See the
+       build comment in player.ts for why this is a decal and not a light; the
+       short version is that a cone with a horizontal cut-off must aim its hot
+       axis at the near tarmac, so it can be wide or it can be soft, never
+       both, whereas a gradient quad has no cone to constrain it.
+
+       Footprint is DERIVED FROM THE ROAD, not set in metres. A fixed 20 m
+       width was the first cut and it was badly wrong: the deck is three lanes
+       for most of its length, so `cor.halfWidth` is about 5.3 m and a 20 m
+       quad hung ~4.5 m past the parapet on each side, lighting the barriers
+       and the open air beyond them. It read as the whole street being lit
+       rather than the road ahead of one car.
+
+       So the width comes from the corridor at the point the wash is centred:
+       both edges land 0.4 m inside the barrier faces, which also makes the
+       toll plaza (six lanes) widen the wash for free and the elevated
+       sections keep it off the parapet by construction. The gradient is zero
+       at the quad's edge, so stopping inside the barrier costs no visible
+       edge — there is nothing there to cut off.
+
+       Length and origin are per-mode, and the quad STARTS AT THE BUMPER. An
+       earlier cut centred it 9 m ahead with a 30 m length, which put its near
+       end 6 m BEHIND the lamp line on the theory that a wash beginning several
+       metres out would read as a floating slab. With a radial texture that was
+       simply wrong: it drew light beside the doors and behind the rear wheels
+       and read as a halo around the car. Headlights throw forward only, so the
+       near edge now sits at the nose and the texture's own ramp (see
+       carpetBeamTex) takes the level up from zero over the first few metres —
+       the soft start comes from the gradient, not from hanging geometry behind
+       the car. Dipped runs 26 m from the nose, main beam 46 m.
+
+       Opacity is additive on top of a near-black night road, so it does not
+       need to be large — and it has been walked down three times, because
+       "too bright" was the complaint every single time it was looked at.
+       Dipped 0.45 -> 0.25 -> 0.125, main 0.55 -> 0.31 -> 0.155, then rescaled
+       to 0.22/0.27 for the wedge, whose peak alpha is 0.52 rather than the
+       radial texture's 0.78 — the old number over the new shape would have
+       been a visible cut. Peak output is ~0.107 against the 0.72 luma where
+       the POV composite starts clipping to flat white: nowhere near it.
+
+       The level also controls the wash's apparent SIZE, which is not obvious
+       and is most of why halving it reads as such a large change. The POV
+       chain crushes blacks with `col - .06` (post.ts), so every pixel of the
+       skirt below 0.06 is pure black and simply is not there — the visible
+       wash is the region above that floor, not the quad. Dimming this shrinks
+       it; brightening it grows it, so retune this before the footprint or the
+       two levers fight each other. Rain lifts it slightly because wet tarmac
+       genuinely spreads a beam further, and daylight takes it out entirely. */
+    const carpet = this.rig.beamCarpetMat;
+    carpet.opacity = lamps
+      ? (hi ? 0.27 : 0.22) * (1 - f) * (this.rain ? 1.15 : 1)
+      : 0;
+    /* Near edge at the nose, so the wedge leaves the car where the lamps do.
+       `carpetLen` is measured from there; the mesh's own centre is therefore
+       half a length further on. */
+    const carpetLen = hi ? 46 : 26;
+    const carpetZ = 2.05 + carpetLen / 2;
+    // 0.4 m short of the barrier face on each side; floored so a freak
+    // narrow section cannot invert the quad
+    const carpetHW = Math.max(2.4, this.cor.halfWidth(car.z + carpetZ) - 0.4);
+    /* POV-only lateral widening. The wash is the same metres of road in every
+       view, but POV_HFOV is 105 deg — at 20 m ahead that frame spans ~52 m of
+       road width, where a ~60 deg chase view spans ~23 m. So the identical
+       13 m wedge fills about a quarter of the POV frame against over half of a
+       chase frame, and reads as too narrow purely because a wide-angle lens
+       gives it less screen. Widening only in POV corrects the apparent width
+       where the problem is, instead of distorting the other cameras to fix a
+       lens artefact. It is applied to the quad, so the wedge texture (whose
+       lateral profile is normalised to the quad) stretches with it and keeps
+       its shape — nose stays narrow, far end still spans the carriageway. */
+    const povWide = this.camMode === CAM_POV ? 1.5 : 1;
+    this.rig.beamCarpet.scale.set(carpetHW * 2 * (hi ? 1.1 : 1) * povWide, carpetLen, 1);
+    this.rig.beamCarpet.position.z = carpetZ;
+    this.rig.beamCarpetG.rotation.x = -Math.atan(car.slope);
     this.rig.headMat.emissiveIntensity = hi ? 4.2 : car.lightsOn ? 2.4 : 0.12;
     // the glow sprite keeps most of its punch in daylight when flashing, or a
     // daytime flash-to-pass would be invisible against a bright sky
