@@ -19,11 +19,16 @@ import type { Cockpit } from "./cockpit";
 
    What is replaced vs kept:
 
-   - REPLACED  dash pad, binnacle, vents, centre stack, centre console, and
-               the head-unit body (cockpit.ts's "dash" merge region).
-   - KEPT      door cards, pillars, roof, headliner, seats, glass, mirrors,
-               wipers, the droplet overlay, and both light rigs. A donor dash
-               is a dash; it does not bring a cabin.
+   - REPLACED  whichever of cockpit.ts's merge regions the donor actually
+               supplies. "dash" is the pad, binnacle, vents, stack, console and
+               head-unit body; "cabin" is the door cards, pillars, roof and
+               headliner. Checked per region rather than assumed: a
+               dashboard-only donor brings no pillars, and hiding ours for it
+               would open the cabin to the sky.
+   - KEPT      seats, glass, mirrors, wipers, the droplet overlay and both
+               light rigs — always. The light strips and window glass in
+               particular are lighting features tuned against the night pass,
+               and a donor's equivalents are inert geometry.
    - MOVED     the instrument cluster (dashboard.ts) and the head-unit canvas
                (carscreen.ts). These stay OURS — they are live, and a donor's
                are painted on — but they relocate onto the donor's binnacle and
@@ -89,6 +94,15 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
     (man.parts[role] ?? [])
       .map((p) => scene.getObjectByName(p.name))
       .filter((o): o is THREE.Object3D => !!o);
+
+  /* Which procedural regions this donor is entitled to replace. Derived from
+     what it actually brought, not assumed: a dashboard-only donor has no
+     "cabin" parts, and hiding our pillars for it would open the cabin to the
+     sky. Roles map to cockpit.ts's merge regions. */
+  const supplies = new Set<string>();
+  if ((man.parts.shell ?? []).length) supplies.add("dash");
+  if ((man.parts.cabin ?? []).length) supplies.add("cabin");
+  if ((man.parts.mirror ?? []).length) supplies.add("mirror");
 
   const cluster = byRole("cluster")[0];
   const screen = byRole("screen")[0];
@@ -164,6 +178,74 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
   const clusterHome = cockpit.clusterGroup.position.clone();
   cockpit.clusterGroup.position.copy(clusterAt);
 
+  /* --- rear-view mirror --------------------------------------------------- */
+
+  /* Take the donor's housing, keep our glass. A donor mirror is a painted
+     rectangle; ours is fed by a render target, UV-cropped to its own slice of
+     the rear camera, and registered with post.ts so the dashcam degrade does
+     not chew it. So the procedural SHELL hides (region "mirror") and the glass
+     moves into the donor's.
+
+     This also fixes the framing for free. The procedural mirror hangs at
+     EYE.y + 0.085 (y 1.435), which was fitted to a lens 12 cm higher than the
+     imported dash uses — from the lower mount it rides the very top edge of
+     the frame and shows housing underside rather than glass. The Volvo hangs
+     its mirror at y ~1.31, so following the donor drops it ~12 cm and puts the
+     glass back in shot. */
+  /* Nudge applied to the donor's whole mirror assembly, housing and glass
+     together. The Volvo hangs its mirror at z 0.44 — only 12.7 cm ahead of the
+     POV lens at z 0.31 — and that proximity, not its height, is what puts it
+     out of shot: the visible half-height at 12.7 cm is 0.07, while the glass
+     centre sits 0.14 above the lens axis. Dropping it alone would have to go
+     absurdly low to win. Moving it FORWARD instead buys frame cheaply, and it
+     is where the mirror belongs anyway: the donor's windscreen passes through
+     z ~0.58 at this height, so +0.10 parks the housing against the glass it
+     would really be stuck to, instead of floating 14 cm behind it. The small
+     drop then settles it just inside the top edge.
+
+     The x term is a framing choice rather than a physical one. The Volvo hangs
+     its mirror on the car's centreline (x ~0.01) while the POV lens sits
+     inboard of the driver at x 0.28, so a centred mirror lands right of frame
+     centre — true to where a real mirror is, but it crowds that side. +x is
+     screen-LEFT here (car-local +x maps to screen-left through the POV
+     camera's heading), so this walks the whole assembly back toward the middle
+     of the frame. Purely cosmetic; move it freely. */
+  const MIRROR_NUDGE = new THREE.Vector3(0.08, -0.04, 0.10);
+
+  const mirrorParts = byRole("mirror");
+  const glass = cockpit.mirrorGlass;
+  const glassHome = {
+    position: glass.position.clone(),
+    quaternion: glass.quaternion.clone(),
+    scale: glass.scale.clone(),
+  };
+  let glassAt: THREE.Vector3 | null = null;
+  let glassScale = 1;
+
+  if (mirrorParts.length) {
+    const box = new THREE.Box3();
+    for (const p of mirrorParts) {
+      const m = p as THREE.Mesh;
+      if (!m.geometry) continue;
+      m.geometry.computeBoundingBox();
+      box.union(m.geometry.boundingBox!.clone().applyMatrix4(m.matrix));
+    }
+    const size = box.getSize(new THREE.Vector3());
+    const mid = box.getCenter(new THREE.Vector3());
+    /* Sit on the housing's cabin-facing face (min z — the driver looks toward
+       +z), a hair proud so the glass never z-fights the shell it sits in. */
+    glassAt = new THREE.Vector3(mid.x, mid.y, box.min.z - 0.004)
+      .add(MIRROR_NUDGE)
+      .multiply(scene.scale);
+    // the housing follows the glass, or the two come apart
+    for (const p of mirrorParts) p.position.add(MIRROR_NUDGE);
+    /* Fit the glass to the housing's aperture rather than assuming a size:
+       ours is 0.30 m wide and the Volvo's body is 0.21, so at native size it
+       would hang out either side of its own frame. Inset slightly so a bezel
+       still reads around it. */
+    glassScale = Math.min(1, (size.x * 0.88) / 0.30) * sx;
+  }
+
   /* --- steering ----------------------------------------------------------- */
 
   /* engine.ts drives `wheelGroup.rotation.z` and knows nothing about donors,
@@ -221,13 +303,48 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
     for (const c of proceduralWheel) c.visible = false;
   }
 
+  /* --- fill light --------------------------------------------------------- */
+
+  /* Replaces the reach of the ambient strips this donor displaces. Those were
+     pinned to the procedural door card and left with it, and cockpit.ts is
+     blunt about what they were for: without an interior source "the vents,
+     glovebox and console reduce to a black mass however well they are
+     modelled". That is exactly what a donor dash inherits.
+
+     Shaped to WIDEN rather than brighten, which is the thing that actually
+     survives the POV chain. That chain crushes everything under 0.06 to pure
+     black and then takes up to 55% more off at the frame edge, so a small hot
+     spot buys one bright patch and leaves the rest below the floor — while a
+     broad, gentle wash lifts the whole pad over it. Hence:
+
+     - decay 1, not the physical 2. 1/r instead of 1/r^2 spreads an even carpet
+       across a 1.5 m dash instead of blowing out whatever is nearest and
+       dropping the corners through the floor. Same reasoning as the low beam
+       in engine.ts.
+     - distance 4.0 against a dash barely 1.3 m away. `distance` is a HARD clip
+       in three, not a falloff, so it has to land far past anything visible or
+       it prints its own edge on the trim.
+     - 0xffb070 rather than a paler warm. The manual ACES pass desaturates as
+       luma climbs, so a source has to sit further toward yellow than the
+       colour you actually want; a pale tint arrives white and reads as a
+       flashlight rather than cabin ambience.
+
+     Parented to the donor scene so it lives and dies with it — the procedural
+     dash keeps its own strips and must not be lit twice. */
+  const fill = new THREE.PointLight(0xffb070, 1.0, 4.0, 1.0);
+  fill.position.set(0.05, 1.22, 0.42);
+  scene.add(fill);
+
   /* --- attach ------------------------------------------------------------- */
 
   cockpit.group.add(scene);
 
   const setActive = (on: boolean) => {
     scene.visible = on;
-    cockpit.dashGroup.visible = !on;
+    for (const [name, gp] of Object.entries(cockpit.regionGroups)) {
+      // regions this donor did not supply stay visible in both states
+      gp.visible = on ? !supplies.has(name) : true;
+    }
     cockpit.screenMesh.visible = !on;
     for (const c of proceduralWheel) c.visible = !on;
     for (const p of wheelParts) p.visible = on;
@@ -248,6 +365,18 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
       }
     }
     cockpit.clusterGroup.position.copy(on ? clusterAt : clusterHome);
+
+    if (glassAt && on) {
+      /* scale.x stays negative: cockpit.ts flips the glass so the rear camera's
+         backward view reads as a mirror rather than a shoulder-check. Losing
+         that sign would silently un-mirror the reflection. */
+      glass.position.copy(glassAt);
+      glass.scale.set(-glassScale, glassScale, glassScale);
+    } else {
+      glass.position.copy(glassHome.position);
+      glass.quaternion.copy(glassHome.quaternion);
+      glass.scale.copy(glassHome.scale);
+    }
   };
   setActive(true);
 

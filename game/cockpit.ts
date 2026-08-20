@@ -48,10 +48,12 @@ export interface Cockpit {
      The procedural dash stays built and stays the fallback; a donor model
      hides these and re-anchors the live parts onto its own geometry. */
 
-  /** Every merged mesh in the "dash" region — pad, binnacle, vents, stack,
-      console, head-unit body. Hiding this leaves the rest of the cabin (door
-      cards, pillars, roof, seats, glass) untouched. */
-  dashGroup: THREE.Group;
+  /** Merged trim by swappable region. "dash" is the pad, binnacle, vents,
+      stack, console and head-unit body; "cabin" is the door cards, pillars,
+      roof and headliner. Seats, glass, light strips and mirrors are in
+      neither and always stay procedural. A donor hides only the regions it
+      actually supplies. */
+  regionGroups: Record<string, THREE.Group>;
   /** The live instrument cluster. Re-anchored onto the donor's binnacle rather
       than rebuilt: the needles are real geometry, not a texture. */
   clusterGroup: THREE.Group;
@@ -766,10 +768,16 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const beginRegion = (name: string) => { curRegion = name; };
   const endRegion = () => { curRegion = null; };
 
-  /** Meshes merged under region "dash", so an imported dash can hide them. */
-  const dashG = new THREE.Group();
-  dashG.name = "proceduralDash";
-  interiorG.add(dashG);
+  /** One group per swappable region, so an imported dash can hide exactly what
+      it replaces and nothing more. A donor that brings a dash but no pillars
+      hides only `dash`. */
+  const regionG: Record<string, THREE.Group> = {};
+  for (const r of ["dash", "cabin", "mirror"]) {
+    const gp = new THREE.Group();
+    gp.name = `procedural:${r}`;
+    interiorG.add(gp);
+    regionG[r] = gp;
+  }
 
   /** Merge every bucket down to one mesh per material and region. */
   function flush() {
@@ -780,7 +788,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
       const mm = new THREE.Mesh(merged, mat);
       // named per material so headless test harnesses can toggle merge buckets
       if (mat.name) mm.name = `merged:${mat.name}${region ? `@${region}` : ""}`;
-      (region === "dash" ? dashG : interiorG).add(mm);
+      ((region && regionG[region]) || interiorG).add(mm);
     }
     buckets.clear();
   }
@@ -1092,6 +1100,19 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
 
   /* --------------------------------------------------------- door cards */
 
+  /* Door cards, pillars, roof and headliner form the "cabin" region: the second
+     thing a donor can stand in for, once frustum clipping made its A-pillars
+     and door card affordable (9% and 17% of two whole-car meshes). Separate
+     from "dash" rather than merged with it because a donor may bring one and
+     not the other — a dashboard-only scan has no pillars, and hiding ours to
+     make room for nothing would open the cabin to the sky.
+
+     Deliberately NOT in the region, and staying procedural either way: the
+     ambient light strips and the window glass below. Both are lighting
+     features tuned against the night pass rather than trim, and a donor's
+     are inert. */
+  beginRegion("cabin");
+
   for (const s of [-1, 1]) {
     const X = s * DOOR_X;
     const yawIn: P3 = [0, s > 0 ? -Math.PI / 2 : Math.PI / 2, 0]; // face inboard
@@ -1170,6 +1191,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
       put(rbox(0.04, 0.08, 0.05, 0.018), liner, [s * 0.78, 1.635, gz], [0, 0, 0], [2, 1]);
   }
 
+  endRegion();
+
   /* ------------------------------------------------------------ seats */
 
   function seat(sx: number) {
@@ -1236,7 +1259,19 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   /* Everything under the pad sits in the pad's own shadow, and with no interior
      light source the vents, glovebox and console reduce to a black mass however
      well they are modelled. These strips are what makes that half of the cabin
-     legible — and they suit the night-drive setting. */
+     legible — and they suit the night-drive setting.
+
+     Tagged "cabin" despite being lighting rather than trim: the strips are
+     pinned to DOOR_X, the inner face of the procedural door card. Replace that
+     door with a donor's and they are lighting nothing — they hang in the space
+     where it used to be and read as a bare accent-coloured line across the
+     frame. They belong to the door, so they leave with it.
+
+     Cost of that, stated plainly: the imported view loses this fill and its
+     lower half goes darker. The fix is to re-anchor them to the donor's door
+     card rather than to drop them, which is worth doing once the geometry has
+     settled. */
+  beginRegion("cabin");
   {
     const led = new THREE.MeshStandardMaterial({
       color: 0x05070c, emissive: trimAccent, emissiveIntensity: 0.55, roughness: 0.6,
@@ -1269,6 +1304,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const cabinLight = new THREE.PointLight(0xffd2a4, 0.45, 3.0, 2);
   cabinLight.position.set(0, 1.42, 0.28);
   interiorG.add(cabinLight);
+  endRegion();
+
   /* And its counterpart: a faint cool wash from the base of the windscreen
      raking BACK across the pad toward the seat — the "city light through the
      glass" that gives the pad top its grazing sheen in the reference photo.
@@ -1542,7 +1579,14 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   mirrorMesh.rotation.x = -0.07;
   mirrorMesh.scale.x = -1;
   interiorG.add(mirrorMesh);
-  // housing: rounded shell + a stalk up to the header, not a floating slab
+  /* housing: rounded shell + a stalk up to the header, not a floating slab.
+     Its own region, separate from the glass above: a donor brings a mirror
+     BODY worth having (it matches its own dash and header) but never a working
+     mirror, because a reflection needs a render target and a donor's is paint.
+     So the shell can be swapped while the glass — ours, RT-fed, UV-cropped and
+     shielded from the dashcam degrade by post.ts — stays put and moves into
+     the donor's housing. */
+  beginRegion("mirror");
   put(bezel(0.335, 0.13, 0.036, 0.045, 0.02), piano, [0, MIR.y, MIR.z], [-0.07, 0, 0]);
   put(rbox(0.32, 0.115, 0.05, 0.04), piano, [0, MIR.y, MIR.z + 0.024], [-0.07, 0, 0]);
   /* The screen leans back as it rises, so the stalk has to run up and
@@ -1550,6 +1594,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      lower while the header it grows from did not move. */
   put(cyl(0.014, 0.018, 0.22, 10), piano, [0, MIR.y + 0.105, MIR.z - 0.05], [-0.5, 0, 0]);
   put(rbox(0.06, 0.03, 0.05, 0.012), piano, [0, MIR.y + 0.185, MIR.z - 0.095], [-0.3, 0, 0]);
+  endRegion();
 
   const sideMirLGeo = new THREE.PlaneGeometry(0.19, 0.115);
   cropUV(sideMirLGeo, 0.58, 1.0);
@@ -1681,7 +1726,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     drawGauges,
     drawScreen,
     dropletsUpdate,
-    dashGroup: dashG,
+    regionGroups: regionG,
     clusterGroup: cluster.group,
     screenMesh: scrMesh,
     screenTexture: scrTex,

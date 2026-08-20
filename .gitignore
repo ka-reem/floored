@@ -9,13 +9,10 @@ test/artifacts/
 public/assets-staging/
 .claude/worktrees/
 
-# Built cockpit dashes: cut from a donor car model by tools/build-cockpit.mjs.
-# Held out of git while the cut is still changing — each build is ~68 MB (4K)
-# and ~23 MB (1K), binaries do not delta, and every rebuild would add another
-# full copy to history forever. The manifests beside them ARE committed: they
-# are small, and they record the role -> node mapping and the measured steering
-# axis that game/cockpitmodel.ts binds against.
-# Rebuild with:
-#   node tools/build-cockpit.mjs <donor.glb>
-#   node tools/build-cockpit.mjs <donor.glb> --out volvo-s90-mobile --tex 1024
-public/models/cockpits/*.glb
+# Built cockpit dashes ARE committed, unlike most build output: Vercel deploys
+# from git, so a gitignored dash means every visitor silently falls back to the
+# procedural one. That is affordable now only because the cut settled — frustum
+# clipping and 512 px textures took it from 68 MB to 17 MB. Rebuild with:
+#   node tools/build-cockpit.mjs <donor.glb> --out volvo-s90 --tex 512
+# Keep an eye on history weight if the cut is re-tuned often: binaries do not
+# delta, so each rebuild adds another full copy permanently.

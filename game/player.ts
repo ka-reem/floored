@@ -6,14 +6,35 @@ import {
 import { paintTexF, carbonTexF } from "./textures";
 import { buildCockpit, COCKPIT_REF, type Cockpit } from "./cockpit";
 import { attachCockpitModel, type CockpitModelHandle } from "./cockpitmodel";
+import type { RenderTier } from "./settings";
 
-/* Which donor dash to load, or "" for none. A build stem under
-   public/models/cockpits/ — see tools/build-cockpit.mjs. Deliberately a plain
-   constant while this is a prototype: it is one edit to turn off, and there is
-   no reason to grow a settings surface for it before it has earned one. */
-const COCKPIT_MODEL = "volvo-s90";
 import { carEnvMap, isSharedEnv, trackEnvMaterial, untrackEnvMaterial } from "./carenv";
 import { paintByHex, type CarSpec, type Paint } from "./carspecs";
+
+/* Which donor dash each render tier loads, or "" for none — a build stem under
+   public/models/cockpits/, see tools/build-cockpit.mjs.
+
+   Desktop and mobile-high both run the 1K cut, which is not a compromise for
+   desktop's sake — 4K has nowhere to land in this view. The dash covers about
+   800x430 px of a 1080p frame (~344k pixels) and a 4096 atlas carries 16.8M
+   texels, so 4K is oversampled by more than an order of magnitude before
+   anything else touches it. Then the dashcam pass softens and grains it
+   (post.ts: "centre nearly in focus, corners mush") and the night grade
+   crushes most of the dash toward black. 4K costs 68 MB and 0.82 GB of
+   decoded texture to deliver detail three separate stages then throw away;
+   1K costs 23 MB and 0.06 GB. Build a -2k or -4k variant and point a tier at
+   it if a brighter interior ever makes the difference visible.
+
+   mobile-base gets nothing. It is the tier unknown hardware falls back to (see
+   resolveRenderTier), so it has to assume the weakest plausible device, and
+   437k triangles of dash on top of traffic and world geometry is not a bet
+   worth taking there. The procedural dash is not a placeholder for those
+   players — it is the shipped one. */
+const COCKPIT_MODEL: Record<RenderTier, string> = {
+  desktop: "volvo-s90",
+  "mobile-high": "volvo-s90",
+  "mobile-base": "",
+};
 /* The headlight carpet's alpha field: a WEDGE spreading forward from the
    bumper, not a radial pool.
 
@@ -309,7 +330,10 @@ export function buildPlayerCar(
   paintHex: number,
   envMap: THREE.CubeTexture,
   glowTex: THREE.Texture,
-  mirrorTexture: THREE.Texture
+  mirrorTexture: THREE.Texture,
+  /* Passed in rather than resolved here: resolveRenderTier needs the live GL
+     context to read the renderer string, and the engine already holds both. */
+  tier: RenderTier = "desktop"
 ): PlayerRig {
   const P = spec.shell;
   const L2 = P.L / 2;
@@ -691,7 +715,8 @@ export function buildPlayerCar(
      a real dash is not a stretchable object — narrow it to the procedural
      region once a donor is more than a prototype. */
   const rigRef = { model: null as CockpitModelHandle | null };
-  if (COCKPIT_MODEL) attachCockpitModel(cockpit, COCKPIT_MODEL, (h) => { rigRef.model = h; });
+  const donor = COCKPIT_MODEL[tier];
+  if (donor) attachCockpitModel(cockpit, donor, (h) => { rigRef.model = h; });
 
   return {
     spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,

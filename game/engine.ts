@@ -660,7 +660,8 @@ export class Game {
     const spec = getCar(this.carId);
     this.rig = buildPlayerCar(
       this.scene, spec, PAINTS[this.paintIx % PAINTS.length].hex,
-      this.mats.envMap, this.mats.glowTex, this.post.mirrorRT.texture
+      this.mats.envMap, this.mats.glowTex, this.post.mirrorRT.texture,
+      this.renderTier
     );
     this.rig.cockpit.setMirrorVis(this.mirror);
     // POV mirror shield: re-handed on every rig build so a car swap never

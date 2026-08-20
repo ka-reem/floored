@@ -174,6 +174,39 @@ catalogued in `public/assets-staging/CATALOG.md` §18–24.
 | `horns/npc_b.wav` | Car horn beep beep, by AmishRob (freesound) | https://freesound.org/people/AmishRob/sounds/423990/ |
 | `horns/truck.wav` | Truck_horns, by ikbenraar (freesound) | https://freesound.org/people/ikbenraar/sounds/570603/ |
 
+## Player cockpit dashboard — `public/models/cockpits/volvo-s90.glb`
+
+| | |
+|---|---|
+| Asset | Volvo S90 Recharge (Free) |
+| Author | lazercar |
+| Licence | **CC BY 4.0** — commercial use and modification permitted with credit |
+| Source | https://sketchfab.com/3d-models/volvo-s90-recharge-free-9462b07c10244fd4a28d86846dc9e3a9 |
+
+The dashboard the player looks at in the DASHCAM POV view. The source is a
+complete car — 3,273,670 triangles across 45 textures, 3.50 GB of decoded
+texture — and none of it ships as authored. `tools/build-cockpit.mjs` keeps
+only what that camera can physically see and discards the rest: the bodywork,
+wheels, seats, rear cabin and every material that went with them, then the
+remaining geometry is clipped triangle-by-triangle to the POV frustum and the
+surviving textures are resized to 512 px. What ships is 341,161 triangles and
+18 textures — 10.4% of the source geometry and under 1% of its texture memory.
+
+Modified further at runtime (`game/cockpitmodel.ts`): the model's painted-on
+instrument cluster is hidden in favour of a live one, and its centre screen is
+re-textured with the game's own navigation canvas.
+
+The 386 MB source download is not in this repository. It is listed in
+`public/assets-staging/CATALOG.md` with the URL and licence above; rebuild the
+shipped GLB with:
+
+    node tools/build-cockpit.mjs <source.glb> --out volvo-s90 --tex 512
+
+Sibling asset from the same author's page: the description links a Google
+Drive `.blend` bundle offered as a higher-quality alternative to Sketchfab's
+own export. It is not used here — the shipped cut comes from the Sketchfab
+glTF export.
+
 ## Sourcing notes / other candidates evaluated but not shipped
 
 A parallel hunt for realistic car **interior** models (dashboard/wheel/seats,
@@ -188,6 +221,8 @@ for the driver's-eye cockpit view) did not clear the bar for this repo:
 - OpenGameArt's CC0 "Cartoon Vehicles Pack 1" (https://opengameart.org/content/cartoon-vehicles-pack-1)
   has real interior geometry (dashboard, seats, steering wheel) but is
   stylized/cartoon, not a match for this game's realism target — not shipped.
+  Superseded in any case by the Volvo S90 cut above; the 2026-08-19 re-hunt
+  and its full shortlist are recorded in `public/assets-staging/CATALOG.md`.
 - Kenney's "Car Kit" (CC0) is exterior-only, no interiors — not applicable.
 - A Sketchfab "Lotus 7 (CC0)" model is mislabeled: its actual displayed
   license is CC-BY 4.0, and it's an open-cockpit spaceframe racer (no

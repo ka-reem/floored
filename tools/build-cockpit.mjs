@@ -40,11 +40,103 @@ const flag = (n, d) => (argv.includes(n) ? argv[argv.indexOf(n) + 1] : d);
 const OUT_NAME = flag("--out", "volvo-s90");
 const TEX = Number(flag("--tex", 0)) || 0;   // 0 = leave source resolution
 const DRY = argv.includes("--dry");
+const CLIP = !argv.includes("--no-clip");
 const OUT_DIR = path.resolve(import.meta.dirname, "../public/models/cockpits");
 
 if (!SRC || !fs.existsSync(SRC)) {
-  console.error("usage: node tools/build-cockpit.mjs <donor.glb> [--out NAME] [--tex N] [--dry]");
+  console.error("usage: node tools/build-cockpit.mjs <donor.glb> [--out NAME] [--tex N] [--no-clip] [--dry]");
   process.exit(1);
+}
+
+/* ------------------------------------------------------ the POV frustum -- */
+
+/* The dashcam lens, in cockpit-local metres, mirroring engine.ts: POV_MOUNT
+   (with the imported-dash height) offset from cockpit.ts's EYE, pitched down
+   POV_TILT, at POV_HFOV horizontal.
+
+   Clipping to this is worth an unusual amount here because the lens is RIGIDLY
+   MOUNTED. It has no head springs, no lean and no lookahead, so unlike a
+   cockpit camera the frustum never moves relative to the dash — what is out of
+   frame is out of frame permanently, not just this instant. On the donor that
+   is 42% of the geometry: the whole centre console (1% visible), the shifter
+   and its knob (0%), and the passenger third of the pad.
+
+   It also buys the A-pillars. They live inside `Shell_Shell_0`, one welded
+   103k-triangle mesh spanning the entire cabin, so no amount of node-picking
+   can extract them — but only 9% of that mesh is ever in frame, and clipping
+   takes exactly that 9%.
+
+   The margins are deliberately loose. Vertical especially: three's fov is
+   vertical and engine.ts derives it from the aspect each frame, so a portrait
+   phone sees materially more than a 16:9 desktop. Cutting to a desktop frame
+   would print a hard geometry edge across a phone's view. Cheap insurance —
+   the parts near the frame edge are the thin ones. */
+const CAM = [0.28, 1.35 - 0.15, -0.30 + 0.61];
+const TILT = 0.227;
+const H_HALF = Math.tan((105 / 2) * Math.PI / 180);
+const V_HALF = H_HALF / (16 / 9);
+const H_MARGIN = 1.25, V_MARGIN = 1.7;
+const NEAR = 0.02;
+
+/** Is a cockpit-local point inside the dashcam frustum (with margin)? */
+function inFrustum(x, y, z) {
+  const dx = x - CAM[0], dy = y - CAM[1], dz = z - CAM[2];
+  // rotate into camera space; the lens looks along +z, pitched down by TILT
+  const cz = dz * Math.cos(TILT) - dy * Math.sin(TILT);
+  if (cz <= NEAR) return false;
+  const cy = dz * Math.sin(TILT) + dy * Math.cos(TILT);
+  return Math.abs(dx) <= H_HALF * cz * H_MARGIN && Math.abs(cy) <= V_HALF * cz * V_MARGIN;
+}
+
+/* Clip one primitive to the frustum, keeping any triangle with a vertex
+   inside, and COMPACT the result. Dropping indices alone would leave every
+   original vertex in the buffers — the triangle count would fall and the file
+   would not, which is the opposite of the point. Vertices are therefore
+   remapped and every attribute rebuilt against the survivors. */
+function clipPrimitive(doc, prim, matrix) {
+  const pos = prim.getAttribute("POSITION");
+  if (!pos) return { before: 0, after: 0 };
+  const idx = prim.getIndices();
+  const triCount = (idx ? idx.getCount() : pos.getCount()) / 3;
+  const at = (i) => (idx ? idx.getScalar(i) : i);
+
+  // vertex-level visibility, computed once each rather than per triangle
+  const vis = new Uint8Array(pos.getCount());
+  const el = [];
+  for (let v = 0; v < pos.getCount(); v++) {
+    pos.getElement(v, el);
+    const x = matrix[0] * el[0] + matrix[4] * el[1] + matrix[8] * el[2] + matrix[12];
+    const y = matrix[1] * el[0] + matrix[5] * el[1] + matrix[9] * el[2] + matrix[13];
+    const z = matrix[2] * el[0] + matrix[6] * el[1] + matrix[10] * el[2] + matrix[14];
+    vis[v] = inFrustum(x, y, z) ? 1 : 0;
+  }
+
+  const kept = [];
+  for (let t = 0; t < triCount; t++) {
+    const a = at(t * 3), b = at(t * 3 + 1), c = at(t * 3 + 2);
+    if (vis[a] || vis[b] || vis[c]) kept.push(a, b, c);
+  }
+  if (kept.length === 0) return { before: triCount, after: 0, empty: true };
+  if (kept.length === triCount * 3) return { before: triCount, after: triCount };
+
+  // remap surviving vertices to a dense range
+  const remap = new Int32Array(pos.getCount()).fill(-1);
+  const order = [];
+  for (const v of kept) if (remap[v] < 0) { remap[v] = order.length; order.push(v); }
+
+  for (const sem of prim.listSemantics()) {
+    const a = prim.getAttribute(sem);
+    const size = a.getElementSize();
+    const out = new (a.getArray().constructor)(order.length * size);
+    const tmp = [];
+    for (let i = 0; i < order.length; i++) {
+      a.getElement(order[i], tmp);
+      for (let c = 0; c < size; c++) out[i * size + c] = tmp[c];
+    }
+    prim.setAttribute(sem, doc.createAccessor().setType(a.getType()).setNormalized(a.getNormalized()).setArray(out));
+  }
+  prim.setIndices(doc.createAccessor().setType("SCALAR").setArray(new Uint32Array(kept.map((v) => remap[v]))));
+  return { before: triCount, after: kept.length / 3 };
 }
 
 /* Roles the cockpit code binds to, in priority order — first pattern that
@@ -62,6 +154,21 @@ const ROLES = [
      assembly will swing them round with the rim if they share a role. */
   ["wheel", /^SteeringWheel[ _]|SteeringWheel Emblem/i],
   ["column", /^Stalks|SteeringColumn/i],
+  /* Cabin structure, added once clipping made it affordable. These are whole-
+     car meshes — the shell spans bumper to bumper and the door card runs the
+     length of the cabin — and they are only worth taking because the frustum
+     keeps 9% and 17% of them respectively: the A-pillars, the windscreen
+     header, and the sliver of driver's door that shows past the dash. Without
+     clipping this role would cost 228k triangles instead of ~27k.
+     Corresponds to the "cabin" merge region in cockpit.ts, which is what the
+     procedural pillars/roof/door cards hide behind when a donor brings its
+     own. */
+  /* The donor's rear-view mirror gets its own role, not "cabin": we take its
+     BODY and refuse its glass. A reflection needs a render target and a
+     donor's mirror is painted on, so cockpit.ts keeps its own RT-fed,
+     UV-cropped glass and simply moves it into this housing. */
+  ["mirror", /RearviewMirror/i],
+  ["cabin", /^Shell_|DoorPanel|^Plane\.057/i],
   ["shell", /Dashboard|^Vents|Knobs|Glovebox|CenterConsole|Shifterknob|Plane\.049/i],
 ];
 const roleOf = (name) => ROLES.find(([, re]) => re.test(name))?.[0] ?? null;
@@ -100,47 +207,11 @@ if (!keep.length) { console.error("no nodes matched any role — check ROLES aga
 
 /* A fresh scene rather than pruning the old one: the donors carry deep empty
    hierarchies, and detaching in place leaves stubs that prune() keeps alive. */
-const scene = doc.createScene(OUT_NAME);
-const manifest = { source: path.basename(SRC), parts: {} };
-
-/* Nodes are RENAMED to `<role>_<n>` rather than keeping the donor's names, and
-   that is load-bearing rather than tidiness. three's GLTFLoader pushes every
-   name through PropertyBinding.sanitizeNodeName on the way in, which turns
-   spaces into underscores and strips dots — so donor names like
-   "InfoTainment Screen_infotainmentScreen_0" or "Plane.049_CenterConsole_0"
-   arrive under a different string than the one written here, and a lookup by
-   the donor's spelling silently finds nothing. Worse, donors reuse names (this
-   one has two nodes called "Dashboard_Dashboard_0") and the loader quietly
-   uniquifies the duplicate, so even an exact match can land on the wrong mesh.
-   Role-indexed names are unique, contain nothing sanitizing touches, and mean
-   the runtime never has to know how a particular donor spells anything. */
-const seen = {};
-for (const { node, role, matrix } of keep) {
-  const n = (seen[role] = (seen[role] ?? -1) + 1);
-  const id = `${role}_${n}`;
-  const flat = doc.createNode(id).setMatrix(matrix).setMesh(node.getMesh());
-  scene.addChild(flat);
-  (manifest.parts[role] ??= []).push({
-    name: id,
-    donorName: node.getName(),      // kept for tracing back to the source file
-    tris: Math.round(triCount(node.getMesh())),
-    bbox: worldBounds(node.getMesh(), matrix),
-  });
-}
-function worldBounds(mesh, m) {
-  let lo = null, hi = null;
-  for (const p of mesh.listPrimitives()) {
-    const a = p.getAttribute("POSITION"); const mn = a.getMin([]), mx = a.getMax([]);
-    for (let c = 0; c < 8; c++) {
-      const v = [c & 1 ? mx[0] : mn[0], c & 2 ? mx[1] : mn[1], c & 4 ? mx[2] : mn[2]];
-      const w = [m[0]*v[0]+m[4]*v[1]+m[8]*v[2]+m[12], m[1]*v[0]+m[5]*v[1]+m[9]*v[2]+m[13], m[2]*v[0]+m[6]*v[1]+m[10]*v[2]+m[14]];
-      if (!lo) { lo = w.slice(); hi = w.slice(); }
-      for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], w[k]); hi[k] = Math.max(hi[k], w[k]); }
-    }
-  }
-  return [lo.map((v) => +v.toFixed(4)), hi.map((v) => +v.toFixed(4))];
-}
-
+/* Measured BEFORE clipping. The frustum keeps only ~41% of the rim (its
+   lower half is under the frame edge), and fitting a plane to an arc that
+   has been cut asymmetrically drags the normal off the true column axis.
+   The axis is a fact about the donor car, not about what is in shot. */
+let steering = null;
 /* The steering axis, measured rather than guessed. The game spins its own
    wheel about local Z, but a donor's column is raked back and sits at whatever
    angle that car uses, so turning the imported rim about any world axis visibly
@@ -149,7 +220,7 @@ function worldBounds(mesh, m) {
    principal axis of the vertex cloud IS the steering axis, and the centroid is
    the hub. Recorded here so the runtime can build a pivot and never has to
    read vertex data. */
-if (manifest.parts.wheel) {
+if (keep.some((k) => k.role === "wheel")) {
   const pts = [];
   for (const { node, role, matrix } of keep) {
     if (role !== "wheel") continue;
@@ -178,8 +249,69 @@ if (manifest.parts.wheel) {
     const n = Math.hypot(...w); v = w.map((x) => x / n);
   }
   if (v[2] < 0) v = v.map((x) => -x);           // point the axis back toward the driver
-  manifest.steering = { hub: c.map((x) => +x.toFixed(4)), axis: v.map((x) => +x.toFixed(4)) };
+  steering = { hub: c.map((x) => +x.toFixed(4)), axis: v.map((x) => +x.toFixed(4)) };
 }
+
+const scene = doc.createScene(OUT_NAME);
+const manifest = { source: path.basename(SRC), parts: {} };
+
+/* Nodes are RENAMED to `<role>_<n>` rather than keeping the donor's names, and
+   that is load-bearing rather than tidiness. three's GLTFLoader pushes every
+   name through PropertyBinding.sanitizeNodeName on the way in, which turns
+   spaces into underscores and strips dots — so donor names like
+   "InfoTainment Screen_infotainmentScreen_0" or "Plane.049_CenterConsole_0"
+   arrive under a different string than the one written here, and a lookup by
+   the donor's spelling silently finds nothing. Worse, donors reuse names (this
+   one has two nodes called "Dashboard_Dashboard_0") and the loader quietly
+   uniquifies the duplicate, so even an exact match can land on the wrong mesh.
+   Role-indexed names are unique, contain nothing sanitizing touches, and mean
+   the runtime never has to know how a particular donor spells anything. */
+const seen = {};
+let clipBefore = 0, clipAfter = 0;
+for (const { node, role, matrix } of keep) {
+  const mesh = node.getMesh();
+
+  /* Clip BEFORE the node is named and recorded, so a part that turns out to be
+     entirely out of frame — the shifter and its knob, on this donor — is
+     dropped rather than shipped as an empty mesh with a live material keeping
+     4K textures alive behind it. */
+  if (CLIP) {
+    let live = 0;
+    for (const prim of mesh.listPrimitives()) {
+      const r = clipPrimitive(doc, prim, matrix);
+      clipBefore += r.before; clipAfter += r.after;
+      if (r.after === 0) prim.dispose(); else live++;
+    }
+    if (!live) { mesh.dispose(); continue; }
+  }
+
+  const n = (seen[role] = (seen[role] ?? -1) + 1);
+  const id = `${role}_${n}`;
+  const flat = doc.createNode(id).setMatrix(matrix).setMesh(mesh);
+  scene.addChild(flat);
+  (manifest.parts[role] ??= []).push({
+    name: id,
+    donorName: node.getName(),      // kept for tracing back to the source file
+    tris: Math.round(triCount(mesh)),
+    bbox: worldBounds(mesh, matrix),
+  });
+}
+function worldBounds(mesh, m) {
+  let lo = null, hi = null;
+  for (const p of mesh.listPrimitives()) {
+    const a = p.getAttribute("POSITION"); const mn = a.getMin([]), mx = a.getMax([]);
+    for (let c = 0; c < 8; c++) {
+      const v = [c & 1 ? mx[0] : mn[0], c & 2 ? mx[1] : mn[1], c & 4 ? mx[2] : mn[2]];
+      const w = [m[0]*v[0]+m[4]*v[1]+m[8]*v[2]+m[12], m[1]*v[0]+m[5]*v[1]+m[9]*v[2]+m[13], m[2]*v[0]+m[6]*v[1]+m[10]*v[2]+m[14]];
+      if (!lo) { lo = w.slice(); hi = w.slice(); }
+      for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], w[k]); hi[k] = Math.max(hi[k], w[k]); }
+    }
+  }
+  return [lo.map((v) => +v.toFixed(4)), hi.map((v) => +v.toFixed(4))];
+}
+
+
+if (steering) manifest.steering = steering;
 
 for (const s of root.listScenes()) if (s !== scene) s.dispose();
 root.setDefaultScene(scene);
