@@ -223,8 +223,8 @@ const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM"];
 
 /* Dashcam mount, as an offset from the driver's eye (see cockpit.ts EYE): high
    over the dash, a little inboard of the driver, aimed down across the cluster.
-   In cockpit-local terms x 0.28, y 1.32, z 0.31 — 0.61 m forward of the eye and
-   3 cm below it. dx is scaled with the shell width for the same reason the eye
+   In cockpit-local terms x 0.28, y 1.20, z 0.31 — 0.61 m forward of the eye and
+   15 cm below it. dx is scaled with the shell width for the same reason the eye
    is, so it keeps its position relative to the binnacle on every car.
 
    The framing is a three-way squeeze and the numbers are not free:
@@ -244,6 +244,16 @@ const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM"];
    The steering wheel rim cannot be had as well: including it forces the cluster
    up to ~40% down, which puts the interior over more than half the frame. */
 const POV_MOUNT = { dx: 0.28, dy: -0.03, dz: 0.61 };
+/* Mount height when an IMPORTED dash is in, 12 cm below the procedural one.
+   The two dashes want different lens heights and neither value works for both:
+   the procedural pad is shallow, and dy -0.03 is what clears it (all the
+   framing notes above were fitted at that height). A donor dash has real
+   depth, so from the same mount the lens looks down onto it from too far above
+   and reads as a camera on a pole rather than one stuck to the glass. -0.15
+   puts it ~13 cm over the Volvo pad top (y 1.07), about where a real
+   windscreen unit sits. Tied to which dash is actually visible rather than
+   picked globally, so the J toggle stays an honest A/B. */
+const POV_MOUNT_DY_IMPORTED = -0.15;
 /* 13 degrees of nose-down, on top of whatever the body is doing. This is what
    rakes the dial faces into the bottom of the frame instead of showing their
    top edge side-on, and it settles the horizon at ~34% down. Raising it further
@@ -266,6 +276,15 @@ export class Game {
   running = false; // simulation advancing (menus closed)
   rain = false;
   grade = false; // set from settings.dashcam in the constructor
+  dashImported = true; // J toggles; only meaningful once a donor dash has loaded
+
+  /** Lens height for the dash currently on screen. Reads live rather than
+      being cached, so the J toggle moves the camera in the same frame it
+      swaps the dash — otherwise the A/B compares two dashes at one height and
+      whichever one it does not suit loses unfairly. */
+  private povMountDy(): number {
+    return this.rig.cockpitModel && this.dashImported ? POV_MOUNT_DY_IMPORTED : POV_MOUNT.dy;
+  }
   mirror = true;
   mmap = true;
   time = 21.4;
@@ -700,6 +719,19 @@ export class Game {
       this.mirror = !this.mirror;
       this.rig.cockpit.setMirrorVis(this.mirror);
       this.ui.toast("MIRROR " + (this.mirror ? "ON" : "OFF"));
+    }
+    /* A/B the imported dash against the procedural one. Both are built and
+       resident, so this is a visibility flip — the point is to be able to
+       judge the import against what it replaces in the same frame and the
+       same light, which is the only comparison that means anything. */
+    if (k === "j") {
+      const m = this.rig.cockpitModel;
+      if (!m) this.ui.toast("NO IMPORTED DASH");
+      else {
+        this.dashImported = !this.dashImported;
+        m.setActive(this.dashImported);
+        this.ui.toast("DASH " + (this.dashImported ? "IMPORTED" : "PROCEDURAL"));
+      }
     }
     if (k === "n") {
       this.resetCar();
@@ -2065,7 +2097,7 @@ export class Game {
             // scaled with the shell like the cockpit eye is, so the lens keeps
             // its position relative to the binnacle on a narrower or wider car
             POV_MOUNT.dx * (P.W / COCKPIT_REF.W),
-            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + POV_MOUNT.dy,
+            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + this.povMountDy(),
             COCKPIT_EYE.z + POV_MOUNT.dz
           )
         )

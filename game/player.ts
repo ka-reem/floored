@@ -5,6 +5,13 @@ import {
 } from "./carshape";
 import { paintTexF, carbonTexF } from "./textures";
 import { buildCockpit, COCKPIT_REF, type Cockpit } from "./cockpit";
+import { attachCockpitModel, type CockpitModelHandle } from "./cockpitmodel";
+
+/* Which donor dash to load, or "" for none. A build stem under
+   public/models/cockpits/ — see tools/build-cockpit.mjs. Deliberately a plain
+   constant while this is a prototype: it is one edit to turn off, and there is
+   no reason to grow a settings surface for it before it has earned one. */
+const COCKPIT_MODEL = "volvo-s90";
 import { carEnvMap, isSharedEnv, trackEnvMaterial, untrackEnvMaterial } from "./carenv";
 import { paintByHex, type CarSpec, type Paint } from "./carspecs";
 /* The headlight carpet's alpha field: a WEDGE spreading forward from the
@@ -260,6 +267,9 @@ export interface PlayerRig {
   bodyG: THREE.Group;
   exteriorG: THREE.Group;
   cockpit: Cockpit;
+  /** The imported dash once it has loaded, else null. Null is the normal
+      steady state when no donor is configured or the fetch failed. */
+  readonly cockpitModel: CockpitModelHandle | null;
   pivFL: THREE.Group;
   pivFR: THREE.Group;
   wheels: THREE.Group[];
@@ -674,8 +684,18 @@ export function buildPlayerCar(
   cockpit.group.scale.x = P.W / COCKPIT_REF.W;
   bodyG.add(cockpit.group);
 
+  /* Imported dash, if one is configured. Fire-and-forget: the procedural dash
+     above is already on screen and stays there until (and unless) this lands.
+     NOTE the x-scale on the group above also stretches the donor. That is
+     consistent with how the procedural trim is fitted to each car's width, but
+     a real dash is not a stretchable object — narrow it to the procedural
+     region once a donor is more than a prototype. */
+  const rigRef = { model: null as CockpitModelHandle | null };
+  if (COCKPIT_MODEL) attachCockpitModel(cockpit, COCKPIT_MODEL, (h) => { rigRef.model = h; });
+
   return {
     spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,
+    get cockpitModel() { return rigRef.model; },
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
     beamCarpet, beamCarpetMat, beamCarpetG: carpetG,

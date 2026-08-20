@@ -43,6 +43,23 @@ export interface Cockpit {
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
   drawScreen(x: number, z: number, h: number, time: number, world?: NavWorld): void;
   dropletsUpdate(dt: number, wiping: boolean, wiperRotZ: number, raining: boolean, speed: number): void;
+
+  /* --- swap points for an imported dash (cockpitmodel.ts) ------------------
+     The procedural dash stays built and stays the fallback; a donor model
+     hides these and re-anchors the live parts onto its own geometry. */
+
+  /** Every merged mesh in the "dash" region — pad, binnacle, vents, stack,
+      console, head-unit body. Hiding this leaves the rest of the cabin (door
+      cards, pillars, roof, seats, glass) untouched. */
+  dashGroup: THREE.Group;
+  /** The live instrument cluster. Re-anchored onto the donor's binnacle rather
+      than rebuilt: the needles are real geometry, not a texture. */
+  clusterGroup: THREE.Group;
+  /** The head unit's glass plane. Hidden when a donor supplies its own. */
+  screenMesh: THREE.Mesh;
+  /** The canvas behind that plane. Bound onto the donor's screen material so
+      the nav map keeps drawing wherever the screen physically ends up. */
+  screenTexture: THREE.Texture;
 }
 
 /** Rest state of `glassLight` — the pose and look it has when nothing is
@@ -702,9 +719,18 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   /* --- static-geometry accumulator ---------------------------------------- */
 
   type P3 = [number, number, number];
-  const buckets = new Map<THREE.Material, THREE.BufferGeometry[]>();
+  const buckets = new Map<string, { mat: THREE.Material; region: string | null; gs: THREE.BufferGeometry[] }>();
   const _m = new THREE.Matrix4(), _q = new THREE.Quaternion();
   const _e = new THREE.Euler(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1);
+
+  /* Merging is per (material, region) rather than per material alone. Region is
+     null for most of the cabin, which costs nothing — those still collapse to
+     one mesh each. The point is the "dash" region: an imported cockpit model
+     (cockpitmodel.ts) replaces the dash and only the dash, so that geometry has
+     to end up in meshes of its own that can be hidden as a set. Merged into the
+     shared per-material meshes it would be inseparable from the door cards and
+     seats, which the import does NOT replace. */
+  let curRegion: string | null = null;
 
   /** Place a geometry into its material's merge bucket. `uv` rescales the UVs
       so the grain keeps a constant world density across differently sized parts. */
@@ -728,21 +754,33 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     const ng = g.index ? g.toNonIndexed() : g;
     ng.clearGroups();
     ng.deleteAttribute("uv1");
-    let arr = buckets.get(mat);
-    if (!arr) buckets.set(mat, (arr = []));
-    arr.push(ng);
+    const key = `${mat.uuid}|${curRegion ?? ""}`;
+    let b = buckets.get(key);
+    if (!b) buckets.set(key, (b = { mat, region: curRegion, gs: [] }));
+    b.gs.push(ng);
   }
 
-  /** Merge every bucket down to one mesh per material. */
+  /* Bracketing rather than a wrapping closure: the dash spans ~280 lines of
+     `put` calls and re-indenting all of them to pass a callback would bury the
+     one line that actually changed. */
+  const beginRegion = (name: string) => { curRegion = name; };
+  const endRegion = () => { curRegion = null; };
+
+  /** Meshes merged under region "dash", so an imported dash can hide them. */
+  const dashG = new THREE.Group();
+  dashG.name = "proceduralDash";
+  interiorG.add(dashG);
+
+  /** Merge every bucket down to one mesh per material and region. */
   function flush() {
-    for (const [mat, gs] of buckets) {
+    for (const { mat, region, gs } of buckets.values()) {
       const merged = gs.length === 1 ? gs[0] : mergeGeometries(gs, false);
       if (!merged) continue;
       merged.computeBoundingSphere();
       const mm = new THREE.Mesh(merged, mat);
       // named per material so headless test harnesses can toggle merge buckets
-      if (mat.name) mm.name = `merged:${mat.name}`;
-      interiorG.add(mm);
+      if (mat.name) mm.name = `merged:${mat.name}${region ? `@${region}` : ""}`;
+      (region === "dash" ? dashG : interiorG).add(mm);
     }
     buckets.clear();
   }
@@ -761,6 +799,12 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const padTilt = (z: number) => Math.atan(2.974 * padU(z) - 0.0457);
 
   /* ------------------------------------------------------------ dash shell */
+
+  /* Everything from here to the door cards is what an imported cockpit model
+     stands in for: pad, binnacle, vents, facia, centre stack, centre console.
+     Door cards, pillars, roof, seats and glass are NOT in the region — those
+     stay procedural whichever dash is in use. */
+  beginRegion("dash");
 
   /* Side profile of the dash in the (z, y) plane: facia rising to a rolled top
      edge, then the pad sweeping forward and down to the base of the screen.
@@ -1044,6 +1088,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     put(box(0.005, 0.006, 0.3), stitch, [-0.115, 0.926, -0.45]);
   }
 
+  endRegion();
+
   /* --------------------------------------------------------- door cards */
 
   for (const s of [-1, 1]) {
@@ -1306,6 +1352,13 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   scrMesh.position.set(SCR.x, SCR.y, SCR.z);
   scrMesh.rotation.set(SCR.tilt, Math.PI - SCR.yaw, 0);
   interiorG.add(scrMesh);
+  /* The tablet is dash furniture, so it belongs to the "dash" region even
+     though it is built down here with the rest of the screen plumbing: a donor
+     model brings its own head unit and this one has to go with the pad. The
+     glass plane above stays out of the region and is hidden separately — the
+     canvas it carries is re-bound onto the donor's screen mesh, not thrown
+     away with the bezel. */
+  beginRegion("dash");
   /* Tablet body: slim piano-black slab + bezel lip around the glass. The
      body pieces face +z (away from the seat) while the glass faces -z, so
      the rotation that keeps a body piece coplanar with the glass at
@@ -1327,6 +1380,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      edge, so the unit reads as clamped to the dash top. */
   put(rbox(0.10, 0.20, 0.04, 0.012), piano,
     [SCR.x, SCR.y - 0.15, SCR.z + 0.03], [SCR.tilt * 1.6, -SCR.yaw, 0]);
+  endRegion();
 
   const NAV_R = 95; // metres of road drawn around the car
   const CX = 128, CY = 116; // car sits low on the screen so more road ahead is visible
@@ -1627,5 +1681,9 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     drawGauges,
     drawScreen,
     dropletsUpdate,
+    dashGroup: dashG,
+    clusterGroup: cluster.group,
+    screenMesh: scrMesh,
+    screenTexture: scrTex,
   };
 }
