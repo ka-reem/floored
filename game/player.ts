@@ -7,6 +7,79 @@ import { paintTexF, carbonTexF } from "./textures";
 import { buildCockpit, COCKPIT_REF, type Cockpit } from "./cockpit";
 import { carEnvMap, isSharedEnv, trackEnvMaterial, untrackEnvMaterial } from "./carenv";
 import { paintByHex, type CarSpec, type Paint } from "./carspecs";
+/* The headlight carpet's alpha field: a WEDGE spreading forward from the
+   bumper, not a radial pool.
+
+   The first cut of this borrowed poolGradientTex() from world/decaltex.ts,
+   which is a centred radial fade — correct for a cobra head, which hangs above
+   its own pool, and wrong for a car, which is behind its light. Stretched over
+   a quad whose near end sat several metres behind the lamp line, it rendered as
+   a HALO AROUND THE CAR: light on the tarmac beside the doors and behind the
+   rear wheels, brightest somewhere out in the middle of it. Headlights only
+   throw forward, so the shape has to be built rather than borrowed.
+
+   Three properties, all of them load-bearing:
+
+   - Zero at the near edge, rising over the first ~20%. There is no light
+     behind the bumper and no hard line at the quad's leading edge either; the
+     wash starts from nothing and comes up.
+   - Deliberately FLAT rather than peaked. The first shaping of this ramped up
+     over 22% and fell as (1-s)^1.5 with a 1.6-power lateral, which put a lot
+     of its alpha into a small bright core — and since the POV chain crushes
+     everything under 0.06 to pure black, the visible wash was a sliver about
+     1 m either side of centre while the rest of the wedge sat below the floor.
+     Flattening it (ramp 0.12, tail exponent 0.55, lateral 0.8, amplitude 0.52)
+     covers 40 m2 of road above that floor instead of 16 at the SAME peak
+     level. Spread comes from where the alpha is spent, not from more of it:
+     the peak is a hue and clipping budget, the tail is what you actually see.
+   - The lateral half-width GROWS with distance, 0.18 -> 1.0 of the quad's, so
+     it is a wedge. Beside the front wheels it is barely a metre wide; by the
+     far end it spans the carriageway. That divergence is what makes it read as
+     light leaving two lamps rather than a shape laid on the road.
+
+   Lateral profile is (1 - (x/hw)^2)^1.6 — smooth, and exactly zero at the
+   wedge edge, so no side of this quad can print an edge.
+
+   Colour is halogen, near-white with a faint warmth cooling very slightly
+   toward the skirt. Explicitly NOT the sodium of the lamp pools: sharing that
+   texture made the car throw an orange pool and read as if the streetlights
+   themselves had been changed. The falloff is a fact about how light fades and
+   is worth sharing; the colour is a fact about the lamp and is not. */
+function carpetBeamTex(): THREE.Texture {
+  const S = 128;
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = S;
+  const ctx = cv.getContext("2d")!;
+  const img = ctx.createImageData(S, S);
+  const ss = (a: number, b: number, x: number) => {
+    const t = Math.min(Math.max((x - a) / (b - a), 0), 1);
+    return t * t * (3 - 2 * t);
+  };
+  for (let y = 0; y < S; y++) {
+    /* CanvasTexture flips Y and PlaneGeometry's +y maps to -z once the mesh is
+       laid flat, so canvas row 0 is the end nearest the car. `s` is therefore
+       distance along the beam, 0 at the bumper to 1 at the far edge. */
+    const s = y / (S - 1);
+    const lon = ss(0, 0.12, s) * Math.pow(Math.max(0, 1 - s), 0.55);
+    const hw = 0.18 + 0.82 * s;
+    for (let x = 0; x < S; x++) {
+      const u = (x / (S - 1)) * 2 - 1;
+      const q = Math.abs(u) / hw;
+      const lat = q >= 1 ? 0 : Math.pow(1 - q * q, 0.8);
+      const a = 0.52 * lon * lat;
+      const i = (y * S + x) * 4;
+      img.data[i] = 255;
+      img.data[i + 1] = Math.round(246 + 6 * s);
+      img.data[i + 2] = Math.round(230 + 14 * s);
+      img.data[i + 3] = Math.round(Math.min(1, a) * 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
 
 /* Player car assembly: smoothed shell + parametric detailing (bumpers, trim,
    panel gaps, door furniture, grille, lamps, mirrors, spoiler, exhausts),
@@ -199,6 +272,16 @@ export interface PlayerRig {
       engine.ts for the geometry. */
   spreadL: THREE.SpotLight;
   spreadR: THREE.SpotLight;
+  /** The wide soft carpet of light on the tarmac ahead — a gradient decal, not
+      a light. See the build below for why the spotlights cannot do this job.
+      Driven per-frame in engine.ts: `beamCarpetMat.opacity` for level,
+      `beamCarpet.scale`/`position.z` for the mode's footprint, and
+      `beamCarpetG.rotation.x` for the deck grade. */
+  beamCarpet: THREE.Mesh;
+  beamCarpetMat: THREE.MeshBasicMaterial;
+  /** Yaw-only parent of `beamCarpet`; pitch this to the deck grade, never to
+      the car body (see the build comment). */
+  beamCarpetG: THREE.Group;
   headMat: THREE.MeshStandardMaterial;
   tailMat: THREE.MeshStandardMaterial;
   sigMatL: THREE.MeshStandardMaterial;
@@ -528,6 +611,63 @@ export function buildPlayerCar(
   spreadL.target = spreadTgtL;
   spreadR.target = spreadTgtR;
 
+  /* ---- the carpet: the wide soft light on the road ahead ----
+
+     This is a gradient DECAL, not a light, and that is the whole point. A
+     spotlight cannot produce what a real dipped beam looks like from inside
+     the car, and the reason is geometric rather than a matter of tuning: the
+     cut-off has to sit just below horizontal or the beam blinds oncoming
+     traffic, and pinning the upper edge there forces a symmetric cone to aim
+     its bright axis down into the tarmac a metre or two past the bumper. Open
+     the cone up for width and that axis lands closer and hotter — the blown
+     white slab. Close it down to move the hot spot away and it reads as a
+     narrow shaft. Both failure modes were shipped and rejected in turn, and
+     no intensity, decay or penumbra value escapes the trade, because it comes
+     from where a 0.6 m-high lamp with a horizontal cut-off can point.
+
+     The highway's sodium lamps have looked right for exactly this reason: the
+     pools under them are quads carrying poolGradientTex — a 15-stop monotone
+     fade with a long low tail (see world/decaltex.ts) — and not lights at
+     all. Same instrument here. A decal has no cone, so width is free, the
+     falloff is whatever the texture says, and there is no boundary anywhere
+     in it for the POV grade's blown-highlight clip to print as a hard line.
+
+     One quad for both lamps, deliberately. Real headlights an axle-width
+     apart throw overlapping beams that merge into a single field within a few
+     metres, and the two-pools-of-light look is a rendering artefact rather
+     than something drivers see. Since the gradient is radial and the quad is
+     stretched long, it reads as one elongated wash centred well down the road
+     — the brightest part is out where you are looking, not against the hood.
+
+     Parented to carGroup, which yaws but does not pitch or roll: the carpet
+     belongs to the ROAD, and if it rode bodyG it would tilt into the tarmac
+     under braking and lift off it under acceleration. engine.ts pitches it by
+     the deck grade alone, per frame, for the same reason. */
+  const carpetG = new THREE.Group();
+  const beamCarpetMat = new THREE.MeshBasicMaterial({
+    map: carpetBeamTex(),
+    color: 0xfff2e0,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    fog: true,
+  });
+  const beamCarpet = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), beamCarpetMat);
+  beamCarpet.rotation.x = -Math.PI / 2;
+  /* Above the road but below the painted markings' own decals, and no depth
+     write, so it never z-fights the deck and never occludes the retro paint
+     it is supposed to be lighting. Frustum culling off: the quad's centre can
+     sit 10 m ahead of the car while its near skirt is still behind the
+     camera, which is exactly the case three's bounding-sphere test gets wrong
+     often enough to make the light flicker at the edge of the screen. */
+  beamCarpet.position.set(0, 0.06, 12);
+  beamCarpet.renderOrder = 3;
+  beamCarpet.frustumCulled = false;
+  carpetG.add(beamCarpet);
+  carGroup.add(carpetG);
+
   /* cockpit */
   const cockpit = buildCockpit(spec.cockpitAccent, mirrorTexture, spec.id);
   cockpit.group.position.y = P.belt - COCKPIT_REF.belt;
@@ -538,6 +678,7 @@ export function buildPlayerCar(
     spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
+    beamCarpet, beamCarpetMat, beamCarpetG: carpetG,
     halfW: P.W / 2 + 0.02,
     halfL: L2 + 0.02,
     dispose(sceneRef: THREE.Scene) {

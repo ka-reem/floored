@@ -883,6 +883,62 @@ export function buildHighway(
   }
 
   /* ---------------- streetlights ---------------- */
+  /* Deck lamp pool footprint — ASYMMETRIC, and hung off the head, not off the
+     road centre. An earlier pass centred the pool at 0.30·hw to get it out over
+     the lanes, which put its hot core 3.65 m inboard of the head that supposedly
+     casts it; a bright patch that is not under its lamp is exactly what reads as
+     a spotlight rather than as light falling from a fitting. So the core goes
+     back under the head and the road coverage comes from asymmetry instead:
+     - OUT: 1.5 m outboard, head → parapet. The head hangs 1.32 m inboard of the
+       parapet (arm 1.55 m in from a pole 0.23 m out), so 1.5 m lands the outer
+       edge just past the barrier base, where the wall hides the last of it.
+       Constant in metres, not a fraction of hw: the arm geometry does not widen
+       with the deck, so this distance is the same on three lanes and on six.
+     - IN_F: 1.68·hw inboard, i.e. across the carriageway, stopping ~1 m short of
+       the far shoulder so nothing overhangs the opposite edge. A fraction
+       because this one DOES have to track the deck, which runs three lanes for
+       most of its length and six through the toll plaza.
+     Real cobra heads throw like this — across the roadway, not back over the
+     barrier — so the asymmetry is what the fitting would actually do, and it
+     also makes the far-side overhang impossible by construction.
+     - B: metres, not a fraction: set by PITCH.light (50 m). Lamps alternate
+       sides on the lattice parity, so same-side pools sit 100 m apart, and even
+       at 25 m of half-length the pools of adjacent stations only just meet, and
+       they meet at their zero-alpha extremes where nothing prints. The
+       along-road fade is the one the driver actually travels through, so it is
+       the one worth the metres. */
+  const POOL_OUT = 1.5, POOL_IN_F = 1.68, POOL_B = 25.0;
+
+  /* Longitudinal UV banding: [texture radius fraction, POOL_B fraction].
+     The pool gradient itself is deliberately NOT reshaped — it looks right and
+     is shared with the town lamps. The problem it has is one of ALLOCATION: its
+     low tail (alpha .086 → 0) occupies the final 3% of its radius, so under a
+     uniform mapping that tail gets ~3% of the pool's length — about 30 cm of
+     road at the old B, which is why the light appeared to stop dead.
+
+     So instead of moving the stops, move the SAMPLING. Splitting the quad
+     longitudinally and advancing texture radius more slowly than distance hands
+     the outer, dimmer part of the same curve a disproportionate share of the
+     ground: the inner 60% of the radius covers 8 m, the outer 40% covers 14 m.
+     Identical texture, identical curve shape; the .086 -> 0 tail goes from 0.6 m
+     of road to 3.5 m (5.8x) and the visible .25 -> .05 fade from 2.3 m to 8.8 m
+     (3.8x). (Same technique as the lateral split above — see emitPool.)
+
+     The banding is weighted hardest at the very END, where it matters most: the
+     POV chain crushes with `max(col-.06,0)`, an absolute cliff to zero, so the
+     last transition cannot be removed — it can only be moved somewhere the light
+     is already faint and the shadow grain dithers across it. Hence the four
+     closely-spaced outer entries: r .84->1 (alpha .18 -> 0) is given 44% of the
+     pool's length. Metres are taken from the mid-range to pay for it rather than
+     by growing the pool much, so the bright core is unchanged.
+
+     Alpha along the road that this produces: .35 at 8 m, .25 at 11 m, .18 at
+     14 m, .13 at 16.5 m, .086 at 19.8 m, 0 at 25 m. */
+  const POOL_LONG: readonly (readonly [number, number])[] = [
+    [0, 0], [0.24, 0.10], [0.44, 0.20], [0.60, 0.32],
+    [0.74, 0.44], [0.84, 0.56], [0.90, 0.68], [0.95, 0.82],
+    [0.98, 0.92], [1, 1],
+  ];
   const lightPts: number[] = [];
   {
     const poleG = new THREE.CylinderGeometry(0.09, 0.12, 7.6, 6);
@@ -950,8 +1006,13 @@ export function buildHighway(
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, w, h);
     });
-    // wider than the first pass (hem 2.05 → 3.0) and peak opacity down: the
-    // read is hazy air around the lamp, not a solid shaft
+    /* Hem 2.05 → 3.0, and NOT wider. A pass in this session took it to 6.5 m to
+       fan the shaft over the lanes; that was the wrong tool for the wrong
+       complaint — the airborne shaft is not what makes a lamp read as lighting
+       the road, the pool on the tarmac is, and a 6.5 m fan is a large translucent
+       object hanging over the carriageway that reads as haze-in-a-cone rather
+       than as light. The road pool carries the effect now (see emitPool); this
+       stays a restrained hint of scattered air around the head. */
     const coneG = new THREE.CylinderGeometry(0.5, 3.0, 7.1, 14, 1, true);
     /* fog stays ON: with additive blending the night fog colour is near
        black, so fogging is what fades a cone out with distance instead of
@@ -970,7 +1031,8 @@ export function buildHighway(
     /* Two shader-side fades:
        - a view-distance fade: driving under a lamp puts the camera inside
          its cone, and even the back wall alone washes half the frame orange;
-         fading out inside ~18 m keeps the shafts a mid-distance effect;
+         fading out inside ~18 m keeps the shafts a mid-distance effect (this
+         went to 9→24 m alongside the 6.5 m hem and comes back with it);
        - the fresnel term described above: alpha ∝ |view·normal|^1.5, full
          face-on, zero at the profile edge, so the silhouette has no line to
          draw. (three prepends the normal attribute + normalMatrix uniform to
@@ -1002,6 +1064,64 @@ export function buildHighway(
     const wantPools = FX_LAMP_POOLS && caps.lampPoolEvery !== 0;
     const poolEvery = Math.max(1, caps.lampPoolEvery ?? 1);
     const poolPos: number[] = [], poolUv: number[] = [];
+    /* One lamp pool, emitted as TWO quads split along the head's lateral line.
+
+       The shared pool gradient (poolGradientTex) is a centred radial fade that
+       reaches zero at the quad edge, and UVs interpolate linearly across a
+       quad — so a single quad can only ever give a SYMMETRIC pool. Splitting at
+       u = 0.5 and giving each half a different width in metres stretches the
+       same gradient asymmetrically: the outboard half spends half the texture
+       over POOL_OUT metres (a quick rise from the barrier base up to the head)
+       and the inboard half spends the other half over `inboard` metres (a long
+       fade out across the lanes). Alpha is identical at u = 0.5 on both sides,
+       so the seam does not print; only the falloff SLOPE changes there, and it
+       changes over the shoulder beside the head rather than out in a lane.
+
+       Doing it in UV space is deliberate: the deck pools ride the town lamps'
+       material instance so that engine.ts's day/night opacity pass and
+       tintLampsSodium() drive all of it with zero engine changes (see
+       townmesh.ts). A purpose-built asymmetric texture would have cost a second
+       material and two more things to keep in sync. */
+    const emitPool = (
+      p: { x: number; z: number; nx: number; nz: number; tx: number; tz: number; grade: number },
+      lampLat: number, flip: number, inboard: number, yAt: (lat: number) => number,
+    ) => {
+      const g = p.grade, tn = 1 / Math.hypot(1, g);
+      const tX = p.tx * tn, tY = g * tn, tZ = p.tz * tn; // unit tangent w/ grade
+      /* grade-aligned along the road so neither end lifts off a climbing deck,
+         and yAt() carries the bypass's cross-fall where the deck has none */
+      const vert = (lat: number, m: number, u: number, v: number) => {
+        poolPos.push(
+          p.x + lat * p.nx + m * tX,
+          yAt(lat) + 0.055 + m * tY,
+          p.z + lat * p.nz + m * tZ,
+        );
+        poolUv.push(u, v);
+      };
+      /* one cell of the lateral x longitudinal grid; the pool material is
+         DoubleSide, so winding does not matter here */
+      const cell = (
+        latA: number, uA: number, latB: number, uB: number,
+        mA: number, vA: number, mB: number, vB: number,
+      ) => {
+        vert(latA, mA, uA, vA); vert(latB, mA, uB, vA); vert(latB, mB, uB, vB);
+        vert(latA, mA, uA, vA); vert(latB, mB, uB, vB); vert(latA, mB, uA, vB);
+      };
+      const lanes: readonly (readonly [number, number, number, number])[] = [
+        [lampLat + flip * POOL_OUT, 0, lampLat, 0.5], // barrier side, short
+        [lampLat, 0.5, lampLat - flip * inboard, 1],  // carriageway, long
+      ];
+      for (const [latA, uA, latB, uB] of lanes)
+        for (const s of [-1, 1] as const)
+          for (let i = 0; i < POOL_LONG.length - 1; i++) {
+            const [rA, fA] = POOL_LONG[i], [rB, fB] = POOL_LONG[i + 1];
+            cell(
+              latA, uA, latB, uB,
+              s * fA * POOL_B, 0.5 + s * rA * 0.5,
+              s * fB * POOL_B, 0.5 + s * rB * 0.5,
+            );
+          }
+    };
     const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
       E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
     let n = 0, nc = 0;
@@ -1020,7 +1140,8 @@ export function buildHighway(
       const p = cor.pose(z);
       // mounted on the parapet, not inside the shoulder where a car scraping
       // the barrier would drive through the pole
-      const lat = flip * (cor.halfWidth(z) + 0.23);
+      const hw = cor.halfWidth(z);
+      const lat = flip * (hw + 0.23);
       E.set(0, p.h, 0);
       Q.setFromEuler(E);
       V.set(p.x + lat * p.nx, p.y + 3.8, p.z + lat * p.nz);
@@ -1052,27 +1173,9 @@ export function buildHighway(
         M.compose(V, Q, S);
         cones.setMatrixAt(nc++, M);
       }
-      if (wantPools && keepNth(poolEvery)) {
-        /* ellipse centred a stride inboard of the head, long axis down the
-           road; grade-aligned via the vertical tangent component so neither
-           end lifts off a climbing deck */
-        const cLat = lampLat - flip * 0.8;
-        const cx = p.x + cLat * p.nx, cz = p.z + cLat * p.nz;
-        const cy = p.y + 0.055;
-        const g = p.grade, tn = 1 / Math.hypot(1, g);
-        const tX = p.tx * tn, tY = g * tn, tZ = p.tz * tn; // unit tangent w/ grade
-        const A = 3.9;  // lateral half axis
-        const B = 5.6;  // longitudinal half axis (elongated along the road)
-        const corner = (sa: number, sb: number): [number, number, number] => [
-          cx + sa * A * p.nx + sb * B * tX,
-          cy + sb * B * tY,
-          cz + sa * A * p.nz + sb * B * tZ,
-        ];
-        const c00 = corner(-1, -1), c10 = corner(1, -1),
-          c11 = corner(1, 1), c01 = corner(-1, 1);
-        poolPos.push(...c00, ...c10, ...c11, ...c00, ...c11, ...c01);
-        poolUv.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
-      }
+      // pool hangs off the head itself (lampLat), flat deck so yAt is constant
+      if (wantPools && keepNth(poolEvery))
+        emitPool(p, lampLat, flip, hw * POOL_IN_F, () => p.y);
       n++;
     }
     /* the viaduct's lights: same fittings, bypass station frame, cross-fall
@@ -1112,23 +1215,10 @@ export function buildHighway(
           M.compose(V, Q, S);
           cones.setMatrixAt(nc++, M);
         }
-        if (wantPools && idx % poolEvery === 0) {
-          const cLat = lampLat - flip * 0.8;
-          const cx = p.x + cLat * p.nx, cz = p.z + cLat * p.nz;
-          const cy = sy(cLat) + 0.055;
-          const g = p.grade, tn = 1 / Math.hypot(1, g);
-          const tX = p.tx * tn, tY = g * tn, tZ = p.tz * tn;
-          const A = 3.9, B = 5.6;
-          const corner = (sa: number, sb: number): [number, number, number] => [
-            cx + sa * A * p.nx + sb * B * tX,
-            cy + sb * B * tY,
-            cz + sa * A * p.nz + sb * B * tZ,
-          ];
-          const c00 = corner(-1, -1), c10 = corner(1, -1),
-            c11 = corner(1, 1), c01 = corner(-1, 1);
-          poolPos.push(...c00, ...c10, ...c11, ...c00, ...c11, ...c01);
-          poolUv.push(0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1);
-        }
+        // same emitter as the deck — the bypass's own half-width stands in for
+        // the deck's, and sy() folds its cross-fall into every vertex height
+        if (wantPools && idx % poolEvery === 0)
+          emitPool(p, lampLat, flip, hw * POOL_IN_F, sy);
         n++;
       }
     }

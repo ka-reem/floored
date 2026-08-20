@@ -35,11 +35,21 @@ export interface Cockpit {
    * dashcam degrade, so it needs the mesh — geometry + live matrixWorld — by
    * name rather than by array position. */
   mirrorGlass: THREE.Mesh;
+  /** The cool "city light through the glass" point light. Exposed because the
+   * engine rakes it front-to-back once per streetlight pitch, so a passing
+   * lamp reads as a wash sweeping over the trim; see LAMP_WASH in engine.ts. */
+  glassLight: THREE.PointLight;
   setMirrorVis(v: boolean): void;
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
   drawScreen(x: number, z: number, h: number, time: number, world?: NavWorld): void;
   dropletsUpdate(dt: number, wiping: boolean, wiperRotZ: number, raining: boolean, speed: number): void;
 }
+
+/** Rest state of `glassLight` — the pose and look it has when nothing is
+    driving it. The engine's streetlight wash animates away from these values
+    and must be able to put them back exactly, so they live here rather than as
+    literals at the construction site. */
+export const GLASS_REST = { y: 1.14, z: 1.0, intensity: 0.5, color: 0xbfd0ff };
 
 /* Dimensions the fixed interior geometry was modelled against (first car's shell) */
 export const COCKPIT_REF = { belt: 0.82, W: 1.84 };
@@ -1218,8 +1228,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      glass" that gives the pad top its grazing sheen in the reference photo.
      Without it the pad's upward face sees only ambient and reads as a flat
      navy sheet however good its leather maps are. */
-  const glassLight = new THREE.PointLight(0xbfd0ff, 0.5, 2.4, 2);
-  glassLight.position.set(0, 1.14, 1.0);
+  const glassLight = new THREE.PointLight(GLASS_REST.color, GLASS_REST.intensity, 2.4, 2);
+  glassLight.position.set(0, GLASS_REST.y, GLASS_REST.z);
   interiorG.add(glassLight);
 
   /* ---------------------------------------------------- window openings */
@@ -1612,6 +1622,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     wiperB,
     mirrorParts,
     mirrorGlass: mirrorMesh,
+    glassLight,
     setMirrorVis: (v) => mirrorParts.forEach((m) => (m.visible = v)),
     drawGauges,
     drawScreen,

@@ -146,6 +146,8 @@ export default function GameApp() {
       <div className="tc" id="tcG">▲</div>
       <div className="tc" id="tcB">▼</div>
       <div className="tc" id="tcC">CAM</div>
+      <div className="tc" id="tcF">LTS</div>
+      <div className="tc" id="tcH">HORN</div>
       {playing &&
         g &&
         g.settings.steerMode === "wheel" &&

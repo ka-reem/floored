@@ -408,7 +408,31 @@ type Lod = {
    elongated warm-white gradient and slid along the deck just ahead of the
    bumper. Generated locally on a small canvas — deliberately not imported
    from textures.ts, which other systems own. */
-const POOL_LEN = 8.6, POOL_W = 3.5, POOL_GAIN = 0.42, POOL_FADE_D = 240;
+/* Footprint, per user call for "more spread, less focused bright":
+   - POOL_W 3.5 → 5.2. At 3.5 m the pool did not even cover the 3.7 m lane the
+     car was in, so it read as a stripe under the bumper rather than as lit
+     road. 5.2 m spills about 0.75 m into each neighbouring lane, which is what
+     a real low beam does. Widening is also what makes a fake pool MORE visible
+     in the POV dashcam grade, not less: that pass crushes with
+     `max(col - .06, 0)`, so what survives is the count of pixels above the
+     floor, and a wide dim footprint has far more of them than a narrow bright
+     one.
+   - POOL_LEN 8.6 → 15.0, spent almost entirely on the tail (see POOL_ROWS).
+     The quad still starts behind the bumper: it is centred at
+     L/2 + 0.42·len ahead, so the near edge sits 0.08·len = 1.2 m BEHIND the
+     bumper line and its cut-off stays hidden under the nose of the car.
+   - POOL_GAIN 0.42 → 0.36. The "less focused bright" half of the request, and
+     deliberately small: the footprint grows 2.6x in area, so the net still
+     reads clearly wider rather than merely dimmer. */
+const POOL_LEN = 15.0, POOL_W = 5.2, POOL_GAIN = 0.36, POOL_FADE_D = 240;
+/* Canvas layout of the pool gradient, shared with the UV remap below so the
+   two can never drift apart. The gradient is a radial one centred POOL_HOT_Y
+   down the canvas, stretched POOL_EL× along y; texture radius fraction t runs
+   from POOL_R0 to POOL_R1 pixels. */
+const POOL_TEX_H = 128, POOL_HOT_Y = 40, POOL_EL = 2.1, POOL_R0 = 2, POOL_R1 = 30;
+/** canvas v coordinate at texture-radius fraction t, on the far (tail) side */
+const poolV = (t: number) =>
+  1 - (POOL_HOT_Y + POOL_EL * (POOL_R0 + (POOL_R1 - POOL_R0) * t)) / POOL_TEX_H;
 function poolTexture(): THREE.Texture {
   const c = document.createElement("canvas");
   c.width = 64;
@@ -421,13 +445,38 @@ function poolTexture(): THREE.Texture {
      laid flat) and feathers out well before every border so instances never
      show a seam. */
   g.save();
-  g.translate(32, 40);
-  g.scale(1, 2.1);
-  const grad = g.createRadialGradient(0, 0, 2, 0, 0, 30);
-  grad.addColorStop(0, "rgba(255,242,214,0.85)");
-  grad.addColorStop(0.35, "rgba(214,198,168,0.5)");
-  grad.addColorStop(0.75, "rgba(96,88,72,0.16)");
-  grad.addColorStop(1, "rgba(0,0,0,0)");
+  g.translate(32, POOL_HOT_Y);
+  g.scale(1, POOL_EL);
+  const grad = g.createRadialGradient(0, 0, POOL_R0, 0, 0, POOL_R1);
+  /* The core (t 0 → 0.35, the 0.85 → 0.5 region) is EXACTLY the old curve —
+     that part of the look is what the user likes. Everything past 0.35 is the
+     old single 0.5 → 0.16 → 0 ramp resampled as many closely-spaced stops on a
+     smooth decelerating curve, ending in a long low creep (0.135 → 0 spread
+     over the last 16% of the radius instead of the last 25% as a straight
+     line). Three linear segments are fine over an 8.6 m quad and print their
+     own knees as bands once stretched over 15 m; and a LINEAR outer ramp
+     crosses the POV crush floor at a definite radius, which is the "scoped"
+     circular edge rather than a fade.
+     Because this is additive over black, the composited texel is alpha × rgb,
+     so the RGB ramp is part of the falloff and is what makes the real curve
+     steeper than the alpha column suggests. The old tail dropped rgb to
+     (96,88,72) by t = 0.75 and then to black, doubling up on the alpha fade;
+     the new tail settles toward (110,101,84) and lets alpha carry the last of
+     it, so the creep stays a creep. */
+  const STOPS: readonly (readonly [number, number])[] = [
+    [0.00, 0.850], [0.35, 0.500], [0.45, 0.420], [0.55, 0.340],
+    [0.65, 0.265], [0.72, 0.215], [0.78, 0.175], [0.84, 0.135],
+    [0.89, 0.100], [0.93, 0.070], [0.96, 0.045], [0.98, 0.026],
+    [0.99, 0.014], [1.00, 0.0],
+  ];
+  for (const [t, a] of STOPS) {
+    // warm white in the core, cooling and darkening out through the skirt
+    const s = t <= 0.35 ? t / 0.35 : (t - 0.35) / 0.65;
+    const r = t <= 0.35 ? 255 - 41 * s : 214 - 104 * s;
+    const gg = t <= 0.35 ? 242 - 44 * s : 198 - 97 * s;
+    const b = t <= 0.35 ? 214 - 46 * s : 168 - 84 * s;
+    grad.addColorStop(t, `rgba(${Math.round(r)},${Math.round(gg)},${Math.round(b)},${a})`);
+  }
   g.fillStyle = grad;
   g.fillRect(-32, -20, 64, 64);
   g.restore();
@@ -658,7 +707,46 @@ export class Traffic {
        opaque road). Per-instance brightness rides in instanceColor, which is
        the one per-instance channel MeshBasicMaterial already understands —
        with additive blending, dimming the colour IS dimming the light. */
-    const poolGeo = new THREE.PlaneGeometry(1, 1);
+    /* Ten longitudinal segments, with the v coordinate rewritten NON-UNIFORMLY
+       along them. The pool's falloff problem is one of ALLOCATION, not shape:
+       the gradient's low tail occupies the last few percent of its radius, so
+       under the uniform UV mapping of a single quad that tail got a few percent
+       of the pool's length — centimetres of road, which reads as the light
+       stopping dead rather than fading. Advancing texture radius SLOWER than
+       distance toward the outer end hands the dim end of the same curve a
+       disproportionate share of the ground: the inner half of the radius now
+       covers 4.5 m and the outer half covers 10.5 m.
+
+       Weighted hardest at the very END, because the POV chain crushes with
+       `max(col - .06, 0)` — an absolute cliff to zero, which cannot be removed,
+       only moved to where the light is already faint and the shadow grain
+       dithers across it. Hence the tightly-spaced outer rows: t 0.835 → 1
+       (alpha .138 → 0) gets 40% of the pool's length, 6.0 m of road, against
+       1.0 m for the old .16 → 0 before.
+
+       Do NOT collapse this back to `PlaneGeometry(1, 1)` — the mesh is
+       instanced, so the extra vertices are paid once for the entire fleet, and
+       the single-quad version is exactly the defect. Row 0 is the near edge and
+       keeps v = 1: the gradient is still climbing there (alpha ~.30, mirrored
+       across the hot spot), and that edge sits behind the bumper, hidden under
+       the nose of the car. Row 1 is the hot spot, 1.5 m in. */
+    const POOL_ROWS: readonly number[] = [
+      -1, 0, 0.26, 0.47, 0.615, 0.74, 0.835, 0.895, 0.935, 0.968, 1.0,
+    ];
+    const poolGeo = new THREE.PlaneGeometry(1, 1, 1, POOL_ROWS.length - 1);
+    {
+      /* PlaneGeometry rows run +y (v = 1) → -y (v = 0), two vertices each;
+         rotateX below sends +y to -z, so row 0 / v = 1 stays the hot end and
+         the mapping the driving code assumes is preserved. */
+      const uv = poolGeo.attributes.uv as THREE.BufferAttribute;
+      for (let i = 0; i < POOL_ROWS.length; i++) {
+        const t = POOL_ROWS[i];
+        const v = t < 0 ? 1 : poolV(t);
+        uv.setY(i * 2, v);
+        uv.setY(i * 2 + 1, v);
+      }
+      uv.needsUpdate = true;
+    }
     poolGeo.rotateX(-Math.PI / 2); // face up; canvas "top" (hot end) → local -z
     this.poolInst = new THREE.InstancedMesh(
       poolGeo,
@@ -676,7 +764,7 @@ export class Traffic {
     this.poolInst.visible = false;
     scene.add(this.poolInst);
 
-    const mkCloud = (color: number, size: number): Cloud => {
+    const mkCloud = (color: number | THREE.Color, size: number): Cloud => {
       const arr = new Float32Array(N * 2 * 3);
       arr.fill(-999);
       const geo = new THREE.BufferGeometry();
@@ -691,9 +779,59 @@ export class Traffic {
       scene.add(pts);
       return { arr, geo, pts };
     };
+    /* Head glow: size 1.05 → 1.35 with the tint scaled 0.82× (0xcfe0ff →
+       0xa9b7d1 — a uniform scale, so the hue is untouched). Broader and softer:
+       1.65× the sprite area against a 0.82× peak, so the spread is not
+       cancelled by the dim, which is the request ("spread more, less focused
+       bright") in the one place NPC head glow is authored. Only the near field
+       is affected by SPRITE_MAX — the cap now engages inside ~15 m rather than
+       ~12 m, and everything beyond that is pure 1/z as before.
+       Tail/brake keep the size nudge (0.85 → 0.96, 1.5 → 1.62) from that pass.
+
+       Tail/brake TINTS are HDR triples, not hexes, because a hex cannot express
+       what these lamps need. Worked arithmetic, all of it against the post
+       chain rather than in isolation:
+
+       - The additive sprite core lands in sceneRT at `color × opacity(0.95) ×
+         texel(1)`, and the bloom bright-pass floor is `T - K = 0.40` post-
+         exposure (night uExp 0.98). Old tail 0xff3344 → luma 0.416, weight
+         0.0003. Old brake 0xff2233 → luma 0.372, weight 0.0000. So neither red
+         lamp bloomed AT ALL, which is why "brighter" never landed: a lamp with
+         no bloom is a flat coloured polygon, not a light source. Worse, brake
+         was the DARKER of the two in luma (0.372 < 0.416) despite being the
+         "bright" state — 0xff2233 is more saturated than 0xff3344 and the
+         .299/.587/.114 weighting charges saturated red about 3.2× against
+         white, so the extra saturation cost more luma than the size gained.
+       - sceneRT is HalfFloat (post.ts) and the bright pass only clamps at 14,
+         so components above 1.0 survive: the multiplier has to come from the
+         colour, since opacity is shared with every other cloud and caps at 1.
+       - Levels chosen: tail luma 0.676 (weight 0.0512, ~190× the old), brake
+         luma 0.947 — right at T, where the soft knee hands over to the hard
+         threshold — for weight 0.1435, 2.8× the tail's. Brake is a clear step
+         above tail in BOTH core level (red 3.05 vs 2.05) and bloom.
+       - Red carries almost all of it and g/b stay LOW on purpose. Two reasons.
+         The .299 weight means luma has to come from red anyway; and the POV
+         blown-highlight clip (post.ts, toward flat white above 0.72 luma) is
+         gated off by lampProtect for saturated pixels, so keeping saturation is
+         what buys the headroom. Pushing all three channels up uniformly would
+         have desaturated through ACES, dropped lampProtect and handed the lamp
+         to the clip. Checked, not assumed: through ACES + the 1/2.2 encode +
+         the vibrance term the tail arrives at luma 0.611 / saturation 0.610 →
+         lampProtect 1.00, and brake at 0.676 / 0.530 → 0.804; both are under
+         the 0.72 knee, so the clip contributes exactly 0.0 even before the
+         protection, and it stays 0.0 when the bloom is fed back in at up to 3×.
+       - The rendered hue barely moves even though the source is much redder:
+         ACES desaturates the high red on its way out, so post-grade the tail
+         reads (1.04, 0.43, 0.45) against the old (0.85, 0.39, 0.45) — the same
+         pinkish red, brighter. Picking the source against the grade rather than
+         by eye is the whole trick here.
+       sig/roof/police tints are deliberately untouched — no complaint about
+       them, and the amber already clears the floor (luma 0.638). */
     this.clouds = {
-      head: mkCloud(0xcfe0ff, 1.05), tail: mkCloud(0xff3344, 0.85),
-      brake: mkCloud(0xff2233, 1.5), sig: mkCloud(0xffa028, 1.05),
+      head: mkCloud(0xa9b7d1, 1.35),
+      tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.96),
+      brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.62),
+      sig: mkCloud(0xffa028, 1.05),
       roof: mkCloud(0xffb040, 0.95), polR: mkCloud(0xff3040, 1.5),
       polB: mkCloud(0x3d74ff, 1.5),
     };
@@ -2271,11 +2409,30 @@ export class Traffic {
          glow at a running level and jump on the brakes. These are radiance
          multipliers on lamp-flagged vertices (lampKind) — a model whose bake
          carries no lamp flags simply leaves its lighting to the glow
-         sprites, which is where today's Orchids fleet reads its lights. */
+         sprites, which is where today's Orchids fleet reads its lights.
+
+         And that is in fact ALL of the fleet: verified by dumping the `_LAMP`
+         accessor out of every public/models/cars/*.glb — min..max is 0..0 in
+         all nine files, because tools/build-orchids-models.mjs allocates
+         `lampKind` and then writes zeros into the GLB without ever tagging a
+         vertex. So this whole emissive path is inert today and the rear levels
+         below have no visual effect; the red lamps are 100% glow sprite (which
+         is why the tail/brake fix lives in the tint of those clouds).
+
+         The rear levels are still set to values that would be RIGHT the moment
+         a rebuild tags the lenses, rather than left at ones known to be wrong.
+         Emissive is `diffuseColor.rgb * lvl`, i.e. albedo-proportional, and a
+         red lens texel is roughly (0.62, 0.055, 0.06), luma ~0.22; the bloom
+         bright-pass floor is 0.40 post-exposure (uExp 0.98 at night). So the
+         old 1.5 gave luma 0.33 — BELOW the floor, a lamp that could not bloom —
+         and 3.4 gave 0.75. Matching the sprite targets (tail 0.68, brake 0.95)
+         wants 3.1 and 4.4. The lens albedo is an estimate from the source
+         artwork, not a measurement, so treat these as a starting point for
+         whoever tags the geometry. */
       const la = lod.lamp.array as Float32Array;
       const lit = night && !n.wreck;
       la[i * 2] = lit ? 2.2 : 0;
-      la[i * 2 + 1] = n.wreck ? 0 : n.brake ? 3.4 : lit ? 1.5 : 0;
+      la[i * 2 + 1] = n.wreck ? 0 : n.brake ? 4.4 : lit ? 3.1 : 0;
       if (d2 < WHEEL2) {
         const fx = sn, fz = c, rx = fz, rz = -fx;
         for (const [lo, so] of n.wheelOffs) {
