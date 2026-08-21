@@ -35,6 +35,13 @@
    (kaze/okami) and only a rare soft thump on the sedan/kei. Horn/crash duck
    and rain hiss are unchanged from before.
 
+   Both engine voices (the synth body below and the recorded ladder further
+   down) sum into one output stage — level trim, low-shelf rumble boost, then
+   a tanh soft clip that keeps the engine bus from ever pushing master into
+   clipping. Its four constants (ENGINE_TUNE_DEFAULT) are the "louder /
+   beefier" knobs and are live-editable from the console via
+   window.__audioTune, the same way post.ts exposes window.__povTune.
+
    The whole graph is built once in init(); update() only moves AudioParams.
 
    On top of the synth model sits a recorded-sample layer (see EngineMode
@@ -173,6 +180,107 @@ const smoothstep = (e0: number, e1: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 
+/* ---- Engine loudness + low-end rumble: THE knobs ----------------------
+   Everything the engine makes — the synth body (engG) AND the recorded rpm
+   ladder (sampBus) — now sums into one shared output stage before master:
+
+     engG ─┐
+           ├─> engLevel ─> engShelf ─> engLim ─> engMakeup ─> master
+     sampBus ┘        └─> engSend (reverb, so tunnels track the new level)
+
+   so "louder / more rumble" is a one-number edit here rather than a hunt
+   through the per-layer coefficients in update(). Those per-layer numbers
+   still set the BALANCE between throttle/revs/overrun and between the two
+   voices; these set how loud the whole engine sits in the mix and how much
+   of it is bottom end. Every value is read fresh each frame from
+   window.__audioTune (see readAudioTune), so they can be A/B'd live from
+   the console with no reload — same pattern as window.__povTune in post.ts.
+
+   Why this is safe to turn up: engLim is a real limiter
+   (DynamicsCompressorNode) on the engine bus only, so the engine's peak
+   contribution to master is bounded by `ceilingDb` whatever the other knobs
+   say — the headless mix check (test/audio-mix-check.mjs) asserts final
+   |peak| < 0.99 and there is no master-bus limiter to catch an overshoot
+   otherwise. Tyre/wind/traffic layers are untouched, so raising `level` does
+   move the engine forward relative to them; that is the point.
+
+   This stage used to be a WaveShaper holding tanh(x), and that was a hard
+   wall rather than a ceiling: WaveShaper CLAMPS its input to [-1,1] before
+   the curve lookup, so the engine bus could never output more than
+   tanh(1) = 0.76 — and it was already compressing well below that
+   (tanh(.65) = .57, i.e. -1.1dB on ordinary signal). Every dB of `level` or
+   `rumbleDb` past that point turned into fold-over distortion instead of
+   volume, which is exactly the "I raised it and it isn't louder" symptom. A
+   compressor takes input above 1.0 properly, and `makeup` after it converts
+   the headroom the limiting frees into actual level — that is where the
+   loudness now comes from, not from driving `level` higher. */
+const ENGINE_TUNE_DEFAULT = {
+  /** Linear gain on the whole engine bus (both voices). 1.0 = the pre-2026-08
+      balance, higher = louder engine relative to tyres/wind/traffic. This is
+      the knob to reach for first. */
+  level: 1.85,
+  /** Low-shelf boost in dB applied to the engine bus below `rumbleHz` — the
+      "beef" control specifically, as opposed to `level` which lifts the whole
+      band. Positive = more chest rumble; 0 = flat (old response). Kept in dB
+      because that's what BiquadFilterNode.gain wants for a shelf. */
+  rumbleDb: 10,
+  /** Corner of that shelf, Hz. ~140 is the exhaust/body region a car actually
+      rumbles in and that laptop speakers can still reproduce; pushing it up
+      toward 250 makes it boomy/muddy, down toward 60 makes it a sub thump
+      most speakers will simply not play. */
+  rumbleHz: 140,
+  /** Corner of the engine chain's highpass, Hz. This used to be a hard 48Hz,
+      which cut the firing fundamental off the bottom of the engine at low and
+      mid rpm (a 4-cyl at 1400rpm fires at ~47Hz) — i.e. the rumble was being
+      filtered away before it was ever mixed. 38 lets that fundamental through
+      while still blocking DC/subsonic energy that would only eat headroom.
+      Lower = more sub, but under ~30 you are spending peak level on content
+      small speakers can't reproduce. */
+  subHz: 38,
+  /** Multiplier on the exhaust noise bed (exG — lowpassed at 220-1120Hz, the
+      non-tonal part of the low end). Turning this up thickens the rumble with
+      texture rather than with more of the same tone, which is what keeps a
+      loud engine from reading as a synth drone. It rides engG, so it is
+      already gated by throttle/load and cannot leak at idle. */
+  exhaust: 2.0,
+  /** Engine-bus limiter threshold in dBFS — the peak ceiling for everything
+      the engine makes. Lower = the limiter grabs earlier, so the sound gets
+      denser and more even (and, with `makeup` below, louder on average) at
+      the cost of dynamic range between idle and WOT. Above about -3 it
+      barely engages and the loud end goes back to being peaky. */
+  ceilingDb: -8,
+  /** Linear gain AFTER the limiter. This is what turns limiting into
+      loudness: the limiter flattens the peaks, makeup lifts the whole
+      flattened signal back up. Up = louder. Keep ceilingDb + makeup such
+      that the engine peaks under ~0.8 into master (master itself is
+      0.9 * volume), or the sum with tyres/wind can clip the destination. */
+  makeup: 1.5,
+};
+export type AudioTune = typeof ENGINE_TUNE_DEFAULT;
+
+/** Read the live console knobs, seeding window.__audioTune with the defaults
+    on first call. Every field is clamped to a sane range and falls back to
+    the default if the console typed something non-numeric, so a fat-fingered
+    `__audioTune.level = "loud"` can't NaN the engine bus into silence. */
+function readAudioTune(): AudioTune {
+  const D = ENGINE_TUNE_DEFAULT;
+  if (typeof window === "undefined") return D;
+  const w = window as unknown as { __audioTune?: AudioTune };
+  if (!w.__audioTune) w.__audioTune = { ...D };
+  const t = w.__audioTune;
+  const num = (v: number, d: number, lo: number, hi: number) =>
+    Number.isFinite(v) ? clampRange(v, lo, hi) : d;
+  return {
+    level: num(t.level, D.level, 0, 3),
+    rumbleDb: num(t.rumbleDb, D.rumbleDb, -12, 15),
+    rumbleHz: num(t.rumbleHz, D.rumbleHz, 40, 400),
+    subHz: num(t.subHz, D.subHz, 20, 120),
+    exhaust: num(t.exhaust, D.exhaust, 0, 4),
+    ceilingDb: num(t.ceilingDb, D.ceilingDb, -40, 0),
+    makeup: num(t.makeup, D.makeup, 0, 3),
+  };
+}
+
 /** One voice in the NPC doppler pool: a cheap oscillator (not the full
     player engine graph) routed through a StereoPanner. Assigned to nearby
     traffic cars by updateNpcs() with simple position-tracked voice
@@ -202,7 +310,14 @@ export class GameAudio {
   private drivePre!: GainNode;
   private driveTrim!: GainNode;
   private engLP!: BiquadFilterNode;
+  private engHP!: BiquadFilterNode;
   private engG!: GainNode;
+  /* Shared engine output stage — both the synth body and the sampled ladder
+     land here. See ENGINE_TUNE_DEFAULT above for what each one does. */
+  private engLevel!: GainNode;
+  private engShelf!: BiquadFilterNode;
+  private engLim!: DynamicsCompressorNode;
+  private engMakeup!: GainNode;
   private limDepth!: GainNode;
   private inF!: BiquadFilterNode; private inG!: GainNode;
   private exF!: BiquadFilterNode; private exG!: GainNode;
@@ -521,9 +636,12 @@ export class GameAudio {
       this.engLP.type = "lowpass";
       this.engLP.frequency.value = 900;
       this.engLP.Q.value = 0.9;
-      const hp = ctx.createBiquadFilter();
-      hp.type = "highpass";
-      hp.frequency.value = 48;
+      this.engHP = ctx.createBiquadFilter();
+      this.engHP.type = "highpass";
+      // Corner is a live knob now (ENGINE_TUNE_DEFAULT.subHz, was a fixed 48
+      // — high enough to cut the firing fundamental off the bottom of the
+      // engine below ~1400rpm, i.e. to filter the rumble out before mixing).
+      this.engHP.frequency.value = ENGINE_TUNE_DEFAULT.subHz;
       const body1 = ctx.createBiquadFilter();
       body1.type = "peaking";
       body1.frequency.value = 165;
@@ -539,8 +657,40 @@ export class GameAudio {
       this.driveTrim.connect(this.engLP);
       this.inG.connect(this.engLP);
       this.exG.connect(this.engLP);
-      this.engLP.connect(hp).connect(body1).connect(body2).connect(this.engG);
-      this.engG.connect(this.master);
+      this.engLP.connect(this.engHP).connect(body1).connect(body2).connect(this.engG);
+
+      /* Shared engine output stage: level trim -> rumble shelf -> limiter ->
+         makeup. Both engine voices (this synth body and, further down, the
+         sampled ladder's sampBus) feed it, so one knob moves "the engine"
+         rather than one of its two implementations — see ENGINE_TUNE_DEFAULT.
+
+         The ceiling is a DynamicsCompressorNode and NOT a WaveShaper soft
+         clip: a shaper clamps its input to [-1,1] before the curve lookup, so
+         with tanh in the curve the bus was walled at 0.76 and every extra dB
+         of level became fold-over distortion (see ENGINE_TUNE_DEFAULT). The
+         settings are limiter-ish rather than compressor-ish — high ratio,
+         3ms attack so a firing transient doesn't punch through, 150ms release
+         which is slow enough not to pump on the ladder's own beat at idle. */
+      this.engLevel = ctx.createGain();
+      this.engLevel.gain.value = ENGINE_TUNE_DEFAULT.level;
+      this.engShelf = ctx.createBiquadFilter();
+      this.engShelf.type = "lowshelf";
+      this.engShelf.frequency.value = ENGINE_TUNE_DEFAULT.rumbleHz;
+      this.engShelf.gain.value = ENGINE_TUNE_DEFAULT.rumbleDb;
+      this.engLim = ctx.createDynamicsCompressor();
+      this.engLim.threshold.value = ENGINE_TUNE_DEFAULT.ceilingDb;
+      this.engLim.knee.value = 8;
+      this.engLim.ratio.value = 8;
+      this.engLim.attack.value = 0.003;
+      this.engLim.release.value = 0.15;
+      this.engMakeup = ctx.createGain();
+      this.engMakeup.gain.value = ENGINE_TUNE_DEFAULT.makeup;
+      this.engG.connect(this.engLevel);
+      this.engLevel
+        .connect(this.engShelf)
+        .connect(this.engLim)
+        .connect(this.engMakeup)
+        .connect(this.master);
 
       // rev-limiter stutter: a square LFO added into the engine gain param
       const limLfo = ctx.createOscillator();
@@ -761,9 +911,17 @@ export class GameAudio {
       this.reverbWet.gain.value = 0;
       reverbTap.connect(this.reverbLP).connect(this.reverbWet).connect(this.master);
 
+      /* One engine reverb send for both voices, tapped off engLevel — i.e.
+         POST the loudness knob (so a louder engine gets a proportionally
+         louder tunnel, instead of the reverb thinning out as `level` rises)
+         but PRE the rumble shelf and the soft clip: the feedback network is
+         the one place extra bottom end turns into mud rather than into beef,
+         and the send should not be carrying folded-over saturation either.
+         At level=1 this is bit-identical to the two separate 0.18 sends the
+         synth body and the sampled bus used to have. */
       const engSend = ctx.createGain();
       engSend.gain.value = 0.18;
-      this.engG.connect(engSend).connect(this.reverbIn);
+      this.engLevel.connect(engSend).connect(this.reverbIn);
       this.tireSend = ctx.createGain();
       this.tireSend.gain.value = 0.22;
       this.tireRoadG.connect(this.tireSend);
@@ -779,8 +937,13 @@ export class GameAudio {
          engLP) -> sampBus -> master, with the same fixed-ratio reverb send
          the synth engine has, so tunnels treat both voices alike. The
          limiter stutter LFO is shared with the synth path via a second
-         depth gain into sampBus.gain. Everything downstream of master
-         (volume, duck, cabin EQ, mute) applies unchanged. */
+         depth gain into sampBus.gain. sampBus now joins the synth body at
+         the shared engine output stage (engLevel -> rumble shelf -> soft
+         clip -> master) instead of going straight to master, so the loudness
+         and rumble knobs move the recorded ladder and the synth alike and
+         the two can never be tuned apart by accident; its reverb send is the
+         shared engSend above for the same reason. Everything downstream of
+         master (volume, duck, cabin EQ, mute) applies unchanged. */
       this.sampBus = ctx.createGain();
       this.sampBus.gain.value = 0;
       this.sampLP = ctx.createBiquadFilter();
@@ -788,10 +951,7 @@ export class GameAudio {
       this.sampLP.frequency.value = 900;
       this.sampLP.Q.value = 0.8;
       this.sampLP.connect(this.sampBus);
-      this.sampBus.connect(this.master);
-      const sampSend = ctx.createGain();
-      sampSend.gain.value = 0.18;
-      this.sampBus.connect(sampSend).connect(this.reverbIn);
+      this.sampBus.connect(this.engLevel);
       this.sampLimDepth = ctx.createGain();
       this.sampLimDepth.gain.value = 0;
       limLfo.connect(this.sampLimDepth).connect(this.sampBus.gain);
@@ -1020,6 +1180,19 @@ export class GameAudio {
       sampledSkid: this.skidG ? this.skidG.gain.value : null,
       convolverWet: this.convWet ? this.convWet.gain.value : null,
       engine: this.engG.gain.value,
+      /* shared engine output stage (window.__audioTune) — a "the engine is
+         too loud/quiet" report is answered by these three plus `engine`/
+         `sampledEngine` above, without needing to know which voice is live */
+      engineBusLevel: this.engLevel.gain.value,
+      engineCeilingDb: this.engLim.threshold.value,
+      engineMakeup: this.engMakeup.gain.value,
+      /* dB the limiter is pulling down right now (negative). Sitting near 0
+         means the ceiling is not engaging and `level` is what to raise;
+         sitting past ~-10 means it is doing all the work and more `level`
+         will not get louder — raise `makeup` or lift `ceilingDb` instead. */
+      engineLimiterGr: this.engLim.reduction,
+      engineRumbleDb: this.engShelf.gain.value,
+      engineSubHz: this.engHP.frequency.value,
       intake: this.inG.gain.value,
       exhaust: this.exG.gain.value,
       turbo: this.turboG.gain.value,
@@ -1846,6 +2019,20 @@ export class GameAudio {
        bodyLevel keeps shaping them. */
     const sampled = this.sampledActive();
     const bedMix = sampled ? 0.5 + thr * 0.35 : 1;
+
+    /* Loudness/rumble knobs, re-read every frame so console edits to
+       window.__audioTune are audible immediately (see ENGINE_TUNE_DEFAULT).
+       Six smoothed param writes per frame is nothing next to the ~40 this
+       method already does, and smoothing them means a live edit glides in
+       instead of clicking. */
+    const tune = readAudioTune();
+    this.sp(this.engLevel.gain, tune.level, 0.05);
+    this.sp(this.engShelf.gain, tune.rumbleDb, 0.05);
+    this.sp(this.engShelf.frequency, tune.rumbleHz, 0.05);
+    this.sp(this.engHP.frequency, tune.subHz, 0.05);
+    this.sp(this.engLim.threshold, tune.ceilingDb, 0.05);
+    this.sp(this.engMakeup.gain, tune.makeup, 0.05);
+
     this.sp(this.drivePre.gain, 0.9 + load * 2.6 + (lim ? 1.4 : 0), 0.04);
     this.sp(this.driveTrim.gain, (sampled ? 0 : 1) / (0.9 + load * 1.2), 0.04);
 
@@ -1933,7 +2120,10 @@ export class GameAudio {
     this.sp(this.inF.frequency, 900 + rn * 2700, 0.04);
     this.sp(this.inG.gain, thr * (0.012 + rn * 0.05) * p.level, 0.04);
     this.sp(this.exF.frequency, 220 + rn * 900, 0.04);
-    this.sp(this.exG.gain, (0.008 + load * 0.03) * (0.3 + rn) * p.level, 0.04);
+    // Exhaust bed carries the tune.exhaust multiplier: it is the low, non-
+    // tonal half of the rumble, and thickening it is what keeps a louder
+    // engine from reading as a bigger synth drone (see ENGINE_TUNE_DEFAULT).
+    this.sp(this.exG.gain, (0.008 + load * 0.03) * (0.3 + rn) * p.level * tune.exhaust, 0.04);
 
     /* Turbo spool follows boost, i.e. throttle held at revs. Peak level
        coefficient 0.0042 (0.01 -> 0.007 -> 0.0042, a clean -40% on the last
