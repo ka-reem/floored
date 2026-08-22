@@ -22,7 +22,12 @@ export interface LoadStage {
   /** Share of the total bar this stage is worth. Relative, not a unit — see
       LOAD_WEIGHTS in engine.ts for where the numbers come from. */
   weight: number;
-  run(): void | Promise<void>;
+  /** `onStep(0..1)` reports progress WITHIN this stage. Optional, and most
+      stages ignore it — but a stage that takes seconds must call it, because
+      weighting alone cannot fix a stall. A stage is one jump of the bar no
+      matter how it is weighted, so a long one always parks the bar somewhere
+      and sits there; the only cure is for it to report from inside. */
+  run(onStep?: (frac: number) => void): void | Promise<void>;
 }
 
 export interface LoadReport {
@@ -148,7 +153,19 @@ export async function runStages(
     await yieldToPaint();
     if (cancelled?.()) return timings;
     const t0 = performance.now();
-    await st.run();
+    /* Intra-stage progress. Rounded to whole percent before it is forwarded,
+       so a stage reporting every frame cannot churn the DOM for movement
+       nobody can see — the bar is ~400px wide, so sub-percent steps are
+       sub-pixel. */
+    let lastPct = -1;
+    await st.run((f) => {
+      const c = f < 0 ? 0 : f > 1 ? 1 : f;
+      const frac = (done + st.weight * c) / total;
+      const pct = Math.round(frac * 100);
+      if (pct === lastPct) return;
+      lastPct = pct;
+      onProgress({ label: st.label, frac });
+    });
     timings[st.label] = Math.round(performance.now() - t0);
     done += st.weight;
   }

@@ -637,7 +637,14 @@ export class Game {
     traffic: 8,
     car: 8,
     shaders: 12,
-    warm: 6,
+    /* 6 -> 22. This stage renders real frames — every shader, every first-use
+       texture upload, the post chain and both extra camera passes — and is
+       one of the two most expensive things in the load, not the cheapest.
+       At 6 of 100 the bar reached 94% and then sat there for the whole
+       warm-up, which is exactly the reported stall. The weight now roughly
+       matches the cost, and the stage reports from inside it as well (see
+       warmFrames), so the bar moves through it rather than across it. */
+    warm: 22,
   };
 
   /** How long the load waits on the traffic bodyshells and on the donor dash
@@ -804,7 +811,7 @@ export class Game {
       {
         label: "ROLLING OUT",
         weight: W.warm,
-        run: async () => {
+        run: async (onStep) => {
           /* Compiling is not the whole of a first frame: textures upload on
              first use, the post chain and the mirror/reflection passes have
              their own programs, and none of that is reachable from
@@ -813,7 +820,7 @@ export class Game {
              still one-off cost gets paid here instead of in the player's first
              corner, and the canvas already holds a finished frame when the
              overlay comes off, so the handoff has nothing to flash. */
-          await this.warmFrames(3);
+          await this.warmFrames(6, onStep);
         },
       },
     ];
@@ -859,7 +866,7 @@ export class Game {
   }
 
   /** Run the render loop, paused, until `n` frames have been drawn. */
-  private warmFrames(n: number): Promise<void> {
+  private warmFrames(n: number, onStep?: (frac: number) => void): Promise<void> {
     this.beginLoop();
     return new Promise((resolve) => {
       let left = n;
@@ -867,6 +874,12 @@ export class Game {
         // loop() re-arms its own rAF first, so by the time this runs the frame
         // it scheduled has been rendered
         if (this.disposed || --left <= 0) return resolve();
+        // ...and report it, so the bar crawls through the warm-up instead of
+        // parking at whatever percent this stage starts on. These are the most
+        // expensive frames the game ever renders (every shader, every texture
+        // upload, the post chain and both extra camera passes, all first-use),
+        // so without this the bar visibly sticks here.
+        onStep?.((n - left) / n);
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
