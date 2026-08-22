@@ -1905,8 +1905,16 @@ function buildTunnel(
     const ca = wa - CROWN_IN, cb = wb - CROWN_IN;
     ceilS.quad(pt(i, -ca, H), pt(i + 1, -cb, H), pt(i + 1, cb, H), pt(i, ca, H));
   }
+  /* DoubleSide like every other surface in the tube, and not optional: the
+     wall quads above are emitted with one vertex order for both values of
+     `sgn`, and mirroring across x reverses the winding, so on one side of the
+     tunnel every dado face points outward. Single-sided, that wall's splash
+     band is simply not drawn from inside — you look straight through it at
+     the city beyond, which is exactly the reported see-through wall. The
+     tile, ceiling, duct and walkway materials are all already DoubleSide,
+     which is why only this band was affected and only on one side. */
   const dadoMat = new THREE.MeshStandardMaterial({
-    color: 0x2b2f38, roughness: 0.92,
+    color: 0x2b2f38, roughness: 0.92, side: THREE.DoubleSide,
   });
   const ductMat = new THREE.MeshStandardMaterial({
     color: 0x3a4049, roughness: 0.55, metalness: 0.55, side: THREE.DoubleSide,
@@ -2222,9 +2230,26 @@ function buildTunnel(
   }
   const gg = new THREE.BufferGeometry();
   gg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(glowPts), 3));
+  /* size 5.5 -> 4.8, opacity 0.9 -> 0.68. Deliberately a modest cut, because
+     inside the tube these ARE the lighting and dimming them far would make
+     the tunnel a dark hole.
+
+     What makes the tunnel read as one blinding point from a kilometre out is
+     not any single lamp, it is that the whole run of them is additive with
+     `fog: false` and `sizeAttenuation: false`. Every lamp along the bore
+     therefore contributes its full screen-size, full-brightness sprite no
+     matter how far away it is, and at range they all project into a few
+     pixels and sum — so the further away you are, the more of them stack into
+     the same spot. Level is the only lever pulled here.
+
+     If it still reads as a beacon on approach, the structural fix is to
+     attenuate with distance rather than to dim further: either
+     `sizeAttenuation: true` (so distant lamps shrink instead of stacking at
+     full size) or a distance fade on the material. Both change the look
+     inside the tube as well, which is why this pass did not reach for them. */
   const gm = new THREE.PointsMaterial({
-    size: 5.5, sizeAttenuation: false, color: 0xffe0a8, map: mats.glowTex,
-    transparent: true, opacity: 0.9, fog: false, depthWrite: false,
+    size: 4.8, sizeAttenuation: false, color: 0xffe0a8, map: mats.glowTex,
+    transparent: true, opacity: 0.68, fog: false, depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
   const gp = new THREE.Points(gg, gm);
@@ -2452,9 +2477,14 @@ function buildToll(
       mp.push(-CW / 2 + 0.6 + i * ((CW - 1.2) / (NMK - 1)), 8.28, -CL / 2 - 0.3);
     const mg = new THREE.BufferGeometry();
     mg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(mp), 3));
+    /* opacity 0.95 -> 0.62. Same story as the canopy cloud: additive, no fog,
+       no size attenuation, so these 13 amber markers were at full strength
+       from any distance and contributed a large share of the plaza's glare on
+       the approach. The amber is well clear of the bleach threshold and is
+       kept — it is the colour that identifies the plaza at range. */
     const mm = new THREE.PointsMaterial({
       size: 2.7, sizeAttenuation: false, color: 0xffb055, map: mats.glowTex,
-      transparent: true, opacity: 0.95, fog: false, depthWrite: false,
+      transparent: true, opacity: 0.62, fog: false, depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
     const mpts = new THREE.Points(mg, mm);
@@ -2468,7 +2498,10 @@ function buildToll(
   const soffit = new THREE.Mesh(new THREE.BoxGeometry(CW - 1.2, 0.16, CL - 1.2),
     new THREE.MeshStandardMaterial({
       color: 0xe6e9ef, roughness: 0.6,
-      emissive: 0x4b515d, emissiveIntensity: 1 }));
+      // faked bounce, pulled back with the fittings that are supposed to be
+      // causing it — a soffit brighter than the plaza it lights reads as a
+      // glowing ceiling rather than as reflected light
+      emissive: 0x363b45, emissiveIntensity: 1 }));
   soffit.position.y = 6.92;
   plaza.add(soffit);
   /* Underside lighting: rows of emissive troffers plus a cloud of additive
@@ -2476,7 +2509,13 @@ function buildToll(
      that read is the whole reason to slow down for it. Not registered in
      neonMats: the canopy shades its own soffit, so these stay lit by day. */
   if (FX_TOLL_GLOW && worldTierCaps().tollGlow !== false) {
-    const troffMat = new THREE.MeshBasicMaterial({ color: 0xf4f6ff, fog: false });
+    /* 0xf4f6ff -> 0xc2cadd. MeshBasic is unlit, so this colour IS the output
+       value: 0xf4f6ff is ~0.96 and lands above the grade's bleach threshold,
+       where ACES plus the vibrance rolloff strip the hue and print pure
+       white. Backing off to ~0.78 keeps the fittings clearly the brightest
+       thing under the canopy while leaving them a colour rather than a hole
+       punched in the frame. */
+    const troffMat = new THREE.MeshBasicMaterial({ color: 0xc2cadd, fog: false });
     // three rows — the old two left a dark stripe down the middle gate, the
     // one lane the player is most likely to thread
     const NTR = 3 * 7;
@@ -2499,9 +2538,25 @@ function buildToll(
     plaza.add(troff);
     const cg = new THREE.BufferGeometry();
     cg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(canopyGlow), 3));
+    /* Toned down hard (size 6.5 -> 4.6, opacity 0.8 -> 0.4, and off pure
+       white): 21 additive near-white points at 0.8 stack into a core well
+       past the ~0.8 luma where the ACES pass bleaches everything to white, so
+       the plaza read as a single blown highlight rather than as lit.
+
+       `sizeAttenuation: false` is why it was also a beacon from a kilometre
+       out — the points hold constant SCREEN size no matter how far away they
+       are, and with `fog: false` nothing attenuates them with distance
+       either, so the approach looked exactly as bright as standing under it.
+       Attenuation is left off deliberately (it is what keeps the plaza
+       readable on approach at 200 km/h, which is the whole point of the
+       fitting) and the level carries the reduction instead.
+
+       Colour off pure white for the same reason as the lamp cones: a
+       saturated source survives the grade as a colour, a near-white one
+       bleaches. 0xd8e2f4 keeps the cool cast without sitting on the clip. */
     const cgm = new THREE.PointsMaterial({
-      size: 6.5, sizeAttenuation: false, color: 0xeef2ff, map: mats.glowTex,
-      transparent: true, opacity: 0.8, fog: false, depthWrite: false,
+      size: 4.6, sizeAttenuation: false, color: 0xd8e2f4, map: mats.glowTex,
+      transparent: true, opacity: 0.4, fog: false, depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
     const cgp = new THREE.Points(cg, cgm);
