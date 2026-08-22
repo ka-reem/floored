@@ -11,6 +11,7 @@ import { makeTerrain, buildGround, type Terrain } from "./world/terrain";
 import { buildRoadNet } from "./world/roadnet";
 import { buildHighway, nearestExitAhead } from "./world/highway";
 import { buildTown } from "./world/townmesh";
+import { buildScenery } from "./world/scenery";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
 import { DECKY } from "./world/const";
@@ -503,6 +504,7 @@ export class Game {
     this.scene.add(ground);
     const hwyOut = buildHighway(this.scene, this.mats, this.world, this.terrain, rng);
     buildTown(this.scene, this.mats, this.world, this.terrain, rng, hwyOut.deckLightPts);
+    buildScenery(this.scene, this.mats, this.world, this.terrain, rng);
     this.tintLampsSodium();
 
     this.traffic = new Traffic(this.scene, this.world, this.mats.envMap, this.mats.glowTex, 120);
