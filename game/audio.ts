@@ -91,10 +91,11 @@ const PROFILES: Record<string, EngineProfile> = {
      what was done to the samples. A 4-cylinder at 6400 fires at 213Hz — very
      nearly an octave lower, and squarely where a real saloon sits.
 
-     Four cylinders is also what the recordings ARE (LOOP_F0 measures 42.9Hz
-     at what is ~1290rpm for a four), so the ladder now needs far less
-     stretching to reach the right pitch and its formants stay put. The
-     interior is a Volvo S90, which is a four in real life.
+     Four cylinders is also what the recordings ARE — the ladder is cut from
+     an in-car recording of a four-cylinder saloon, and LOOP_F0's rungs sit
+     at 761-2991rpm for a four — so the ladder needs almost no stretching to
+     reach the right pitch through the driving range and its formants stay
+     put. The interior is a Volvo S90, which is a four in real life.
 
      `bright` up (harmonics roll off faster, less edge), `odd` up (a four is
      lumpier than a straight six — that unevenness is what stops it droning),
@@ -887,6 +888,11 @@ export class GameAudio {
   private sampLimDepth!: GainNode; // rev-limiter stutter into sampBus.gain
   private loopSrcs: AudioBufferSourceNode[] = [];
   private loopGains: GainNode[] = [];
+  /** rpm at which each ladder loop is dominant, for the CURRENT car — see
+      ladderAnchors(). Recomputed in setCar() rather than per frame because it
+      only depends on the profile's cylinder count, and defaulted here so the
+      crossfade is well-defined if update() runs before setCar() ever does. */
+  private anchors: number[] = ladderAnchors(PROFILES.generic.cyl);
   private idleG: GainNode | null = null;
   private skidSrc: AudioBufferSourceNode | null = null;
   private skidG: GainNode | null = null;
@@ -1005,6 +1011,10 @@ export class GameAudio {
     if (p === this.prof) return;
     this.prof = p;
     this.peakRpm = p.revLimit;
+    // Which rpm each recorded loop belongs at depends on how often THIS
+    // engine fires, so the ladder's crossfade schedule is a property of the
+    // car, not of the sample set. See ladderAnchors().
+    this.anchors = ladderAnchors(p.cyl);
     if (!this.ok) return;
     const w = this.engineWave(p);
     for (const o of this.oscs) o.setPeriodicWave(w);
@@ -2682,7 +2692,7 @@ export class GameAudio {
        generated at exactly the right frequency and has no range limit at all
        — fades up and takes the top end, which is also where an engine most
        needs to sound sharp and angry. */
-    const ladderTop = (LADDER_STRETCH * LOOP_F0[3] * 120) / p.cyl;
+    const ladderTop = (LADDER_STRETCH * LOOP_F0[LOOP_F0.length - 1] * 120) / p.cyl;
     const takeover = smoothstep(ladderTop * 0.78, ladderTop * 1.06, rpm);
     const synthMix = SYNTH_FLOOR + (1 - SYNTH_FLOOR) * takeover;
 
@@ -2765,13 +2775,33 @@ export class GameAudio {
        the recording still breathes with load. */
     let sampLevelTarget = 0;
     if (this.engReady) {
-      const A = RPM_ANCHORS;
+      /* Anchors are per-CAR, not per-build: they come from LOOP_F0 and this
+         profile's cylinder count, so each loop is dominant at the rpm where
+         this engine reaches the firing frequency that loop was recorded at.
+         See ladderAnchors. Below the first anchor the lowest loop carries it
+         alone; above the last, the highest one does — and up there `takeover`
+         is already fading the whole ladder out under the synth. */
+      const A = this.anchors;
+      const last = A.length - 1;
       let g0 = 0, g1 = 0, band = 0;
       if (rpm <= A[0]) { band = 0; g0 = 1; }
-      else if (rpm >= A[3]) { band = 2; g1 = 1; }
+      else if (rpm >= A[last]) { band = last - 1; g1 = 1; }
       else {
-        band = rpm < A[1] ? 0 : rpm < A[2] ? 1 : 2;
-        const x = clamp01((rpm - A[band]) / (A[band + 1] - A[band]));
+        while (band < last - 1 && rpm >= A[band + 1]) band++;
+        /* Crossfade position measured in LOG rpm, not linear rpm. The rungs
+           are spaced geometrically (each loop sits about 20% above the last,
+           except the wide bottom gap), and what the ear tracks across a band
+           is the ratio to each loop's home pitch, not the arithmetic distance
+           in rpm — a loop 400rpm above home at 800rpm is stretched twice as
+           far as one 400rpm above home at 2000. Linear positioning therefore
+           held the lower loop in the mix well past the point where it was the
+           worse-matched of the two: across the 761-1732rpm gap it left loop_0
+           audible at 1500rpm still playing at 1.97x. In log position the
+           handover is symmetric about the geometric mean, which is exactly
+           where the two loops are equally stretched. */
+        const x = clamp01(
+          Math.log(rpm / A[band]) / Math.log(A[band + 1] / A[band])
+        );
         g0 = Math.cos((x * Math.PI) / 2);
         g1 = Math.sin((x * Math.PI) / 2);
       }
@@ -2779,9 +2809,9 @@ export class GameAudio {
          fundamental (LOOP_F0) on the engine's true firing frequency `base2`.
          Not rpm/anchor — see the long note on LOOP_F0 for why that made the
          pitch fall backwards three times on the way to redline instead of
-         rising. Because the target is the same for all four, the loops are
+         rising. Because the target is the same for all of them, the loops are
          always in unison and the crossfade morphs texture only. */
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < LOOP_F0.length; i++) {
         const g = !sampled ? 0 : i === band ? g0 : i === band + 1 ? g1 : 0;
         this.sp(this.loopGains[i].gain, g, 0.045);
         this.sp(
