@@ -43,9 +43,13 @@ await page.evaluate(() => { window.__povTune.screenShield = 0.92; });
 await page.evaluate(() => window.__neonx.setCam(0));
 await sleep(1200);
 console.log("CHASE:", JSON.stringify(await page.evaluate(dump)));
-await page.evaluate(() => { window.__neonx.setCam(3); window.__neonx.game.rig.cockpitModel?.setActive(false); });
+await page.evaluate(() => {
+  window.__neonx.setCam(3);
+  const g = window.__neonx.game;
+  (g.rig?.cockpitModel ?? g.rig?.cockpit?.cockpitModel)?.setActive(false);
+});
 await sleep(2000);
-console.log("POV/procedural:", JSON.stringify(await page.evaluate(dump)));
+console.log("POV/procedural:", JSON.stringify(await page.evaluate(dump).catch(e => String(e).slice(0,200))));
 await page.screenshot({ path: path.join(OUT, "pov-procedural.png") });
 await browser.close();
 for (const e of errs.slice(0,10)) console.log(e);

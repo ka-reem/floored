@@ -2379,7 +2379,18 @@ export class Traffic {
     } else acc = aMax * (1 - Math.pow(n.v / v0, 4));
     if (panic) acc = Math.min(acc, -6.5);
     acc = clamp(acc, -8.5, 3.2);
-    n.brake = acc < -1.2;
+    /* Brake-lamp switch. -1.2 m/s^2 meant the lamps stayed dark through most
+       of what the car-following model actually does: a real brake switch
+       trips on a pedal touch, well under 0.3. The IDM underneath already
+       produces a deceleration ripple back through a platoon — this is what
+       lets the player SEE it, and red blooming down the line of cars ahead
+       is the most legible thing in the dashcam frame.
+
+       Hysteresis (trip at -0.35, release at -0.12) rather than one
+       threshold, because a single edge sits inside the noise of the
+       following model and the lamps would strobe on a steady cruise.
+       `n.brake` is persistent per-NPC state, so it doubles as the latch. */
+    n.brake = acc < (n.brake ? -0.12 : -0.35);
     n.v = Math.max(0, n.v + acc * dt);
     n.s += n.v * dt;
 
@@ -2782,7 +2793,18 @@ export class Traffic {
     if (mergeCap < Infinity) acc = Math.min(acc, mergeCap); // blocked taper: yield
     if (panic) acc = Math.min(acc, -6.5);
     acc = clamp(acc, -8.5, 3.2);
-    n.brake = acc < -1.2;
+    /* Brake-lamp switch. -1.2 m/s^2 meant the lamps stayed dark through most
+       of what the car-following model actually does: a real brake switch
+       trips on a pedal touch, well under 0.3. The IDM underneath already
+       produces a deceleration ripple back through a platoon — this is what
+       lets the player SEE it, and red blooming down the line of cars ahead
+       is the most legible thing in the dashcam frame.
+
+       Hysteresis (trip at -0.35, release at -0.12) rather than one
+       threshold, because a single edge sits inside the noise of the
+       following model and the lamps would strobe on a steady cruise.
+       `n.brake` is persistent per-NPC state, so it doubles as the latch. */
+    n.brake = acc < (n.brake ? -0.12 : -0.35);
     n.v = Math.max(0, n.v + acc * dt);
     n.s = cor.wrapZ(n.s + n.v * dt);
 
@@ -2927,7 +2949,18 @@ export class Traffic {
 
     if (panic) acc = Math.min(acc, -6.5);
     acc = clamp(acc, -8.5, 3.2);
-    n.brake = acc < -1.2;
+    /* Brake-lamp switch. -1.2 m/s^2 meant the lamps stayed dark through most
+       of what the car-following model actually does: a real brake switch
+       trips on a pedal touch, well under 0.3. The IDM underneath already
+       produces a deceleration ripple back through a platoon — this is what
+       lets the player SEE it, and red blooming down the line of cars ahead
+       is the most legible thing in the dashcam frame.
+
+       Hysteresis (trip at -0.35, release at -0.12) rather than one
+       threshold, because a single edge sits inside the noise of the
+       following model and the lamps would strobe on a steady cruise.
+       `n.brake` is persistent per-NPC state, so it doubles as the latch. */
+    n.brake = acc < (n.brake ? -0.12 : -0.35);
     n.v = Math.max(0, n.v + acc * dt);
     n.s = Math.min(by.len - 0.5, n.s + n.v * dt);
 
@@ -3143,7 +3176,14 @@ export class Traffic {
   /* light sprites + headlight ground pools */
   private updateLights(now: number, night: boolean, player: CarState) {
     const SP = this.clouds;
-    const blinkOn = now % 0.9 < 0.45;
+    /* Indicator blink phase. This used to be one global `now % 0.9`, which
+       put every signalling car and every wreck's hazards in perfect lockstep
+       — two cars indicating in exact sync is unmistakably synthetic, and it
+       is the kind of thing the eye catches without knowing why. Offsetting by
+       the driver's existing per-NPC jitter phase decorrelates them for free.
+       The 1.11Hz rate itself is right and is unchanged; only the phase moves.
+       Computed per car below rather than once here. */
+    const blinkPhase = (jit: number) => (now + jit * 0.14) % 0.9 < 0.45;
     const pools = this.headlightPools && night;
     let pk = 0;
     const pe = this.poolInst.instanceMatrix.array as Float32Array;
@@ -3236,6 +3276,7 @@ export class Traffic {
       /* Signals — both slots at once is a hazard flash: a wreck, or the
          two-blink acknowledgement a car gives when it takes a hint and speeds
          up rather than moving over (see HAIL.ackT). */
+      const blinkOn = blinkPhase(n.drv.jit);
       if (wrecked || n.hailAck > 0) {
         emit(SP.sig, 0, hx0, hy0, hz0, blinkOn);
         emit(SP.sig, 1, tx1, ty1, tz1, blinkOn);

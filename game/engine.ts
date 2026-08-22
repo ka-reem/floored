@@ -1038,15 +1038,32 @@ export class Game {
      Only on click, never per frame — a raycast per frame for a control that is
      touched once a minute is not worth the frame time. Desktop only: gated on
      music.enabled, which is false on touch. */
-  private musicRay = new THREE.Raycaster();
+  private musicRay = (() => {
+    const r = new THREE.Raycaster();
+    /* cockpit.ts puts the whole interior shell on layer 1, and a Raycaster
+       only tests objects whose layers intersect its own — a default (layer 0)
+       raycaster never hits the head unit at all. It only ever intersects the
+       one panel mesh, so testing every layer costs nothing and also covers a
+       donor screen, which arrives from the GLB on layer 0. */
+    r.layers.enableAll();
+    return r;
+  })();
   private musicNdc = new THREE.Vector2();
   private onPointerDown = (e: PointerEvent) => {
+    if (e.button !== 0) return;
     if (!this.music.enabled || !this.running || !this.loaded) return;
+    /* The raycast ignores `visible`, so without this the buttons would still
+       be clickable — straight through the bodywork — from CHASE and HOOD,
+       where updateCamera() has hidden the whole cockpit group. */
+    if (this.camMode !== CAM_COCKPIT && this.camMode !== CAM_POV) return;
     const panel = this.rig?.cockpit?.navPanel();
     if (!panel) return;
+    // Off the canvas rect, not the window: the two agree today (canvas.game is
+    // position:fixed inset:0) but a click is not where the frame time is.
+    const r = this.renderer.domElement.getBoundingClientRect();
     this.musicNdc.set(
-      (e.clientX / innerWidth) * 2 - 1,
-      -(e.clientY / innerHeight) * 2 + 1
+      ((e.clientX - r.left) / r.width) * 2 - 1,
+      -((e.clientY - r.top) / r.height) * 2 + 1
     );
     this.musicRay.setFromCamera(this.musicNdc, this.camera);
     const hit = this.musicRay.intersectObject(panel, false)[0];

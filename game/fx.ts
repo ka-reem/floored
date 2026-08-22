@@ -189,6 +189,14 @@ export class SmokeFX {
     // what it buys is that a big enough pileup can no longer take the last
     // slot out from under the spray. Guarded so a small custom `n` still
     // leaves the wrecks something.
+    //
+    // At the default n the two caps sum to exactly the pool, so a passing cap
+    // check implies a free slot. Below n=27 they DON'T: this clamp pins
+    // wreckMax to 1 while SPRAY_MAX stays 26, so the caps can promise more
+    // slots than exist and `take()` really can come back null. That makes the
+    // null checks after every `take()` load-bearing rather than paranoia —
+    // don't let a tidy-up delete them. Behaviour there is still correct, the
+    // spray just gets whatever the pool can spare.
     this.wreckMax = Math.max(1, n - SPRAY_MAX);
     for (let i = 0; i < n; i++) {
       const mat = new THREE.SpriteMaterial({
