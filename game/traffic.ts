@@ -905,12 +905,33 @@ const TOLL_WASH_TINT_R = 0.92, TOLL_WASH_TINT_G = 0.95, TOLL_WASH_TINT_B = 1.0;
    ≈ 0.13 to ≈ 0.20 display luma at close range, about half that at 30 m.
    A brightening you notice when it sweeps on or off a car, not a spotlight.
    Raise HLW_GAIN in ~0.03 steps if it must read stronger; past ~0.25 the
-   car ahead starts looking self-lit and the effect gives itself away. */
-const HLW_GAIN = 0.12;
-/** along-beam falloff, metres ahead of the player's nose: full to 18 m, then
-    a smoothstep tail to zero at 60 m — the far half is what puts a faint
-    read on a car at highway following distance without pinning near cars */
-const HLW_CORE_D = 18, HLW_R_D = 60;
+   car ahead starts looking self-lit and the effect gives itself away.
+
+   0.12 -> 0.085 on "really really soft". Note the falloff change below does
+   more here than this number does: at a 30 m following distance the two
+   together take the wash from 0.096 to 0.048, i.e. half, while up close it
+   only comes down by a third. Soft where it was flat, still present where
+   the beam really is strong. */
+const HLW_GAIN = 0.085;
+/** Along-beam falloff, metres ahead of the player's nose: full only to 5 m,
+    then a long smoothstep tail to zero at 60 m.
+
+    The core was 18 m, and that was the real defect — not the gain. 18 m is
+    longer than the whole range you actually follow a car at, so the wash sat
+    pinned at maximum from the bumper out to ~20 m and only began to move
+    beyond that. The car ahead therefore lit up by exactly the same amount
+    whether you were two metres off its bumper or twenty, which reads as a
+    glow stuck to the car rather than as your headlights falling on it — and
+    it is what "it should illuminate depending on how close or far away I am"
+    is describing.
+
+    Pulling the core in to 5 m (about a car length, where a real dipped beam
+    genuinely is saturated) puts the entire following range on the tail
+    instead: the factor now runs 1.00 at 3 m, 0.91 at 15 m, 0.57 at 30 m and
+    0.09 at 50 m. It moves continuously the whole time you are closing on
+    someone. The 55 m gap to HLW_R_D keeps the tail long, which is what makes
+    it a fade rather than an edge (see the realistic-light skill). */
+const HLW_CORE_D = 5, HLW_R_D = 60;
 /** lateral falloff, metres off the beam axis; widens with distance like the
     two toed-out cones' combined footprint (~9°/17° from centre) */
 const HLW_CORE_L0 = 1.8, HLW_R_L0 = 4.2, HLW_CORE_LK = 0.08, HLW_R_LK = 0.16;
