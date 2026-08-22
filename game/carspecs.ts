@@ -104,7 +104,7 @@ export const CARS: CarSpec[] = [
       FINAL: 3.7, RATIOS: [3.54, 2.13, 1.48, 1.15, 0.92, 0.76], REV: 3.82,
       TQ_R: [1000, 2000, 3000, 4000, 4600, 5400, 6200, 7200],
       TQ_T: [165, 235, 285, 320, 335, 330, 300, 248],
-      gripF: 1.0, gripR: 1.04, steerMax: 0.62, steerHi: 0.026, steerAy: 20.5, revLimit: 7400, drag: 0.4,
+      gripF: 1.0, gripR: 1.04, steerMax: 0.62, steerHi: 0.026, steerAy: 20.5, revLimit: 6400, drag: 0.4,
     },
     stats: { speed: 0.92, accel: 0.88, grip: 0.78, handling: 0.85 },
     cockpitAccent: 0x8f1a22,

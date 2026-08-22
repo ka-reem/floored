@@ -71,7 +71,22 @@ export interface EngineProfile {
 
 const PROFILES: Record<string, EngineProfile> = {
   // Turbo straight-six coupe: smooth firing, strong spool.
-  kaze: { cyl: 6, odd: 0.16, bright: 0.95, turbo: 1.0, level: 1.0, revLimit: 7400, burble: 0.85 },
+  /* Sedan-with-a-bit-of-sport, not a supercar — and the numbers matter more
+     than they look. Firing frequency is rpm*cyl/120, so a 6-cylinder at a
+     7400 redline fires at 370Hz flat out: a high, buzzy, small-engine pitch,
+     and most of why the top of the rev range read as a motorbike no matter
+     what was done to the samples. A 4-cylinder at 6400 fires at 213Hz — very
+     nearly an octave lower, and squarely where a real saloon sits.
+
+     Four cylinders is also what the recordings ARE (LOOP_F0 measures 42.9Hz
+     at what is ~1290rpm for a four), so the ladder now needs far less
+     stretching to reach the right pitch and its formants stay put. The
+     interior is a Volvo S90, which is a four in real life.
+
+     `bright` up (harmonics roll off faster, less edge), `odd` up (a four is
+     lumpier than a straight six — that unevenness is what stops it droning),
+     turbo and burble well down from the coupe's showy settings. */
+  kaze: { cyl: 4, odd: 0.34, bright: 1.18, turbo: 0.5, level: 1.0, revLimit: 6400, burble: 0.3 },
   // Executive sedan: even, refined, muted.
   shirayuki: { cyl: 6, odd: 0.1, bright: 1.25, turbo: 0.15, level: 0.82, revLimit: 6700, burble: 0.08 },
   // 660cc kei triple: buzzy, uneven, screams at the top.
