@@ -692,6 +692,24 @@ export class MusicPlayer {
     this.skip(-1);
   }
 
+  /** One transport action from a click on the in-dash screen. Routed through
+      here rather than having the caller pick a method so the click path and
+      the key path cannot drift apart — and because a click IS a user gesture,
+      which is exactly what an AudioContext needs to unlock, so this primes on
+      the way in. Returns what it did, for the caller's toast. */
+  click(action: "prev" | "toggle" | "next"): string | null {
+    if (!this.enabled) return null;
+    this.prime();
+    if (!this.ready) return null;
+    if (action === "toggle") {
+      this.toggle();
+      return this.playing ? "\u266a " + this.track.title : "MUSIC PAUSED";
+    }
+    if (action === "next") this.next();
+    else this.prev();
+    return "\u266a " + this.track.title;
+  }
+
   private skip(dir: number) {
     if (!this.enabled) return;
     this.ix = (this.ix + dir + PIECES.length) % PIECES.length;
@@ -1021,4 +1039,42 @@ export class MusicPlayer {
     g.setValueAtTime(g.value, now);
     g.linearRampToValueAtTime(to, now + time);
   }
+}
+
+/* ------------------------------------------------- pointer hit-testing --- */
+
+/* Clicking the transport glyphs on the in-dash screen.
+
+   The head unit is a CanvasTexture on a plane in the 3D cockpit, so a click
+   has to be raycast from the camera onto that plane and the hit UV mapped
+   back into the 256x160 logical space carscreen.ts draws in. The maths lives
+   here rather than in engine.ts so the engine's hook stays a few lines.
+
+   THE RECTS BELOW MUST AGREE WITH carscreen.ts. They are derived from its
+   CARD ({x:6,y:6,w:91,h:148} -> centre x 51.5) and its transport row at
+   BAR_Y + 15 = 143, with the glyphs at centre -26/-19, -4/+4 and +19/+26.
+   They are padded to a comfortable cursor target rather than tracking the
+   glyph outlines exactly. carscreen.ts is owned by the dash-screen agent; if
+   that layout moves, these move with it — ideally by that file exporting the
+   rects and this constant being deleted. */
+const SCREEN_W = 256;
+const SCREEN_H = 160;
+
+export type Transport = "prev" | "toggle" | "next";
+
+const HITS: { id: Transport; x0: number; x1: number; y0: number; y1: number }[] = [
+  { id: "prev", x0: 17, x1: 40, y0: 131, y1: 156 },
+  { id: "toggle", x0: 41, x1: 62, y0: 131, y1: 156 },
+  { id: "next", x0: 63, x1: 86, y0: 131, y1: 156 },
+];
+
+/** Map a UV hit on the head-unit plane to a transport action, or null if the
+    click landed elsewhere on the screen (the nav pane, the album art, the
+    card's dead space). `v` is flipped because UV origin is bottom-left while
+    the canvas the panel is drawn into is top-down. */
+export function hitTransport(u: number, v: number): Transport | null {
+  const x = u * SCREEN_W;
+  const y = (1 - v) * SCREEN_H;
+  for (const h of HITS) if (x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1) return h.id;
+  return null;
 }

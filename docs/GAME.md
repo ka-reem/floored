@@ -112,7 +112,8 @@ falls back to the procedural one.
 
 ### The test suite
 
-27 scripts in `test/`, of which exactly **two** are wired to npm:
+27 scripts in `test/` (plus whatever `_*-scratch.mjs` probes an agent has left
+lying around), of which exactly **two** are wired to npm:
 
 | Command | What it does | Needs a server? |
 |---|---|---|
@@ -145,24 +146,24 @@ constructor installs (see §5.1).
 ### The size budget currently fails — this is known
 
 `node test/size-budget.mjs` checks committed assets against a 15 MB
-critical-path budget and a 30 MB total budget. Verified output at time of
-writing:
+critical-path budget and a 30 MB total budget. Last verified output:
 
 ```
-Critical: 24.79 MB / 15 MB budget
-Total:    26.84 MB / 30 MB budget
+Critical: 22.96 MB / 15 MB budget
+Total:    25.05 MB / 30 MB budget
 FAIL: critical-path assets exceed 15 MB
 ```
 
 Exit code 1. The dominant line is `public/models/cockpits` at **16.35 MB** — the
 baked Volvo S90 dash, which is a single file and is the thing the whole dashcam
-view depends on. Nothing is broken; this is a standing, pre-existing state.
+view depends on. **Nothing is broken; this is a standing, pre-existing state.**
 Don't be alarmed by a red test here.
 
-**These numbers are actively moving.** An asset-compression pass was running
-while this was written — the same script reported `30.23 MB / 43.80 MB` an hour
-earlier, before the PBR scans and HDRIs were shrunk. Re-run it rather than
-trusting the figures above.
+**These numbers are actively falling.** An asset-compression pass ran while this
+was written, and the same script reported three different answers within one
+hour: `30.23 / 43.80` → `24.79 / 26.84` → `22.96 / 25.05`. The *total* budget now
+passes; only the critical path fails, and it is dominated by the one file that
+cannot easily shrink. Re-run the script rather than trusting the figures above.
 
 ---
 
@@ -1089,21 +1090,23 @@ change on its own. `engine.ts` resets `lastReverb = -1` for exactly this reason.
 
 ## 8. In flight at the time of writing
 
-This document describes what is **committed and stable** as of `2b6e472`.
-A dozen agents were mid-edit while it was written, so treat these specific areas
-as possibly ahead of what is described here:
+The body of this document was researched against `2b6e472` and describes what
+was **committed and stable** there. A dozen agents were mid-edit throughout, and
+three of their sweeps (`4891fdf`, `00878f9`, `51acadd`) landed while it was being
+written — so treat these specific areas as possibly ahead of the text above:
 
 | Area | State |
 |---|---|
-| **Loading screen** | `game/loading.ts` and the staged loader are **committed** (`4891fdf`) and described above |
-| **Music player** | `game/music.ts` is **committed**; the engine wiring landed; the dash-screen panel that reads it does **not** exist yet — the music card still shows a fake tracklist |
-| **In-dash map** | **Committed** — the nav pane now shares `drawMiniMap` with the HUD. Described above |
-| **Asset compression** | **In progress and uncommitted.** PBR scans, HDRIs, decals and lens dirt are all being shrunk right now; `ao.jpg` maps are being deleted. The size-budget numbers in §3 are a moving target |
-| **Gamepad support** | `game/gamepad.ts` is **new and untracked** — analog triggers bypass the keyboard ramp, the stick does not. Not described above because it is not committed |
-| **Tunnel / bridge / barrier work** | `world/corridor.ts`, `world/highway.ts`, `world/mats.ts`, `world/routegraph.ts` all have uncommitted modifications |
-| **Traffic courtesy / yielding** | **Committed** (`2932e18`) and described in full above |
-| **Zipper merges through lane shrinks** | **Committed** (`d55c8cf`) |
-| **`tools/shrink-hdri.mjs`** | New and untracked — downsamples Radiance HDRs, since three prefilters the env cube at `width / 4` and everything above 2048 wide is decoded and thrown away |
+| **Loading screen** | **Committed** (`4891fdf`). Described above |
+| **Music player** | **Committed** (`4891fdf`), engine wiring landed — but the dash-screen panel that reads it does **not** exist yet. The music card still shows a fake tracklist |
+| **In-dash map** | **Committed** (`4891fdf`) — the nav pane now shares `drawMiniMap` with the HUD. Described above |
+| **Traffic courtesy / yielding** | **Committed** (`2932e18`). Described in full above |
+| **Zipper merges through lane shrinks** | **Committed** (`d55c8cf`). Only lightly covered above |
+| **Asset diet** | **Committed** (`00878f9`, `51acadd`) — PBR scans, HDRIs, decals and lens dirt shrunk; `ao.jpg` maps deleted. This is why §3's budget numbers moved three times |
+| **Gamepad support** | `game/gamepad.ts` — landed in `00878f9`/`51acadd` **after** the research pass, so it is *not* described above. Analog triggers bypass the keyboard input ramp (a trigger is already a pedal); the stick deliberately does **not** bypass the steering ramp, because that ramp exists to stop the front axle snapping to full lock in one frame at 40 m/s |
+| **Mobile input, world-static rain, settings persistence** | Landed in `51acadd`, after the research pass. Not described above |
+| **Tunnel / bridge / barrier work** | Bridge and barrier materials landed in `4891fdf`; further corridor/highway/mats/routegraph work landed in the later sweeps |
+| **`tools/shrink-hdri.mjs`** | Now committed — downsamples Radiance HDRs, since three prefilters the env cube at `width / 4` and everything above 2048 wide is decoded and thrown away |
 
 Also note the commit message on `4891fdf`, which covers the loading screen, dash
 screen, bridge, barriers, music and FX pass:

@@ -27,7 +27,7 @@ import { buildPlayerCar, type PlayerRig } from "./player";
 import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, type GaugeFlags } from "./cockpit";
 import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
-import { MusicPlayer } from "./music";
+import { MusicPlayer, hitTransport } from "./music";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap } from "./minimap";
@@ -432,6 +432,12 @@ export class Game {
     this.ui = ui;
     this.settings = profile.settings;
     this.grade = profile.settings.dashcam;
+    /* Direct assignment, not setRain()/setters: rainFX does not exist until
+       load() runs, and setRain toasts — a restored profile must not fire a
+       "RAIN — grip down" popup at startup. */
+    this.rain = profile.settings.rain;
+    this.time = profile.settings.time;
+    this.mmap = profile.settings.mmap;
     this.carId = profile.carId;
     this.paintIx = profile.paintIx;
     this.seed = profile.seed;
@@ -736,6 +742,9 @@ export class Game {
             this.scene, this.world, this.mats.envMap, this.mats.glowTex, 120
           );
           this.rainFX = new RainFX(this.scene, this.mats.streakTex);
+          // the load's applySettings pass covers mats.setWet but not the
+          // particles, so a profile restored with rain on needs this
+          this.rainFX.pts.visible = this.rain;
           this.smokeFX = new SmokeFX(this.scene, this.mats.smokeTex);
           // wait for the bodyshells: a style with no model is barred from
           // spawning, so driving off before they land means an empty road that
@@ -1022,6 +1031,32 @@ export class Game {
     this.hiConsumed = false;
     this.hiDownAt = performance.now() / 1000;
   }
+  /* Click the transport glyphs on the in-dash screen. The head unit is a
+     CanvasTexture on a plane, so this raycasts the cursor onto that plane and
+     hands the hit UV to music.ts, which owns the button rects.
+
+     Only on click, never per frame — a raycast per frame for a control that is
+     touched once a minute is not worth the frame time. Desktop only: gated on
+     music.enabled, which is false on touch. */
+  private musicRay = new THREE.Raycaster();
+  private musicNdc = new THREE.Vector2();
+  private onPointerDown = (e: PointerEvent) => {
+    if (!this.music.enabled || !this.running || !this.loaded) return;
+    const panel = this.rig?.cockpit?.navPanel();
+    if (!panel) return;
+    this.musicNdc.set(
+      (e.clientX / innerWidth) * 2 - 1,
+      -(e.clientY / innerHeight) * 2 + 1
+    );
+    this.musicRay.setFromCamera(this.musicNdc, this.camera);
+    const hit = this.musicRay.intersectObject(panel, false)[0];
+    if (!hit || !hit.uv) return;
+    const action = hitTransport(hit.uv.x, hit.uv.y);
+    if (!action) return;
+    const msg = this.music.click(action);
+    if (msg) this.ui.toast(msg);
+  };
+
   private onKeyUp = (e: KeyboardEvent) => {
     const k = e.key.toLowerCase();
     this.keydown[k] = 0;
@@ -1055,6 +1090,7 @@ export class Game {
 
   private bindInput() {
     addEventListener("keydown", this.onKeyDown);
+    this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown);
     addEventListener("keyup", this.onKeyUp);
     const bindHold = (id: string, key: string) => {
       const el = document.getElementById(id);
@@ -1191,6 +1227,16 @@ export class Game {
   }
   applySettings(s: GameSettings) {
     this.settings = s;
+    /* grade/mmap/rain are live engine state mirrored from settings. The
+       in-game keys write both sides, so this only moves them when the panel
+       does — including Reset-to-defaults, which Object.assigns the settings
+       and would otherwise leave the engine disagreeing with the saved value.
+       The rain guard matters: this runs on every slider tick and setRain
+       toasts. `time` is deliberately not mirrored — forcing it each tick
+       would fight the day/night cycle. */
+    this.grade = s.dashcam;
+    this.mmap = s.mmap;
+    if (this.rain !== s.rain) this.setRain(s.rain);
     // re-resolve the tier: the manual override lives in these settings, and a
     // change has to land on the same frame the settings panel applies it
     this.renderTier = resolveRenderTier(s, this.isTouch, this.renderer.getContext());
@@ -1251,6 +1297,7 @@ export class Game {
 
   setRain(on: boolean) {
     this.rain = on;
+    this.settings.rain = on;
     // settable from the pre-Drive settings panel: `rain` is read back by the
     // load's applySettings pass, so the world comes up wet either way
     if (this.loaded) {
@@ -1306,6 +1353,7 @@ export class Game {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     removeEventListener("keydown", this.onKeyDown);
+    this.renderer.domElement.removeEventListener("pointerdown", this.onPointerDown);
     removeEventListener("keyup", this.onKeyUp);
     removeEventListener("resize", this.onResize);
     window.removeEventListener("error", this.onWindowError);
@@ -1320,7 +1368,7 @@ export class Game {
        a remount or HMR silently never receives the HDRI and falls back to the
        painted cube for good. rig.dispose() untracks them (player.ts:745). */
     this.rig?.dispose(this.scene);
-    /* Geometry, the rain PointsMaterial and 70 SpriteMaterials. Optional-chained
+    /* Geometry, the rain PointsMaterial and 96 SpriteMaterials. Optional-chained
        for the same reason as the rig: both are `!`-declared and only exist once
        the world has built. Their textures (streakTex/smokeTex) are deliberately
        NOT freed here — they belong to the material bundle and outlive the FX,
@@ -2168,10 +2216,13 @@ export class Game {
     // external HUD minimap is redundant in that view — hide it. POV keeps the
     // HUD: the head unit is a long way down-frame there, and the map is the
     // one thing the player still needs to navigate with.
-    if (this.mmap) {
-      const mmapCv = this.miniMap();
-      if (mmapCv) mmapCv.style.display = this.camMode === CAM_COCKPIT ? "none" : "block";
-    }
+    /* Unconditional: gated on this.mmap it only ever ran on the way ON, so a
+       profile restored with the map off left the canvas on screen until X
+       was pressed. miniMap() is cached, so this is not a per-frame lookup. */
+    const mmapCv = this.miniMap();
+    if (mmapCv)
+      mmapCv.style.display =
+        this.mmap && this.camMode !== CAM_COCKPIT ? "block" : "none";
     rig.pivFL.rotation.y = car.delta;
     rig.pivFR.rotation.y = car.delta;
     const spin = (-car.u / this.spec.phys.WR) * dt;
@@ -2752,6 +2803,14 @@ export class Game {
       const pSmoke = 1 - Math.exp(-25.85 * dt);
       for (const w of this.traffic.activeWrecks())
         if (Math.random() < pSmoke) this.smokeFX.emit(w.x, w.y + 0.9, w.z, Math.random() < 0.15);
+      /* Wheel spray. Rate is per second and accumulated inside fx.ts, so this
+         is a plain per-frame call with no gate of its own. The `rain ? 1 : 0`
+         is the intensity slot: when a variable rain source lands, pass it here
+         and the spray thins out with the weather for free. */
+      this.smokeFX.sprayEmit(
+        dt, this.car.x, this.car.y, this.car.z, this.car.h,
+        Math.abs(this.car.u), this.rain ? 1 : 0, this.car.slipAmt
+      );
       this.smokeFX.update(dt);
       this.signalsUpdate(now);
       this.weather(dt, now);
