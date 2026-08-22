@@ -149,6 +149,12 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
      and has real needles. Its centre screen stays and takes our nav canvas —
      that one IS just a lit rectangle, which is exactly what a texture is for. */
   cluster.visible = false;
+  /* Its cover glass goes with it. The pane is a near-black blended shell
+     (baseColor ~0.007, alpha ~0.68, double-sided) sitting between the eye and
+     our relocated gauges, and the scan is dense enough that a POV ray crosses
+     it several times — each layer multiplies through, dimming the cluster
+     roughly 25x. Fail-soft: byRole returns [] for donors without the role. */
+  for (const g of byRole("clusterGlass")) g.visible = false;
   /* Centre of the donor binnacle in cockpit-local space: the mesh's own
      geometry bounds pushed through its (already cockpit-local) matrix. */
   const clusterMesh = cluster as THREE.Mesh;

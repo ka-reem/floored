@@ -3,7 +3,7 @@ import { clamp, lerp, TAU } from "./util";
 import { speedInUnits, unitLabel, type SpeedUnits } from "./settings";
 
 /* Instrument cluster for the cockpit view: two analog dials (tacho + speedo)
-   with real 3D needles, a centre digital display (gear / speed / odo / tells)
+   with real 3D needles, a centre digital display (speed / gear / odo / tells)
    and a shift-light bar. Dial faces are canvas textures painted once (and
    repainted only when the rev limit changes); per-frame work is one small
    canvas redraw plus a couple of needle rotations. */
@@ -270,28 +270,28 @@ export function buildInstrumentCluster(
     tell(g, f.rain, "#6fb8ff", "☂", 88, 32);
     tell(g, f.tcOn, "#ffb43a", "TC", 116, 32);
 
-    // gear
+    // digital speed — the headline readout
     g.fillStyle = "rgba(150,166,196,.85)";
     g.font = "600 13px sans-serif";
-    g.fillText("GEAR", 88, 56);
+    g.fillText(unitLabel(units), 88, 56);
     const rev = gearTxt.startsWith("R");
-    g.fillStyle = rev ? "#ff8a72" : "#eaf2ff";
-    g.shadowColor = rev ? "#ff8a72" : "#8fc4ff";
+    g.fillStyle = "#eaf2ff";
+    g.shadowColor = "#8fc4ff";
     g.shadowBlur = 14;
     g.font = "700 62px sans-serif";
-    g.fillText(rev ? "R" : gearTxt.replace(/[^0-9]/g, "") || "N", 88, 100);
+    g.fillText(String(shownSpeed | 0), 88, 100);
     g.shadowBlur = 0;
     g.fillStyle = accentCss;
     g.font = "700 13px sans-serif";
     g.fillText(rev ? "REVERSE" : "AUTO  D", 88, 134);
 
-    // digital speed
-    g.fillStyle = "#dfe8fb";
+    // gear
+    g.fillStyle = rev ? "#ff8a72" : "#dfe8fb";
     g.font = "700 34px sans-serif";
-    g.fillText(String(shownSpeed | 0), 88, 164);
+    g.fillText(rev ? "R" : gearTxt.replace(/[^0-9]/g, "") || "N", 88, 164);
     g.fillStyle = "rgba(150,166,196,.85)";
     g.font = "11px sans-serif";
-    g.fillText(unitLabel(units), 88, 184);
+    g.fillText("GEAR", 88, 184);
     g.fillText("ODO " + (31842 + Math.floor(f.odo)) + " km", 88, 204);
 
     infoTex.needsUpdate = true;

@@ -497,8 +497,20 @@ type Lod = {
      bumper line and its cut-off stays hidden under the nose of the car.
    - POOL_GAIN 0.42 → 0.36. The "less focused bright" half of the request, and
      deliberately small: the footprint grows 2.6x in area, so the net still
-     reads clearly wider rather than merely dimmer. */
-const POOL_LEN = 15.0, POOL_W = 5.2, POOL_GAIN = 0.36, POOL_FADE_D = 240;
+     reads clearly wider rather than merely dimmer.
+   - POOL_LEN 15.0 → 18.0 ("stronger / longer" NPC beams, at zero perf): the
+     span IS the brightness lever here. The POV crush (`max(col - .06, 0)`)
+     keeps only pixels above its floor, so a longer footprint reads as a
+     stronger beam; the non-uniform POOL_ROWS mapping stretches with it, so
+     the tail keeps its 40%-of-length creep and no new edge appears.
+     POOL_GAIN deliberately does NOT rise with it: the hot core already
+     composites to ≈ 0.71 display luma (0.85 texel × 0.36 through ACES at
+     night exposure), i.e. a hair under the 0.72 blown-highlight clip in
+     post.ts — brightening the core is the one move with no headroom, and
+     the clip would eat the gain and hand back a white patch. Cost of the
+     length: ~20% more area on ONE instanced additive draw, no lights, no
+     draw calls — real per-NPC lights stay banned (see above). */
+const POOL_LEN = 18.0, POOL_W = 5.2, POOL_GAIN = 0.36, POOL_FADE_D = 240;
 /* Canvas layout of the pool gradient, shared with the UV remap below so the
    two can never drift apart. The gradient is a radial one centred POOL_HOT_Y
    down the canvas, stretched POOL_EL× along y; texture radius fraction t runs
@@ -588,6 +600,42 @@ const TOLL_WASH_ZC = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
 const TOLL_WASH_CORE = 13, TOLL_WASH_R = 21;
 const TOLL_WASH_GAIN = 0.7;
 const TOLL_WASH_TINT_R = 0.92, TOLL_WASH_TINT_G = 0.95, TOLL_WASH_TINT_B = 1.0;
+
+/* ---- player-headlight wash over NPC bodies ----
+   Same "matching fake" as the streetlight wash above, for the player's own
+   beams. The real headlight SpotLights DO reach NPC materials — nothing is
+   layered out — but they cannot make a car ahead read as lit at following
+   distance, by construction: the dipped cone is edge-pinned (upper edge
+   0.23° below horizontal) with penumbra 1.0, so a vertical panel at 25-40 m
+   sits both above the cut-off (only the sub-0.5 m valance band is inside the
+   cone at all) and in the last degree before the cone rim, where the angular
+   smoothstep is ~0.01. Worked number: at 30 m the bumper of the car ahead
+   receives ≈ 60/30^0.45 × 0.012 ≈ 0.09 — invisible. Fixing that by widening
+   or re-aiming the cone would re-tune the beam-on-road look (see the long
+   angle/decay comments in engine.ts weather()), so the car-body response is
+   faked here instead: a per-instance radiance added into the same washCol
+   channel the streetlights use, gated on a forward wedge from the player's
+   nose. Zero cost — one dot product per NPC per frame, no lights, no new
+   attributes — and the anti-blowout knee caps it with everything else.
+
+   DELIBERATELY SUBTLE ("really subtle" — the user, twice). At full wash a
+   mid-grey panel adds ≈ 0.12 × 0.35 albedo × 0.55 vertical-panel weight
+   ≈ 0.023 linear — through ACES + the POV crush that lifts a panel from
+   ≈ 0.13 to ≈ 0.20 display luma at close range, about half that at 30 m.
+   A brightening you notice when it sweeps on or off a car, not a spotlight.
+   Raise HLW_GAIN in ~0.03 steps if it must read stronger; past ~0.25 the
+   car ahead starts looking self-lit and the effect gives itself away. */
+const HLW_GAIN = 0.12;
+/** along-beam falloff, metres ahead of the player's nose: full to 18 m, then
+    a smoothstep tail to zero at 60 m — the far half is what puts a faint
+    read on a car at highway following distance without pinning near cars */
+const HLW_CORE_D = 18, HLW_R_D = 60;
+/** lateral falloff, metres off the beam axis; widens with distance like the
+    two toed-out cones' combined footprint (~9°/17° from centre) */
+const HLW_CORE_L0 = 1.8, HLW_R_L0 = 4.2, HLW_CORE_LK = 0.08, HLW_R_LK = 0.16;
+/** dipped-beam 0xffeeda in linear — matches the SpotLights and the parapet
+    wash in mats.ts, so every surface answers the beam in one colour */
+const HLW_R = 1.0, HLW_G = 0.858, HLW_B = 0.708;
 
 /** smoothstep-shaped falloff: 1 inside `core`, 0 past `r` */
 function washFall(d: number, core: number, r: number) {
@@ -2405,6 +2453,12 @@ export class Traffic {
     for (const st of this.styles) st.n = 0;
     let wk = 0;
     const WHEEL2 = 150 * 150;
+    /* player-beam wash basis (see the HLW_* block): forward axis once per
+       frame, and the gate mirrors engine.ts's `lamps` as closely as this
+       side can see it — lightsOn covers the running-lights state; the
+       flash-to-pass-with-lights-off case is a sub-second daylight event */
+    const beamOn = night && player.lightsOn;
+    const pfx = Math.sin(player.h), pfz = Math.cos(player.h);
     for (const n of this.npcs) {
       if (!n.active) continue;
       const dx = n.x - player.x, dz = n.z - player.z;
@@ -2473,6 +2527,27 @@ export class Traffic {
           wshR += g * WASH_R;
           wshG += g * WASH_G;
           wshB += g * WASH_B;
+        }
+      }
+      /* Player-headlight wash — outside the `n.hw` gate above on purpose: it
+         is driven by geometry relative to the player, not by which road the
+         NPC is on, and an oncoming car's front catching the beams is as real
+         as a led car's tail. `along` is measured from the lamp line (nose is
+         ~2 m ahead of the player's centre), matching engine.ts's beam
+         origin. */
+      if (beamOn) {
+        const along = dx * pfx + dz * pfz - 2;
+        if (along > 0 && along < HLW_R_D) {
+          const lat = Math.abs(dx * pfz - dz * pfx);
+          const w =
+            HLW_GAIN *
+            washFall(along, HLW_CORE_D, HLW_R_D) *
+            washFall(lat, HLW_CORE_L0 + along * HLW_CORE_LK, HLW_R_L0 + along * HLW_R_LK);
+          if (w > 0) {
+            wshR += w * HLW_R;
+            wshG += w * HLW_G;
+            wshB += w * HLW_B;
+          }
         }
       }
       const wa = lod.wash.array as Float32Array;

@@ -365,10 +365,26 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
    * <worldpos_vertex> and <color_fragment>, which is all this needs.
    * Inert until setBeam() is called — uBeamK stays 0 and the mix collapses to
    * the material's original colour, so nothing changes if it is never wired.
+   *
+   * `wash` switches the hook from the retro multiplier to an ADDITIVE emissive
+   * term for LIT materials (the concrete parapets). The multiplier form is
+   * wrong for those: outside the beam it would darken the material's ambient-
+   * lit night look everywhere (a change to the whole night scene), and inside
+   * the beam ×1.0 only restores a surface the real SpotLights barely reach —
+   * the dipped cone is edge-pinned with penumbra 1.0, so anything off the
+   * road-surface axis (a vertical barrier face, a car body) sits in the last
+   * degrees before the cone rim where the angular smoothstep is ~0 (see the
+   * cone comments in engine.ts weather()). So instead: add
+   * `albedo × dippedTint × cone × fall × night × wash` as emissive, the same
+   * matching-fake pattern as traffic.ts's washCol. It fades on the cone and
+   * range smoothsteps (no hard line), is gated off in daylight and with the
+   * lamps by uBeamK, and stretches with high beam via uBeamRange. The gain is
+   * chosen against the POV grade: peak ≈ albedo·wash linear, and it must stay
+   * well under the 0.72-display-luma blown-highlight clip (post.ts).
    */
   function addBeam(
     mat: THREE.Material,
-    opts?: { near?: number; far?: number; spread?: number }
+    opts?: { near?: number; far?: number; spread?: number; wash?: number }
   ) {
     const near = opts?.near ?? 22;
     const far = opts?.far ?? 70;
@@ -386,6 +402,7 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
        nothing that shipped before it. */
     const cos0 = Math.min(Math.max(opts?.spread ?? 0.55, -0.99), 0.99);
     const cos1 = Math.min(cos0 + 0.16, 0.999);
+    const wash = opts?.wash ?? 0;
     mat.onBeforeCompile = (sh) => {
       sh.uniforms.uBeamPos = uBeamPos;
       sh.uniforms.uBeamDir = uBeamDir;
@@ -410,11 +427,8 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
             "uniform float uBeamAmb; uniform float uBeamK; uniform float uBeamRange;\n" +
             "uniform float uBeamNear; uniform float uBeamFar;\n" +
             "uniform float uBeamCos; uniform float uBeamCos1;"
-        )
-        .replace(
-          "#include <color_fragment>",
-          `#include <color_fragment>
-{
+        );
+      const gate = `
   vec3 bd = vRetroW - uBeamPos;
   float bdist = length(bd);
   float align = dot(bd / max(bdist, 1e-4), uBeamDir);
@@ -422,12 +436,30 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   // narrow bright wedge that widens with distance
   float cone = smoothstep(uBeamCos, uBeamCos1, align);
   float fall = 1.0 - smoothstep(uBeamNear * uBeamRange, uBeamFar * uBeamRange, bdist);
-  float lit = cone * fall;
+  float lit = cone * fall;`;
+      sh.fragmentShader = wash > 0
+        ? sh.fragmentShader.replace(
+            "#include <emissivemap_fragment>",
+            /* additive wash for lit materials — see the doc comment above. The
+               tint is the dipped-beam 0xffeeda in linear, so the wall answers
+               in the beam's own colour and stays a different light from the
+               sodium lamps. Albedo-proportional, so the concrete scan's
+               texture modulates it for free. */
+            `#include <emissivemap_fragment>
+{${gate}
+  totalEmissiveRadiance +=
+    diffuseColor.rgb * vec3(1.0, 0.858, 0.708) * (lit * uBeamK * ${wash.toFixed(3)});
+}`
+          )
+        : sh.fragmentShader.replace(
+            "#include <color_fragment>",
+            `#include <color_fragment>
+{${gate}
   diffuseColor.rgb *= mix(uBeamAmb, 1.0, lit * uBeamK);
 }`
-        );
+          );
     };
-    mat.customProgramCacheKey = () => `beam|${near}|${far}|${cos0}|${cos1}`;
+    mat.customProgramCacheKey = () => `beam|${near}|${far}|${cos0}|${cos1}|${wash}`;
   }
 
   /* ---------------- world-projected UVs ---------------- */
@@ -446,7 +478,19 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
    */
   function projectedUv(mat: THREE.MeshStandardMaterial, scale: number) {
     mat.userData.projScale = scale;
-    mat.onBeforeCompile = (sh) => {
+    /* Chain, don't clobber: the parapet materials already carry addBeam's
+       headlight-wash hook by the time the async scan lands here. The chained
+       key must also stay distinct per prior hook — `conc` (no hook) and
+       `barrier` (beam hook) compile different shaders, and a shared "projuv"
+       key would make three hand one the other's program. The prior key is
+       resolved once, eagerly: addBeam's key is static, and reading it lazily
+       after the reassignment below would recurse. */
+    const prevHook = mat.onBeforeCompile;
+    const prevKey = Object.prototype.hasOwnProperty.call(mat, "customProgramCacheKey")
+      ? mat.customProgramCacheKey()
+      : "";
+    mat.onBeforeCompile = (sh, renderer) => {
+      prevHook?.call(mat, sh, renderer);
       sh.uniforms.uProjScale = { value: mat.userData.projScale };
       mat.userData.projSh = sh;
       sh.vertexShader = sh.vertexShader
@@ -476,7 +520,7 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
 }`
         );
     };
-    mat.customProgramCacheKey = () => "projuv";
+    mat.customProgramCacheKey = () => `projuv|${prevKey}`;
   }
 
   const road = new THREE.MeshStandardMaterial({
@@ -649,6 +693,24 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      the beam the panel simply shows its true material lit by the real
      headlight SpotLights, and outside it falls to the emissive skyglow floor. */
   addBeam(fence, { near: 24, far: 85, spread: 0.5 });
+  /* Concrete parapets. Same rake-as-you-pass read as the fence, but via the
+     additive `wash` path — these are lit materials, and the multiplier form
+     would darken their ambient night look everywhere outside the beam (see
+     addBeam's doc comment). The real headlight SpotLights barely reach a
+     vertical face beside the road: the dipped cone is edge-pinned with
+     penumbra 1.0, so barrier faces sit in the near-zero rim of its angular
+     smoothstep at every distance. Numbers, worked against the POV grade:
+     albedo ≈ 0.15 linear (0x8d939f tint × concrete scan), so peak wash is
+     0.15 × 0.5 ≈ 0.08 linear → ~0.33 display luma after ACES + the dashcam
+     crush — plainly lit concrete, and well under the 0.72 blown-highlight
+     clip and the ~0.8 hue bleach. Fade is cone × range smoothsteps: the wall
+     beside the doors is outside the cone (dark), brightens in over ~3-8 m
+     ahead, and dies off 22 → 78 m with the smoothstep's own flattening tail —
+     no terminator line. High beam stretches the reach via setBeam's range
+     multiplier, exactly as the paint does. `barrier` (single-sided) is
+     registered too so the pair can never drift apart if it gains a user. */
+  addBeam(barrier, { near: 22, far: 78, spread: 0.55, wash: 0.5 });
+  addBeam(barrierDouble, { near: 22, far: 78, spread: 0.55, wash: 0.5 });
 
   const mats: Mats = {
     envMap, glowTex, streakTex, smokeTex, chevTex, goreTex, xingTex, studTex,
