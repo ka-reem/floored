@@ -66,7 +66,13 @@ export function carPreviewURL(carId: string, paintHex: number): string {
 
   const st = getStudio();
   const spec = getCar(carId);
-  const rig = buildPlayerCar(st.scene, spec, paintHex, st.envMap, st.glowTex, st.blankTex);
+  /* "mobile-base" purely because it is the tier that configures no donor dash.
+     This shot is rendered and read back SYNCHRONOUSLY on the next line and the
+     rig is disposed immediately after, so an imported dash could never arrive
+     in time to appear in it — on the default tier every car card was kicking
+     off a 17 MB fetch whose only possible outcomes were wasted bandwidth and a
+     wire() call against a disposed cockpit. */
+  const rig = buildPlayerCar(st.scene, spec, paintHex, st.envMap, st.glowTex, st.blankTex, "mobile-base");
   rig.headMat.emissiveIntensity = 2.2;
   rig.carGroup.rotation.y = -2.42; // front-3/4, nose toward camera-left
 

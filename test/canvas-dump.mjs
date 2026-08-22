@@ -34,6 +34,10 @@ await page.evaluate(() => {
   const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));
   b?.click();
 });
+/* The world is built by the staged loader after this click, not by the
+   constructor, so __neonx existing no longer means there is a world to
+   drive in — wait for the load to finish before touching it. */
+await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 180000 });
 await sleep(2500);
 const DECK_Z = Number(process.env.SHOT_Z ?? -1300); // e.g. 150 = the corridor curve
 await page.evaluate((z) => {

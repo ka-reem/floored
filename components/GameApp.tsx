@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Game } from "@/game/engine";
+import type { LoadReport } from "@/game/loading";
 import { CARS, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
 import {
@@ -9,7 +10,7 @@ import {
   type Profile, type GameSettings,
 } from "@/game/settings";
 
-type Screen = "main" | "garage" | "settings" | "controls" | "playing" | "paused";
+type Screen = "main" | "garage" | "settings" | "controls" | "loading" | "playing" | "paused";
 
 export default function GameApp() {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -19,6 +20,8 @@ export default function GameApp() {
   const [fromPause, setFromPause] = useState(false);
   const [toast, setToast] = useState("");
   const [exitHint, setExitHint] = useState<string | null>(null);
+  const [load, setLoad] = useState<LoadReport>({ label: "", frac: 0 });
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [, force] = useState(0);
   const rerender = () => force((n) => n + 1);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -78,15 +81,38 @@ export default function GameApp() {
     saveProfile(p);
   }, []);
 
-  const drive = () => {
+  /* DRIVE. The world does not exist until this runs — the engine constructor
+     only sets up a canvas and the settings the menus read (see Game.load) —
+     so the first press pays for the whole build behind the loading screen.
+     A second press (after MAIN MENU from the pause screen) is instant. */
+  const drive = useCallback(async () => {
     const g = gameRef.current;
     if (!g) return;
+    /* Before anything asynchronous: iOS only unlocks an AudioContext created
+       inside the gesture itself, and every line below this one is a task or
+       more removed from the tap. */
+    g.primeAudio();
+    if (!g.loaded) {
+      setLoadErr(null);
+      setLoad({ label: "", frac: 0 });
+      setScreen("loading");
+      try {
+        await g.load(setLoad);
+      } catch (e) {
+        // stay on the loading screen, but as an error state with a way out —
+        // a half-built world is not something to drop the player into
+        setLoadErr(e instanceof Error ? e.message : String(e));
+        return;
+      }
+      // unmounted (or torn down and rebuilt) while we were loading
+      if (gameRef.current !== g) return;
+    }
     g.start();
     g.setRunning(true);
     setFromPause(false);
     setScreen("playing");
     persist();
-  };
+  }, [persist]);
   const resume = () => {
     gameRef.current?.setRunning(true);
     setScreen("playing");
@@ -173,6 +199,10 @@ export default function GameApp() {
         </div>
       )}
 
+      {screen === "loading" && (
+        <LoadingScreen label={load.label} frac={load.frac} error={loadErr} />
+      )}
+
       {screen === "paused" && (
         <div className="menuRoot paused">
           <h1 className="menuTitle" style={{ fontSize: 34 }}>PAUSED</h1>
@@ -254,6 +284,58 @@ export default function GameApp() {
         </div>
       )}
     </>
+  );
+}
+
+/* ================= loading screen ================= */
+
+/* Rendered from the DRIVE tap until the world is built and warmed.
+
+   Everything that moves here moves on the compositor (see the .loadRoot block
+   in globals.css): each build stage blocks the main thread outright, so any
+   JS-driven or layout-driven animation would freeze exactly when the player
+   most needs to see that something is happening. React re-renders this once
+   per stage — a dozen times over the whole load — and the CSS carries the
+   motion in between. */
+function LoadingScreen({
+  label, frac, error,
+}: {
+  label: string;
+  frac: number;
+  error: string | null;
+}) {
+  return (
+    <div className="loadRoot">
+      <h1 className="loadTitle">NEON EXPRESSWAY</h1>
+      <div className="loadJp">首都高ナイトドライブ</div>
+      {error ? (
+        /* Reload rather than retry: a stage that threw left a half-built world
+           in the scene, and running the stages again over it would stack a
+           second town on the first (see Game.loadFailed). */
+        <div className="loadErr">
+          Something went wrong building the town.
+          <code>{error}</code>
+          <div className="menuBtns" style={{ minWidth: 0, marginTop: 18 }}>
+            <button className="menuBtn primary" onClick={() => location.reload()}>
+              RELOAD
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="loadBar">
+            {/* scaleX rather than width so the bar keeps travelling while the
+                next stage blocks the main thread */}
+            <div className="loadFill" style={{ transform: `scaleX(${frac})` }} />
+            <div className="loadSweep" />
+          </div>
+          <div className="loadStatus">
+            <span>{label}</span>
+            <span className="pct">{Math.round(frac * 100)}%</span>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

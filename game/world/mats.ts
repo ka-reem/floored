@@ -2,7 +2,7 @@ import * as THREE from "three";
 import {
   roadTex, hwyTexF, rampTexF, windowsTexF, storefrontTexF, vendingTexF, glowTexF,
   streakTexF, smokeTexF, envFaceCanvas, chevTexF, goreTexF, xingTexF, studTexF,
-  fenceTexF, loadPbrSet, type PbrSet,
+  fenceTexF, grimeTexF, loadPbrSet, type PbrSet,
 } from "../textures";
 
 /* Shared materials + textures. Planar-reflection sampling is injected into the
@@ -199,6 +199,15 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   const screen = new THREE.Vector2(1, 1);
   let detailOn = true;
   let pbrStarted = false;
+
+  /* Procedural weathering (see weatherSurface). ONE 256x256 mask texture
+     shared by every concrete and steel surface in the world — never one per
+     instance, or the VRAM saved by going procedural would be handed straight
+     back. `uWeatherK` is the shared on/off uniform every weathered material
+     holds, so perf mode flips one value instead of recompiling a dozen
+     programs mid-drive. */
+  const grimeTex = grimeTexF();
+  const uWeatherK = { value: 1 };
 
   const ud = (m: THREE.MeshStandardMaterial) => m.userData as unknown as RoadUD;
 
@@ -523,6 +532,221 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     mat.customProgramCacheKey = () => `projuv|${prevKey}`;
   }
 
+  /* ---------------- procedural weathering ---------------- */
+
+  /**
+   * Options for `weatherSurface`. Every amplitude is a fraction of the
+   * material's own albedo, so a dark skirt and a pale parapet weather by the
+   * same proportion rather than the same absolute amount.
+   */
+  interface WeatherOpts {
+    /** large-scale tonal drift, ± this fraction of albedo */
+    macro?: number;
+    /** rain-wash streak darkening at a full streak, 0..1 */
+    streak?: number;
+    /** contraction-joint groove darkness; 0 disables the grooves entirely */
+    joint?: number;
+    /** metres between contraction joints */
+    jointPitch?: number;
+    /** tonal spread between one casting and the next, ± fraction */
+    section?: number;
+    /** how much lighter the rain-washed up-facing coping reads */
+    topClean?: number;
+    /** roughness swing the same masks drive */
+    rough?: number;
+    /** warm oxide tint carried by the heaviest streaks (galvanised steel) */
+    rust?: number;
+    /** world metres per repeat of the macro field */
+    macroScale?: number;
+    /** world metres per repeat of the streak field, before the v stretch */
+    streakScale?: number;
+  }
+
+  /**
+   * Weather a concrete or steel surface procedurally, in world space.
+   *
+   * WHY this exists. The parapets are a 0.34 m box with three quads per 8 m
+   * segment and no uv attribute at all (highway.ts emits them as a triangle
+   * soup), so everything they show comes from one photo scan projected down
+   * the face's dominant axis at 0.45 units/m — i.e. the SAME 2.22 m patch of
+   * concrete repeated end to end for kilometres. At 40 m/s that patch flicks
+   * past 18 times a second, and a periodic signal at 18 Hz is exactly what
+   * the eye is best at locking onto: the wall reads as printed wallpaper
+   * rather than as concrete. Nothing about the scan's own quality fixes that;
+   * the period is the tell.
+   *
+   * So this layers three fields on top, at frequencies deliberately
+   * incommensurate with the scan's 2.22 m and with each other:
+   *
+   *   - macro mottling at ~11.3 m and a second draw of the same field at
+   *     ~2.9 m. Their beat runs to hundreds of metres, which is longer than
+   *     any stretch of wall the player sees at once;
+   *   - vertical rain-wash streaks below the coping (upright faces only —
+   *     rain does not streak a horizontal surface), which is the single
+   *     most recognisable thing about weathered concrete and, because it
+   *     also drives roughness, is what makes light BREAK across the face
+   *     instead of sliding over it;
+   *   - contraction joints at a real casting pitch, plus a per-casting tonal
+   *     offset, so consecutive sections are visibly different pours.
+   *
+   * All of it multiplies `diffuseColor` right after `<map_fragment>`, which
+   * means it lands *before* addBeam's wash reads that albedo — the headlight
+   * wash inherits the weathering for free, and a dirty streak takes less
+   * light than the clean concrete beside it, which is the whole point at
+   * night.
+   *
+   * Chains onto whatever hook the material already carries (addBeam) and is
+   * itself chained onto later by projectedUv when the scan lands; see the
+   * cache-key note in projectedUv — three keys programs on that string, and
+   * a shared key across different hook sets makes it hand one material
+   * another's program.
+   */
+  function weatherSurface(mat: THREE.MeshStandardMaterial, o: WeatherOpts = {}) {
+    const macro = o.macro ?? 0.13;
+    const streak = o.streak ?? 0.16;
+    const joint = o.joint ?? 0;
+    const pitch = o.jointPitch ?? 4.6;
+    const section = o.section ?? 0.07;
+    const topClean = o.topClean ?? 0.1;
+    const rough = o.rough ?? 0.2;
+    const rust = o.rust ?? 0;
+    const macK = 1 / (o.macroScale ?? 11.3);
+    const strK = 1 / (o.streakScale ?? 2.9);
+    const f = (n: number) => n.toFixed(4);
+
+    /* Same eager chain-and-compose as projectedUv, for the same reason: the
+       beam hook is already installed by the time this runs, and reading the
+       prior key lazily after the reassignment below would recurse. */
+    const prevHook = mat.onBeforeCompile;
+    const prevKey = Object.prototype.hasOwnProperty.call(mat, "customProgramCacheKey")
+      ? mat.customProgramCacheKey()
+      : "";
+    mat.onBeforeCompile = (sh, renderer) => {
+      prevHook?.call(mat, sh, renderer);
+      sh.uniforms.tGrime = { value: grimeTex };
+      sh.uniforms.uWeatherK = uWeatherK;
+
+      sh.vertexShader = sh.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec3 vWeaW; varying vec3 vWeaN;"
+        )
+        .replace(
+          "#include <worldpos_vertex>",
+          `#include <worldpos_vertex>
+{
+  /* The instanceMatrix branch matters: an InstancedMesh's modelMatrix is the
+     BATCH transform, so without it every instance would sample the identical
+     patch of world and weather identically — the failure projectedUv calls
+     out for the poles. */
+  mat4 wMat = modelMatrix;
+  #ifdef USE_INSTANCING
+    wMat = modelMatrix * instanceMatrix;
+  #endif
+  vWeaW = (wMat * vec4(transformed, 1.0)).xyz;
+  vWeaN = normalize(mat3(wMat) * normal);
+}`
+        );
+
+      sh.fragmentShader = sh.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec3 vWeaW; varying vec3 vWeaN;\n" +
+            "uniform sampler2D tGrime; uniform float uWeatherK;"
+        )
+        .replace(
+          "#include <map_fragment>",
+          `#include <map_fragment>
+/* declared at main scope, not inside the branch: <roughnessmap_fragment>
+   further down reads them, and a zeroed set there costs one madd */
+float wMac = 0.0, wDirt = 0.0, wJnt = 0.0, wTop = 0.0;
+/* Branching on a UNIFORM, not on anything per-fragment: every fragment in a
+   quad takes the same path, so the GPU skips the body outright when perf mode
+   zeroes it AND the fwidth() below stays well defined — derivatives taken in
+   divergent control flow are not. */
+if (uWeatherK > 0.001) {
+  vec3 wAn = abs(vWeaN);
+  bool wUp = wAn.y > max(wAn.x, wAn.z);
+  // project down the dominant axis, exactly as projectedUv does, so the masks
+  // sit on the same axes as the photo scan they are breaking up
+  vec2 wUV = wUp ? vWeaW.xz : (wAn.x > wAn.z ? vWeaW.zy : vWeaW.xy);
+  wTop = smoothstep(0.55, 0.86, wAn.y);
+  float wSide = 1.0 - wTop;
+
+  vec3 g1 = texture2D(tGrime, wUV * ${f(macK)}).rgb;
+  // 0.125 on v is the 8:1 stretch that turns blobs into vertical runs; the
+  // 0.37 offset decorrelates this draw from the macro one above it
+  vec3 g2 = texture2D(tGrime, vec2(wUV.x * ${f(strK)} + 0.37, wUV.y * ${f(strK * 0.125)})).rgb;
+
+  // two incommensurate frequencies of the same field: their beat is hundreds
+  // of metres long, so there is no period left for the eye to lock onto
+  wMac = (g1.r - 0.5) + (g2.r - 0.5) * 0.6 + (g1.b - 0.5) * 0.35;
+  // rain wash runs down upright faces only
+  wDirt = (1.0 - g2.g) * wSide;
+
+  ${
+    section > 0
+      ? `/* Per-casting tone. "along" is the run direction: the projection above
+     puts world Z on wUV.x for a wall whose normal is X-dominant, and world X
+     for one whose normal is Z-dominant, so it tracks the road through bends.
+     mod before the sin: sIdx runs to the high hundreds over the track, and
+     sin() of a large argument is where a fract-hash loses its low bits on a
+     mediump fragment unit. A 512-casting period is ~2.4 km — never seen
+     twice in one frame. */
+  float along = wUV.x;
+  float sIdx = floor(along / ${f(pitch)});
+  float sTone = fract(sin(mod(sIdx, 512.0) * 12.9898 + 4.13) * 43758.5453);`
+      : "float along = wUV.x; float sTone = 0.5;"
+  }
+  ${
+    joint > 0
+      ? `// contraction joints. The groove is widened with the fragment's own
+  // footprint (fwidth) so it never falls between samples and shimmers, and its
+  // contrast is faded out past ~55 m where a 2 cm groove is sub-pixel anyway.
+  float jd = abs(fract(along / ${f(pitch)} + 0.5) - 0.5) * ${f(pitch)};
+  float jw = 0.011 + fwidth(along) * 0.7;
+  wJnt = (1.0 - smoothstep(jw, jw * 3.0, jd)) * wSide
+       * (1.0 - smoothstep(55.0, 115.0, length(vViewPosition)));`
+      : ""
+  }
+
+  float tone = 1.0
+    + wMac * ${f(macro)}
+    + (sTone - 0.5) * ${f(section)} * wSide
+    - wDirt * ${f(streak)}
+    - wJnt * ${f(joint)}
+    + wTop * ${f(topClean)};
+  // clamped, not because the sum can run away, but so a future amplitude bump
+  // can never push albedo past what addBeam's wash gain was budgeted against
+  diffuseColor.rgb *= mix(1.0, clamp(tone, 0.62, 1.18), uWeatherK);${
+    rust > 0
+      ? `
+  /* Oxide bleed. Only the heaviest streaks carry it — on galvanised sheet the
+     zinc holds everywhere except where a fixing has broken it, and the rust
+     then washes down from that one point. */
+  float ox = smoothstep(0.62, 1.0, wDirt) * ${f(rust)} * uWeatherK;
+  diffuseColor.rgb *= mix(vec3(1.0), vec3(1.28, 0.72, 0.40), ox);`
+      : ""
+  }
+}`
+        )
+        .replace(
+          "#include <roughnessmap_fragment>",
+          `#include <roughnessmap_fragment>
+/* Roughness is where most of the realism actually lands: dirt scatters, so a
+   streak has to answer the headlight differently from the clean concrete
+   beside it. Without this the wall takes light uniformly and reads as plastic
+   however good its albedo is. The clamp also caps the scan path, where
+   roughness = target/roughMean can put a bright texel over 1.0. */
+roughnessFactor *= 1.0 + (wDirt * 1.6 - wMac + wJnt * 1.2 - wTop * 0.3)
+                       * ${f(rough)} * uWeatherK;
+roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
+        );
+    };
+    mat.customProgramCacheKey = () =>
+      `weather|${f(macro)}|${f(streak)}|${f(joint)}|${f(rust)}|${prevKey}`;
+  }
+
   const road = new THREE.MeshStandardMaterial({
     map: roadT, roughness: 0.4, metalness: 0.1, envMap, envMapIntensity: 0.4,
   });
@@ -549,21 +773,46 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   ud(hwy).grooveAmt = 0.16;
   ud(hwy).grooveFreq = 28 * Math.PI * 2;
 
+  /* CONCRETE IS A DIELECTRIC. metalness must be ~0 on every one of these, and
+     that is a correction, not a taste call: `barrier` shipped at 0.35 with no
+     metalness map behind it, which under three's PBR model does two wrong
+     things at once — it throws away 35 % of the diffuse response (so the wall
+     was lit like 0.10-albedo asphalt when its albedo says 0.15 concrete) and
+     it hands that energy to a broad albedo-tinted specular lobe off the fake
+     env cube. A dark, evenly sheened, hue-tinted surface is the definition of
+     grey plastic, and it is the largest single reason the barriers did not
+     read as concrete.
+
+     What that costs elsewhere, worked through so nobody has to guess:
+       - the beam wash is UNAFFECTED. addBeam's wash path adds
+         `diffuseColor × tint × …` at <emissivemap_fragment>, and metalness is
+         not folded into diffuseColor until <lights_physical_fragment> further
+         down. Only the tint below moves it — see the note there.
+       - lit response rises by 1/(1-0.35) = 1.54x. The tint is pulled back to
+         ~0.81 in linear to spend about half of that, leaving ~1.23x: concrete
+         that is plainly lighter than the tarmac beside it in daylight, which
+         is how a real parapet looks and how it never did here.
+
+     The tint also loses its blue cast (0x8d939f had B 18 points over R).
+     Concrete's own albedo is neutral-to-warm; the blue in a night frame comes
+     from the sky and the ambient, and baking it into the albedo as well is
+     what made the wall look painted. 0x82817c is neutral, a touch warm. */
+  const CONC_TINT = 0x82817c;
   const conc = new THREE.MeshStandardMaterial({
-    color: 0x33363f, roughness: 0.8, metalness: 0.08,
+    color: 0x33363f, roughness: 0.82, metalness: 0.0,
   });
-  const concDark = new THREE.MeshStandardMaterial({ color: 0x24262e, roughness: 0.85 });
+  const concDark = new THREE.MeshStandardMaterial({ color: 0x24262e, roughness: 0.87 });
   const barrier = new THREE.MeshStandardMaterial({
-    color: 0x8d939f, roughness: 0.55, metalness: 0.35, envMap, envMapIntensity: 0.3,
+    color: CONC_TINT, roughness: 0.84, metalness: 0.0, envMap, envMapIntensity: 0.12,
   });
   const concDouble = new THREE.MeshStandardMaterial({
-    color: 0x33363f, roughness: 0.8, metalness: 0.08, side: THREE.DoubleSide,
+    color: 0x33363f, roughness: 0.82, metalness: 0.0, side: THREE.DoubleSide,
   });
   const concDarkDouble = new THREE.MeshStandardMaterial({
-    color: 0x24262e, roughness: 0.85, side: THREE.DoubleSide,
+    color: 0x24262e, roughness: 0.87, side: THREE.DoubleSide,
   });
   const barrierDouble = new THREE.MeshStandardMaterial({
-    color: 0x8d939f, roughness: 0.55, metalness: 0.35, envMap, envMapIntensity: 0.3,
+    color: CONC_TINT, roughness: 0.84, metalness: 0.0, envMap, envMapIntensity: 0.12,
     side: THREE.DoubleSide,
   });
   /* Tunnel lining. The self-illumination stands in for the bounce light a real
@@ -709,8 +958,59 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      no terminator line. High beam stretches the reach via setBeam's range
      multiplier, exactly as the paint does. `barrier` (single-sided) is
      registered too so the pair can never drift apart if it gains a user. */
-  addBeam(barrier, { near: 22, far: 78, spread: 0.55, wash: 0.5 });
-  addBeam(barrierDouble, { near: 22, far: 78, spread: 0.55, wash: 0.5 });
+  /* Gain 0.5 → 0.66, and this is a COMPENSATION, not a strengthening — the
+     night read is meant to land exactly where the previous pass tuned it. The
+     wash is `diffuseColor × tint × cone × fall × gain`, and neutralising the
+     parapet tint above took diffuseColor's linear luminance to 0.755 of what
+     it was (0.290 → 0.219 before the scan). 0.5 / 0.755 = 0.66 puts the peak
+     back on the same 0.075 linear ≈ 0.33 POV display luma the skill notes
+     record, still miles under the 0.72 blown-highlight clip. Reach, spread and
+     the two smoothstep fades are untouched. Worst case is now the weathering's
+     own +18 % ceiling on top: 0.088 linear ≈ 0.36 display. */
+  const WALL_WASH = 0.66;
+  addBeam(barrier, { near: 22, far: 78, spread: 0.55, wash: WALL_WASH });
+  addBeam(barrierDouble, { near: 22, far: 78, spread: 0.55, wash: WALL_WASH });
+
+  /* Weathering, installed AFTER addBeam so its albedo edit lands upstream of
+     the wash that reads that albedo, and BEFORE the async projectedUv so the
+     cache keys compose in one direction only (projuv|weather|beam|…).
+
+     Parapets carry the full kit. The joint pitch is 4.6 m — a real slipformed
+     contraction-joint spacing, and deliberately not a multiple of either the
+     scan's 2.22 m projected tile or highway.ts's 8 m wall segment, so the two
+     periods never line up into a single stronger beat.
+
+     The deck fascia gets the same treatment at a longer 11.5 m pitch (box-
+     girder segment joints) and heavier streaking: a bridge soffit and its
+     girder faces streak harder than a parapet does, because everything that
+     lands on the deck drains over that edge. `concDark` (piers, ramp skirts)
+     is left out on purpose — it is already near-black, so proportional
+     weathering does nothing you can see, and it is drawn as an InstancedMesh
+     whose scan UVs projectedUv cannot vary per instance anyway. */
+  const PARAPET_WEATHER: WeatherOpts = {
+    macro: 0.13, streak: 0.17, joint: 0.34, jointPitch: 4.6,
+    section: 0.075, topClean: 0.1, rough: 0.22,
+  };
+  const FASCIA_WEATHER: WeatherOpts = {
+    macro: 0.15, streak: 0.24, joint: 0.28, jointPitch: 11.5,
+    section: 0.06, topClean: 0.04, rough: 0.2,
+  };
+  // one shared opts object per family, so the single- and double-sided halves
+  // can never drift apart the way a pair of literals eventually would
+  weatherSurface(barrier, PARAPET_WEATHER);
+  weatherSurface(barrierDouble, PARAPET_WEATHER);
+  weatherSurface(conc, FASCIA_WEATHER);
+  weatherSurface(concDouble, FASCIA_WEATHER);
+  /* Galvanised sheet, not concrete: no joints (the panel seams are drawn into
+     the cutout art), a longer macro field because a rolled sheet's patina
+     drifts over metres not decimetres, and the oxide bleed switched on so the
+     runs below a broken fixing go rust-brown instead of just dark. Amplitudes
+     are half the concrete's — zinc weathers, but it does not get dirty the way
+     a poured wall does. */
+  weatherSurface(fence, {
+    macro: 0.09, streak: 0.1, joint: 0, section: 0, topClean: 0,
+    rough: 0.16, rust: 0.35, macroScale: 17.0, streakScale: 3.6,
+  });
 
   const mats: Mats = {
     envMap, glowTex, streakTex, smokeTex, chevTex, goreTex, xingTex, studTex,
@@ -816,6 +1116,13 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       if (on) void ensurePbr();
       if (detailOn === on) return;
       detailOn = on;
+      /* Weathering rides the same switch: two extra texture fetches and a
+         handful of ALU on every concrete and fence fragment. Flipping the
+         shared uniform rather than recompiling is deliberate — the branch it
+         guards is uniform-valued, so it is fully coherent and the GPU skips
+         the body outright, and nobody eats a shader-compile hitch mid-drive
+         for a quality toggle. */
+      uWeatherK.value = on ? 1 : 0;
       /* Perf mode drops the two extra road texture fetches per pixel — the
          detail albedo and the normal map — while keeping the roughness map,
          which is the cheap one and the one carrying the wet-road look. */
@@ -965,8 +1272,15 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
         barrier, barrierDouble, tunnelCeil,
       ]) {
         projectedUv(m, 0.45);
+        /* normalScale 0.65 → 0.85. Relief is the other half of the "takes
+           light uniformly" problem the weathering pass is fixing: the scan's
+           normals are the only thing that makes the headlight rake across the
+           face's form-work texture at a grazing angle instead of gliding over
+           it. 0.65 was set when the material also carried a metalness sheen to
+           lean on; with metalness at 0 the normals have to do that work alone.
+           Left below 1.0 so the aggregate does not start reading as gravel. */
         upgradeSurface(m, concreteSet, {
-          repeat: [1, 1], normalScale: 0.65, roughness: m.roughness,
+          repeat: [1, 1], normalScale: 0.85, roughness: m.roughness,
         });
       }
     /* Tunnel walls get real ceramic tile (the classic urban-tunnel band) in

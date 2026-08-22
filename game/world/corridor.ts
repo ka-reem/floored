@@ -156,6 +156,108 @@ export const TUNNEL = { z0: 920, z1: 1260, /** clear height under the ceiling */
     islands, booths) is centred in it and is only ~34 m long. */
 export const TOLL = { z0: 1280, z1: 1560, plazaZ0: 1390, plazaZ1: 1450 };
 
+/* ---- sectional variety --------------------------------------------------
+
+   A 4 km lap of identically-dressed three-lane deck reads as one endless road
+   no matter how good the dressing is, and at 150 km/h the only variation the
+   driver can actually register is the thing at eye level a metre from the
+   door: the edge. So the corridor is cut into SECTIONS, stretches whose
+   *edges* are built differently from their neighbours'.
+
+   Crucially a section decides nothing but what stands at the pavement edge.
+   The alignment, the lane schedule, the pitch schedule and the half-width are
+   untouched by anything here, so no amount of re-sequencing sections can
+   break a taper, a clearance or the loop splice.
+
+   Kinds, ordered by how enclosed the road feels inside them:
+
+     rail    — the parapet drops to a 0.42 m kerb carrying a three-band steel
+               railing. You can see the drop, the ground and the town straight
+               through it. Used on the sweepers and on the stretch the bypass
+               viaduct crosses, where having something to look *at* is the
+               whole point.
+     viaduct — the default: the 1.05 m solid concrete parapet.
+     mesh    — perforated galvanised screens standing on the parapet. These
+               were on their own PITCH.soundwall lattice inside highway.ts;
+               they are resolved here now so that every edge treatment is
+               decided in one place and two of them can never overlap.
+     screen  — solid concrete noise walls 4.6 m above the parapet on BOTH
+               sides: the Shuto "trench" that turns the deck into a canyon and
+               takes the sky away. The counterweight to `rail`, and the reason
+               `rail` reads as open when you come out into it.
+     bridge  — the tied-arch span, see BRIDGE.
+
+   Placement is keyed on wrapZ(z). That is what makes the splice free: the
+   DECK_EXT of overrun built past each end of the canonical band asks for the
+   section of the road it is a copy of and gets it, so no table entry here has
+   to sum to anything the way the bend deltas do. */
+
+export type SectionKind = "viaduct" | "rail" | "mesh" | "screen" | "bridge";
+
+export interface Section {
+  z0: number;
+  z1: number;
+  kind: SectionKind;
+}
+
+/** The tied-arch bridge.
+
+    An expressway that is already a viaduct from end to end cannot make a
+    bridge read by lifting the road up — it is up. What separates a bridge
+    from the viaduct either side of it is the structure you drive *through*
+    and the hole underneath it, so this span gets both: the 32 m piers stop
+    at each abutment and a parabolic tied arch carries the deck across the
+    gap between them, with the deck's own girder deepened to act as the tie.
+
+    Both ends land on the pier lattice (multiples of PITCH.pier) so the
+    abutments replace two piers that would otherwise stand there rather than
+    fighting them, and the span is clear of the bypass diverge gore at z=500
+    and of every cantilever sign mast. */
+export const BRIDGE = {
+  /** abutments; both are PITCH.pier multiples, and z1 − z0 is the clear span */
+  z0: 320,
+  z1: 448,
+  /** crown rise above the deck at midspan — span/6, an ordinary tied arch */
+  rise: 21,
+  /** rib centre, this far outboard of the pavement edge. Same reasoning as
+      the gantry legs: anything inboard of the parapet clamp is something the
+      car drives through while scraping the wall. */
+  ribOut: 0.55,
+  /** rib box section */
+  ribW: 0.55,
+  ribD: 0.9,
+  /** hangers per rib, evenly spaced over the span excluding the springings */
+  hangers: 9,
+  /** structural depth of the tie girder (the plain viaduct's is 1.15 m) */
+  girder: 2.1,
+  /** cross-braces between the ribs, as fractions of the span. All three sit
+      where the arch is over 15 m up, i.e. nowhere near vehicle clearance. */
+  braceAt: [0.25, 0.5, 0.75],
+};
+
+/** Hand-placed sections. Everything else is `viaduct`, and the `mesh` runs
+    come off the PITCH.soundwall lattice (see `sections()`).
+
+    Why these z: each one is a stretch with no cantilever sign mast, no gore,
+    no lane taper mid-way and no tunnel or plaza in it, and each is long
+    enough (≥ 128 m, ~3 s at speed) to register as a place rather than as a
+    glitch. Boundaries are PITCH.pier multiples so a section changes at a pier
+    and an expansion joint, the way a real structure changes. */
+const SECTION_PLAN: readonly Section[] = [
+  // second sweeper, at its narrowest (two lanes): open railing on a curve,
+  // so the drop and the town swing past outside the car
+  { z0: -1408, z1: -1248, kind: "rail" },
+  // ...then the opposite extreme 200 m later, walled in on both sides
+  { z0: -1056, z1: -832, kind: "screen" },
+  { z0: BRIDGE.z0, z1: BRIDGE.z1, kind: "bridge" },
+  // the stretch the bypass viaduct crosses back over (routegraph puts its
+  // flyover at z ≈ 812–840): railing, so the span overhead is visible
+  { z0: 608, z1: 800, kind: "rail" },
+];
+
+/** Length of one perforated-screen run on the PITCH.soundwall lattice. */
+const MESH_SEG = 120;
+
 /* ---- placement contract ------------------------------------------------
    Deck furniture is generated by highway.ts but *described* here, so the
    browser-free checks in test/corridor-check.mjs can assert against the real
@@ -488,6 +590,62 @@ export class Corridor {
   tunnelBlend(z: number) {
     const fade = 26;
     return Math.min(sm((z - TUNNEL.z0) / fade), sm((TUNNEL.z1 - z) / fade));
+  }
+
+  /* ---- sections ---- */
+  private _sections: Section[] | null = null;
+  /** The resolved edge-treatment plan for one lap, sorted by z and with no
+      two runs overlapping. Everything is stated in canonical-band z; use
+      `sectionAt` rather than this list to look a station up, because that is
+      what folds the overrun back onto its twin.
+
+      The hand-placed runs win outright; the `mesh` lattice fills in around
+      them, skipping anything that would stand a screen inside the tunnel or
+      the toll plaza, over a ramp gore, or on top of a hand-placed run. (The
+      whole window is tested, not just its midpoint: the midpoint test used to
+      let the run at z0 = 1200 build its screens straight through the tunnel's
+      exit portal and on into the plaza.) */
+  sections(): readonly Section[] {
+    if (this._sections) return this._sections;
+    const out: Section[] = SECTION_PLAN.map((s) => ({ ...s }));
+    const clashes = (a: number, b: number) =>
+      out.some((s) => a < s.z1 && b > s.z0) ||
+      (a < TUNNEL.z1 && b > TUNNEL.z0) ||
+      (a < TOLL.z1 && b > TOLL.z0) ||
+      CONNECT_Z.some((cz) => a < cz + 260 && b > cz - 260);
+    for (const z0 of this.lattice(PITCH.soundwall)) {
+      // one entry per lap: the overrun's copies are found through wrapZ
+      if (z0 < this.Z0 || z0 >= this.Z1) continue;
+      const z1 = z0 + MESH_SEG;
+      if (z1 > this.Z1 || clashes(z0, z1)) continue;
+      out.push({ z0, z1, kind: "mesh" });
+    }
+    out.sort((a, b) => a.z0 - b.z0);
+    return (this._sections = out);
+  }
+
+  /** The section run covering z, folded across the splice, or null on plain
+      viaduct. Callers that need to veto a whole run (rather than a station)
+      want this one — a guard applied per-station punches a hole in the middle
+      of a wall instead of removing it. */
+  sectionRunAt(z: number): Section | null {
+    const w = this.wrapZ(z);
+    for (const s of this.sections()) if (w >= s.z0 && w < s.z1) return s;
+    return null;
+  }
+
+  /** Edge treatment at z, folded across the splice. */
+  sectionAt(z: number): SectionKind {
+    return this.sectionRunAt(z)?.kind ?? "viaduct";
+  }
+
+  /** True when z is within `pad` of a section boundary — where the deck gets
+      its expansion joint and the structure visibly hands over. */
+  atSectionEdge(z: number, pad: number) {
+    const w = this.wrapZ(z);
+    for (const s of this.sections())
+      if (Math.abs(w - s.z0) < pad || Math.abs(w - s.z1) < pad) return true;
+    return false;
   }
 
   /* ---- furniture placement ---- */

@@ -21,6 +21,10 @@ await page.evaluate(() => {
   const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));
   b?.click();
 });
+/* The world is built by the staged loader after this click, not by the
+   constructor, so __neonx existing no longer means there is a world to
+   drive in — wait for the load to finish before touching it. */
+await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 180000 });
 await sleep(2000);
 // drop the car partway down the ramp, pointing along its centreline
 await page.evaluate((zr) => {

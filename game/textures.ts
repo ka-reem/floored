@@ -602,6 +602,97 @@ export function fenceTexF(kind: "perf" | "grate" = "perf") {
   return t;
 }
 
+/* ------------------------------------------------------------------ *
+ * Weathering masks
+ * ------------------------------------------------------------------ */
+
+/** 32-bit integer hash. Math.imul, not `*`: the products overflow 2^53 and
+    plain multiplication would quietly lose the low bits the hash lives in. */
+function ihash(x: number, y: number, seed: number): number {
+  let h = Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(seed, 1442695041);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/** Value noise on a WRAPPED lattice — `cells` cells across the unit square,
+    with the lattice indices taken modulo `cells`, which is what makes every
+    octave (and so the finished texture) tile seamlessly under RepeatWrapping.
+    A non-wrapped noise would print a hard seam every repeat, which is the
+    exact artifact these masks exist to hide. */
+function vnoise(u: number, v: number, cells: number, seed: number): number {
+  const x = u * cells, y = v * cells;
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const fx = x - x0, fy = y - y0;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const m = (n: number) => ((n % cells) + cells) % cells;
+  const xa = m(x0), xb = m(x0 + 1), ya = m(y0), yb = m(y0 + 1);
+  const a = ihash(xa, ya, seed), b = ihash(xb, ya, seed);
+  const c = ihash(xa, yb, seed), d = ihash(xb, yb, seed);
+  const top = a + (b - a) * sx;
+  return top + (c + (d - c) * sx - top) * sy;
+}
+
+/** Summed octaves, normalised back to a 0..1 range with a ~0.5 mean. */
+function fbm(u: number, v: number, cells: number, oct: number, seed: number): number {
+  let sum = 0, amp = 1, norm = 0, c = cells;
+  for (let i = 0; i < oct; i++) {
+    sum += amp * vnoise(u, v, c, seed + i * 977);
+    norm += amp;
+    amp *= 0.5;
+    c *= 2;
+  }
+  return sum / norm;
+}
+
+/**
+ * Weathering mask atlas for concrete and roadside steel — three independent
+ * seamless noise fields packed into one RGB texture. Sampled by
+ * `weatherSurface()` in world/mats.ts at two very different world scales:
+ *
+ *   R — large-scale tonal drift, the patchy unevenness of a cast surface.
+ *       This is what stops two 20 m stretches of parapet being identical.
+ *   G — mid-scale field, sampled with its v axis stretched ~8x so the round
+ *       blobs become the vertical rain-wash runs every real parapet carries
+ *       below its coping. Biased bright (`pow < 1`) so the wall is mostly
+ *       clean with narrow dirty runs, not uniformly grubby.
+ *   B — fine grain, one frequency above anything the photo scan tiles at, so
+ *       it dithers the scan's own repeat rather than reinforcing it.
+ *
+ * These are DATA maps, not colour: left untagged (linear) like the rest of
+ * the canvas art, and read as raw masks by the shader.
+ *
+ * Size: 256x256 RGBA8 = 256 KB, ~340 KB with the mip chain, uploaded ONCE and
+ * shared by every concrete and steel material in the world. Bigger buys
+ * nothing measurable — the coarsest channel is stretched over ~11 m of wall
+ * (4.4 cm/texel) and the finest over ~2.9 m (1.1 cm/texel), both already
+ * finer than the dashcam's own blur resolves at the distance a barrier is
+ * seen from.
+ */
+export const grimeTexF = () =>
+  makeTex(256, 256, (ctx, w, h) => {
+    const img = ctx.createImageData(w, h);
+    const d = img.data;
+    for (let y = 0; y < h; y++) {
+      const v = y / h;
+      for (let x = 0; x < w; x++) {
+        const u = x / w;
+        const i = (y * w + x) * 4;
+        // 3 cells over the tile: at the 11.3 m macro scale that is a blotch
+        // every ~3.8 m, the size real form-work and cure variation comes in
+        const mac = fbm(u, v, 3, 5, 11);
+        // 6 cells at the 2.9 m streak scale ≈ 0.5 m between runs before the
+        // shader's 8:1 v stretch turns them into full-height streaks
+        const str = Math.pow(fbm(u, v, 6, 4, 3701), 0.62);
+        const fine = fbm(u, v, 24, 3, 88011);
+        d[i] = Math.round(255 * Math.min(1, Math.max(0, (mac - 0.5) * 1.45 + 0.5)));
+        d[i + 1] = Math.round(255 * str);
+        d[i + 2] = Math.round(255 * fine);
+        d[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }, true);
+
 /** Elongated road-surface word. Characters are stacked along the direction of
     travel and stretched ~2.6:1, the way real Japanese expressway paint is laid
     out so it reads correctly at a flat viewing angle. char[0] sits nearest the

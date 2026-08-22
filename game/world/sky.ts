@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { rand, TAU } from "../util";
 import { skyCanvas, skylineTexF } from "../textures";
 import { worldTierCaps } from "../settings";
@@ -76,14 +77,17 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
        value read as *lighter* than the sky behind it, which inverted the
        ridgeline — it has to sit under the horizon glow band, not above it. */
     const mMat = new THREE.MeshBasicMaterial({ color: 0x05070f, fog: false });
+    // one ridgeline, one draw call: the cones never move relative to each
+    // other, so the transforms are baked instead of costing 14 draws a frame
+    const cones: THREE.BufferGeometry[] = [];
     for (let i = 0; i < 14; i++) {
       const a = rand(0, TAU), r = rand(2000, 2500);
-      const m = new THREE.Mesh(
-        new THREE.ConeGeometry(rand(300, 700), rand(220, 520), 5), mMat);
-      m.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
-      m.rotation.y = rand(0, TAU);
-      scene.add(m);
+      const g = new THREE.ConeGeometry(rand(300, 700), rand(220, 520), 5);
+      g.rotateY(rand(0, TAU));
+      g.translate(Math.cos(a) * r, 0, Math.sin(a) * r);
+      cones.push(g);
     }
+    scene.add(new THREE.Mesh(mergeGeometries(cones, false)!, mMat));
   }
   /* The distant city, as three staggered rings of window-lights between the
      mountains and the skyline ring. The load-bearing trick is CLUSTERING:
@@ -111,8 +115,11 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
       const C = new THREE.Color();
       for (let t = 0; t < nTow; t++) {
         let a = rand(0, TAU);
-        // pull roughly half the towers into the downtown arcs
-        if (t % 2 === 0) a = downtown[t % downtown.length] + rand(-0.5, 0.5);
+        /* Pull roughly half the towers into the downtown arcs, alternating
+           between them. Indexing by `t` picked arc 0 every single time — the
+           branch only runs on even t, so `t % 2` was always 0 and the second
+           downtown never got seeded. */
+        if (t % 2 === 0) a = downtown[(t >> 1) % downtown.length] + rand(-0.5, 0.5);
         const r = rand(r0, r1);
         const cx = Math.cos(a) * r, cz = Math.sin(a) * r;
         const near = downtown.some((d) => Math.abs(Math.atan2(Math.sin(a - d), Math.cos(a - d))) < 0.55);
@@ -155,21 +162,20 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
       const tg = new THREE.Group();
       tg.position.set(1680, 0, 980);
       const shaftM = new THREE.MeshBasicMaterial({ color: 0x141a26, fog: false });
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(7, 11, 118, 8), shaftM);
-      shaft.position.y = 59;
-      tg.add(shaft);
-      const flare = new THREE.Mesh(new THREE.CylinderGeometry(16, 8, 14, 8), shaftM);
-      flare.position.y = 125;
-      tg.add(flare);
+      // shaft + flare + cap all share shaftM and never move: one draw
+      const shaft = new THREE.CylinderGeometry(7, 11, 118, 8);
+      shaft.translate(0, 59, 0);
+      const flare = new THREE.CylinderGeometry(16, 8, 14, 8);
+      flare.translate(0, 125, 0);
+      const cap = new THREE.CylinderGeometry(2, 15, 7, 8);
+      cap.translate(0, 145, 0);
+      tg.add(new THREE.Mesh(mergeGeometries([shaft, flare, cap], false)!, shaftM));
       const cab = new THREE.Mesh(
         new THREE.CylinderGeometry(14, 16, 10, 8),
         new THREE.MeshBasicMaterial({ color: 0x9fe8d8, fog: false })
       );
       cab.position.y = 137;
       tg.add(cab);
-      const cap = new THREE.Mesh(new THREE.CylinderGeometry(2, 15, 7, 8), shaftM);
-      cap.position.y = 145;
-      tg.add(cap);
       const bea = new THREE.Sprite(new THREE.SpriteMaterial({
         map: glowTex, color: 0xff3038, transparent: true,
         blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
@@ -181,9 +187,14 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     }
   }
 
+  /* Obstruction beacons on three unseen masts. `fog: false` like every other
+     backdrop material here: they sit 2.3 km out, and at the fog densities
+     weather() runs (1e-3 by day, 2.1e-3 at night) exp2 fog takes them to
+     ~0.5% and ~1e-8 of their colour respectively — i.e. the engine was
+     blinking three points that could never be seen. */
   const towersMat = new THREE.PointsMaterial({
     size: 3, map: glowTex, color: 0xff5060, transparent: true,
-    sizeAttenuation: false, depthWrite: false,
+    sizeAttenuation: false, depthWrite: false, fog: false,
   });
   {
     const p = new Float32Array([1500, 560, -1700, -2100, 480, 900, 800, 430, 2200]);
@@ -212,15 +223,15 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
       towG.add(t);
       ty += h;
     }
+    const decks: THREE.BufferGeometry[] = [];
     for (const dy of [96, 178]) {
       const rr = dy < 120 ? 40 : 22;
-      const deck = new THREE.Mesh(
-        new THREE.CylinderGeometry(rr, rr, 9, 10),
-        new THREE.MeshBasicMaterial({ color: 0xffd9a0, fog: false })
-      );
-      deck.position.y = dy;
-      towG.add(deck);
+      const g = new THREE.CylinderGeometry(rr, rr, 9, 10);
+      g.translate(0, dy, 0);
+      decks.push(g);
     }
+    towG.add(new THREE.Mesh(mergeGeometries(decks, false)!,
+      new THREE.MeshBasicMaterial({ color: 0xffd9a0, fog: false })));
     const spire = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 2.4, 70, 6), whiteM);
     spire.position.y = ty + 35;
     towG.add(spire);
@@ -241,29 +252,43 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     new THREE.MeshBasicMaterial({ color: 0x49d8ff, fog: false })));
   ferris.add(new THREE.Mesh(new THREE.TorusGeometry(30, 0.9, 8, 36),
     new THREE.MeshBasicMaterial({ color: 0xff5fae, fog: false })));
-  for (let i = 0; i < 6; i++) {
-    const sp = new THREE.Mesh(new THREE.BoxGeometry(1.1, 110, 1.1),
-      new THREE.MeshBasicMaterial({ color: 0x9fb4cc, fog: false }));
-    sp.rotation.z = (i / 6) * Math.PI;
-    ferris.add(sp);
-  }
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * TAU;
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(3, 3.6, 3),
-      new THREE.MeshBasicMaterial({ color: i % 2 ? 0x49d8ff : 0xff5fae, fog: false }));
-    cab.position.set(Math.cos(a) * 55, Math.sin(a) * 55, 0);
-    ferris.add(cab);
+  /* Spokes and cabins are rigid within `ferris` (the whole group is what
+     spins), so their transforms are baked and each colour becomes one draw
+     instead of one per part — 22 draw calls and 22 materials down to 3. */
+  {
+    const spokes: THREE.BufferGeometry[] = [];
+    for (let i = 0; i < 6; i++) {
+      const g = new THREE.BoxGeometry(1.1, 110, 1.1);
+      g.rotateZ((i / 6) * Math.PI);
+      spokes.push(g);
+    }
+    ferris.add(new THREE.Mesh(mergeGeometries(spokes, false)!,
+      new THREE.MeshBasicMaterial({ color: 0x9fb4cc, fog: false })));
+    const cabs: THREE.BufferGeometry[][] = [[], []];
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * TAU;
+      const g = new THREE.BoxGeometry(3, 3.6, 3);
+      g.translate(Math.cos(a) * 55, Math.sin(a) * 55, 0);
+      cabs[i % 2].push(g);
+    }
+    for (const [i, hex] of [0xff5fae, 0x49d8ff].entries())
+      ferris.add(new THREE.Mesh(mergeGeometries(cabs[i], false)!,
+        new THREE.MeshBasicMaterial({ color: hex, fog: false })));
   }
   const hub = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 4, 10),
     new THREE.MeshBasicMaterial({ color: 0xdfe6f2, fog: false }));
   hub.rotation.x = Math.PI / 2;
   fwG.add(hub);
-  for (const s of [-1, 1]) {
-    const leg = new THREE.Mesh(new THREE.BoxGeometry(2.2, 118, 2.2),
-      new THREE.MeshBasicMaterial({ color: 0x5a6478, fog: false }));
-    leg.position.set(0, -29, s * 16);
-    leg.rotation.x = s * 0.28;
-    fwG.add(leg);
+  {
+    const legs: THREE.BufferGeometry[] = [];
+    for (const s of [-1, 1]) {
+      const g = new THREE.BoxGeometry(2.2, 118, 2.2);
+      g.rotateX(s * 0.28);
+      g.translate(0, -29, s * 16);
+      legs.push(g);
+    }
+    fwG.add(new THREE.Mesh(mergeGeometries(legs, false)!,
+      new THREE.MeshBasicMaterial({ color: 0x5a6478, fog: false })));
   }
   scene.add(fwG);
 

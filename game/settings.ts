@@ -288,12 +288,27 @@ export function applyPresetDefaults(s: GameSettings, preset: GameSettings["prese
 
 const KEY = "neonx.profile.v3";
 
+/** Settings that must survive as finite numbers — a NaN here reaches the
+ *  renderer (fovBase → projection matrix), the audio graph (vol → gain) or the
+ *  chunk culler (drawDist) and poisons it silently. */
+const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol"] as const;
+
+/** Non-negative integer, or the fallback. For the persisted array indices whose
+ *  consumers wrap with `%`: JS `%` keeps the sign and never rounds, so neither a
+ *  negative nor a fractional index can be walked back into range downstream. */
+const normIx = (v: unknown, fallback: number) =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : fallback;
+
 export function loadProfile(): Profile {
   const base = defaultProfile();
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return base;
     const p = JSON.parse(raw);
+    /* JSON.parse happily yields a string/number/array/null for a mangled entry;
+       spreading one of those below would build a Profile out of its characters
+       or indices instead of falling back. */
+    if (!p || typeof p !== "object" || Array.isArray(p)) return base;
     const settings = { ...base.settings, ...(p.settings || {}) };
     // v3 profiles stored fog as a 0.3..2.6 multiplier; snap those to the
     // nearest named level
@@ -305,7 +320,21 @@ export function loadProfile(): Profile {
     settings.dashcam = settings.dashcam === true;
     if (settings.tierOverride !== "auto" && !isRenderTier(settings.tierOverride))
       settings.tierOverride = "auto";
-    return { ...base, ...p, settings };
+    for (const k of NUM_KEYS)
+      if (typeof settings[k] !== "number" || !Number.isFinite(settings[k]))
+        settings[k] = base.settings[k];
+    const prof: Profile = { ...base, ...p, settings };
+    /* paintIx and camMode index fixed tables. Their consumers wrap with `%`,
+       which recovers an integer overshoot but not a negative or fractional
+       value: PAINTS[-1] is undefined and throws on `.hex`/`.name` while the car
+       is built and while the menu renders, and a fractional camMode cycles
+       1.5 → 2.5 → 3.5 → 0.5 forever without ever matching a camera. Only the
+       lower bound and integrality are enforced here — the table lengths live
+       with the consumers, so an overshoot is still theirs to wrap. */
+    prof.paintIx = normIx(prof.paintIx, base.paintIx);
+    prof.camMode = normIx(prof.camMode, base.camMode);
+    if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
+    return prof;
   } catch {
     return base;
   }

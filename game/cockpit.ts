@@ -5,6 +5,9 @@ import { makeTex, loadPbrSet } from "./textures";
 import { buildInstrumentCluster } from "./dashboard";
 import { loadProfile, resolveRenderTier, TIER_CAPS, type SpeedUnits } from "./settings";
 import { drawCarScreen } from "./carscreen";
+import type { WorldData } from "./world/data";
+import type { CarState } from "./physics";
+import type { Npc } from "./traffic";
 
 /* RHD cockpit: dash, doors, console, seats, instrument cluster (dashboard.ts),
    nav screen, mirrors (RT-fed), steering wheel + hands, wipers and the rain
@@ -41,7 +44,10 @@ export interface Cockpit {
   glassLight: THREE.PointLight;
   setMirrorVis(v: boolean): void;
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
-  drawScreen(x: number, z: number, h: number, time: number, world?: NavWorld): void;
+  /** Repaint the head unit. Takes the world/car/traffic the HUD minimap
+   * takes, because the nav pane now draws that same map (carscreen.ts).
+   * `time` is the in-game clock in hours, `now` the engine seconds clock. */
+  drawScreen(world: WorldData, car: CarState, npcs: Npc[], time: number, now: number): void;
   dropletsUpdate(dt: number, wiping: boolean, wiperRotZ: number, raining: boolean, speed: number): void;
 
   /* --- swap points for an imported dash (cockpitmodel.ts) ------------------
@@ -62,6 +68,14 @@ export interface Cockpit {
   /** The canvas behind that plane. Bound onto the donor's screen material so
       the nav map keeps drawing wherever the screen physically ends up. */
   screenTexture: THREE.Texture;
+  /** The donor's own centre screen, once cockpitmodel.ts has re-bound the nav
+      canvas onto it — null while the procedural tablet is the head unit. */
+  donorScreen: THREE.Mesh | null;
+  /** Whichever screen is actually on show. post.ts projects it for the POV
+      screen shield (the same treatment the mirror glass gets), so it has to
+      follow the donor swap — and the swap can happen long after the rig was
+      built, since the donor loads asynchronously. */
+  navPanel(): THREE.Mesh;
 }
 
 /** Rest state of `glassLight` — the pose and look it has when nothing is
@@ -88,20 +102,6 @@ export const COCKPIT_REF = { belt: 0.82, W: 1.84 };
    at z = -0.30 puts the facia ~0.9 m away, which is where a real driver sits,
    and the cluster drops to a believable ~30 degrees. */
 export const EYE = { x: 0.36, y: 0.82 + 0.53, z: -0.3 };
-
-/* Head-unit road map types for drawScreen's optional `world` argument.
-   Structural (not imported from world/data.ts or traffic.ts) so this file
-   stays decoupled — engine.ts's WorldData already satisfies this shape;
-   see the report to the team lead for the one-line call-site change needed
-   to actually feed it through. */
-export interface NavEdge { pts: ArrayLike<number>; ss: ArrayLike<number>; len: number }
-export interface NavRamp { x0: number; x1: number; z0: number; z1: number; pts: { x: number; z: number }[] }
-export interface NavExit { z: number; no: number; name: string }
-export interface NavWorld {
-  net: { edges: NavEdge[] };
-  terrain?: { ramps: NavRamp[] };
-  exits?: NavExit[];
-}
 
 export interface GaugeFlags {
   lightsOn: boolean; sigL: boolean; sigR: boolean; rain: boolean; tcOn: boolean;
@@ -1419,16 +1419,12 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     [SCR.x, SCR.y - 0.15, SCR.z + 0.03], [SCR.tilt * 1.6, -SCR.yaw, 0]);
   endRegion();
 
-  const NAV_R = 95; // metres of road drawn around the car
-  const CX = 128, CY = 116; // car sits low on the screen so more road ahead is visible
-  const NAV_SC = 1.55; // px per metre
-  const _navP = { x: 0, y: 0, z: 0 }; // scratch for corridor.worldOf, reused per drawScreen call
-
-  function drawScreen(x: number, z: number, h: number, time: number, world?: NavWorld) {
-    /* CarPlay-style split head unit — live nav map left, music card right.
+  function drawScreen(world: WorldData, car: CarState, npcs: Npc[], time: number, now: number) {
+    /* CarPlay-style split head unit — music card left, live nav map right.
        All rendering lives in carscreen.ts; this canvas/texture and the call
-       cadence (engine.ts, every ~45 ms in cockpit/POV) are unchanged. */
-    drawCarScreen(scrCv, x, z, h, time, world);
+       cadence (engine.ts, every ~45 ms in cockpit/POV) are unchanged. The map
+       throttles itself below that cadence — see NAV_MS there. */
+    drawCarScreen(scrCv, world, car, npcs, time, now);
     scrTex.needsUpdate = true;
   }
 
@@ -1730,5 +1726,10 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     clusterGroup: cluster.group,
     screenMesh: scrMesh,
     screenTexture: scrTex,
+    donorScreen: null,
+    /* The procedural tablet's own visible flag IS the swap: cockpitmodel.ts
+       clears it exactly when it puts a donor screen on show, so it is the
+       cheapest correct test for which panel post.ts should be shielding. */
+    navPanel() { return scrMesh.visible || !this.donorScreen ? scrMesh : this.donorScreen; },
   };
 }

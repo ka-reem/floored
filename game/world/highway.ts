@@ -7,7 +7,7 @@ import { parapetGap } from "./ramps";
 import { BYPASS, DIVERGE_Z, MERGE_Z, type RouteGraph } from "./routegraph";
 import {
   getCorridor, assertPitches, signPlan, PITCH, PHASE, SIGN, TUNNEL, TOLL, TOLL_PLAZA,
-  type Station,
+  BRIDGE, type SectionKind, type Station,
 } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
@@ -238,6 +238,34 @@ export function buildHighway(
   const wallMat = mats.barrierDouble;
 
   const WALL_H = 1.05, WALL_T = 0.34, DECK_TH = 1.15;
+  /* ---- section dressing ---------------------------------------------------
+     corridor.sectionAt(z) says how the deck edge is built over this stretch
+     (see the long note in corridor.ts). Three things read off it here:
+     how tall the concrete at the edge is, whether a steel railing stands on
+     it instead of a parapet, and whether a noise wall stands over it. */
+  /** kerb height where a railing replaces the parapet */
+  const KERB_H: Partial<Record<SectionKind, number>> = { rail: 0.42, bridge: 0.55 };
+  /** solid noise wall height, measured up from the parapet coping */
+  const SCREEN_H = 4.6;
+  /** railing bands, [height above the kerb top, band depth] */
+  const RAIL_BANDS: readonly (readonly [number, number])[] = [
+    [0.10, 0.09], [0.36, 0.08], [0.60, 0.10],
+  ];
+  /** structural depth of the deck girder — deepened over the bridge span,
+      where the girder is the arch's tie and has to look like it */
+  const deckTh = (z: number) => (cor.sectionAt(z) === "bridge" ? BRIDGE.girder : DECK_TH);
+  /** z windows where a mast comes up through the deck edge, and which side.
+      A 5.65 m screen wall built straight through a gantry leg swallows it,
+      and the leg is the thing that tells you the sign overhead is bolted to
+      something — so the wall steps around them, the way a real one does.
+      side −1 is the town side (where every cantilever post stands), 0 both. */
+  const mastGaps: { z0: number; z1: number; side: number }[] = [];
+  for (const s of signPlan()) mastGaps.push({ z0: s.z - 1.5, z1: s.z + 1.5, side: -1 });
+  // …and the bypass's own boards, which buildBypassViaduct hangs off the same
+  // corridor edge from its own gores
+  for (const z of [DIVERGE_Z - 400, DIVERGE_Z - 200, DIVERGE_Z - 40, MERGE_Z - 80])
+    mastGaps.push({ z0: z - 1.5, z1: z + 1.5, side: -1 });
+  for (const z of cor.lattice(PITCH.gantry)) mastGaps.push({ z0: z - 1.2, z1: z + 1.2, side: 0 });
   /** stations where a parapet must not be drawn (the ramp divergence zones) */
   const gapZ = terrain.ramps.map(parapetGap);
   /** the bypass gores cut the parapet too — west at the diverge, and the
@@ -266,23 +294,68 @@ export function buildHighway(
     if (!east) for (const g of gapZ) cut(g);
     return spans.filter(([a, b]) => b - a > 0.3); // drop unbuildable slivers
   };
+  /** [zA, zB] minus every mast window that applies to this side. Same shape
+      as wallSpans, and applied on top of it, so a screen wall inherits the
+      gore cuts and then loses the metre and a half around each post. */
+  const clipMasts = (zA: number, zB: number, sgn: number): [number, number][] => {
+    let spans: [number, number][] = [[zA, zB]];
+    for (const g of mastGaps) {
+      if (g.side !== 0 && g.side !== sgn) continue;
+      const next: [number, number][] = [];
+      for (const [a2, b2] of spans) {
+        if (g.z1 <= a2 || g.z0 >= b2) {
+          next.push([a2, b2]);
+          continue;
+        }
+        if (g.z0 > a2) next.push([a2, g.z0]);
+        if (g.z1 < b2) next.push([g.z1, b2]);
+      }
+      spans = next;
+    }
+    return spans.filter(([a2, b2]) => b2 - a2 > 0.3);
+  };
   /** z's the bypass gores keep clear of long deck furniture */
   const nearNewGore = (z: number, r: number) =>
     world.routes !== undefined &&
     (Math.abs(z - DIVERGE_Z) < r || Math.abs(z - MERGE_Z) < r);
   /** the tunnel supplies its own walls, so skip the parapet through it */
   const inTube = (z: number) => z > TUNNEL.z0 - 3 && z < TUNNEL.z1 + 3;
+  /* corridor.ts resolves the section plan, but it cannot see the bypass gores
+     without importing routegraph.ts, which imports it — so the last veto is
+     applied here. It is applied to the whole RUN, not to the station: a guard
+     that fires per-station punches a hole through the middle of a wall rather
+     than removing it. */
+  const sectionAt = (z: number): SectionKind => {
+    const run = cor.sectionRunAt(z);
+    if (!run) return "viaduct";
+    // only the opaque treatments: a tall wall standing over a gore reads as a
+    // black panel across the sign line. A railing hides nothing.
+    if ((run.kind === "mesh" || run.kind === "screen") &&
+      (nearNewGore(cor.wrapZ(run.z0), 260) || nearNewGore(cor.wrapZ(run.z1), 260)))
+      return "viaduct";
+    return run.kind;
+  };
 
   const chunkOf = (z: number) => Math.floor(z / CHUNK_Z);
   const road = new Map<number, Soup>();
   const fascia = new Map<number, Soup>();
   const walls = new Map<number, Soup>();
   const marks = new Map<number, Soup>();
+  /** steel railing ribbons on the open sections; DoubleSide, so a single
+      quad per band is enough (same trick the bypass crossing rail uses) */
+  const rails = new Map<number, Soup>();
+  /** solid noise walls over the parapet on the `screen` sections */
+  const screens = new Map<number, Soup>();
+  /** transverse expansion joints, on their own coarse chunking: two triangles
+      every 32 m is not worth a per-300 m draw call */
+  const joints = new Map<number, Soup>();
   const soup = (m: Map<number, Soup>, c: number) => {
     let s = m.get(c);
     if (!s) m.set(c, (s = new Soup()));
     return s;
   };
+  /** railing post mounts, gathered here and instanced once at the end */
+  const railPosts: { x: number; y: number; z: number; h: number }[] = [];
 
   for (let i = 0; i < ST.length - 1; i++) {
     const a = ST[i], b = ST[i + 1];
@@ -295,9 +368,13 @@ export function buildHighway(
       [0, a.s / TILE], [0, b.s / TILE],
       [(2 * b.hw) / TILE, b.s / TILE], [(2 * a.hw) / TILE, a.s / TILE]
     );
-    // fascia: the box girder under the deck
-    const lad = pt(i, -a.hw - 0.5, -DECK_TH), rad = pt(i, a.hw + 0.5, -DECK_TH);
-    const lbd = pt(i + 1, -b.hw - 0.5, -DECK_TH), rbd = pt(i + 1, b.hw + 0.5, -DECK_TH);
+    // fascia: the box girder under the deck. Its depth follows the section —
+    // the bridge span's girder is the arch tie and is nearly twice as deep,
+    // which is most of what makes the span read as a bridge from below and
+    // from the mirrors on the way off it.
+    const dtA = deckTh(a.z), dtB = deckTh(b.z);
+    const lad = pt(i, -a.hw - 0.5, -dtA), rad = pt(i, a.hw + 0.5, -dtA);
+    const lbd = pt(i + 1, -b.hw - 0.5, -dtB), rbd = pt(i + 1, b.hw + 0.5, -dtB);
     const F = soup(fascia, c);
     F.quad(la, lb, lbd, lad); // west side
     F.quad(ra, rad, rbd, rb); // east side
@@ -306,21 +383,59 @@ export function buildHighway(
     // identical to pt() at a station, so uncut segments are unchanged)
     if (i % WALL_EVERY === 0 && i + WALL_EVERY < ST.length && !inTube(a.z)) {
       const e = ST[i + WALL_EVERY];
+      const kind = sectionAt(a.z);
+      /* On `rail` and `bridge` the concrete stops at a kerb and a steel
+         railing carries on up to the same 1.05 m the parapet reached, so the
+         delineators on top of it and the analytic parapet clamp in collide.ts
+         (which is a function of halfWidth alone, and never of what is drawn)
+         both stay exactly where they were. Only the sightline changes. */
+      const kerb = KERB_H[kind];
+      const hWall = kerb ?? WALL_H;
       for (const sgn of [-1, 1]) {
         for (const [zA, zB] of wallSpans(a.z, e.z, sgn > 0)) {
           const W = soup(walls, c);
-          const P = (z: number, out: number): Vec3 => {
+          const P = (z: number, out: number, dy = 0): Vec3 => {
             const lat = sgn * (cor.halfWidth(z) + WALL_T / 2 + 0.06) + out;
             const w = cor.worldOf(z, lat);
-            return [w.x, w.y, w.z];
+            return [w.x, w.y + dy, w.z];
           };
           const a0 = P(zA, -sgn * WALL_T / 2), a1 = P(zA, sgn * WALL_T / 2);
           const b0 = P(zB, -sgn * WALL_T / 2), b1 = P(zB, sgn * WALL_T / 2);
-          const up = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
+          const up = (p: Vec3): Vec3 => [p[0], p[1] + hWall, p[2]];
           const dn = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
           W.quad(dn(a0), dn(b0), up(b0), up(a0));
           W.quad(dn(a1), dn(b1), up(b1), up(a1));
           W.quad(up(a0), up(b0), up(b1), up(a1));
+          if (kerb !== undefined) {
+            // three flat ribbons on the kerb line; posts are instanced below
+            const R = soup(rails, c);
+            for (const [y0, t] of RAIL_BANDS) {
+              const lo0 = P(zA, 0, kerb + y0), lo1 = P(zB, 0, kerb + y0);
+              R.quad(
+                lo0, lo1,
+                [lo1[0], lo1[1] + t, lo1[2]], [lo0[0], lo0[1] + t, lo0[2]]
+              );
+            }
+            const m = P(zA, 0, kerb);
+            railPosts.push({ x: m[0], y: m[1], z: m[2], h: cor.pose(zA).h });
+          } else if (kind === "screen") {
+            /* Solid noise wall over the coping, stepped around any mast that
+               comes up through the edge here. It leans 12 cm inboard at the
+               top: a dead-vertical 4.6 m slab beside the lane reads as a
+               texture on a wall, whereas the lean puts its coping in the top
+               of the windscreen and is what makes the road feel roofed in. */
+            const LEAN = -0.12; // lateral drift of the coping, inboard
+            for (const [mA, mB] of clipMasts(zA, zB, sgn)) {
+              const S2 = soup(screens, c);
+              const foot = (z: number, o: number) => P(z, o, WALL_H);
+              const head = (z: number, o: number) =>
+                P(z, o + sgn * LEAN, WALL_H + SCREEN_H);
+              const oi = -sgn * WALL_T / 2, oo = sgn * WALL_T / 2;
+              S2.quad(foot(mA, oi), foot(mB, oi), head(mB, oi), head(mA, oi));
+              S2.quad(foot(mA, oo), foot(mB, oo), head(mB, oo), head(mA, oo));
+              S2.quad(head(mA, oi), head(mB, oi), head(mB, oo), head(mA, oo));
+            }
+          }
         }
       }
     }
@@ -552,6 +667,88 @@ export function buildHighway(
   emit(walls, wallMat, false, true, false);
   emit(marks, markMat, true, false, true);
 
+  /* Section dressing: the railing ribbons and the noise walls. The screens
+     share barrierDouble with the parapets they stand on, so the photoscan
+     concrete reaches them and they cost draw calls but no extra shader. */
+  const railMat = new THREE.MeshStandardMaterial({
+    color: 0x545c6b, roughness: 0.45, metalness: 0.75, side: THREE.DoubleSide,
+  });
+  emit(rails, railMat, false, false, false);
+  emit(screens, wallMat, false, true, false);
+  if (railPosts.length) {
+    /* One post per station (4 m) on the open sections. A railing without
+       verticals reads as three floating lines from the dashcam — the posts
+       are what give it a rhythm and, at speed, the strobing that says the
+       barrier beside you is close. */
+    const postG = new THREE.BoxGeometry(0.1, 0.66, 0.1);
+    const posts = new THREE.InstancedMesh(postG, railMat, railPosts.length);
+    const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(),
+      V = new THREE.Vector3(), SC = new THREE.Vector3(1, 1, 1);
+    railPosts.forEach((p, i) => {
+      E.set(0, p.h, 0);
+      Q.setFromEuler(E);
+      V.set(p.x, p.y + 0.33, p.z);
+      M.compose(V, Q, SC);
+      posts.setMatrixAt(i, M);
+    });
+    posts.computeBoundingSphere();
+    scene.add(posts);
+  }
+
+  /* ---- expansion joints ----
+     A segmental viaduct is a chain of spans, and where two of them meet there
+     is a finger joint straight across the deck. They cost two triangles each
+     and they are the cheapest thing on this road that conveys speed: on the
+     PITCH.pier lattice they arrive at better than one a second at 150 km/h,
+     and a rhythm you can count is what turns "a texture scrolling past" into
+     "ground going past". Riding the pier lattice also means a joint always
+     lands over a pier — and so over every section boundary, since those are
+     pier multiples too, which is exactly where a real structure changes.
+
+     Laid a hair PROUD of the lane paint rather than under it: paint stops at
+     a real joint, so drawing the joint on top is both what happens in life
+     and the way out of a z-fight with the markings that cross it. Beam-
+     responsive like the paint, so the steel edge angles flare when the
+     headlights reach them and die away behind the car. */
+  {
+    const jointTex = makeTex(8, 64, (ctx, w2, h2) => {
+      const band = (y0: number, y1: number, col: string) => {
+        ctx.fillStyle = col;
+        ctx.fillRect(0, y0, w2, y1 - y0);
+      };
+      band(0, h2, "#0d0f14");
+      band(3, 11, "#666d78"); // galvanised edge angle, the bit that catches
+      band(11, 27, "#0a0b0f"); // the gap
+      band(27, 39, "#3d434d"); // finger plate
+      band(39, 55, "#0a0b0f");
+      band(55, 63, "#666d78");
+    });
+    const jointMat = new THREE.MeshBasicMaterial({
+      map: jointTex, transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+    });
+    mats.addBeam(jointMat, { near: 18, far: 62, spread: 0.95 });
+    const JL = 0.55;
+    for (const z of cor.lattice(PITCH.pier)) {
+      if (z + JL > cor.ZB1) continue;
+      // the plaza's own deck is dressed with rumble bars and gate islands;
+      // one more transverse band across it is noise
+      if (z > TOLL.plazaZ0 - 26 && z < TOLL.plazaZ1 + 26) continue;
+      const J = soup(joints, Math.floor(z / (CHUNK_Z * 3)));
+      const hw0 = cor.halfWidth(z) - 0.05, hw1 = cor.halfWidth(z + JL) - 0.05;
+      const p0 = cor.worldOf(z, -hw0), p1 = cor.worldOf(z, hw0);
+      const p2 = cor.worldOf(z + JL, hw1), p3 = cor.worldOf(z + JL, -hw1);
+      const Y = 0.03;
+      J.quadUv(
+        [p0.x, p0.y + Y, p0.z], [p3.x, p3.y + Y, p3.z],
+        [p2.x, p2.y + Y, p2.z], [p1.x, p1.y + Y, p1.z],
+        [0, 0], [0, 1], [1, 1], [1, 0]
+      );
+    }
+    emit(joints, jointMat, true, false, true);
+  }
+
+
   /* ---------------- piers ---------------- */
   {
     const zs = cor.lattice(PITCH.pier);
@@ -563,6 +760,12 @@ export function buildHighway(
       E = new THREE.Euler(), S = new THREE.Vector3();
     let k = 0;
     for (const z of zs) {
+      /* The bridge's whole argument is the hole under it: the arch carries
+         the deck from abutment to abutment, so the piers that would otherwise
+         stand at 352/384/416 are not there. The two abutments are on the
+         lattice as well and get their own splayed blocks (buildBridge), so
+         they come out here too rather than being drawn twice. */
+      if (z >= BRIDGE.z0 && z <= BRIDGE.z1) continue;
       const p = cor.pose(z);
       const gy = terrain.h(p.x, z);
       const hgt = Math.max(1.5, p.y - 1.4 - gy);
@@ -585,6 +788,9 @@ export function buildHighway(
     beams.computeBoundingSphere();
     scene.add(pier, beams);
   }
+
+  /* ---------------- the tied-arch bridge ---------------- */
+  buildBridge(scene, mats, world, terrain, cor);
 
   /* ---------------- tunnel ---------------- */
   buildTunnel(scene, mats, world, cor, pt);
@@ -809,11 +1015,14 @@ export function buildHighway(
       scene.add(g);
     }
   }
-  /* Sound barriers, on the shoulder away from the town. Swept along the
-     corridor stations like the rest of the furniture — a straight box drifts
-     more than a metre off a curving deck edge over its own length — and kept
-     well away from the gores, since a 3 m barrier standing over an exit reads
-     as a black panel across the sign line.
+  /* Sound barriers — the `mesh` sections. Where they go is now decided by the
+     section plan in corridor.ts rather than by a lattice walk here, so the
+     screens, the solid noise walls and the open railings cannot land on top
+     of one another and the whole sequence of edge treatments can be read in
+     one table. The sweep still walks the corridor's own stations (a straight
+     box drifts more than a metre off a curving deck edge over its own length)
+     and the gore veto is still applied, since a 3 m barrier standing over an
+     exit reads as a black panel across the sign line.
 
      The hero version is a perforated galvanised-mesh screen standing on the
      parapet: an alphaTest cutout (never alpha blend — the depth buffer stays
@@ -823,38 +1032,30 @@ export function buildHighway(
      away behind the car. UVs run in panel-widths so the scan tiles at life
      size. */
   {
-    const SEG = 120, H = 3.0, PANEL_W = 2.4;
+    const H = 3.0, PANEL_W = 2.4;
     /* the fenceOverdraw cap finally gets its consumer: mobile-base falls back
        to the old translucent slab, shedding the alphaTest overdraw */
     if (FX_FENCE_PANELS && caps.fenceOverdraw) {
       const S = new Soup();
       const postAt: { x: number; y: number; z: number; h: number }[] = [];
-      for (const z0 of cor.lattice(PITCH.soundwall)) {
-        if (z0 + SEG > cor.ZB1) continue;
-        const mid = z0 + SEG / 2;
-        if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
-        if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
-        if (nearNewGore(mid, 260)) continue;
-        const i0 = Math.round((z0 - cor.ZB0) / 4);
-        const i1 = Math.min(ST.length - 1, Math.round((z0 + SEG - cor.ZB0) / 4));
-        for (let i = i0; i < i1; i++) {
-          // centred over the parapet, rising out of its top (base tucked just
-          // below the coping so no sliver of sky shows between them)
-          const la = ST[i].hw + 0.23, lb = ST[i + 1].hw + 0.23;
-          const y0 = WALL_H - 0.15;
-          S.quadUv(
-            pt(i, la, y0), pt(i + 1, lb, y0),
-            pt(i + 1, lb, y0 + H), pt(i, la, y0 + H),
-            [ST[i].s / PANEL_W, 0], [ST[i + 1].s / PANEL_W, 0],
-            [ST[i + 1].s / PANEL_W, 1], [ST[i].s / PANEL_W, 1]
-          );
-          if (i % 2 === 0) {
-            const p = ST[i];
-            postAt.push({
-              x: p.x + p.nx * la, y: p.y + y0, z: p.z + p.nz * la,
-              h: Math.atan2(p.tx, p.tz),
-            });
-          }
+      for (let i = 0; i < ST.length - 1; i++) {
+        if (sectionAt(ST[i].z) !== "mesh") continue;
+        // centred over the parapet, rising out of its top (base tucked just
+        // below the coping so no sliver of sky shows between them)
+        const la = ST[i].hw + 0.23, lb = ST[i + 1].hw + 0.23;
+        const y0 = WALL_H - 0.15;
+        S.quadUv(
+          pt(i, la, y0), pt(i + 1, lb, y0),
+          pt(i + 1, lb, y0 + H), pt(i, la, y0 + H),
+          [ST[i].s / PANEL_W, 0], [ST[i + 1].s / PANEL_W, 0],
+          [ST[i + 1].s / PANEL_W, 1], [ST[i].s / PANEL_W, 1]
+        );
+        if (i % 2 === 0) {
+          const p = ST[i];
+          postAt.push({
+            x: p.x + p.nx * la, y: p.y + y0, z: p.z + p.nz * la,
+            h: Math.atan2(p.tx, p.tz),
+          });
         }
       }
       if (!S.empty) {
@@ -882,18 +1083,10 @@ export function buildHighway(
       const swMat = soundwall.clone();
       swMat.side = THREE.DoubleSide;
       const S = new Soup();
-      for (const z0 of cor.lattice(PITCH.soundwall)) {
-        if (z0 + SEG > cor.ZB1) continue;
-        const mid = z0 + SEG / 2;
-        if (cor.inTunnel(mid) || cor.inToll(mid)) continue;
-        if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
-        if (nearNewGore(mid, 260)) continue;
-        const i0 = Math.round((z0 - cor.ZB0) / 4);
-        const i1 = Math.min(ST.length - 1, Math.round((z0 + SEG - cor.ZB0) / 4));
-        for (let i = i0; i < i1; i++) {
-          const la = ST[i].hw + 0.3, lb = ST[i + 1].hw + 0.3;
-          S.quad(pt(i, la), pt(i + 1, lb), pt(i + 1, lb, H), pt(i, la, H));
-        }
+      for (let i = 0; i < ST.length - 1; i++) {
+        if (sectionAt(ST[i].z) !== "mesh") continue;
+        const la = ST[i].hw + 0.3, lb = ST[i + 1].hw + 0.3;
+        S.quad(pt(i, la), pt(i + 1, lb), pt(i + 1, lb, H), pt(i, la, H));
       }
       if (!S.empty) {
         const m = new THREE.Mesh(S.geom(false), swMat);
@@ -1278,6 +1471,201 @@ export function takeDeckPoolGeometry(): THREE.BufferGeometry | null {
   const g = deckPoolGeo;
   deckPoolGeo = null;
   return g;
+}
+
+/* ============================ tied-arch bridge ========================== */
+
+/** The span at BRIDGE.z0..z1.
+
+    The hard part of putting a bridge on this road is that the road is already
+    a viaduct: it is ten metres up on piers from one end of the lap to the
+    other, so "the road lifts onto piers" is not a change the driver can see.
+    What separates a bridge from the viaduct either side of it is (a) a
+    structure you drive *through*, (b) a hole underneath where the piers stop,
+    and (c) the joint you feel and see at each end. This builds all three.
+
+    Reading it in the dashcam, in order: the arch rises out of the road ahead
+    and closes overhead as you reach it; the deck edge drops to a kerb-and-
+    railing so the ground is suddenly visible past it; the hangers strobe past
+    the door; the expansion joint bands cross the bonnet at each abutment. Off
+    the far end the girder shallows again and the piers come back.
+
+    Cost: two swept ribs at 20 segments (~320 triangles), one instanced mesh
+    for the hangers, one for the braces, four abutment boxes and two Points
+    clouds — call it 900 triangles and 7 draw calls, all of it inside a 128 m
+    frustum slice that is only in view for a few seconds a lap. */
+function buildBridge(
+  scene: THREE.Scene,
+  mats: Mats,
+  world: WorldData,
+  terrain: Terrain,
+  cor: ReturnType<typeof getCorridor>
+) {
+  const { z0, z1, rise, ribOut, ribW, ribD, hangers, girder, braceAt } = BRIDGE;
+  const span = z1 - z0;
+  const ribLat = cor.halfWidth((z0 + z1) / 2) + ribOut;
+  /** arch height above the deck line at fraction t — a plain parabola, which
+      is what a tied arch's rib actually is */
+  const archY = (t: number) => rise * 4 * t * (1 - t);
+  /** rib centreline point at fraction t on side `sgn` */
+  const ribPt = (t: number, sgn: number) => {
+    const z = z0 + t * span;
+    const w = cor.worldOf(z, sgn * ribLat);
+    return new THREE.Vector3(w.x, w.y + archY(t), w.z);
+  };
+  /** deck edge under the rib — where a hanger lands */
+  const deckPt = (t: number, sgn: number) => {
+    const z = z0 + t * span;
+    const w = cor.worldOf(z, sgn * ribLat);
+    return new THREE.Vector3(w.x, w.y, w.z);
+  };
+
+  const steel = new THREE.MeshStandardMaterial({
+    color: 0x59616f, roughness: 0.5, metalness: 0.72, side: THREE.DoubleSide,
+  });
+
+  /* ---- the two ribs, swept as box sections ---- */
+  const N = 20;
+  const S = new Soup();
+  const nrm = new THREE.Vector3();
+  {
+    const p = cor.pose((z0 + z1) / 2);
+    nrm.set(p.nx, 0, p.nz); // the corridor is dead straight through the span
+  }
+  for (const sgn of [-1, 1]) {
+    /** the four corners of the rib's box section at fraction t */
+    const frame = (t: number): Vec3[] => {
+      const c = ribPt(t, sgn);
+      const d = ribPt(Math.min(1, t + 0.02), sgn).sub(ribPt(Math.max(0, t - 0.02), sgn)).normalize();
+      const u = new THREE.Vector3().crossVectors(d, nrm).normalize();
+      const out: Vec3[] = [];
+      for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const)
+        out.push([
+          c.x + nrm.x * a * ribW / 2 + u.x * b * ribD / 2,
+          c.y + nrm.y * a * ribW / 2 + u.y * b * ribD / 2,
+          c.z + nrm.z * a * ribW / 2 + u.z * b * ribD / 2,
+        ]);
+      return out;
+    };
+    let prev = frame(0);
+    for (let k = 1; k <= N; k++) {
+      const cur = frame(k / N);
+      for (let e = 0; e < 4; e++) {
+        const f = (e + 1) % 4;
+        S.quad(prev[e], prev[f], cur[f], cur[e]);
+      }
+      prev = cur;
+    }
+  }
+  const ribMesh = new THREE.Mesh(S.geom(false), steel);
+  ribMesh.castShadow = true;
+  scene.add(ribMesh);
+
+  const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
+    E = new THREE.Euler(), SC = new THREE.Vector3();
+
+  /* ---- hangers: rib down to the deck edge ---- */
+  {
+    const hg = new THREE.BoxGeometry(0.09, 1, 0.09);
+    const hm = new THREE.InstancedMesh(hg, steel, hangers * 2);
+    let n = 0;
+    for (const sgn of [-1, 1])
+      for (let k = 1; k <= hangers; k++) {
+        const t = k / (hangers + 1);
+        const top = ribPt(t, sgn), bot = deckPt(t, sgn);
+        const len = Math.max(0.2, top.y - bot.y);
+        E.set(0, cor.pose(bot.z).h, 0);
+        Q.setFromEuler(E);
+        V.set(bot.x, bot.y + len / 2, bot.z);
+        SC.set(1, len, 1);
+        M.compose(V, Q, SC);
+        hm.setMatrixAt(n++, M);
+      }
+    hm.count = n;
+    hm.computeBoundingSphere();
+    scene.add(hm);
+  }
+
+  /* ---- cross-braces between the ribs, all of them 15 m up ---- */
+  {
+    const bg = new THREE.BoxGeometry(1, 0.34, 0.34);
+    const bm = new THREE.InstancedMesh(bg, steel, braceAt.length);
+    braceAt.forEach((t, i) => {
+      const a = ribPt(t, -1), b = ribPt(t, 1);
+      E.set(0, cor.pose(a.z).h, 0);
+      Q.setFromEuler(E);
+      V.copy(a).add(b).multiplyScalar(0.5);
+      SC.set(a.distanceTo(b), 1, 1);
+      M.compose(V, Q, SC);
+      bm.setMatrixAt(i, M);
+    });
+    bm.computeBoundingSphere();
+    scene.add(bm);
+  }
+
+  /* ---- abutments: the springing blocks that replace the two piers ----
+     Splayed concrete, wide enough to carry both ribs and the girder, standing
+     on the ground the suppressed piers used to. The collider matches the
+     block: nothing down there is a ghost. */
+  for (const z of [z0, z1]) {
+    const p = cor.pose(z);
+    const gy = terrain.h(p.x, z);
+    const soffit = p.y - girder;
+    const h = Math.max(2, soffit - gy);
+    const blk = new THREE.Mesh(new THREE.BoxGeometry(ribLat * 2 + 2.2, h, 3.2), mats.concDark);
+    blk.position.set(p.x, gy + h / 2, p.z);
+    blk.rotation.y = p.h;
+    blk.castShadow = true;
+    scene.add(blk);
+    // shoe under each rib foot, so the arch visibly lands on something
+    for (const sgn of [-1, 1]) {
+      const w = cor.worldOf(z, sgn * ribLat);
+      const shoe = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.9), mats.concDark);
+      shoe.position.set(w.x, w.y + 0.4, w.z);
+      shoe.rotation.y = p.h;
+      scene.add(shoe);
+    }
+    world.colliders.addAabb({
+      x0: p.x - ribLat - 1.1, x1: p.x + ribLat + 1.1,
+      z0: p.z - 1.6, z1: p.z + 1.6, y0: gy, y1: gy + h,
+    });
+  }
+
+  /* ---- marker lights ----
+     Structures this size carry obstruction lighting, and at night it is the
+     only thing that draws the arch before the headlights reach it: a string
+     of amber points up each rib and a red pair at the crown. Soft radial
+     glowTex points, not geometry, so there is no edge to print — and they go
+     into neonMats, because a marker light by night is a dead lens by day. */
+  {
+    const amber: number[] = [], red: number[] = [];
+    for (const sgn of [-1, 1])
+      for (let k = 0; k <= 8; k++) {
+        const t = k / 8;
+        const q = ribPt(t, sgn);
+        (Math.abs(t - 0.5) < 0.01 ? red : amber).push(q.x, q.y + 0.55, q.z);
+      }
+    for (const sgn of [-1, 1]) {
+      const q = ribPt(0.5, sgn);
+      red.push(q.x, q.y + 0.62, q.z);
+    }
+    const cloud = (pts: number[], color: number, size: number, op: number) => {
+      if (!pts.length) return;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+      const m = new THREE.PointsMaterial({
+        size, sizeAttenuation: false, color, map: mats.glowTex,
+        transparent: true, opacity: op, fog: false, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const o = new THREE.Points(g, m);
+      o.frustumCulled = false;
+      scene.add(o);
+      world.neonMats.push(m);
+    };
+    cloud(amber, 0xffb055, 2.4, 0.85);
+    cloud(red, 0xff5638, 3.0, 0.9);
+  }
 }
 
 /* ============================ tunnel ==================================== */

@@ -1,5 +1,8 @@
 import * as THREE from "three";
-import { clamp, lerp, mulberry32 } from "./util";
+import { clamp, lerp, mulberry32, type Rng } from "./util";
+import {
+  runStages, withBudget, type LoadReport, type LoadStage,
+} from "./loading";
 import {
   fogMultiplier, speedInUnits, unitLabel, resolveRenderTier, TIER_CAPS,
   type GameSettings, type Profile, type RenderTier, type TierCaps,
@@ -312,6 +315,12 @@ export class Game {
   /** the current press already spent itself toggling the latch, so its release
       must not also be read as the end of a flash */
   private hiConsumed = false;
+  /** A flash gesture happened this frame — a one-frame pulse handed to
+      traffic.update(), which reacts to the *gesture* (one press, one flash)
+      rather than to whether the beams are currently lit. Set on the press
+      edge so the reaction is immediate; a press that turns out to be a latch
+      hold has still, correctly, put the mains in the car ahead's mirrors once. */
+  private hiFlashPulse = false;
 
   private ui: UiBridge;
   private renderer: THREE.WebGLRenderer;
@@ -319,17 +328,21 @@ export class Game {
   private camera: THREE.PerspectiveCamera;
   private rearCam: THREE.PerspectiveCamera;
   private refCam = new THREE.PerspectiveCamera();
-  private mats: Mats;
-  private sky: Sky;
-  private world: WorldData;
-  private terrain: Terrain;
+  /* The world half of the engine. All of it is built by load(), not by the
+     constructor, so every one of these is undefined until `loaded` is true —
+     which is why the handful of methods the menus can reach before Drive
+     (applySettings, setCar, setRain) have to guard. */
+  private mats!: Mats;
+  private sky!: Sky;
+  private world!: WorldData;
+  private terrain!: Terrain;
   private post: PostFX;
-  private traffic: Traffic;
+  private traffic!: Traffic;
   private audio = new GameAudio();
-  private rainFX: RainFX;
-  private smokeFX: SmokeFX;
+  private rainFX!: RainFX;
+  private smokeFX!: SmokeFX;
   private rig!: PlayerRig;
-  car: CarState;
+  car!: CarState;
   private input: DriverInput = { th: 0, br: 0, st: 0, hb: 0, horn: 0 };
   private keydown: Record<string, number> = {};
   private hemi: THREE.HemisphereLight;
@@ -460,71 +473,11 @@ export class Game {
     this.post.setMobile(this.tierCaps.mirrorHalf);
     // desktop-only cinematic extras: two-scale bloom + film-look finishers
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
-    /* On the low preset the photo scans are not fetched at all — some 60 MB of
-       texture memory and a 5 MB download, on exactly the device that asked for
-       less. The load is deferred rather than cancelled, so updatePbrDetail()
-       turning detail back on when the preset is raised is also what starts it,
-       and the world upgrades in place. The mobile-base tier defers the fetch
-       the same way — a manual tier bump later still upgrades in place. */
-    this.mats = buildMats({
-      pbr: profile.settings.preset !== "low" && this.tierCaps.pbrDetail,
-    });
-    // async: swaps a real night-city HDRI under the car bodywork when one is
-    // on disk, otherwise the painted cube env above stays
-    primeCarEnv(this.renderer, this.mats.envMap);
-    this.mats.setReflectionTexture(this.post.reflectRT.texture);
-    this.mats.setReflectionScreen(
-      innerWidth * this.renderer.getPixelRatio(),
-      innerHeight * this.renderer.getPixelRatio()
-    );
-    this.sky = buildSky(this.scene, this.mats.glowTex);
-
-    /* ---- world build (seeded) ---- */
-    const rng = mulberry32(this.seed);
-    this.terrain = makeTerrain(rng);
-    const net = buildRoadNet(rng, this.terrain);
-    /* the route graph: the corridor grown into a small closed graph (bypass
-       viaduct + town loop). Deterministic like the corridor; assertClosed()
-       sits here next to the world build the same way assertPitches() guards
-       the furniture lattices. */
-    const routes = getRouteGraph();
-    routes.assertClosed();
-    this.world = {
-      colliders: new ColliderIndex(),
-      net,
-      terrain: this.terrain,
-      routes,
-      exits: [],
-      chunks: [],
-      neonMats: [],
-    };
-    const ground = buildGround(this.terrain, this.mats.ground);
-    ground.layers.set(LAYER_NOREF);
-    this.scene.add(ground);
-    const hwyOut = buildHighway(this.scene, this.mats, this.world, this.terrain, rng);
-    buildTown(this.scene, this.mats, this.world, this.terrain, rng, hwyOut.deckLightPts);
-    this.tintLampsSodium();
-
-    this.traffic = new Traffic(this.scene, this.world, this.mats.envMap, this.mats.glowTex, 120);
-    this.rainFX = new RainFX(this.scene, this.mats.streakTex);
-    this.smokeFX = new SmokeFX(this.scene, this.mats.smokeTex);
-
-    /* Spawn on the corridor rather than at a fixed offset: the centreline
-       wanders by up to 62 m and the deck rises and falls by 5, so a hardcoded
-       (HX, DECKY) start would drop the car beside or under the road.
-
-       spawnZ() is the centre of the town-side window: the stretch beside the
-       town that is straight, level, clear of both ramps' parapet gaps (the z
-       range where the deck's barrier is cut away for a ramp to peel off), out
-       of the tunnel and off the toll plaza. It is derived from the ramp layout
-       rather than written down here on purpose — this used to be a literal, and
-       when the gores moved it silently ended up inside a gap, spawning the
-       player next to a hole in the wall. */
-    const spawn = this.cor.respawn(spawnZ(), 1);
-    this.car = freshCarState(spawn.x, spawn.y, spawn.z, spawn.h, 23);
-    this.buildRig();
-    this.chasePos.set(this.car.x, this.car.y + 2.15, this.car.z - 7);
-    this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
+    /* Everything above is what the MENUS need: a canvas, a resolved tier, and
+       the settings the panels read. The world itself — materials, terrain,
+       expressway, town, traffic, the player rig — is NOT built here; it is
+       built by load() below, in yielding stages, behind the loading screen.
+       See the note on load() for why. */
 
     this.timeSpeed = this.settings.autoTime ? 150 : 0;
     this.bindInput();
@@ -639,6 +592,263 @@ export class Game {
     window.addEventListener("blur", this.onWindowBlur);
   }
 
+  /* ---------------- staged load ---------------- */
+
+  /** Relative cost of each load stage, used to weight the progress bar.
+
+      These are estimates of where the time goes on a mid-range phone, not
+      measurements, and they only have to be right relative to each other — the
+      bar's job is to not stall at 80%. runStages() records real per-stage
+      milliseconds and the load hangs them off `__neonx.loadTimings`, so
+      retuning these against an actual device is a console read, not a
+      guessing game.
+
+      The shape they encode: the two big procedural mesh builds (4.7 km of
+      expressway at a station every 4 m, then the town) dominate everything
+      else put together; the canvas textures are a distant third; the fetches
+      (bodyshells, donor dash) are network-bound and therefore wildly variable,
+      so they are weighted at what a warm cache costs rather than a cold one. */
+  private static readonly LOAD_WEIGHTS = {
+    mats: 12,
+    land: 6,
+    highway: 26,
+    town: 22,
+    traffic: 8,
+    car: 8,
+    shaders: 12,
+    warm: 6,
+  };
+
+  /** How long the load waits on the traffic bodyshells and on the donor dash
+      before walking on without them (see withBudget). The dash gets the longer
+      budget because it is a single 17 MB file and because the dashcam POV is
+      the view the game is played in — having it swap in under the player a
+      second into the drive is the one pop worth paying for up front. */
+  private static readonly FLEET_BUDGET_MS = 5000;
+  private static readonly DASH_BUDGET_MS = 8000;
+  /** Budget on the shader pre-warm. Not a performance knob — compileAsync
+      polls program.isReady() on a 10 ms timer, and a GL context lost mid-load
+      is a poll that can never come back true. Without this the player sits on
+      "COMPILING SHADERS" forever; with it the load finishes and they at least
+      get the game's own context-loss behaviour. */
+  private static readonly COMPILE_BUDGET_MS = 15000;
+
+  /** True once load() has finished; until then the world does not exist and
+      the menus are the only thing that works. */
+  loaded = false;
+
+  /** The world build, as a list of stages the loader can yield between.
+
+      The order here is the order the old constructor ran in and must stay
+      that way: `rng` is a seeded stream threaded through terrain → road net →
+      highway → town, so moving any consumer changes what every later one
+      draws for a given seed. */
+  private buildStages(): LoadStage[] {
+    const W = Game.LOAD_WEIGHTS;
+    let rng: Rng;
+    let net: ReturnType<typeof buildRoadNet>;
+    let deckLightPts: ReturnType<typeof buildHighway>["deckLightPts"];
+    return [
+      {
+        label: "MIXING PAINT",
+        weight: W.mats,
+        run: () => {
+          /* On the low preset the photo scans are not fetched at all — some
+             60 MB of texture memory and a 5 MB download, on exactly the device
+             that asked for less. The load is deferred rather than cancelled,
+             so updatePbrDetail() turning detail back on when the preset is
+             raised is also what starts it, and the world upgrades in place.
+             The mobile-base tier defers the fetch the same way — a manual tier
+             bump later still upgrades in place. */
+          this.mats = buildMats({
+            pbr: this.settings.preset !== "low" && this.tierCaps.pbrDetail,
+          });
+          // async: swaps a real night-city HDRI under the car bodywork when one
+          // is on disk, otherwise the painted cube env above stays
+          primeCarEnv(this.renderer, this.mats.envMap);
+          this.mats.setReflectionTexture(this.post.reflectRT.texture);
+          this.mats.setReflectionScreen(
+            innerWidth * this.renderer.getPixelRatio(),
+            innerHeight * this.renderer.getPixelRatio()
+          );
+          this.sky = buildSky(this.scene, this.mats.glowTex);
+        },
+      },
+      {
+        label: "SHAPING THE LAND",
+        weight: W.land,
+        run: () => {
+          rng = mulberry32(this.seed);
+          this.terrain = makeTerrain(rng);
+          net = buildRoadNet(rng, this.terrain);
+          /* the route graph: the corridor grown into a small closed graph
+             (bypass viaduct + town loop). Deterministic like the corridor;
+             assertClosed() sits here next to the world build the same way
+             assertPitches() guards the furniture lattices. */
+          const routes = getRouteGraph();
+          routes.assertClosed();
+          this.world = {
+            colliders: new ColliderIndex(),
+            net,
+            terrain: this.terrain,
+            routes,
+            exits: [],
+            chunks: [],
+            neonMats: [],
+          };
+          const ground = buildGround(this.terrain, this.mats.ground);
+          ground.layers.set(LAYER_NOREF);
+          this.scene.add(ground);
+        },
+      },
+      {
+        label: "RAISING THE EXPRESSWAY",
+        weight: W.highway,
+        run: () => {
+          deckLightPts = buildHighway(
+            this.scene, this.mats, this.world, this.terrain, rng
+          ).deckLightPts;
+        },
+      },
+      {
+        label: "BUILDING THE TOWN",
+        weight: W.town,
+        run: () => {
+          buildTown(this.scene, this.mats, this.world, this.terrain, rng, deckLightPts);
+          this.tintLampsSodium();
+        },
+      },
+      {
+        label: "PUTTING CARS ON THE ROAD",
+        weight: W.traffic,
+        run: async () => {
+          this.traffic = new Traffic(
+            this.scene, this.world, this.mats.envMap, this.mats.glowTex, 120
+          );
+          this.rainFX = new RainFX(this.scene, this.mats.streakTex);
+          this.smokeFX = new SmokeFX(this.scene, this.mats.smokeTex);
+          // wait for the bodyshells: a style with no model is barred from
+          // spawning, so driving off before they land means an empty road that
+          // fills itself in over the first few seconds
+          await withBudget(this.traffic.fleetLoaded, Game.FLEET_BUDGET_MS);
+        },
+      },
+      {
+        label: "WARMING THE ENGINE",
+        weight: W.car,
+        run: async () => {
+          /* Spawn on the corridor rather than at a fixed offset: the centreline
+             wanders by up to 62 m and the deck rises and falls by 5, so a
+             hardcoded (HX, DECKY) start would drop the car beside or under the
+             road.
+
+             spawnZ() is the centre of the town-side window: the stretch beside
+             the town that is straight, level, clear of both ramps' parapet gaps
+             (the z range where the deck's barrier is cut away for a ramp to peel
+             off), out of the tunnel and off the toll plaza. It is derived from
+             the ramp layout rather than written down here on purpose — this used
+             to be a literal, and when the gores moved it silently ended up
+             inside a gap, spawning the player next to a hole in the wall. */
+          const spawn = this.cor.respawn(spawnZ(), 1);
+          this.car = freshCarState(spawn.x, spawn.y, spawn.z, spawn.h, 23);
+          this.buildRig();
+          this.chasePos.set(this.car.x, this.car.y + 2.15, this.car.z - 7);
+          this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
+          // re-run now that mats exists: the constructor's call could only
+          // reach the renderer/post half of it (see applySettings)
+          this.applySettings(this.settings);
+          await withBudget(this.rig.cockpitReady, Game.DASH_BUDGET_MS);
+        },
+      },
+      {
+        label: "COMPILING SHADERS",
+        weight: W.shaders,
+        run: async () => {
+          /* three compiles a material's program the first time it is DRAWN, so
+             a world this size pays for a few hundred link calls spread over the
+             first seconds of driving — the classic hitch right after a loading
+             screen says it is done. compileAsync walks the whole scene up front
+             (traverse, not traverseVisible: the culled chunks count too) and,
+             where KHR_parallel_shader_compile exists, lets the driver link off
+             the main thread while we sit here. */
+          await withBudget(
+            this.renderer.compileAsync(this.scene, this.camera),
+            Game.COMPILE_BUDGET_MS
+          );
+        },
+      },
+      {
+        label: "ROLLING OUT",
+        weight: W.warm,
+        run: async () => {
+          /* Compiling is not the whole of a first frame: textures upload on
+             first use, the post chain and the mirror/reflection passes have
+             their own programs, and none of that is reachable from
+             compileAsync. So run the real render loop — paused, so nothing
+             moves — for a few frames behind the loading screen. Whatever is
+             still one-off cost gets paid here instead of in the player's first
+             corner, and the canvas already holds a finished frame when the
+             overlay comes off, so the handoff has nothing to flash. */
+          await this.warmFrames(3);
+        },
+      },
+    ];
+  }
+
+  /** Latched when a stage throws. A failed load leaves a half-built scene —
+      ground and half an expressway already in it — and re-running the stages
+      over that would stack a second world on top of the first rather than
+      recover. There is no resume; the only way out is a page reload, which is
+      what the loading screen offers. */
+  private loadFailed = false;
+
+  /** The load in flight, so a second call adopts it instead of starting a
+      second build. A double-tap on DRIVE is one tap as far as the player is
+      concerned; without this it would be two towns in one scene. */
+  private loading: Promise<void> | null = null;
+
+  /** Build the world, reporting progress, with the browser free to paint
+      between stages. Rejects if a stage throws — the caller owns the error
+      state. Safe to call again at any point: already loaded is a no-op, still
+      loading joins the load in flight. */
+  load(onProgress: (r: LoadReport) => void): Promise<void> {
+    if (this.loaded) return Promise.resolve();
+    if (this.loadFailed)
+      return Promise.reject(new Error("the world build already failed — reload the page"));
+    if (!this.loading) this.loading = this.runLoad(onProgress);
+    return this.loading;
+  }
+
+  private async runLoad(onProgress: (r: LoadReport) => void): Promise<void> {
+    let timings: Record<string, number>;
+    try {
+      timings = await runStages(this.buildStages(), onProgress, () => this.disposed);
+    } catch (e) {
+      this.loadFailed = true;
+      throw e;
+    }
+    if (this.disposed) return;
+    this.loaded = true;
+    // real per-stage milliseconds, for retuning LOAD_WEIGHTS against a device
+    const dbg = (window as any).__neonx;
+    if (dbg) dbg.loadTimings = timings;
+  }
+
+  /** Run the render loop, paused, until `n` frames have been drawn. */
+  private warmFrames(n: number): Promise<void> {
+    this.beginLoop();
+    return new Promise((resolve) => {
+      let left = n;
+      const tick = () => {
+        // loop() re-arms its own rAF first, so by the time this runs the frame
+        // it scheduled has been rendered
+        if (this.disposed || --left <= 0) return resolve();
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
   private onWindowError = (e: ErrorEvent) => {
     this.debug.errors.push(String(e.message));
   };
@@ -664,15 +874,20 @@ export class Game {
       this.renderTier
     );
     this.rig.cockpit.setMirrorVis(this.mirror);
-    // POV mirror shield: re-handed on every rig build so a car swap never
-    // leaves post.ts projecting a disposed mesh
+    // POV shield: re-handed on every rig build so a car swap never leaves
+    // post.ts projecting a disposed mesh. The head unit goes through a thunk
+    // because a donor dash can move the nav canvas onto its own screen mesh
+    // long after this runs (see Cockpit.navPanel).
     this.post.setPovMirror(this.rig.cockpit.mirrorGlass, this.camera);
+    this.post.setPovScreen(() => this.rig.cockpit.navPanel());
   }
 
   setCar(carId: string, paintIx: number) {
     this.carId = carId;
     this.paintIx = paintIx;
-    this.buildRig();
+    // the garage is reachable from the main menu, where there is no rig to
+    // rebuild yet — the load stage picks these up and builds the chosen car
+    if (this.loaded) this.buildRig();
     this.audio.setCar(carId);
   }
 
@@ -761,6 +976,10 @@ export class Game {
        whichever comes first. `e.repeat` is already filtered above, so
        autorepeat can't re-arm the timer under a held key. */
     if (!this.highBeam) this.audio.stalkClick(); // stalk click on the OFF→ON edge only (lane O)
+    // traffic reads this as one flash-at-the-car-ahead gesture. Only while
+    // running: nothing consumes the pulse when the world is paused, and a
+    // flash banked in a menu must not fire the moment play resumes.
+    if (this.running) this.hiFlashPulse = true;
     this.hiHeld = true;
     this.hiConsumed = false;
     this.hiDownAt = performance.now() / 1000;
@@ -913,14 +1132,20 @@ export class Game {
       this.lastPR = pr;
       this.renderer.setPixelRatio(pr);
       this.post.makeTargets(this.perfMode);
-      this.mats.setReflectionTexture(this.post.reflectRT.texture);
-      this.mats.setReflectionScreen(
+      this.mats?.setReflectionTexture(this.post.reflectRT.texture);
+      this.mats?.setReflectionScreen(
         innerWidth * this.renderer.getPixelRatio(),
         innerHeight * this.renderer.getPixelRatio()
       );
     }
-    this.mats.setWet(this.rain, this.reflectionsOn);
-    this.updatePbrDetail();
+    /* The settings panel is reachable from the main menu, i.e. before the
+       staged load has built any materials. The renderer/post half above still
+       applies, and the load re-runs this whole call once mats exists, so an
+       early preset change is not lost — it just lands a stage later. */
+    if (this.mats) {
+      this.mats.setWet(this.rain, this.reflectionsOn);
+      this.updatePbrDetail();
+    }
     this.timeSpeed = s.autoTime ? (this.timeSpeed === 0 ? 150 : this.timeSpeed) : 0;
     this.audio.setLevels(s.vol, this.running ? 1 : 0.12);
   }
@@ -944,19 +1169,41 @@ export class Game {
 
   setRain(on: boolean) {
     this.rain = on;
-    this.rainFX.pts.visible = on;
-    this.mats.setWet(on, this.reflectionsOn);
+    // settable from the pre-Drive settings panel: `rain` is read back by the
+    // load's applySettings pass, so the world comes up wet either way
+    if (this.loaded) {
+      this.rainFX.pts.visible = on;
+      this.mats.setWet(on, this.reflectionsOn);
+    }
     this.ui.toast(on ? "RAIN — grip down" : "RAIN OFF");
   }
 
   /* ---------------- lifecycle ---------------- */
-  start() {
-    if (this.started) return;
-    this.started = true;
+
+  /** Create and unlock the AudioContext.
+
+      Split out of start() because it has to happen inside the Drive tap
+      itself: iOS only lets an AudioContext leave the "suspended" state when it
+      is created in a user gesture, and the staged load now sits between the
+      tap and start() — several tasks later, by which time the gesture no
+      longer counts. Idempotent, so start() calling it again costs nothing. */
+  primeAudio() {
     this.audio.init();
     this.audio.setCar(this.carId);
+  }
+
+  /** Begin the render loop. The warm-up stage of the load calls this too, so
+      the loading screen's last stage is drawing real frames. */
+  private beginLoop() {
+    if (this.started) return;
+    this.started = true;
     this.last = performance.now() / 1000;
     this.loop();
+  }
+
+  start() {
+    this.primeAudio();
+    this.beginLoop();
   }
 
   setRunning(run: boolean) {
@@ -991,8 +1238,10 @@ export class Game {
     this.camera.aspect = innerWidth / innerHeight;
     this.camera.updateProjectionMatrix();
     this.post.makeTargets(this.perfMode);
-    this.mats.setReflectionTexture(this.post.reflectRT.texture);
-    this.mats.setReflectionScreen(
+    // an orientation change on the menu screen arrives before there are any
+    // materials to re-point at the new targets
+    this.mats?.setReflectionTexture(this.post.reflectRT.texture);
+    this.mats?.setReflectionScreen(
       innerWidth * this.renderer.getPixelRatio(),
       innerHeight * this.renderer.getPixelRatio()
     );
@@ -1868,7 +2117,7 @@ export class Game {
       rig.cockpit.drawGauges(
         car.rpm, Math.abs(car.u) * 3.6, car.rev ? "R" : "D" + car.gear, now, flags
       );
-      rig.cockpit.drawScreen(car.x, car.z, car.h, this.time, this.world);
+      rig.cockpit.drawScreen(this.world, car, this.traffic.npcs, this.time, now);
     }
     if (this.dropT > 0.033) {
       rig.cockpit.dropletsUpdate(this.dropT, wiping, rig.cockpit.wiperA.rotation.z, this.rain, Math.abs(car.u));
@@ -2383,8 +2632,10 @@ export class Game {
       this.camera.getWorldDirection(this.tmpV);
       this.traffic.update(
         dt, now, this.car, this.tmpV.x, this.tmpV.z,
-        this.settings.traffic, this.input.horn > 0, this.dayFactor() < 0.32 || this.rain
+        this.settings.traffic, this.input.horn > 0, this.dayFactor() < 0.32 || this.rain,
+        this.hiFlashPulse
       );
+      this.hiFlashPulse = false; // one press, one gesture — consumed here
       for (const w of this.traffic.activeWrecks())
         if (Math.random() < 0.35) this.smokeFX.emit(w.x, w.y + 0.9, w.z, Math.random() < 0.15);
       this.smokeFX.update(dt);

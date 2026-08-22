@@ -17,7 +17,13 @@ import { HX } from "./world/const";
    is drawn a second time, shifted a lap, and the map reads as continuous.
 
    This runs every fourth frame on a small canvas, so it stays deliberately
-   arithmetic: one reused scratch point, no per-station allocation. */
+   arithmetic: one reused scratch point, no per-station allocation.
+
+   Two consumers now: the HUD overlay canvas (engine.ts), and the nav pane of
+   the in-dash head unit (carscreen.ts), which draws the same map into an
+   offscreen canvas at its own scale and cadence. `MiniMapOpts` is the whole
+   difference between them — the drawing below is shared verbatim, so the
+   little map in the car and the big one on the glass can never drift apart. */
 
 const SC = 0.4; // pixels per metre
 /** the corridor is drawn in place and a lap either side, to hide the splice */
@@ -86,28 +92,48 @@ function centrePath(
   return true;
 }
 
+export interface MiniMapOpts {
+  /** pixels per metre (default SC) */
+  sc?: number;
+  /** Logical size to draw at. Defaults to the canvas's own pixel size; pass
+      it when the context carries a backing-store scale transform (the head
+      unit's pane does), so line widths and type stay in logical pixels
+      instead of shrinking with the store. */
+  w?: number;
+  h?: number;
+  /** the HUD's outer frame — off for a pane that has its own bezel */
+  frame?: boolean;
+  /** Skip the centred player arrow. A caller that redraws the map less often
+      than it repaints draws its own marker live on top, offset by how far the
+      car has moved since the map was baked (carscreen.ts). */
+  noPlayer?: boolean;
+}
+
 export function drawMiniMap(
   cv: HTMLCanvasElement,
   world: WorldData,
   car: CarState,
   npcs: Npc[],
-  now: number
+  now: number,
+  opts?: MiniMapOpts
 ) {
   const g = cv.getContext("2d");
   if (!g) return;
   const cor = getCorridor();
-  const Wp = cv.width, sc = SC;
+  const Wp = opts?.w ?? cv.width, Hp = opts?.h ?? cv.height;
+  const sc = opts?.sc ?? SC;
   // x mirrored: +x in this y-up world points LEFT when north (+z) is
   // up-screen — the old +x mapping drew a view-from-below (left turns bent
   // right on the map). Same fix as the head-unit map's toS.
   const tx = (x: number) => Wp / 2 - (x - car.x) * sc;
-  const tz = (z: number) => Wp / 2 - (z - car.z) * sc;
-  g.clearRect(0, 0, Wp, Wp);
+  const tz = (z: number) => Hp / 2 - (z - car.z) * sc;
+  g.clearRect(0, 0, Wp, Hp);
   g.fillStyle = "rgba(8,10,18,.8)";
-  g.fillRect(0, 0, Wp, Wp);
+  g.fillRect(0, 0, Wp, Hp);
 
-  /** world-space radius the canvas covers, plus a margin for wide geometry */
-  const R = Wp / (2 * sc) + 40;
+  /** world-space radius the canvas covers, plus a margin for wide geometry.
+      Taken off the LONGER side so a non-square pane still culls correctly. */
+  const R = Math.max(Wp, Hp) / (2 * sc) + 40;
 
   // ---- town roads, straight off the graph ----
   g.strokeStyle = "rgba(110,130,170,.55)";
@@ -120,7 +146,7 @@ export function drawMiniMap(
     let started = false;
     for (let i = 0; i <= n; i += 2) {
       const X = tx(e.pts[i * 3]), Z = tz(e.pts[i * 3 + 2]);
-      if (X < -20 || X > Wp + 20 || Z < -20 || Z > Wp + 20) {
+      if (X < -20 || X > Wp + 20 || Z < -20 || Z > Hp + 20) {
         started = false;
         continue;
       }
@@ -203,7 +229,7 @@ export function drawMiniMap(
       // merge gore marker on the east side, the diverge carries exit no. 3
       const mp = cor.worldOf(MERGE_Z, cor.halfWidth(MERGE_Z) + 8);
       const MX = tx(mp.x), MZ = tz(mp.z + dz);
-      if (MX > 6 && MX < Wp - 6 && MZ > 6 && MZ < Wp - 6) {
+      if (MX > 6 && MX < Wp - 6 && MZ > 6 && MZ < Hp - 6) {
         g.fillStyle = "rgba(172,150,255,.95)";
         g.beginPath();
         g.moveTo(MX, MZ - 3.2);
@@ -228,7 +254,7 @@ export function drawMiniMap(
     for (let i = 0; i <= n; i += 2) {
       const p = r.pts[Math.min(i, n)];
       const X = tx(p.x), Z = tz(p.z);
-      if (X < -20 || X > Wp + 20 || Z < -20 || Z > Wp + 20) {
+      if (X < -20 || X > Wp + 20 || Z < -20 || Z > Hp + 20) {
         started = false;
         continue;
       }
@@ -248,7 +274,7 @@ export function drawMiniMap(
     if (Math.abs(ex.z - car.z) > R) continue;
     cor.worldOf(ex.z, -(cor.halfWidth(ex.z) + 12), _p);
     const X = tx(_p.x), Z = tz(_p.z);
-    if (X < 8 || X > Wp - 8 || Z < 8 || Z > Wp - 8) continue;
+    if (X < 8 || X > Wp - 8 || Z < 8 || Z > Hp - 8) continue;
     g.fillText(String(ex.no), X, Z);
   }
 
@@ -256,24 +282,28 @@ export function drawMiniMap(
   for (const n of npcs) {
     if (!n.active || n.type !== "police") continue;
     const X = tx(n.x), Z = tz(n.z);
-    if (X < 2 || X > Wp - 2 || Z < 2 || Z > Wp - 2) continue;
+    if (X < 2 || X > Wp - 2 || Z < 2 || Z > Hp - 2) continue;
     g.fillStyle = ((now * 3) | 0) % 2 ? "#ff4050" : "#3d74ff";
     g.fillRect(X - 1.4, Z - 1.4, 2.8, 2.8);
   }
 
   // ---- player ----
-  g.save();
-  g.translate(Wp / 2, Wp / 2);
-  g.rotate(-car.h); // mirrored x flips the heading's screen sense too
-  g.fillStyle = "#ffffff";
-  g.beginPath();
-  g.moveTo(0, -6.5);
-  g.lineTo(4.2, 5.2);
-  g.lineTo(-4.2, 5.2);
-  g.closePath();
-  g.fill();
-  g.restore();
-  g.strokeStyle = "rgba(150,170,210,.4)";
-  g.lineWidth = 2;
-  g.strokeRect(1, 1, Wp - 2, Wp - 2);
+  if (!opts?.noPlayer) {
+    g.save();
+    g.translate(Wp / 2, Hp / 2);
+    g.rotate(-car.h); // mirrored x flips the heading's screen sense too
+    g.fillStyle = "#ffffff";
+    g.beginPath();
+    g.moveTo(0, -6.5);
+    g.lineTo(4.2, 5.2);
+    g.lineTo(-4.2, 5.2);
+    g.closePath();
+    g.fill();
+    g.restore();
+  }
+  if (opts?.frame ?? true) {
+    g.strokeStyle = "rgba(150,170,210,.4)";
+    g.lineWidth = 2;
+    g.strokeRect(1, 1, Wp - 2, Hp - 2);
+  }
 }

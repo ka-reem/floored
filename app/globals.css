@@ -207,6 +207,144 @@ canvas.game {
   color: #cfd9f2;
 }
 
+/* ---------- Loading screen ----------
+
+   Shown between the DRIVE tap and the first playable frame while the staged
+   world build runs (game/loading.ts).
+
+   THE RULE FOR EVERYTHING IN HERE: animate transform and opacity ONLY. Each
+   load stage is a solid block of main-thread work — a single buildHighway()
+   call is hundreds of milliseconds on a phone — and anything that needs the
+   main thread to advance (a width/left transition, a JS-driven ticker, a
+   spinning GIF) freezes solid for the duration, which is precisely the "it
+   just hangs" this screen exists to fix. Transform/opacity animations are
+   handed to the compositor and keep moving while the main thread is buried.
+
+   Sits above .menuRoot (z 40) because the touch-control pucks (z 8) are in
+   the DOM the whole time and must not show through. */
+.loadRoot {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  /* opaque, unlike the menu: there is nothing behind this worth showing, and
+     a translucent layer over an unrendered canvas reads as a broken frame */
+  background: radial-gradient(
+    120% 90% at 50% 110%,
+    rgb(19, 26, 61) 0%,
+    rgb(7, 10, 24) 55%,
+    rgb(4, 5, 12) 100%
+  );
+  /* The safe-area terms are zero today — app/layout.tsx does not set
+     viewport-fit=cover, so the UA already keeps the page clear of the notch —
+     and are here so this screen stays correct if it ever does. The 20px is
+     what actually does the work on a phone. */
+  padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+    calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
+}
+.loadTitle {
+  color: #f2f6ff;
+  font-size: min(7vw, 30px);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  margin: 0;
+  text-shadow: 0 0 30px rgba(90, 140, 255, 0.7);
+}
+.loadJp {
+  color: #ff5f8f;
+  font-size: min(3.6vw, 13px);
+  letter-spacing: 0.5em;
+  /* the tracking is on the right edge too, so nudge the block back to centre */
+  margin: 8px 0 0 0.5em;
+  text-shadow: 0 0 18px rgba(255, 80, 140, 0.8);
+}
+.loadBar {
+  position: relative;
+  width: min(400px, 74vw);
+  height: 6px;
+  margin-top: 34px;
+  border-radius: 4px;
+  background: rgba(60, 75, 110, 0.4);
+  overflow: hidden;
+}
+.loadFill {
+  position: absolute;
+  inset: 0;
+  /* no radius of its own: scaleX would squash it into a sliver, and the track
+     above already clips the ends */
+  background: linear-gradient(90deg, #4f7dff, #6fd2ff);
+  transform-origin: left center;
+  /* both of these exist to force a compositor layer, so the motion survives a
+     stage that has the main thread pinned */
+  will-change: transform;
+  /* scaleX, not width: this transition has to survive the stage it is
+     announcing (see the rule above). Long and eased so the bar is still
+     travelling through a blocking stage rather than snapping and sitting. */
+  transition: transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.loadSweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0));
+  animation: loadSweep 1.4s linear infinite;
+  will-change: transform;
+}
+@keyframes loadSweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+.loadStatus {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(400px, 74vw);
+  margin-top: 12px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: #93a3cc;
+  /* two lines' worth, so a label that wraps on a narrow phone cannot shove
+     the bar up the screen mid-load */
+  min-height: 2.6em;
+}
+.loadStatus > span:first-child {
+  text-align: left;
+}
+.loadStatus .pct {
+  /* never squeezed by a long stage label, and never re-flowed by its own
+     digits changing */
+  flex: none;
+  color: #cfe0ff;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
+.loadErr {
+  width: min(400px, 74vw);
+  margin-top: 18px;
+  text-align: left;
+  color: #ffb4c4;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.loadErr code {
+  display: block;
+  margin-top: 6px;
+  color: #8fa2c8;
+  font-size: 11px;
+  word-break: break-word;
+}
+
 /* ---------- Panels (settings/controls/garage) ---------- */
 .panel {
   width: min(560px, 94vw);

@@ -291,6 +291,9 @@ export interface PlayerRig {
   /** The imported dash once it has loaded, else null. Null is the normal
       steady state when no donor is configured or the fetch failed. */
   readonly cockpitModel: CockpitModelHandle | null;
+  /** Settles once the donor dash has landed or been given up on; already
+      settled on a tier that configures no donor. Never rejects. */
+  readonly cockpitReady: Promise<void>;
   pivFL: THREE.Group;
   pivFR: THREE.Group;
   wheels: THREE.Group[];
@@ -716,11 +719,22 @@ export function buildPlayerCar(
      region once a donor is more than a prototype. */
   const rigRef = { model: null as CockpitModelHandle | null };
   const donor = COCKPIT_MODEL[tier];
-  if (donor) attachCockpitModel(cockpit, donor, (h) => { rigRef.model = h; });
+  /* Settled when the donor question is answered — landed, failed, or never
+     asked. The staged load in engine.ts waits on this (with a budget) so the
+     dash is already fitted on the first frame the player sees: the dashcam POV
+     is the view the game is played in, and a dash that swaps under them a
+     second into the drive is the one asset pop worth paying for up front.
+     Resolves rather than rejects on failure — attachCockpitModel's callback
+     runs either way, and a missing donor is a normal steady state. */
+  let dashDone!: () => void;
+  const cockpitReady = new Promise<void>((res) => { dashDone = res; });
+  if (donor) attachCockpitModel(cockpit, donor, (h) => { rigRef.model = h; dashDone(); });
+  else dashDone();
 
   return {
     spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,
     get cockpitModel() { return rigRef.model; },
+    cockpitReady,
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
     beamCarpet, beamCarpetMat, beamCarpetG: carpetG,

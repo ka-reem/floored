@@ -174,6 +174,11 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
     mat.emissiveIntensity = 1.15;
     mat.toneMapped = false;
     mat.needsUpdate = true;
+    /* Hand the mesh over so post.ts can shield THIS panel from the dashcam
+       degrade once the donor is on show — the map is only worth reading if it
+       stays sharp, and after the swap the procedural tablet it was projecting
+       is hidden inside the dash. */
+    cockpit.donorScreen = m;
   }
 
   /* --- our live parts, relocated ----------------------------------------- */

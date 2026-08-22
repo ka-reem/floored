@@ -1,6 +1,6 @@
 import type { CarState } from "./physics";
 import type { WorldData } from "./world/data";
-import { parapetGap } from "./world/ramps";
+import { parapetGap, type Ramp } from "./world/ramps";
 import { BYPASS, type RouteGraph, type RoutePose } from "./world/routegraph";
 
 /* Player collision: the corridor's parapets (analytic, from the same
@@ -28,6 +28,17 @@ function newGaps(routes: RouteGraph) {
   }
   return _newGaps;
 }
+/* Same deal for the ramp gores: parapetGap() builds a fresh window per ramp,
+   and the ramp list is fixed for the life of a terrain. */
+let _rgFor: Ramp[] | null = null;
+let _rampGaps: { z0: number; z1: number }[] = [];
+function rampGaps(ramps: Ramp[]) {
+  if (_rgFor !== ramps) {
+    _rgFor = ramps;
+    _rampGaps = ramps.map(parapetGap);
+  }
+  return _rampGaps;
+}
 const _byPose: RoutePose = {
   x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0, bank: 0,
 };
@@ -48,10 +59,31 @@ function collideAABB(car: CarState, px: number, pz: number, rr: number, bb: any)
   const cz = Math.max(bb.z0, Math.min(pz, bb.z1));
   const dx = px - cx, dz = pz - cz, d2 = dx * dx + dz * dz;
   if (d2 >= rr * rr) return false;
-  const d = Math.sqrt(d2) || 0.0001;
-  tmpN.x = d2 ? dx / d : 1;
-  tmpN.z = d2 ? dz / d : 0;
-  const pen = rr - d;
+  let pen: number;
+  if (d2 > 1e-8) {
+    const d = Math.sqrt(d2);
+    tmpN.x = dx / d;
+    tmpN.z = dz / d;
+    pen = rr - d;
+  } else {
+    /* Probe inside the box: the clamped point IS the probe, so there is no
+       contact direction to normalise. Push out along the shallowest face, the
+       same fallback collideObb() already uses. The old default was a fixed +x
+       of the full rr, a direction unrelated to the box — for a wall-shaped
+       AABB that is as likely to drive the car deeper in as out. */
+    const hx = (bb.x1 - bb.x0) / 2, hz = (bb.z1 - bb.z0) / 2;
+    const lx = px - (bb.x0 + hx), lz = pz - (bb.z0 + hz);
+    const ex = hx - Math.abs(lx), ez = hz - Math.abs(lz);
+    if (ex < ez) {
+      tmpN.x = Math.sign(lx) || 1;
+      tmpN.z = 0;
+      pen = ex + rr;
+    } else {
+      tmpN.x = 0;
+      tmpN.z = Math.sign(lz) || 1;
+      pen = ez + rr;
+    }
+  }
   car.x += tmpN.x * pen;
   car.z += tmpN.z * pen;
   const vn = car.wvx * tmpN.x + car.wvz * tmpN.z;
@@ -104,17 +136,24 @@ function collideObb(car: CarState, px: number, pz: number, rr: number, o: any): 
   return true;
 }
 
+/* The four separating-axis candidates, as flat [ux,uz] pairs. obb2 runs once
+   per nearby NPC per frame and the old array-of-arrays literal was five
+   allocations a call, so the scratch is module-scope. Nothing obb2 calls can
+   re-enter it. */
+const _sat = new Float64Array(8);
+
 export function obb2(
   ax: number, az: number, afx: number, afz: number, aw: number, al: number,
   bx: number, bz: number, bfx: number, bfz: number, bw: number, bl: number
 ) {
-  const axes = [
-    [afz, -afx], [afx, afz], [bfz, -bfx], [bfx, bfz],
-  ];
+  _sat[0] = afz; _sat[1] = -afx;
+  _sat[2] = afx; _sat[3] = afz;
+  _sat[4] = bfz; _sat[5] = -bfx;
+  _sat[6] = bfx; _sat[7] = bfz;
   const dx = ax - bx, dz = az - bz;
   let pen = 1e9, nx = 0, nz = 0;
-  for (const u of axes) {
-    const ux = u[0], uz = u[1];
+  for (let i = 0; i < 8; i += 2) {
+    const ux = _sat[i], uz = _sat[i + 1];
     const ra = aw * Math.abs(ux * afz - uz * afx) + al * Math.abs(ux * afx + uz * afz);
     const rb = bw * Math.abs(ux * bfz - uz * bfx) + bl * Math.abs(ux * bfx + uz * bfz);
     const dist = ux * dx + uz * dz;
@@ -159,10 +198,8 @@ export function collidePlayer(
     let guarded = true;
     if (side < 0) {
       // the parapet mesh is cut away across the divergence zone…
-      for (const r of world.terrain.ramps) {
-        const g = parapetGap(r);
+      for (const g of rampGaps(world.terrain.ramps))
         if (car.z > g.z0 && car.z < g.z1) guarded = false;
-      }
       // …and stays absent for as long as the car is on ramp pavement
       const ry = world.terrain.onRamp(car.x, car.z);
       if (ry !== null && Math.abs(ry - car.y) < 2.6) guarded = false;
@@ -229,7 +266,9 @@ export function collidePlayer(
 
   // static geometry, probed at the front and rear axle
   const col = world.colliders;
-  for (const off of [halfL * 0.56, -halfL * 0.56]) {
+  const axle = halfL * 0.56;
+  for (let k = 0; k < 2; k++) {
+    const off = k === 0 ? axle : -axle;
     const px = car.x + fx * off, pz = car.z + fz * off;
     for (const bi of col.nearbyAabbs(px, pz))
       if (collideAABB(car, px, pz, halfW + 0.05, col.aabbs[bi])) hit = true;

@@ -34,9 +34,12 @@ const FACE_DIM = 0.40;
 const SWEEP_A0 = Math.PI * 0.75; // canvas angle at frac 0
 const SWEEP = Math.PI * 1.5; // total sweep
 /* Speedo scale per unit. The car tops out near 295 km/h / 183 mph; majors are
-   spaced wide enough that three-digit numerals do not run together on the dial. */
-const speedoScale = (units: SpeedUnits) =>
-  units === "mph" ? { max: 180, step: 30, minorPer: 6 } : { max: 300, step: 50, minorPer: 5 };
+   spaced wide enough that three-digit numerals do not run together on the dial.
+   The two scales are constants rather than fresh literals because update() asks
+   for one every frame. */
+const SPEEDO_MPH = { max: 180, step: 30, minorPer: 6 };
+const SPEEDO_KMH = { max: 300, step: 50, minorPer: 5 };
+const speedoScale = (units: SpeedUnits) => (units === "mph" ? SPEEDO_MPH : SPEEDO_KMH);
 
 /** Needle rotation about +Z for a needle modelled pointing along +Y. */
 const needleRot = (frac: number) => -(SWEEP_A0 + SWEEP * clamp(frac, 0, 1)) - Math.PI / 2;
@@ -222,7 +225,8 @@ export function buildInstrumentCluster(
     group.add(seg);
   }
 
-  let facesFor = "";
+  let facesRev = -1;
+  let facesUnits: SpeedUnits | "" = "";
   function paintFaces(revLimit: number, units: SpeedUnits) {
     const maxR = Math.max(1, Math.ceil(revLimit / 1000));
     paintDialFace(tach.cv.getContext("2d")!, S, {
@@ -246,7 +250,8 @@ export function buildInstrumentCluster(
       accent: accentCss,
     });
     speedo.tex.needsUpdate = true;
-    facesFor = revLimit + units;
+    facesRev = revLimit;
+    facesUnits = units;
   }
 
   function tell(g: CanvasRenderingContext2D, on: boolean, col: string, ch: string, x: number, y: number) {
@@ -255,8 +260,34 @@ export function buildInstrumentCluster(
     g.fillText(ch, x, y);
   }
 
+  /* The info panel is a full 176x232 repaint plus a texture upload, and it is
+     asked to draw on every gauge tick even when nothing on it has changed
+     (parked, or cruising at a steady indicated speed). These hold the last
+     drawn state — every value the panel actually renders — so an unchanged
+     tick costs a handful of compares instead. Anything new added to drawInfo
+     must be added here too, or it will not repaint. */
+  let lastSpd = -1, lastOdo = -1, lastTells = -1;
+  let lastGear = "", lastUnits: SpeedUnits | "" = "";
+
   function drawInfo(shownSpeed: number, units: SpeedUnits, gearTxt: string, now: number, f: ClusterFlags) {
     const g = infoCtx;
+    const blink = now % 0.9 < 0.45;
+    const spd = shownSpeed | 0;
+    const odoKm = 31842 + Math.floor(f.odo);
+    const tells =
+      (f.sigL && blink ? 1 : 0) | (f.sigR && blink ? 2 : 0) | (f.lightsOn ? 4 : 0) |
+      (f.rain ? 8 : 0) | (f.tcOn ? 16 : 0);
+    if (
+      spd === lastSpd && odoKm === lastOdo && tells === lastTells &&
+      gearTxt === lastGear && units === lastUnits
+    )
+      return;
+    lastSpd = spd;
+    lastOdo = odoKm;
+    lastTells = tells;
+    lastGear = gearTxt;
+    lastUnits = units;
+
     g.clearRect(0, 0, 176, 232);
     g.fillStyle = "rgba(6,9,16,.92)";
     g.beginPath();
@@ -270,7 +301,6 @@ export function buildInstrumentCluster(
     g.textAlign = "center";
     g.textBaseline = "middle";
 
-    const blink = now % 0.9 < 0.45;
     tell(g, f.sigL && blink, "#37ff8a", "◀", 26, 32);
     tell(g, f.sigR && blink, "#37ff8a", "▶", 150, 32);
     tell(g, f.lightsOn, "#3aa6ff", "≡D", 62, 32);
@@ -286,7 +316,7 @@ export function buildInstrumentCluster(
     g.shadowColor = "#8fc4ff";
     g.shadowBlur = 14;
     g.font = "700 62px sans-serif";
-    g.fillText(String(shownSpeed | 0), 88, 100);
+    g.fillText(String(spd), 88, 100);
     g.shadowBlur = 0;
     g.fillStyle = accentCss;
     g.font = "700 13px sans-serif";
@@ -299,14 +329,14 @@ export function buildInstrumentCluster(
     g.fillStyle = "rgba(150,166,196,.85)";
     g.font = "11px sans-serif";
     g.fillText("GEAR", 88, 184);
-    g.fillText("ODO " + (31842 + Math.floor(f.odo)) + " km", 88, 204);
+    g.fillText("ODO " + odoKm + " km", 88, 204);
 
     infoTex.needsUpdate = true;
   }
 
   function update(rpm: number, kmh: number, gearTxt: string, now: number, f: ClusterFlags) {
     const units = f.units ?? defaultUnits;
-    if (f.revLimit + units !== facesFor) paintFaces(f.revLimit, units);
+    if (f.revLimit !== facesRev || units !== facesUnits) paintFaces(f.revLimit, units);
     const maxR = Math.max(1, Math.ceil(f.revLimit / 1000)) * 1000;
     // engine.ts hands us km/h; re-derive m/s so the face can speak either unit
     const shownSpeed = speedInUnits(Math.abs(kmh) / 3.6, units);

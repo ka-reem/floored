@@ -16,7 +16,12 @@ export class RainFX {
       p[i * 3 + 1] = rand(0, 50);
       p[i * 3 + 2] = rand(-60, 60);
     }
-    this.geo.setAttribute("position", new THREE.BufferAttribute(p, 3));
+    // rewritten in full every frame while rain is on, so tell the driver that
+    // up front — a STATIC_DRAW buffer taking a bufferSubData per frame is what
+    // makes tile-based mobile GPUs ghost/reallocate it behind our back
+    const pa = new THREE.BufferAttribute(p, 3);
+    pa.setUsage(THREE.DynamicDrawUsage);
+    this.geo.setAttribute("position", pa);
     this.pts = new THREE.Points(
       this.geo,
       new THREE.PointsMaterial({
@@ -33,18 +38,24 @@ export class RainFX {
   update(dt: number, cx: number, cy: number, cz: number, vx: number, vz: number) {
     if (!this.pts.visible) return;
     const p = this.geo.attributes.position.array as Float32Array;
+    // the three step sizes are the same for every drop; computing them per
+    // particle was 5100 redundant multiplies a frame at N=1700
+    const fall = 28 * dt,
+      dx = vx * dt * 0.4,
+      dz = vz * dt * 0.4;
     for (let i = 0; i < this.N; i++) {
-      p[i * 3 + 1] -= 28 * dt;
-      p[i * 3] -= vx * dt * 0.4;
-      p[i * 3 + 2] -= vz * dt * 0.4;
-      if (p[i * 3] > 60) p[i * 3] -= 120;
-      if (p[i * 3] < -60) p[i * 3] += 120;
-      if (p[i * 3 + 2] > 60) p[i * 3 + 2] -= 120;
-      if (p[i * 3 + 2] < -60) p[i * 3 + 2] += 120;
-      if (p[i * 3 + 1] < 0) {
-        p[i * 3 + 1] += 50;
-        p[i * 3] = rand(-60, 60);
-        p[i * 3 + 2] = rand(-60, 60);
+      const b = i * 3;
+      p[b + 1] -= fall;
+      p[b] -= dx;
+      p[b + 2] -= dz;
+      if (p[b] > 60) p[b] -= 120;
+      if (p[b] < -60) p[b] += 120;
+      if (p[b + 2] > 60) p[b + 2] -= 120;
+      if (p[b + 2] < -60) p[b + 2] += 120;
+      if (p[b + 1] < 0) {
+        p[b + 1] += 50;
+        p[b] = rand(-60, 60);
+        p[b + 2] = rand(-60, 60);
       }
     }
     (this.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
@@ -61,6 +72,12 @@ interface Puff {
 
 export class SmokeFX {
   private pool: Puff[] = [];
+  /* Where the next free-slot scan starts. `emit` runs once per active wreck
+     per frame and the wreck pool is 120 deep, so the old `pool.find(q => ...)`
+     allocated up to 120 closures a frame and always rescanned the busy head of
+     the pool. Every free puff is interchangeable — `emit` reconfigures it from
+     scratch — so a rotating cursor picks an equivalent slot for free. */
+  private cursor = 0;
 
   constructor(scene: THREE.Scene, smokeTex: THREE.Texture, n = 70) {
     for (let i = 0; i < n; i++) {
@@ -75,7 +92,18 @@ export class SmokeFX {
   }
 
   emit(x: number, y: number, z: number, big = false) {
-    const p = this.pool.find((q) => !q.active);
+    const n = this.pool.length;
+    let i = this.cursor,
+      p: Puff | null = null;
+    for (let k = 0; k < n; k++) {
+      const q = this.pool[i];
+      i = i + 1 === n ? 0 : i + 1;
+      if (!q.active) {
+        p = q;
+        break;
+      }
+    }
+    this.cursor = i;
     if (!p) return;
     p.active = true;
     p.age = 0;
