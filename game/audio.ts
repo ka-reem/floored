@@ -137,7 +137,7 @@ export type EngineMode = "synth" | "sampled";
     decodeAudioData treats WAV bit-identically in every browser (Safari can't
     decode OGG at all, and MP3/AAC pad ~40ms of encoder delay onto one-shot
     heads and break loop seams). One-shots/beds are 22.05k — their content
-    sits below ~10kHz — so the whole set stays ~1.4MB; the four rpm-ladder
+    sits below ~10kHz — so the whole set stays ~1.4MB; the five rpm-ladder
     loops keep their original 44.1k samples byte-for-byte (seamless loops).
     Licenses/provenance: see ATTRIBUTIONS.md ("Recorded audio"). */
 const SAMPLE_BASE = "/assets/audio";
@@ -146,6 +146,7 @@ const SAMPLE_FILES: Record<string, string> = {
   eng1: "engine/loop_1.wav",
   eng2: "engine/loop_2.wav",
   eng3: "engine/loop_3.wav",
+  eng4: "engine/loop_4.wav",
   idle: "engine/idle.wav",
   skid: "tires/skid.wav",
   ir: "reverb/tunnel_ir.wav",
@@ -177,44 +178,84 @@ const SAMPLE_FILES: Record<string, string> = {
   hornTruck: "horns/truck.wav",
 };
 
-/** MEASURED firing fundamental of each ladder loop, Hz. Obtained by
-    autocorrelation over each WAV (confidence 0.83-0.95) and confirmed
-    against the spectral peaks, which sit on these frequencies and their
-    integer multiples — loop_0 also shows the half-order at 21.5Hz, exactly
-    what a four-stroke does.
+/** Firing fundamental of each ladder loop, Hz — EXACT, not estimated.
 
-    These four numbers are the reason the engine did not sound like it was
-    revving. The loops span only 42.9 -> 69.9Hz, a ratio of 1.63; the tuning
-    anchors below claimed they spanned 1050 -> 6400rpm, a ratio of 6.1. With
-    playbackRate set to rpm/anchor, as it was, the pitch you actually heard
-    was f_measured * rpm/anchor — which RISES about 2.3x inside a band and
-    then FALLS ~38% the instant the crossfade moves to the next loop, three
-    times over the rev range. Net pitch from idle to redline was 42.9 ->
-    69.9Hz: barely a musical fifth, non-monotonic, with three backward jumps
-    in it. Meanwhile the mixer's level terms (thr*0.23 on the ladder,
-    thr*0.105 on the synth) climbed monotonically with throttle. An engine
-    whose loudness rises while its pitch goes nowhere is precisely the
-    reported "it sounds like it's idling and then just getting louder — it
-    doesn't sound like the rpm is increasing".
+    Each loop is cut as a whole number of engine cycles, so its length IS its
+    pitch: looping n samples makes the result periodic at rate/n whatever was
+    recorded in it, and a four fires four times per cycle, so
 
-    Worse, inside a band the two crossfading loops were a fifth or more
-    apart in pitch, so the equal-power crossfade blended two dissonant
-    voices rather than morphing one timbre into another. That is the muddy,
-    beating quality on top of the missing rev sweep.
+        f0 = 4 * cycles * 44100 / samples
 
-    playbackRate is now derived from these measured values against the
-    engine's true firing frequency (see the sampled block in update()), so
-    all four loops sound in UNISON at the correct pitch at every rpm, the
-    crossfade only changes texture the way the comment below always claimed,
-    and pitch tracks rpm monotonically across the whole range. */
-const LOOP_F0 = [42.9, 60.0, 64.7, 69.9];
+    which is where these five numbers come from (2/5/5/6/9 cycles over
+    13901/15276/13020/13094/15923 samples). Every one was cross-checked
+    against the written file's own spectrum and agrees to within 1.2%. That
+    is a much stronger guarantee than the previous set had — those were
+    autocorrelation ESTIMATES over loops nobody had cut to whole cycles, so
+    the number and the file could, and did, disagree.
 
-/** rpm at which each ladder loop is the dominant TIMBRE. Purely a texture
-    schedule now, not a pitch one: pitch comes from LOOP_F0 above, so which
-    loop is playing no longer changes what note you hear, only its character.
-    Spread across the rev range so the recording's colour still evolves from
-    idle to redline. */
-const RPM_ANCHORS = [1050, 2400, 4200, 6400];
+    WHY THE PREVIOUS SET SOUNDED LIKE A MOTORBIKE. It was [42.9, 60.0, 64.7,
+    69.9] — a span of 1.63x. That was never four rungs of a ladder: the
+    source (domasx2, OpenGameArt) is one recording pitch-shifted four ways,
+    and its own page says so ("difference between the files is pitch only").
+    So the ladder had to be resampled to cover a range it did not contain,
+    and resampling moves FORMANTS as well as pitch — airbox, bore, exhaust
+    length, the body of the car around the microphone all scale with the
+    playback rate. The set was wrong at BOTH ends: at 850rpm idle the lowest
+    loop played at 0.66x (formants dropped a third — a bus), and around
+    4200rpm the top loop played at 2.16x (formants up a full octave — a
+    motorbike). The complaint was accurate and it was unfixable by tuning,
+    because the recordings simply had no rev range in them.
+
+    These five are cut from ONE continuous take: a 1985 Ford Escort Mk3
+    accelerating away from a traffic light, microphone inside the cabin
+    (freesound 141459 by escortmarius, CC0 — see ATTRIBUTIONS.md). One car,
+    one microphone, one road, so the formants are identical from rung to
+    rung and only the engine speed changes — which is the entire point of a
+    ladder. They span 25.38 -> 99.70Hz, a ratio of 3.93, and they sit at
+    761 / 1732 / 2032 / 2425 / 2991rpm on a four. In the range the game
+    actually drives in, every loop therefore plays within about 20% of 1.0x
+    and its formants stay where the car put them.
+
+    Measuring these was not a matter of running a pitch detector. In this
+    recording — as in any cabin recording made on a phone, whose microphone
+    rolls off hard below ~100Hz — the FOURTH engine order is the loudest
+    thing in the spectrum, 10-20x the firing fundamental itself, and a
+    four-stroke additionally puts real energy on the crank-rev component at
+    half the firing rate. A general detector picks the octave wrong in both
+    directions. The octave was pinned instead by physical argument: the idle
+    section can only be ~750rpm, the gear-ratio steps between pulls can only
+    be gear-ratio steps, and both readings agree that the dominant peak is
+    consistently 2x the firing frequency.
+
+    The one hole in the set is between loop_0 and loop_1: 25.4 -> 57.7Hz, a
+    2.27x gap covering 761-1732rpm. The recording goes from idle to a launch
+    with nothing steady in between, so there is no material for a rung there
+    and none was invented (a pitch-shifted one would be exactly the thing
+    this change exists to remove). Around 1200rpm the two neighbours are
+    therefore stretched about 1.5x and 0.68x — the worst the ladder gets
+    anywhere below 4000rpm, and better than the old set managed at idle. */
+const LOOP_F0 = [25.38, 57.74, 67.74, 80.83, 99.70];
+
+/** rpm at which each ladder loop is the dominant TIMBRE, derived rather than
+    tabulated: a loop should be dominant exactly where it plays at 1.0x, and
+    that rpm is a property of LOOP_F0 and the engine's cylinder count, not a
+    number to be chosen. Firing frequency is rpm*cyl/120, so
+
+        anchor_i = LOOP_F0[i] * 120 / cyl
+
+    which on the four-cylinder profiles lands on 761/1732/2032/2425/2991rpm —
+    the actual engine speeds in the recording — and on the straight-six
+    (shirayuki) and the kei triple (tanuki) shifts to wherever those engines
+    reach the same firing frequency, because that is what they will sound
+    like at. The old hardcoded [1050, 2400, 4200, 6400] could only ever be
+    right for one cylinder count and, as it happened, was right for none.
+
+    Still purely a texture schedule, not a pitch one — pitch comes from
+    LOOP_F0 either way — but now the texture crossfade and the pitch agree
+    about which loop is at home where, so the crossfade morphs between two
+    loops that are both playing near 1.0x instead of between a stretched one
+    and a squashed one. */
+const ladderAnchors = (cyl: number) => LOOP_F0.map((f) => (f * 120) / cyl);
 
 /** Hard bounds on ladder playbackRate — a sanity clamp, not a taste one.
     Pitch must keep TRACKING rpm right to the redline: a loop pinned at a
@@ -223,36 +264,46 @@ const RPM_ANCHORS = [1050, 2400, 4200, 6400];
     against each other. Better a heavily stretched loop, at the low level it
     is mixed at up there, than a stationary one.
 
-    3.6 -> 2.4, on "it sounds like a motorbike". Resampling shifts FORMANTS,
-    not just pitch: at 3.5x every resonance of the recorded engine — airbox,
-    bore, exhaust length, the body of the car around it — moves up by three
-    and a half times as well. That is not a car revving higher, it is a much
-    smaller engine, which is exactly what a motorbike is. Pitch was tracking
-    correctly; the timbre underneath it was shrinking.
+    2.4 -> 2.6, because the reason it was cut to 2.4 no longer applies. It
+    came down from 3.6 on "it sounds like a motorbike", which was the right
+    diagnosis of the wrong constant: with a set that spanned 1.63x, the
+    formant shift was already severe in the middle of the rev range, and
+    clamping the top just moved where it stopped getting worse. The set now
+    spans 3.93x and is at ~1.0x wherever the game spends its time, so the
+    clamp can go back to being what its name says — a stop against runaway
+    rate at the very top, well past where `takeover` has handed the tone to
+    the synth — instead of a taste control. On a four it first binds at
+    7800rpm, above the highest redline in PROFILES.
 
-    Capping at 2.4 only works because LADDER_STRETCH came down with it (see
-    below) — the synth now has the top of the range to itself before the
-    clamp ever bites, so the drone this constant exists to prevent cannot
-    happen. */
-const RATE_MIN = 0.5, RATE_MAX = 2.4;
+    RATE_MIN is untouched and, with loop_0 sitting at idle rather than a
+    third above it, is now unreachable: it would take 381rpm to trip. */
+const RATE_MIN = 0.5, RATE_MAX = 2.6;
 
 /** The stretch beyond which the recordings stop reading as an engine and
     start reading as a chipmunk — where the synth should be carrying the
     tone, with the ladder demoted to texture underneath it. Distinct from
     RATE_MAX above: this one is a judgement about timbre and decides the
     crossfade, that one only stops the rate running away. The engine needs
-    850 -> 7400rpm (8.7x) and these recordings span 1.63x, so the top of the
-    range genuinely cannot be covered by stretching them; this is where that
-    is conceded.
+    850 -> 7400rpm (8.7x); the recordings span 3.93x, so a concession is
+    still needed at the top — but a far smaller one than before.
 
-    2.8 -> 2.0, in step with RATE_MAX above. The handover to the synth now
-    completes near 4450rpm on a four rather than 6200, so the top half of the
-    rev range is carried by the oscillator model — which is generated at
-    exactly the right frequency and has no formants to shift, so it cannot
-    develop the small-engine character no matter how high it revs. The
-    recordings keep the bottom end, where they are barely stretched and sound
-    like what they are. */
-const LADDER_STRETCH = 2.0;
+    2.0 -> 1.9, which sounds like a cut and is a large increase in what the
+    recordings actually cover. The number multiplies the TOP loop, and the
+    top loop went from 69.9Hz to 99.7Hz: the ladder's usable ceiling is
+    LADDER_STRETCH * LOOP_F0[last] * 120 / cyl, so on a four that moves from
+    4194rpm to 5683rpm, and the handover to the synth now begins at 4433rpm
+    and completes at 6024 rather than starting at 3271. The recordings carry
+    roughly 1500rpm more of the range than they did, and carry it at a much
+    lower stretch: 1.48x where the handover starts, against the 2.16x the old
+    set was already at by 4200rpm.
+
+    1.9 rather than 2.0 or higher because the point of the extra span is to
+    spend it on FIDELITY, not on reach. Past about 1.5x the formant shift
+    starts to be audible as the engine "shrinking", and above the handover
+    the synth is the better voice anyway — it is generated at exactly the
+    right frequency and has no formants to move, so it cannot develop the
+    small-engine character however high it revs. */
+const LADDER_STRETCH = 1.9;
 
 /** How much of the synth tonal body stays mixed in underneath the recordings
     at ordinary rpm. Was 0 — sampled mode muted the oscillator path outright
@@ -260,7 +311,14 @@ const LADDER_STRETCH = 2.0;
     LOOP_F0, could not actually carry a rev sweep. A floor keeps a correctly
     pitched fundamental present at every rpm, so "the revs are climbing" is
     audible even where the ladder is thin, without the synth reading as a
-    separate voice on top. */
+    separate voice on top.
+
+    Deliberately left at 0.2 with the new ladder. The recordings can now carry
+    a rev sweep on their own, so the argument that put this floor here is
+    weaker — but it is also doing a second job, filling in the fundamental
+    that the phone microphone in the source recording barely captured below
+    ~100Hz, and that job did not go away. Worth revisiting by ear; not worth
+    changing blind in the same edit that replaced the samples. */
 const SYNTH_FLOOR = 0.2;
 
 /** One crash() invocation, as recorded into the debug log (see
@@ -1563,15 +1621,17 @@ export class GameAudio {
     }
   }
 
-  /** Start the four ladder loops + idle bed against the prebuilt sampled
-      bus. Sources run forever at gain 0 until update() mixes them in —
-      same always-running pattern as every synth layer in init(). */
+  /** Start the ladder loops + idle bed against the prebuilt sampled bus.
+      Sources run forever at gain 0 until update() mixes them in — same
+      always-running pattern as every synth layer in init().
+
+      Keyed off LOOP_F0.length rather than a fixed four, so the ladder's
+      depth is set in one place: adding or removing a rung is an edit to
+      LOOP_F0 and a file in SAMPLE_FILES, and the node graph, the crossfade
+      and the anchors all follow. */
   private wireSampledEngine() {
     const c = this.ctx;
-    const loops = [
-      this.samples.get("eng0"), this.samples.get("eng1"),
-      this.samples.get("eng2"), this.samples.get("eng3"),
-    ];
+    const loops = LOOP_F0.map((_, i) => this.samples.get(`eng${i}`));
     if (loops.some((b) => !b)) return; // ladder incomplete -> stay on synth
     for (const buf of loops) {
       const src = c.createBufferSource();
