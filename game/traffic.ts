@@ -581,6 +581,85 @@ const HAIL = {
   annoyHorn: true,
 };
 
+/* ================= the courtesy nudge (tailgate / thread) =================
+
+   Sit on a driver's bumper, or aim for the gap between two of them, and one
+   may edge over a little INSIDE ITS OWN LANE to let you through. It is not a
+   lane change and it must never become one: the car keeps its lane index, its
+   blinker stays off, and the whole movement is a few tens of centimetres.
+
+   This is the same shape of problem as HAIL above and gets the same answer.
+   A player will tailgate for minutes at a time, so anything rolled repeatedly
+   at a fixed chance converges on certainty and the road parts for you. So:
+
+   · Compliance rides on the SAME per-driver trait as the horn/flash yield —
+     `drv.yieldMax` — scaled down hard by `ceilScale`. A driver who will not
+     move for your horn will not move for your bumper either, which is the
+     point: the cars stay recognisable as people across both features.
+   · Repeated crowding walks the SAME saturating curve, C(k) = ceiling ·
+     (1 − e^(−k/K)), rolled through the identical conditional q(k). The
+     asymptote is the ceiling, full stop, and it is a LOW ceiling.
+   · One roll per `cd` seconds of continuous crowding, and only after `dwell`
+     seconds of it — brushing past close for half a second while overtaking
+     is an overtake, not tailgating.
+
+   Chance of having been given a nudge after 5 / 20 / 60 s of unbroken
+   tailgating, and the asymptote. k = floor((t − dwell)/cd) + 1, so t = 5 s is
+   the 2nd roll, 20 s the 8th, 60 s the 24th:
+
+       stubborn  (yieldMax 0.085 → ceiling 0.030)   1.8% /  2.9% /  3.0% /  3.0%
+       median    (yieldMax 0.41  → ceiling 0.144)   8.6% / 14.0% / 14.3% / 14.3%
+       courteous (yieldMax 0.68  → ceiling 0.238)  14.2% / 23.2% / 23.7% / 23.8%
+
+   So most of the time nothing happens, which is the request ("small chance
+   though", twice). Averaged over the real roster it is ~7% for a long tailgate.
+
+   Deliberately NOT stacked with HAIL: `hailDone` gates the nudge, so a car
+   that has already moved over for a horn does not also shuffle sideways. */
+const NUDGE = {
+  /** nudge ceiling as a fraction of the driver's horn/flash ceiling */
+  ceilScale: 0.35,
+  /** saturation constant, in rolls */
+  K: 2.2,
+  /** seconds of unbroken crowding before the first roll */
+  dwell: 1.2,
+  /** …and between rolls after that */
+  cd: 2.5,
+  /** crowding breaks if the player is off the trigger for this long, so a
+      momentary wobble in the player's line doesn't reset the dwell clock */
+  grace: 0.6,
+
+  /* --- what counts as crowding (all measured in the NPC's own frame) --- */
+  /** tailgate: player centre this close behind the NPC's tail, and this
+      nearly in line with it */
+  tailGap: 11,
+  tailSide: 1.5,
+  /** thread: the player is straddling this car's lane edge — far enough out
+      to be aiming at the gap, near enough that it is this car's gap */
+  threadSideLo: 1.5,
+  threadSideHi: 3.0,
+  /** …and within this much of the NPC longitudinally (either side, since a
+      squeeze happens alongside as much as behind) */
+  threadLong: 9,
+  /** nobody is crowding anybody below this closing pace */
+  minSpeed: 9,
+
+  /* --- the movement --- */
+  /** lateral shift, metres. Large enough to read as deliberate through the
+      dashcam, small enough that the body stays well inside the lane line —
+      it is additionally clamped to maxBias() so it can never poke out. */
+  off: 0.3,
+  /** how fast the nudge itself eases in and back out (m/s). Slow on purpose:
+      ~0.9 s for the full move, so it reads as a driver easing over rather
+      than the car snapping sideways. */
+  rate: 0.34,
+  /** hold the offset this long after the player stops crowding */
+  hold: 2.5,
+  /** clearance probe: how far into the neighbouring lane to look before
+      committing. Reuses laneClearAt's own lane-danger half-width. */
+  probe: 2.2,
+};
+
 export interface Npc {
   id: number;
   active: boolean;
@@ -647,6 +726,21 @@ export interface Npc {
   hailAck: number;
   /** annoyed brake-check countdown (s) */
   hailMad: number;
+  /* ---- courtesy nudge (see the NUDGE block) ---- */
+  /** unbroken seconds the player has been tailgating / threading this car */
+  nudgeDwell: number;
+  /** which trigger the dwell is accumulating for: 0 none, 1 tailgate, 2 thread */
+  nudgeKind: number;
+  /** committed lateral nudge target, metres in this route's offset space,
+      signed; 0 when not nudging. `nudgeCur` eases toward it. */
+  nudgeLat: number;
+  /** the eased, currently-applied nudge — this is what folds into offT */
+  nudgeCur: number;
+  /** seconds left holding the nudge after the player stops crowding */
+  nudgeHold: number;
+  /** gesture count k for the saturating curve, and the clock of the last roll */
+  nudgeGest: number;
+  nudgeRollAt: number;
 }
 
 type Cloud = { arr: Float32Array; geo: THREE.BufferGeometry; pts: THREE.Points };
@@ -1194,6 +1288,8 @@ export class Traffic {
         hVis: 0, x: 0, y: -999, z: 0, spin: 0, wob: 0,
         wreck: null, fade: 1, ccKind: null, ccCd: 0,
         hailGest: 0, hailP: 0, hailAt: -1e9, hailDone: false, hailAck: 0, hailMad: 0,
+        nudgeDwell: 0, nudgeKind: 0, nudgeLat: 0, nudgeCur: 0, nudgeHold: 0,
+        nudgeGest: 0, nudgeRollAt: -1e9,
       });
     }
 
@@ -1349,6 +1445,14 @@ export class Traffic {
        updateBypass) crosses at this route's own default instead of at
        whatever rate the slot's previous occupant happened to leave behind. */
     n.laneRate = 0;
+    /* courtesy-nudge state (see the NUDGE block) — manoeuvre state, not
+       personality, so it clears with pendK/blink here; rollDriver() re-arms
+       the saturating curve itself for the incoming driver */
+    n.nudgeDwell = 0;
+    n.nudgeKind = 0;
+    n.nudgeLat = 0;
+    n.nudgeCur = 0;
+    n.nudgeHold = 0;
   }
 
   /** Roll a persistent personality. Heavies never speed, police are always brisk. */
@@ -1406,6 +1510,9 @@ export class Traffic {
     n.hailAck = 0;
     n.hailMad = 0;
     n.nudgeT = 0;
+    // the courtesy-nudge curve is per-driver, exactly like the hail curve above
+    n.nudgeGest = 0;
+    n.nudgeRollAt = -1e9;
 
     n.pT = this.rng() * d.react;
     n.pLead.ds = Infinity;
@@ -2270,6 +2377,11 @@ export class Traffic {
           }
         }
         if (ahead > 0 && ahead < 9 && side < 3) panic = true;
+        /* courtesy nudge — see the NUDGE block. Signed lateral too: `side` is
+           the magnitude the rest of this pass wants, the nudge needs to know
+           which flank the player is on. */
+        if (n.hw)
+          this.nudgeUpdate(n, dt, now, ahead, side, dx * fz - dz * fx, playerSpeed);
         // near-miss FOR THE CLOSE-CALL SOUND ONLY (nearPass has no other use —
         // panic above still drives actual evasive braking and is untouched).
         // A genuinely tight squeeze at real speed, not just "somewhat near":
@@ -2279,6 +2391,12 @@ export class Traffic {
         // tuned against a Monte Carlo sim of a 2-minute aggressive weave to
         // land around 5-10 total reactions rather than dozens.
         if (side > 0.3 && side < 0.9 && ahead > -1 && ahead < 4 && playerSpeed + n.v > 28) nearPass = true;
+      } else if (n.hw && (n.nudgeCur !== 0 || n.nudgeDwell !== 0)) {
+        /* player is on another deck: nothing can be crowding this car, but a
+           nudge already committed still has to release and ease back rather
+           than stick. `ahead` far outside every trigger window does exactly
+           that through the same path. */
+        this.nudgeUpdate(n, dt, now, 1e9, 1e9, 0, 0);
       }
 
       if (n.hw && n.route === BYPASS_EDGE) this.updateBypass(n, dt, v0, lead, panic);
@@ -2693,6 +2811,85 @@ export class Traffic {
     }
   }
 
+  /* ---------------- courtesy nudge (see the NUDGE block) ----------------
+     One call per active NPC per frame, from update()'s player-obstacle pass.
+     `ahead`/`side` are the player's position in this car's own frame, already
+     computed there. Everything here is arithmetic on state this car already
+     carries — no searches, and the one clearance query only runs on the frame
+     a roll actually succeeds. */
+  private nudgeUpdate(n: Npc, dt: number, now: number, ahead: number, side: number,
+    pSide: number, playerSpeed: number) {
+    /* 1. is the player crowding this car, and how? Tailgating is measured
+          from the tail, threading from the flank. */
+    let kind = 0;
+    if (playerSpeed > NUDGE.minSpeed && !n.wreck) {
+      const back = -ahead - n.L / 2; // metres from the NPC's tail, +ve behind
+      if (back > 0 && back < NUDGE.tailGap && side < NUDGE.tailSide) kind = 1;
+      else if (
+        Math.abs(ahead) < NUDGE.threadLong &&
+        side > NUDGE.threadSideLo && side < NUDGE.threadSideHi
+      ) kind = 2;
+    }
+
+    /* 2. dwell. `grace` lets the clock survive a momentary wobble in the
+          player's line rather than restarting the whole approach. */
+    if (kind !== 0) {
+      if (kind !== n.nudgeKind) n.nudgeDwell = 0;
+      n.nudgeKind = kind;
+      n.nudgeDwell += dt;
+      n.nudgeHold = NUDGE.hold;
+    } else {
+      n.nudgeDwell -= dt / NUDGE.grace;
+      if (n.nudgeDwell <= 0) {
+        n.nudgeDwell = 0;
+        n.nudgeKind = 0;
+      }
+      n.nudgeHold = Math.max(0, n.nudgeHold - dt);
+    }
+
+    /* 3. roll, at most once per cd of unbroken crowding. Gated on hailDone so
+          this never stacks with a horn/flash yield, and on the car actually
+          holding its lane — a car mid-manoeuvre has enough going on. */
+    if (
+      kind !== 0 && n.nudgeLat === 0 && !n.hailDone && n.pendK < 0 &&
+      n.blink === 0 && n.mergeLean === 0 &&
+      n.nudgeDwell >= NUDGE.dwell && now - n.nudgeRollAt >= NUDGE.cd
+    ) {
+      n.nudgeRollAt = now;
+      const k = ++n.nudgeGest;
+      /* identical conditional to hailRoll's, against a ceiling scaled down
+         from this driver's horn/flash ceiling — see the NUDGE block */
+      const A = n.drv.yieldMax * NUDGE.ceilScale;
+      const cPrev = A * (1 - Math.exp(-(k - 1) / NUDGE.K));
+      const q = (A * (1 - Math.exp(-k / NUDGE.K)) - cPrev) / (1 - cPrev);
+      if (this.rng() < q) {
+        /* Move AWAY from the player's side of the car. On a tailgate the
+           player is in line, so pSide's sign is weak — fall back to the kerb
+           side (−lat), which is where a real driver drifts to wave you past. */
+        const away = kind === 2 ? (pSide > 0 ? -1 : 1) : (pSide > 0.35 ? -1 : pSide < -0.35 ? 1 : -1);
+        /* Never edge into somebody. Same lane-danger half-width laneClearAt
+           uses, probed on the side we are about to lean toward; if that side
+           is occupied the car simply doesn't move, which is the right answer.
+           maxBias/biasAtBypass then keep the body inside its own lane line. */
+        const lim = n.route === BYPASS_EDGE
+          ? Math.max(0, BYPASS.laneW / 2 - n.W / 2 - 0.25)
+          : this.maxBias(n, n.s);
+        const want = away * Math.min(NUDGE.off, lim);
+        if (want !== 0 &&
+          this.laneClearAt(n, n.s, n.offCur + away * NUDGE.probe))
+          n.nudgeLat = want;
+      }
+    }
+
+    /* 4. release once the hold expires, then ease. The eased `nudgeCur` is
+          what folds into offT in updateHwy/updateBypass — this never touches
+          offCur directly, so the lane-keeping controller stays in charge. */
+    if (n.nudgeLat !== 0 && n.nudgeHold <= 0) n.nudgeLat = 0;
+    const dn = n.nudgeLat - n.nudgeCur;
+    if (Math.abs(dn) > 0.005) n.nudgeCur += clamp(dn, -NUDGE.rate * dt, NUDGE.rate * dt);
+    else n.nudgeCur = n.nudgeLat;
+  }
+
   private updateHwy(
     n: Npc, dt: number, v0: number,
     lead: { ds: number; v: number } | null, panic = false
@@ -2962,8 +3159,12 @@ export class Traffic {
     // a lean-waiting car aims at its lane edge instead of centre + bias; the
     // blinker must not clear while the lean holds, or followers lose the
     // widened perception that makes them yield
+    // the courtesy nudge rides on top of the driver's own bias, clamped
+    // together so the pair can never push the body past its lane line; a
+    // lean-waiting car is already at its edge and is left alone
     n.offT = cor.laneOffset(n.laneK, n.s) +
-      (n.mergeLean !== 0 ? n.mergeLean : this.biasAt(n, n.s));
+      (n.mergeLean !== 0 ? n.mergeLean
+        : clamp(this.biasAt(n, n.s) + n.nudgeCur, -this.maxBias(n, n.s), this.maxBias(n, n.s)));
     const dOff = n.offT - n.offCur;
     const rate = n.blink !== 0 ? n.laneRate || cor.lanePitch(n.s) / 3 : LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) {
@@ -3073,7 +3274,11 @@ export class Traffic {
         n.pendK = -1;
       }
     }
-    n.offT = by.laneOffset(n.laneK, n.s) + this.biasAtBypass(n);
+    // courtesy nudge on top of the driver's bias, clamped to the bypass's
+    // constant-pitch lane the same way biasAtBypass is
+    const byLim = Math.max(0, BYPASS.laneW / 2 - n.W / 2 - 0.25);
+    n.offT = by.laneOffset(n.laneK, n.s) +
+      clamp(this.biasAtBypass(n) + n.nudgeCur, -byLim, byLim);
     const dOff = n.offT - n.offCur;
     const rate = n.blink !== 0 ? n.laneRate || BYPASS.laneW / 3 : LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) {
