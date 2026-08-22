@@ -182,8 +182,20 @@ const RPM_ANCHORS = [1050, 2400, 4200, 6400];
     fixed rate turns into a drone sitting a musical third under a synth voice
     that is still climbing, and two engine voices at different pitches beat
     against each other. Better a heavily stretched loop, at the low level it
-    is mixed at up there, than a stationary one. */
-const RATE_MIN = 0.5, RATE_MAX = 3.6;
+    is mixed at up there, than a stationary one.
+
+    3.6 -> 2.4, on "it sounds like a motorbike". Resampling shifts FORMANTS,
+    not just pitch: at 3.5x every resonance of the recorded engine — airbox,
+    bore, exhaust length, the body of the car around it — moves up by three
+    and a half times as well. That is not a car revving higher, it is a much
+    smaller engine, which is exactly what a motorbike is. Pitch was tracking
+    correctly; the timbre underneath it was shrinking.
+
+    Capping at 2.4 only works because LADDER_STRETCH came down with it (see
+    below) — the synth now has the top of the range to itself before the
+    clamp ever bites, so the drone this constant exists to prevent cannot
+    happen. */
+const RATE_MIN = 0.5, RATE_MAX = 2.4;
 
 /** The stretch beyond which the recordings stop reading as an engine and
     start reading as a chipmunk — where the synth should be carrying the
@@ -192,8 +204,16 @@ const RATE_MIN = 0.5, RATE_MAX = 3.6;
     crossfade, that one only stops the rate running away. The engine needs
     850 -> 7400rpm (8.7x) and these recordings span 1.63x, so the top of the
     range genuinely cannot be covered by stretching them; this is where that
-    is conceded. */
-const LADDER_STRETCH = 2.8;
+    is conceded.
+
+    2.8 -> 2.0, in step with RATE_MAX above. The handover to the synth now
+    completes near 4450rpm on a four rather than 6200, so the top half of the
+    rev range is carried by the oscillator model — which is generated at
+    exactly the right frequency and has no formants to shift, so it cannot
+    develop the small-engine character no matter how high it revs. The
+    recordings keep the bottom end, where they are barely stretched and sound
+    like what they are. */
+const LADDER_STRETCH = 2.0;
 
 /** How much of the synth tonal body stays mixed in underneath the recordings
     at ordinary rpm. Was 0 — sampled mode muted the oscillator path outright
@@ -310,8 +330,15 @@ const ENGINE_TUNE_DEFAULT = {
       is purely the engine's position against them. Past this point the
       engine can start losing to the wind layer at speed rather than reading
       as pleasantly quiet — if that happens, the fix is to bring those layers
-      down and leave `level` here, not to push `level` lower still. */
-  level: 0.5,
+      down and leave `level` here, not to push `level` lower still.
+
+      0.5 -> 0.42, still on "too loud". Worth knowing which lever did what
+      here: the cabin lowpass now covering POV (setInterior, "pov" mode)
+      takes far more PERCEIVED loudness out of the engine than this does,
+      because most of the apparent level of a bright engine lives in exactly
+      the harmonics a 6.4kHz rolloff removes. Judge the result after that
+      change, not from this number. */
+  level: 0.42,
   /** Low-shelf boost in dB applied to the engine bus below `rumbleHz` — the
       "beef" control specifically, as opposed to `level` which lifts the whole
       band. Positive = more chest rumble; 0 = flat (old response). Kept in dB
@@ -2732,10 +2759,27 @@ export class GameAudio {
       with a cabin resonance bump; exterior (b=false, the default) is the
       open, brighter response used before this feature existed. Two
       pre-built biquads in the master chain — cheap to toggle. */
-  setInterior(b: boolean) {
+  /** Cabin acoustics. `mode` is which side of the glass the listener is on:
+      "out" for the exterior cameras, "cabin" for COCKPIT, and "pov" for the
+      hard-mounted dashcam — the view the game actually ships in.
+
+      POV used to be handed "out", so the shipping camera showed you the
+      windscreen, the pillars and the cluster while playing a fully open
+      exterior mix. That is the reported "it should sound slightly muted,
+      we're inside the car". It also flattered the engine's brightest
+      harmonics, which is a large part of why the top of the rev range read as
+      a motorbike rather than a car: nothing was rolling off the buzz.
+
+      POV sits between the two rather than on "cabin", and deliberately: a
+      dashcam is suction-cupped to the glass, so it is inside the cabin but
+      hard against the window, which is acoustically brighter than a
+      microphone at head height in the middle of it. */
+  setInterior(mode: "out" | "pov" | "cabin") {
     if (!this.ok) return;
-    this.sp(this.cabinLP.frequency, b ? 5200 : 20000, 0.25);
-    this.sp(this.cabinPeak.gain, b ? 4.5 : 0, 0.25);
+    const lp = mode === "cabin" ? 5200 : mode === "pov" ? 6400 : 20000;
+    const pk = mode === "cabin" ? 4.5 : mode === "pov" ? 3.2 : 0;
+    this.sp(this.cabinLP.frequency, lp, 0.25);
+    this.sp(this.cabinPeak.gain, pk, 0.25);
   }
 
   /** Low-frequency pressure whump for tunnel entry/exit — a sub-100Hz-

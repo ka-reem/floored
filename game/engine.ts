@@ -1597,7 +1597,9 @@ export class Game {
   private interiorUpdate() {
     if (this.camMode === this.lastInteriorMode) return;
     this.lastInteriorMode = this.camMode;
-    this.audio.setInterior(this.camMode === CAM_COCKPIT);
+    this.audio.setInterior(
+      this.camMode === CAM_COCKPIT ? "cabin" : this.camMode === CAM_POV ? "pov" : "out"
+    );
   }
 
   /** Hand the audio side the traffic it should be able to hear, and turn
