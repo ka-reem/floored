@@ -889,6 +889,11 @@ export class Traffic {
   };
   /** player's bypass surface hit this frame, or null (set in update()) */
   private playerBy: { s: number } | null = null;
+  /** Player's route-space slot this frame (set in update()): corridor z/lat
+      when on the deck, bypass s/lat when on the viaduct, plus speed — so
+      lane-change gap acceptance (laneClearAt) can treat the player as a hard
+      no-go and an NPC never begins a merge into a side-by-side player. */
+  private playerSlot = { cor: false, by: false, s: 0, off: 0, byS: 0, byLat: 0, v: 0 };
   private cpose = { x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0 };
   private _cw = { x: 0, y: 0, z: 0 };
   private rng = mulberry32(0xbeef);
@@ -1907,6 +1912,21 @@ export class Traffic {
     const deckY = this.cor.heightAt(player.x, player.z, 8);
     const bySurf = this.routes.surfaceAt(player.x, player.z, 4);
     this.playerBy = bySurf && Math.abs(player.y - bySurf.y) < 7 ? bySurf : null;
+    {
+      /* route-space player slot for lane-change gap acceptance */
+      const ps = this.playerSlot;
+      ps.v = Math.abs(player.u);
+      ps.cor = deckY !== null && Math.abs(player.y - deckY) < 7;
+      if (ps.cor) {
+        ps.s = this.cor.zAt(player.x, player.z);
+        ps.off = this.cor.latAt(player.x, player.z);
+      }
+      ps.by = this.playerBy !== null;
+      if (bySurf && ps.by) {
+        ps.byS = bySurf.s;
+        ps.byLat = bySurf.lat;
+      }
+    }
     const playerUp =
       (deckY !== null && Math.abs(player.y - deckY) < 7) || this.playerBy !== null;
     const cap = Math.round(this.N * clamp(density, 0.15, 1));
@@ -2475,7 +2495,8 @@ export class Traffic {
       the ways the old taper merges ended in overlapping bodies (the sim in
       test/traffic-merge-sim.mjs steps all of this headlessly). */
   private laneClearAt(
-    n: Npc, s: number, off2: number, route = n.route, back = 13.5, fwd = 23.5
+    n: Npc, s: number, off2: number, route = n.route, back = 13.5, fwd = 23.5,
+    backC = 3.0, fwdC = 2.0
   ): boolean {
     const cor = this.cor;
     for (const m of this.npcs) {
@@ -2484,12 +2505,34 @@ export class Traffic {
       if (Math.abs(m.offCur - off2) > 2.2) continue;
       const ds = route === BYPASS_EDGE ? m.s - s : cor.deltaZ(s, m.s);
       const halfL = (m.L + n.L) / 2;
-      // 3.0 s of rear closing: a lane change exposes the merger for several
-      // seconds (signal + crossing), and a rear car keeps its speed for most
-      // of that before it can see, react and brake
-      const backNeed = halfL + back + 3.0 * Math.max(0, m.v - n.v);
-      const fwdNeed = halfL + fwd + 2.0 * Math.max(0, n.v - m.v);
+      // backC s of rear closing (3.0 by default): a lane change exposes the
+      // merger for several seconds (signal + crossing), and a rear car keeps
+      // its speed for most of that before it can see, react and brake. An
+      // URGENT zipper merge passes smaller backC/fwdC: the crossing is brisk
+      // (~1 s) and target-lane followers already yield to the blinker/lean,
+      // so the full 3 s term only deadlocks a slowed merger behind gaps it
+      // could safely take — which is what jammed the shrink solid.
+      const backNeed = halfL + back + backC * Math.max(0, m.v - n.v);
+      const fwdNeed = halfL + fwd + fwdC * Math.max(0, n.v - m.v);
       if (ds > -backNeed && ds < fwdNeed) return false;
+    }
+    /* The PLAYER is a hard no-go for every lane change: never begin a merge
+       into road they occupy or are about to. The envelope is NOT tightened
+       by zipper urgency and keeps the full closing-speed terms — an NPC
+       blocked by a side-by-side player takes the existing yield path
+       (mergeCap / lean / stopDs) and slots in behind once clear, so this
+       cannot deadlock the taper. */
+    const ps = this.playerSlot;
+    const pByp = route === BYPASS_EDGE;
+    if (pByp ? ps.by : ps.cor) {
+      const pOff = pByp ? ps.byLat : ps.off;
+      if (Math.abs(pOff - off2) < 2.2) {
+        const ds = pByp ? ps.byS - s : cor.deltaZ(s, ps.s);
+        const halfL = (4.5 + n.L) / 2; // player body ~4.5 m long
+        const backNeed = halfL + 6 + 3.0 * Math.max(0, ps.v - n.v);
+        const fwdNeed = halfL + 9 + 2.0 * Math.max(0, n.v - ps.v);
+        if (ds > -backNeed && ds < fwdNeed) return false;
+      }
     }
     return true;
   }
@@ -2734,7 +2777,11 @@ export class Traffic {
           const clear = urgent
             ? this.laneClearAt(
                 n, n.s, off2, n.route, 1.2 + 0.25 * n.v, 2.5 + 0.35 * n.v)
-            : this.laneClearAt(n, n.s, off2);
+            : /* forced-but-not-yet-urgent: commit EARLIER than a comfort
+                 change would — a normal IDM headway gap upstream, taken at
+                 speed, beats waiting to zipper at the taper end (closing
+                 terms stay at full strength, so nobody gets braked on) */
+              this.laneClearAt(n, n.s, off2, n.route, 9, 16);
           if (clear) {
             /* brisk when urgent AND when merging from a crawl: a stopped car
                pulling into a gap takes it in one motion — a leisurely 4 s
@@ -2755,7 +2802,12 @@ export class Traffic {
               : cor.lanePitch(n.s) / lerp(3, 2, drv.lane); // merges run a touch brisker than a comfort change
             n.turnCd = Math.max(n.turnCd, 2);
           } else {
-            mergeCap = urgent ? -2.6 : -0.9;
+            /* blocked: yield. The non-urgent lift is deliberately light
+               (-0.35, was -0.9) — a firm pre-brake this far out drops the
+               whole doomed lane below stream speed, the closing-speed term
+               then rejects every gap the slowed cars are offered, and the
+               feedback jams the shrink solid (seeds 99/2026 in the sim). */
+            mergeCap = urgent ? -2.6 : -0.35;
             if (urgent) {
               /* No slot: lean to the lane edge, blinker on, and wait. The
                  body stays inside its own lane (maxBias + 0.2 puts the flank

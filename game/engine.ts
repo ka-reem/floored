@@ -15,6 +15,7 @@ import { makeTerrain, buildGround, type Terrain } from "./world/terrain";
 import { buildRoadNet } from "./world/roadnet";
 import { buildHighway, nearestExitAhead } from "./world/highway";
 import { buildTown } from "./world/townmesh";
+import { buildScenery } from "./world/scenery";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
 import { DECKY } from "./world/const";
@@ -493,7 +494,11 @@ export class Game {
        the settings the panels read. The world itself — materials, terrain,
        expressway, town, traffic, the player rig — is NOT built here; it is
        built by load() below, in yielding stages, behind the loading screen.
-       See the note on load() for why. */
+       See the note on load() for why.
+
+       The inline world build that used to live here is gone deliberately —
+       it is what froze the tab on Drive. If a merge ever reintroduces it,
+       that is the conflict resolving the wrong way. */
 
     this.timeSpeed = this.settings.autoTime ? 150 : 0;
     this.bindInput();
@@ -1175,6 +1180,15 @@ export class Game {
     return this.dom("mmap") as HTMLCanvasElement | null;
   }
 
+  /** Whether the HUD overlay minimap should be on screen at all: the setting,
+      and neither in-car view — both of those have the head unit's own map
+      (carscreen.ts), which is the one the player reads there. */
+  private mmapVisible() {
+    return this.mmap && this.camMode !== CAM_COCKPIT && this.camMode !== CAM_POV;
+  }
+  /** last mmapVisible(), so the reveal can repaint before it is shown */
+  private mmapWasOn = false;
+
   /* Held on the Game rather than rebuilt per frame: readInput runs at frame
      rate and these two closures never change. Bodies are deliberately the
      same as the `c` and `l` key handlers — the pad is an extra way to press
@@ -1700,6 +1714,16 @@ export class Game {
     this.sun.position.set(car.x - Math.cos(sa) * 520, Math.max(120, Math.sin(sa) * 640), car.z - 260);
     this.sun.target.position.set(car.x, 0, car.z);
     this.sun.castShadow = f > 0.22 && !this.perfMode && this.settings.shadows;
+    /* Keep the at-infinity backdrop (dome, skyline ring, mountains, city
+       rings) centred on the car. World-fixed it sat centred on the ORIGIN,
+       whose rings the 4 km lap physically outruns: nearing z = +Z1 the
+       skyline ring stood a few hundred metres past the deck — a wall across
+       the road — and the loop splice then snapped it 4 km away, which is the
+       visible "drive into a wall, then teleport" at the end of the map.
+       Glued to the viewer it stays on the horizon at both ends, so the
+       splice's pure z-translation leaves the whole frame unchanged. y stays
+       0: the deck's own ±5 m grade must not bob the horizon. */
+    sky.backdrop.position.set(car.x, 0, car.z);
     sky.starMat.opacity = 0.8 * (1 - f);
     sky.moonMat.opacity = 0.95 * (1 - f);
     for (const m of this.mats.winMats) {
@@ -1711,6 +1735,13 @@ export class Game {
     // unfogged behind everything
     sky.skylineMat.opacity =
       (1 - f * 0.8) * clamp(1.9 - fogMultiplier(this.settings.fog), 0.12, 1);
+    // the abstract-city light masses go with it: daylight kills a glow dome
+    // long before it kills a silhouette, and heavy fog swallows both
+    for (const m of sky.cityAbstractMats)
+      (m as THREE.MeshBasicMaterial).opacity =
+        ((m.userData.nightO as number) ?? 0.4) *
+        (1 - f * 0.85) *
+        clamp(1.9 - fogMultiplier(this.settings.fog), 0.12, 1);
     this.mats.sfMat.emissiveIntensity = lerp(0.78, 0.12, f);
     if (world.glowPts) (world.glowPts.material as THREE.PointsMaterial).opacity = 1 - f * 0.92;
     /* The pools carry more of the road now that there is no ambient fill left
@@ -2229,17 +2260,25 @@ export class Game {
     rig.cockpit.group.visible = inside;
     rig.exteriorG.visible = !inside;
     this.lampWash(inside);
-    // the cockpit now has its own nav screen (drawScreen above), so the
-    // external HUD minimap is redundant in that view — hide it. POV keeps the
-    // HUD: the head unit is a long way down-frame there, and the map is the
-    // one thing the player still needs to navigate with.
-    /* Unconditional: gated on this.mmap it only ever ran on the way ON, so a
+    /* Both in-car views now carry their own nav screen (drawScreen above), so
+       the external HUD minimap is redundant in either — hide it. POV is the
+       view the game is played in, and the head unit reads clearly there, so
+       the overlay would just be a second map pasted over the footage.
+       Unconditional: gated on this.mmap it only ever ran on the way ON, so a
        profile restored with the map off left the canvas on screen until X
        was pressed. miniMap() is cached, so this is not a per-frame lookup. */
     const mmapCv = this.miniMap();
-    if (mmapCv)
-      mmapCv.style.display =
-        this.mmap && this.camMode !== CAM_COCKPIT ? "block" : "none";
+    const mmapOn = this.mmapVisible();
+    if (mmapCv) {
+      /* Repaint at the moment it is revealed, not on the next %4 frame: the
+         canvas still holds whatever was on it when POV was entered, which by
+         now is a map of somewhere else entirely. Drawing before the display
+         flip means a stale frame is never on screen for even one frame. */
+      if (mmapOn && !this.mmapWasOn)
+        drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
+      mmapCv.style.display = mmapOn ? "block" : "none";
+    }
+    this.mmapWasOn = mmapOn;
     rig.pivFL.rotation.y = car.delta;
     rig.pivFR.rotation.y = car.delta;
     const spin = (-car.u / this.spec.phys.WR) * dt;
@@ -2853,7 +2892,7 @@ export class Game {
         this.chunkT = 0;
         this.chunksUpdate();
       }
-      if (this.mmap && this.camMode !== CAM_COCKPIT && this.frameN % 4 === 0) {
+      if (this.mmapVisible() && this.frameN % 4 === 0) {
         const mmapCv = this.miniMap();
         if (mmapCv) drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
       }

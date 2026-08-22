@@ -1569,9 +1569,22 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   /* z 0.63 (candidate-B port): 3 cm forward cuts the housing's apparent
      width ~10% from the 105-degree POV lens and shows glass rather than
      housing underside at the frame top. */
-  const MIR = { y: Math.min(EYE.y + 0.085, 1.545), z: 0.63 };
-  const mirrorMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.096), mirrorMat);
-  mirrorMesh.position.set(0, MIR.y, MIR.z - 0.012);
+  /* x +0.06: nudged toward the driver's side, which is screen-LEFT in the
+     dashcam POV (car-local +x maps to screen-left through that lens — the same
+     convention the head unit's SCR.x note records). Small on purpose: it moves
+     the glass about a twentieth of the POV frame's width, clear of the frame's
+     right edge without walking into the road ahead. */
+  const MIR = { x: 0.06, y: Math.min(EYE.y + 0.085, 1.545), z: 0.63 };
+  /* A plain square of glass — no letterbox, no bevel, nothing else. The
+     rearCam RT is 2.5:1, so a square plane showing all of it would squash the
+     view vertically; cropUV takes the middle 1/2.5 of the frame instead, which
+     is exactly a square of the rear view at its true proportions. The cost is
+     honest and worth naming: the glass sees 40% of the wide render's width, so
+     the far flanks that the old letterbox showed are no longer in it. */
+  const mirrorGeo = new THREE.PlaneGeometry(0.13, 0.13);
+  cropUV(mirrorGeo, 0.3, 0.7);
+  const mirrorMesh = new THREE.Mesh(mirrorGeo, mirrorMat);
+  mirrorMesh.position.set(MIR.x, MIR.y, MIR.z - 0.012);
   mirrorMesh.rotation.x = -0.07;
   mirrorMesh.scale.x = -1;
   interiorG.add(mirrorMesh);
@@ -1583,13 +1596,15 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      shielded from the dashcam degrade by post.ts — stays put and moves into
      the donor's housing. */
   beginRegion("mirror");
-  put(bezel(0.335, 0.13, 0.036, 0.045, 0.02), piano, [0, MIR.y, MIR.z], [-0.07, 0, 0]);
-  put(rbox(0.32, 0.115, 0.05, 0.04), piano, [0, MIR.y, MIR.z + 0.024], [-0.07, 0, 0]);
+  /* Square housing to match the square glass — same thin lip it always had,
+     just no longer a letterbox. */
+  put(bezel(0.155, 0.155, 0.036, 0.045, 0.02), piano, [MIR.x, MIR.y, MIR.z], [-0.07, 0, 0]);
+  put(rbox(0.145, 0.145, 0.05, 0.04), piano, [MIR.x, MIR.y, MIR.z + 0.024], [-0.07, 0, 0]);
   /* The screen leans back as it rises, so the stalk has to run up and
      rearward — longer than it was, because the housing now hangs ~3.5 cm
      lower while the header it grows from did not move. */
-  put(cyl(0.014, 0.018, 0.22, 10), piano, [0, MIR.y + 0.105, MIR.z - 0.05], [-0.5, 0, 0]);
-  put(rbox(0.06, 0.03, 0.05, 0.012), piano, [0, MIR.y + 0.185, MIR.z - 0.095], [-0.3, 0, 0]);
+  put(cyl(0.014, 0.018, 0.22, 10), piano, [MIR.x, MIR.y + 0.105, MIR.z - 0.05], [-0.5, 0, 0]);
+  put(rbox(0.06, 0.03, 0.05, 0.012), piano, [MIR.x, MIR.y + 0.185, MIR.z - 0.095], [-0.3, 0, 0]);
   endRegion();
 
   const sideMirLGeo = new THREE.PlaneGeometry(0.19, 0.115);

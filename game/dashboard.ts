@@ -64,6 +64,23 @@ function paintDialFace(
   g.arc(cx, cy, R, 0, TAU);
   g.fill();
 
+  // backlit rim: the accent LED ring real clusters have. Painted into the
+  // face texture so FACE_DIM and the grade dim it with everything else, and
+  // given a long inward tail (half of R) so it fades rather than printing a
+  // hard ring — brightest right at the bezel, gone by mid-face.
+  const ac = new THREE.Color(opts.accent);
+  const rgba = (a: number) =>
+    `rgba(${Math.round(ac.r * 255)},${Math.round(ac.g * 255)},${Math.round(ac.b * 255)},${a})`;
+  const glow = g.createRadialGradient(cx, cy, R * 0.5, cx, cy, R);
+  glow.addColorStop(0, rgba(0));
+  glow.addColorStop(0.5, rgba(0.05));
+  glow.addColorStop(0.8, rgba(0.13));
+  glow.addColorStop(1, rgba(0.22));
+  g.fillStyle = glow;
+  g.beginPath();
+  g.arc(cx, cy, R, 0, TAU);
+  g.fill();
+
   // outer chrome-ish rim + inner shadow ring
   g.lineWidth = S * 0.018;
   g.strokeStyle = "rgba(150,165,190,.5)";

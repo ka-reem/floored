@@ -24,9 +24,26 @@ export interface Sky {
   towersMat: THREE.PointsMaterial;
   beaconMat: THREE.SpriteMaterial;
   ferris: THREE.Group;
+  /** Everything painted "at infinity" — dome, stars, moon, skyline ring,
+      mountains, city rings. The engine re-centres this on the car every frame
+      (weather()): the lap is 4 km long but these rings sit only ~2.1–2.5 km
+      from the origin, so left world-fixed the far end of the corridor ran
+      *into* them — a wall of skyline across the road just before the loop
+      splice, which then snapped it 4 km away. A backdrop at infinity is
+      direction-only; gluing it to the viewer keeps it on the horizon at both
+      ends of the lap and makes the splice's pure translation invisible.
+      In-map landmarks (ferris wheel, broadcast tower, airport tower) stay
+      world-fixed — they are scenery you drive past, not backdrop. */
+  backdrop: THREE.Group;
+  /** the abstract-city layer (glow domes + light-column slabs): the engine
+      dims each material to userData.nightO × its day/fog factor */
+  cityAbstractMats: THREE.Material[];
 }
 
 export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
+  const backdrop = new THREE.Group();
+  scene.add(backdrop);
+  const cityAbstractMats: THREE.Material[] = [];
   const skyCache: THREE.Texture[] = [];
   for (let i = 0; i < 8; i++) skyCache.push(new THREE.CanvasTexture(skyCanvas(i / 7)));
   const skyMat = new THREE.MeshBasicMaterial({
@@ -34,7 +51,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   });
   const sky = new THREE.Mesh(new THREE.SphereGeometry(2800, 20, 12), skyMat);
   sky.renderOrder = -10;
-  scene.add(sky);
+  backdrop.add(sky);
 
   const starGeo = new THREE.BufferGeometry();
   {
@@ -51,7 +68,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     size: 2.2, sizeAttenuation: false, color: 0xcdd8ff, map: glowTex,
     transparent: true, opacity: 0.8, fog: false, depthWrite: false,
   });
-  scene.add(new THREE.Points(starGeo, starMat));
+  backdrop.add(new THREE.Points(starGeo, starMat));
 
   const moonMat = new THREE.SpriteMaterial({
     map: glowTex, color: 0xf2ecda, fog: false, depthWrite: false, transparent: true,
@@ -59,7 +76,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   const moon = new THREE.Sprite(moonMat);
   moon.scale.set(150, 150, 1);
   moon.position.set(-900, 1250, -1700);
-  scene.add(moon);
+  backdrop.add(moon);
 
   const skylineTex = skylineTexF();
   skylineTex.repeat.set(9, 1);
@@ -69,7 +86,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   const skyline = new THREE.Mesh(new THREE.CylinderGeometry(2340, 2340, 340, 48, 1, true), skylineMat);
   skyline.position.y = 150;
   skyline.renderOrder = -9;
-  scene.add(skyline);
+  backdrop.add(skyline);
 
   // mountains
   {
@@ -153,7 +170,123 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
       });
       const pts = new THREE.Points(g, m);
       pts.renderOrder = -8; // over the skyline ring, under everything real
-      scene.add(pts);
+      backdrop.add(pts);
+    }
+
+    /* The abstract city: where the point rings are the city's *detail*, this
+       is its *mass* — two kinds of light hung on the same downtown arcs so
+       they register as one place. A sodium glow dome over each downtown (the
+       light a city throws at its own haze), and a picket of light-columns:
+       tall soft gradient slabs that suggest glowing towers without drawing a
+       single literal window. Everything additive with 15-stop pow-curve
+       tails (no gradient knee ever prints — realistic-light rules) and peaks
+       far under the grade's white-clip so the masses stay amber/blue instead
+       of bleaching. Lives in the backdrop group: it is at-infinity dressing
+       and must follow the car like the rest of the horizon. */
+    {
+      const domeTex = new THREE.CanvasTexture((() => {
+        const c = document.createElement("canvas");
+        c.width = 256;
+        c.height = 128;
+        const x = c.getContext("2d")!;
+        const g = x.createRadialGradient(128, 128, 6, 128, 128, 126);
+        for (let i = 0; i <= 15; i++) {
+          const t = i / 15;
+          g.addColorStop(t, `rgba(255,255,255,${(0.5 * Math.pow(1 - t, 2.5)).toFixed(3)})`);
+        }
+        x.fillStyle = g;
+        x.save();
+        x.translate(128, 128);
+        x.scale(1, 0.55); // squash to a horizon-hugging half-dome
+        x.translate(-128, -128);
+        x.fillRect(0, -128, 256, 256);
+        x.restore();
+        return c;
+      })());
+      // deep orange source: red survives the ACES desaturation better than
+      // the target amber does (see the lamp-cone precedent in highway.ts)
+      const domeMat = new THREE.SpriteMaterial({
+        map: domeTex, color: 0xff7a24, transparent: true, opacity: 0.34,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+      });
+      domeMat.userData.nightO = 0.34;
+      cityAbstractMats.push(domeMat);
+      for (const a of downtown) {
+        const s = new THREE.Sprite(domeMat);
+        s.scale.set(1500, 430, 1);
+        s.center.set(0.5, 0); // anchor at the glow's base…
+        s.position.set(Math.cos(a) * 2260, -30, Math.sin(a) * 2260); // …below horizon
+        s.renderOrder = -9;
+        backdrop.add(s);
+      }
+
+      const colTex = new THREE.CanvasTexture((() => {
+        const c = document.createElement("canvas");
+        c.width = 128;
+        c.height = 256;
+        const x = c.getContext("2d")!;
+        for (let col = 0; col < 7; col++) {
+          const cx = 10 + col * 17, wpx = 7 + (col % 4) * 2;
+          const hpx = 130 + ((col * 47) % 110);
+          // base wash climbing the column, long tail upward
+          for (let i = 0; i < 15; i++) {
+            const t = i / 15;
+            x.fillStyle = `rgba(255,255,255,${(0.4 * Math.pow(1 - t, 2.2)).toFixed(3)})`;
+            x.fillRect(cx, 256 - (t + 1 / 15) * hpx, wpx, hpx / 15 + 1);
+          }
+          // sparse brighter flecks — implied floors, not windows
+          for (let yy = 250; yy > 256 - hpx; yy -= 7)
+            if (Math.random() < 0.45) {
+              const fade = 1 - (256 - yy) / hpx;
+              x.fillStyle = `rgba(255,255,255,${(0.5 * fade).toFixed(3)})`;
+              x.fillRect(cx + Math.floor(Math.random() * (wpx - 2)), yy, 2, 3);
+            }
+        }
+        // fade the bottom edge out so the slab base never prints a line
+        const fg = x.createLinearGradient(0, 256, 0, 238);
+        fg.addColorStop(0, "rgba(0,0,0,1)");
+        fg.addColorStop(1, "rgba(0,0,0,0)");
+        x.globalCompositeOperation = "destination-out";
+        x.fillStyle = fg;
+        x.fillRect(0, 238, 128, 18);
+        return c;
+      })());
+      const pos: number[] = [], uv: number[] = [], col: number[] = [], idx: number[] = [];
+      const C = new THREE.Color();
+      for (let i = 0; i < 40; i++) {
+        let a = rand(0, TAU);
+        if (i % 4 !== 3) a = downtown[i % 2] + rand(-0.55, 0.55);
+        const r = rand(1420, 1620);
+        const w = rand(55, 130), h = rand(80, 190), y0 = -8;
+        const cx = Math.cos(a) * r, cz = Math.sin(a) * r;
+        const tx = -Math.sin(a), tz = Math.cos(a);
+        const b0 = pos.length / 3;
+        pos.push(
+          cx - (tx * w) / 2, y0, cz - (tz * w) / 2,
+          cx + (tx * w) / 2, y0, cz + (tz * w) / 2,
+          cx + (tx * w) / 2, y0 + h, cz + (tz * w) / 2,
+          cx - (tx * w) / 2, y0 + h, cz - (tz * w) / 2
+        );
+        uv.push(0, 0, 1, 0, 1, 1, 0, 1);
+        C.set(Math.random() < 0.7 ? 0xff9a44 : 0x9db8e6).multiplyScalar(rand(0.35, 0.8));
+        for (let k = 0; k < 4; k++) col.push(C.r, C.g, C.b);
+        idx.push(b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3);
+      }
+      const cg = new THREE.BufferGeometry();
+      cg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+      cg.setAttribute("uv", new THREE.BufferAttribute(new Float32Array(uv), 2));
+      cg.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col), 3));
+      cg.setIndex(idx);
+      const colMat = new THREE.MeshBasicMaterial({
+        map: colTex, vertexColors: true, transparent: true, opacity: 0.5,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+        side: THREE.DoubleSide,
+      });
+      colMat.userData.nightO = 0.5;
+      cityAbstractMats.push(colMat);
+      const slabs = new THREE.Mesh(cg, colMat);
+      slabs.renderOrder = -8;
+      backdrop.add(slabs);
     }
 
     /* Airport control tower on the east horizon: flared cab on a slim shaft,
@@ -197,10 +330,12 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     sizeAttenuation: false, depthWrite: false, fog: false,
   });
   {
+    /* red obstruction beacons on far towers — horizon dressing, and the one at
+       z = 2200 stood right past the corridor's far end, so these follow too */
     const p = new Float32Array([1500, 560, -1700, -2100, 480, 900, 800, 430, 2200]);
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(p, 3));
-    scene.add(new THREE.Points(g, towersMat));
+    backdrop.add(new THREE.Points(g, towersMat));
   }
 
   /* broadcast tower */
@@ -292,5 +427,8 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   }
   scene.add(fwG);
 
-  return { skyMat, skyCache, starMat, moonMat, skylineMat, towersMat, beaconMat, ferris };
+  return {
+    skyMat, skyCache, starMat, moonMat, skylineMat, towersMat, beaconMat, ferris,
+    backdrop, cityAbstractMats,
+  };
 }
