@@ -939,8 +939,23 @@ const TOLL_WASH_TINT_R = 0.92, TOLL_WASH_TINT_G = 0.95, TOLL_WASH_TINT_B = 1.0;
    falls away faster. Peak stays well under the ~0.25 where a car starts
    reading as self-lit.
 
+   0.22 -> 0.5, and this one is backed by a runtime measurement rather than
+   arithmetic. Probing the live game (85 active NPCs, night, dashcam) showed
+   `washCol` on lit instances sitting at **1.25** — that is the STREETLIGHT
+   wash, which shares this channel, and it is already at the anti-blowout knee
+   (KNEE = 1.3). A headlight contribution of 0.16 on top of 1.25 is a ~13%
+   lift on an already-bright surface, which is why every previous increase
+   here was invisible: the arithmetic was right and the effect was real, it
+   was simply swamped.
+
+   The "past ~0.25 it reads self-lit" note above predates that measurement and
+   assumed the wash arrived on an otherwise dark car. That holds on an unlit
+   stretch and does NOT hold under lamps. 0.5 gives ~26% lift up close and
+   ~15% at following distance against a 1.25 base — visible without dominating
+   — and on a dark stretch the knee is what stops it blowing out.
+
    If it needs to move again, move it ALONE and leave HLW_CORE_D at 5. */
-const HLW_GAIN = 0.22;
+const HLW_GAIN = 0.5;
 /** Along-beam falloff, metres ahead of the player's nose: full only to 5 m,
     then a long smoothstep tail to zero at 60 m.
 
