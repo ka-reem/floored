@@ -15,7 +15,10 @@ page.on("console", (m) => { if (m.type()==="error" && !m.text().includes("favico
 await page.goto("http://localhost:3000", { waitUntil: "domcontentloaded", timeout: 120000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 60000 });
 await page.evaluate(() => { window.__neonx.game.load(() => {}); });
-await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 240000 });
+for (let i = 0; i < 40; i++) {
+  await sleep(4000);
+  if (await page.evaluate(() => !!window.__neonx?.game?.loaded)) break;
+}
 await page.evaluate(() => { const b=[...document.querySelectorAll("button")].find(x=>x.textContent.includes("DRIVE")); b?.click(); });
 await sleep(2500);
 const dump = () => {

@@ -8,6 +8,7 @@ import {
   type GameSettings, type Profile, type RenderTier, type TierCaps,
 } from "./settings";
 import { getCar, PAINTS, type CarSpec } from "./carspecs";
+import { pollGamepad, type PadEdge } from "./gamepad";
 import { buildMats, type Mats } from "./world/mats";
 import { primeCarEnv } from "./carenv";
 import { makeTerrain, buildGround, type Terrain } from "./world/terrain";
@@ -387,6 +388,10 @@ export class Game {
   private raf = 0;
   private disposed = false;
   private isTouch: boolean;
+  /** HUD nodes live in React's tree, so they are looked up lazily and
+     re-looked-up if a node is ever swapped out — but not once per frame,
+     which is what the getElementById calls in hud()/frame() amounted to */
+  private domCache = new Map<string, HTMLElement | null>();
   private wheelVal = 0;
   private tiltVal = 0;
   private tiltHooked = false;
@@ -942,6 +947,10 @@ export class Game {
     }
     if (k === "v") {
       this.grade = !this.grade;
+      /* the settings panel reads game.grade but the profile stores
+         settings.dashcam — without this write the two disagree and the
+         flip is lost on reload (persist() copies this.settings out) */
+      this.settings.dashcam = this.grade;
       this.ui.toast("DASHCAM MODE " + (this.grade ? "ON" : "OFF"));
     }
     if (k === "m") {
@@ -969,7 +978,8 @@ export class Game {
     if (k === "h") this.ui.helpRequest();
     if (k === "x") {
       this.mmap = !this.mmap;
-      const cv = document.getElementById("mmap");
+      this.settings.mmap = this.mmap;
+      const cv = this.miniMap();
       if (cv) cv.style.display = this.mmap ? "block" : "none";
       this.ui.toast("MAP " + (this.mmap ? "ON" : "OFF"));
     }
@@ -984,7 +994,8 @@ export class Game {
         this.ui.toast(this.music.playing ? "♪ " + this.music.track.title : "MUSIC PAUSED");
     }
     if (k === "," || k === ".") {
-      k === "." ? this.music.next() : this.music.prev();
+      if (k === ".") this.music.next();
+      else this.music.prev();
       if (this.music.enabled) this.ui.toast("♪ " + this.music.track.title);
     }
     if (k === "b") this.lookBack = true;
@@ -1100,6 +1111,32 @@ export class Game {
     this.wheelVal = v;
   }
 
+  private dom(id: string): HTMLElement | null {
+    const c = this.domCache.get(id);
+    if (c && c.isConnected) return c;
+    const el = document.getElementById(id);
+    this.domCache.set(id, el);
+    return el;
+  }
+  private miniMap(): HTMLCanvasElement | null {
+    return this.dom("mmap") as HTMLCanvasElement | null;
+  }
+
+  /* Held on the Game rather than rebuilt per frame: readInput runs at frame
+     rate and these two closures never change. Bodies are deliberately the
+     same as the `c` and `l` key handlers — the pad is an extra way to press
+     the same controls, not a second set of semantics. */
+  private padEdge: PadEdge = {
+    cam: () => {
+      this.camMode = (this.camMode + 1) % CAM_COUNT;
+      this.ui.toast(CAM_NAMES[this.camMode]);
+    },
+    lights: () => {
+      this.car.lightsUser = !this.car.lightsUser;
+      this.ui.toast("LIGHTS " + (this.car.lightsUser ? "ON" : "AUTO"));
+    },
+  };
+
   private readInput(dt: number) {
     const kd = this.keydown;
     if (this.debug.override) {
@@ -1121,6 +1158,13 @@ export class Game {
       this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
       return;
     }
+    /* A pad that is connected AND being used owns the frame and writes the
+       whole input itself; otherwise this returns false and the keyboard/touch
+       path below runs exactly as it did before. It is handed the same
+       speed-sensitive steer rate the keyboard uses, so full lock stays as
+       hard to reach at 40 m/s with a stick as with the A/D keys. */
+    const padRate = lerp(3.4, 1.7, clamp(Math.abs(this.car.u) / 40, 0, 1));
+    if (pollGamepad(this.input, dt, padRate, this.padEdge)) return;
     const tT = kd["w"] || kd["arrowup"] ? 1 : 0;
     const tB = kd["s"] || kd["arrowdown"] ? 1 : 0;
     const sL = kd["a"] || kd["arrowleft"] ? 1 : 0;
@@ -2125,7 +2169,7 @@ export class Game {
     // HUD: the head unit is a long way down-frame there, and the map is the
     // one thing the player still needs to navigate with.
     if (this.mmap) {
-      const mmapCv = document.getElementById("mmap");
+      const mmapCv = this.miniMap();
       if (mmapCv) mmapCv.style.display = this.camMode === CAM_COCKPIT ? "none" : "block";
     }
     rig.pivFL.rotation.y = car.delta;
@@ -2601,9 +2645,16 @@ export class Game {
       } else this.ui.exitHint(null);
     }
     const bOn = this.blinkOnNow(now);
-    const il = document.getElementById("indL"), ir = document.getElementById("indR");
-    if (il) il.className = "ind" + (car.sigL && bOn ? " on" : "");
-    if (ir) ir.className = "ind" + (car.sigR && bOn ? " on" : "");
+    const il = this.dom("indL"), ir = this.dom("indR");
+    /* Recomputed every frame but only changes at blink rate, and a className
+       write invalidates style whether or not the value moved. Compared
+       against the element rather than a cached field so a remounted lamp
+       re-syncs itself — same reason the wx icon stores its state in
+       dataset.wx above. */
+    const clL = "ind" + (car.sigL && bOn ? " on" : "");
+    const clR = "ind" + (car.sigR && bOn ? " on" : "");
+    if (il && il.className !== clL) il.className = clL;
+    if (ir && ir.className !== clR) ir.className = clR;
     if ((car.sigL || car.sigR) && bOn !== this.prevBlinkOn) this.audio.tick();
     this.prevBlinkOn = bOn;
   }
@@ -2726,9 +2777,10 @@ export class Game {
         this.chunkT = 0;
         this.chunksUpdate();
       }
-      const mmapCv = document.getElementById("mmap") as HTMLCanvasElement | null;
-      if (this.mmap && mmapCv && this.camMode !== CAM_COCKPIT && this.frameN % 4 === 0)
-        drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
+      if (this.mmap && this.camMode !== CAM_COCKPIT && this.frameN % 4 === 0) {
+        const mmapCv = this.miniMap();
+        if (mmapCv) drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
+      }
     } else {
       this.acc = 0;
       // paused: no collision runs, so nothing would ever clear a scrape that

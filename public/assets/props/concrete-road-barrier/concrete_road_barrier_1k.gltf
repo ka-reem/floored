@@ -1,38 +1,125 @@
 {
   "asset": {
-    "generator": "Khronos glTF Blender I/O v3.6.27",
+    "generator": "glTF-Transform v4.4.2",
     "version": "2.0"
   },
-  "scene": 0,
-  "scenes": [
+  "accessors": [
     {
-      "name": "Scene",
-      "nodes": [
-        0
-      ]
+      "type": "SCALAR",
+      "componentType": 5123,
+      "count": 7296,
+      "bufferView": 0,
+      "byteOffset": 0
+    },
+    {
+      "type": "VEC3",
+      "componentType": 5126,
+      "count": 1516,
+      "max": [
+        0.7701511383056641,
+        0.8223973512649536,
+        0.3439931571483612
+      ],
+      "min": [
+        -0.7737954258918762,
+        -0.007966965436935425,
+        -0.2947474718093872
+      ],
+      "bufferView": 1,
+      "byteOffset": 0
+    },
+    {
+      "type": "VEC3",
+      "componentType": 5120,
+      "count": 1516,
+      "normalized": true,
+      "bufferView": 1,
+      "byteOffset": 12
+    },
+    {
+      "type": "VEC2",
+      "componentType": 5123,
+      "count": 1516,
+      "normalized": true,
+      "bufferView": 1,
+      "byteOffset": 16
     }
   ],
-  "nodes": [
+  "bufferViews": [
     {
-      "mesh": 0,
-      "name": "concrete_road_barrier"
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 14592,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 14592,
+      "byteLength": 30320,
+      "byteStride": 20,
+      "target": 34962
+    }
+  ],
+  "samplers": [
+    {
+      "magFilter": 9729,
+      "minFilter": 9987,
+      "wrapS": 10497,
+      "wrapT": 10497
+    }
+  ],
+  "textures": [
+    {
+      "source": 1,
+      "sampler": 0
+    },
+    {
+      "source": 0,
+      "sampler": 0
+    },
+    {
+      "source": 2,
+      "sampler": 0
+    }
+  ],
+  "images": [
+    {
+      "name": "concrete_road_barrier_nor_gl",
+      "mimeType": "image/jpeg",
+      "uri": "textures/concrete_road_barrier_nor_gl_1k.jpg"
+    },
+    {
+      "name": "concrete_road_barrier_diff",
+      "mimeType": "image/jpeg",
+      "uri": "textures/concrete_road_barrier_diff_1k.jpg"
+    },
+    {
+      "name": "concrete_road_barrier_rough",
+      "mimeType": "image/jpeg",
+      "uri": "textures/concrete_road_barrier_arm_1k.jpg"
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "concrete_road_barrier.bin",
+      "byteLength": 44912
     }
   ],
   "materials": [
     {
-      "doubleSided": true,
       "name": "concrete_road_barrier",
-      "normalTexture": {
-        "index": 0
-      },
+      "doubleSided": true,
       "pbrMetallicRoughness": {
-        "baseColorTexture": {
-          "index": 1
-        },
         "metallicFactor": 0,
+        "baseColorTexture": {
+          "index": 0
+        },
         "metallicRoughnessTexture": {
           "index": 2
         }
+      },
+      "normalTexture": {
+        "index": 1
       }
     }
   ],
@@ -42,119 +129,36 @@
       "primitives": [
         {
           "attributes": {
-            "POSITION": 0,
-            "NORMAL": 1,
-            "TEXCOORD_0": 2
+            "POSITION": 1,
+            "NORMAL": 2,
+            "TEXCOORD_0": 3
           },
-          "indices": 3,
-          "material": 0
+          "mode": 4,
+          "material": 0,
+          "indices": 0
         }
       ]
     }
   ],
-  "textures": [
+  "nodes": [
     {
-      "sampler": 0,
-      "source": 0
-    },
-    {
-      "sampler": 0,
-      "source": 1
-    },
-    {
-      "sampler": 0,
-      "source": 2
+      "name": "concrete_road_barrier",
+      "mesh": 0
     }
   ],
-  "images": [
+  "scenes": [
     {
-      "mimeType": "image/jpeg",
-      "name": "concrete_road_barrier_nor_gl",
-      "uri": "textures/concrete_road_barrier_nor_gl_1k.jpg"
-    },
-    {
-      "mimeType": "image/jpeg",
-      "name": "concrete_road_barrier_diff",
-      "uri": "textures/concrete_road_barrier_diff_1k.jpg"
-    },
-    {
-      "mimeType": "image/jpeg",
-      "name": "concrete_road_barrier_rough",
-      "uri": "textures/concrete_road_barrier_arm_1k.jpg"
+      "name": "Scene",
+      "nodes": [
+        0
+      ]
     }
   ],
-  "accessors": [
-    {
-      "bufferView": 0,
-      "componentType": 5126,
-      "count": 31514,
-      "max": [
-        0.7707335948944092,
-        0.8226187229156494,
-        0.3439931571483612
-      ],
-      "min": [
-        -0.774623453617096,
-        -0.008429879322648048,
-        -0.2947474718093872
-      ],
-      "type": "VEC3"
-    },
-    {
-      "bufferView": 1,
-      "componentType": 5126,
-      "count": 31514,
-      "type": "VEC3"
-    },
-    {
-      "bufferView": 2,
-      "componentType": 5126,
-      "count": 31514,
-      "type": "VEC2"
-    },
-    {
-      "bufferView": 3,
-      "componentType": 5123,
-      "count": 182784,
-      "type": "SCALAR"
-    }
+  "scene": 0,
+  "extensionsUsed": [
+    "KHR_mesh_quantization"
   ],
-  "bufferViews": [
-    {
-      "buffer": 0,
-      "byteLength": 378168,
-      "byteOffset": 0,
-      "target": 34962
-    },
-    {
-      "buffer": 0,
-      "byteLength": 378168,
-      "byteOffset": 378168,
-      "target": 34962
-    },
-    {
-      "buffer": 0,
-      "byteLength": 252112,
-      "byteOffset": 756336,
-      "target": 34962
-    },
-    {
-      "buffer": 0,
-      "byteLength": 365568,
-      "byteOffset": 1008448,
-      "target": 34963
-    }
-  ],
-  "samplers": [
-    {
-      "magFilter": 9729,
-      "minFilter": 9987
-    }
-  ],
-  "buffers": [
-    {
-      "byteLength": 1374016,
-      "uri": "concrete_road_barrier.bin"
-    }
+  "extensionsRequired": [
+    "KHR_mesh_quantization"
   ]
 }

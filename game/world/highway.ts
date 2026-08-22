@@ -922,10 +922,121 @@ export function buildHighway(
     scene.add(rp);
     world.reflMat = rm;
   }
+  /* Emergency-phone cabinets on the parapet coping, one every PITCH.sos.
+     Deck furniture at eye level and an arm's length from the door is what the
+     driver actually registers on a road whose scenery is 300 m away, and this
+     is the cheapest such thing there is: two instanced meshes for the whole
+     lap. Only where the edge is solid concrete — on the railing sections
+     there is no coping to bolt one to, and standing one on a kerb would put
+     it in the sightline the railing exists to open up. */
+  {
+    const slots: { x: number; y: number; z: number; h: number; nx: number; nz: number }[] = [];
+    for (const z of cor.lattice(PITCH.sos, PHASE.sos)) {
+      if (cor.inTunnel(z) || cor.inToll(z)) continue;
+      const kind = sectionAt(z);
+      if (kind === "rail" || kind === "bridge") continue;
+      // never in a parapet gap: there is nothing there to stand it on
+      if (gapZ.some((g) => z > g.z0 - 2 && z < g.z1 + 2)) continue;
+      if (newGaps.some((g) => g.side < 0 && z > g.z0 - 2 && z < g.z1 + 2)) continue;
+      const p = cor.pose(z);
+      const lat = -(cor.halfWidth(z) + 0.23);
+      slots.push({
+        x: p.x + lat * p.nx, y: p.y + WALL_H, z: p.z + lat * p.nz,
+        h: p.h, nx: p.nx, nz: p.nz,
+      });
+    }
+    if (slots.length) {
+      const boxMat = new THREE.MeshStandardMaterial({
+        color: 0xc08a2e, roughness: 0.55, metalness: 0.35,
+      });
+      const sosTex = makeTex(160, 128, (ctx, w2, h2) => {
+        ctx.fillStyle = "#d4531c";
+        ctx.fillRect(0, 0, w2, h2);
+        ctx.strokeStyle = "#fff3e2";
+        ctx.lineWidth = 5;
+        ctx.strokeRect(4, 4, w2 - 8, h2 - 8);
+        ctx.fillStyle = "#fff3e2";
+        ctx.textAlign = "center";
+        ctx.font = '700 26px "Hiragino Sans",sans-serif';
+        ctx.fillText("非常電話", w2 / 2, 52);
+        ctx.font = "800 34px sans-serif";
+        ctx.fillText("SOS", w2 / 2, 94);
+      });
+      const box = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(0.34, 0.95, 0.62), boxMat, slots.length);
+      const plate = new THREE.InstancedMesh(
+        new THREE.PlaneGeometry(0.54, 0.44),
+        // fogged: an unfogged orange plate 500 m out is a hard-edged dot in
+        // the haze, the same failure the tunnel portal chevrons had
+        new THREE.MeshBasicMaterial({ map: sosTex }), slots.length);
+      const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(),
+        V = new THREE.Vector3(), SC = new THREE.Vector3(1, 1, 1);
+      slots.forEach((s, i) => {
+        E.set(0, s.h, 0);
+        Q.setFromEuler(E);
+        V.set(s.x, s.y + 0.47, s.z);
+        M.compose(V, Q, SC);
+        box.setMatrixAt(i, M);
+        // face the plate across the deck, at the driver rather than at the town
+        E.set(0, s.h + Math.PI / 2, 0);
+        Q.setFromEuler(E);
+        // +normal is inboard here: the cabinet sits at a negative lat
+        V.set(s.x + 0.18 * s.nx, s.y + 0.62, s.z + 0.18 * s.nz);
+        M.compose(V, Q, SC);
+        plate.setMatrixAt(i, M);
+      });
+      box.computeBoundingSphere();
+      plate.computeBoundingSphere();
+      scene.add(box, plate);
+    }
+  }
   // sign gantries
   {
     const gMat = new THREE.MeshStandardMaterial({ color: 0x3a404c, roughness: 0.6, metalness: 0.4 });
     const words = ["箱崎 Hakozaki", "新宿 Shinjuku", "渋谷 Shibuya", "湾岸線 Wangan"];
+    /* Variable-message boards. Amber dot-matrix on near-black, drawn as
+       discrete dots rather than as solid glyphs — the dot grid is the whole
+       read, and at distance it is what separates a VMS from a yellow sign.
+       The amber is held around 0.7 luma on purpose: the ACES grade bleaches
+       anything much above 0.8 to white, and a board that goes white stops
+       being a VMS (see the lamp-cone note further down). */
+    const vmsLines: readonly (readonly [string, string])[] = [
+      ["この先 渋滞 3km", "CONGESTION AHEAD"],
+      ["トンネル内 車線変更禁止", "NO LANE CHANGE IN TUNNEL"],
+      ["前方 工事 車線規制", "ROADWORKS  LANE CLOSED"],
+      ["路面凍結注意", "ICE — REDUCE SPEED"],
+    ];
+    const vmsTex = (line: readonly [string, string]) =>
+      makeTex(512, 160, (ctx, w2, h2) => {
+        ctx.fillStyle = "#07080b";
+        ctx.fillRect(0, 0, w2, h2);
+        ctx.strokeStyle = "#23272f";
+        ctx.lineWidth = 8;
+        ctx.strokeRect(4, 4, w2 - 8, h2 - 8);
+        /* Render the text to an offscreen mask, then stamp one dot per lit
+           cell. Cheaper to write than a bitmap font and it gives the real
+           artefact: strokes that break into dots when you get close. */
+        const cv = document.createElement("canvas");
+        cv.width = w2;
+        cv.height = h2;
+        const c2 = cv.getContext("2d")!;
+        c2.fillStyle = "#fff";
+        c2.textAlign = "center";
+        c2.font = '700 46px "Hiragino Sans","Yu Gothic",sans-serif';
+        c2.fillText(line[0], w2 / 2, 66);
+        c2.font = "700 30px sans-serif";
+        c2.fillText(line[1], w2 / 2, 116);
+        const src = c2.getImageData(0, 0, w2, h2).data;
+        const STEP = 5;
+        ctx.fillStyle = "#e0972a";
+        for (let y = 2; y < h2; y += STEP)
+          for (let x = 2; x < w2; x += STEP)
+            if (src[(y * w2 + x) * 4 + 3] > 110) {
+              ctx.beginPath();
+              ctx.arc(x, y, 1.7, 0, Math.PI * 2);
+              ctx.fill();
+            }
+      });
     /* Shared fittings for the catwalk + floodlight dressing: one material set
        for every gantry, so the extra meshes cost draw calls but no compiles. */
     const floodFaceMat = new THREE.MeshBasicMaterial({ color: 0xe8f1ff, fog: false });
@@ -965,13 +1076,25 @@ export function buildHighway(
       /* Pick the wording from the *wrapped* lattice index. A random draw here
          would give the gantry 380 m past the splice different text from the
          one 380 m before it — the same structure, relabelled mid-teleport. */
-      const w1 = words[cor.latticeIndex(z, PITCH.gantry) % words.length];
+      const gi = cor.latticeIndex(z, PITCH.gantry);
+      const w1 = words[gi % words.length];
       // the deck is only 10.5 m wide where it drops to two lanes, so size the
       // panel to the road rather than hanging it out over the drop
       const sw = Math.min(9, legLat * 2 - 1.4);
+      /* Every fourth gantry on the lattice carries a variable-message board
+         instead of a route board. Same structure, same cost, completely
+         different thing to read at 500 m — an amber dot-matrix panel is the
+         one sign on an expressway whose colour says "this is live", and
+         having two kinds of gantry is most of what stops five identical
+         goalposts a lap reading as one repeated prop. Chosen from the folded
+         lattice index for the same reason the wording is: a random draw would
+         relabel the gantry mid-teleport. */
+      const vms = gi % 4 === 2;
       // fogged, and backed, for the same reasons as the cantilever boards
       const sign = new THREE.Mesh(new THREE.PlaneGeometry(sw, sw * 0.29),
-        new THREE.MeshBasicMaterial({ map: signTexF(w1, "首都高速 C1") }));
+        new THREE.MeshBasicMaterial({
+          map: vms ? vmsTex(vmsLines[(gi >> 2) % vmsLines.length]) : signTexF(w1, "首都高速 C1"),
+        }));
       sign.position.set(0, 5.5, -0.35);
       sign.rotation.y = Math.PI;
       g.add(sign);
@@ -1588,7 +1711,7 @@ function buildBridge(
 
   /* ---- cross-braces between the ribs, all of them 15 m up ---- */
   {
-    const bg = new THREE.BoxGeometry(1, 0.34, 0.34);
+    const bg = new THREE.BoxGeometry(1, 0.46, 0.46);
     const bm = new THREE.InstancedMesh(bg, steel, braceAt.length);
     braceAt.forEach((t, i) => {
       const a = ribPt(t, -1), b = ribPt(t, 1);
@@ -1706,7 +1829,11 @@ function buildTunnel(
      The profile is stated once, as (inward offset from the wall face, height)
      pairs, and swept; the walkway, dado, duct and crown all come off it. */
   const TUBE_OUT = 1.55; // wall face, outboard of the pavement edge
-  const KERB_IN = 0.14; // walkway kerb, just outboard of the parapet clamp
+  /* Kerb face at halfWidth + 0.06 — the same lateral line the parapet's inner
+     face uses everywhere else, and the same line the analytic clamp in
+     collide.ts stops the car on. Anything further out leaves a slot between
+     the pavement edge and the kerb that looks straight through the deck. */
+  const KERB_IN = 0.06;
   const WALK_H = 0.26;
   const DADO_Y = 2.3; // top of the dark lower band
   const DUCT_Y = 3.55, DUCT_H = 0.42, DUCT_OUT = 0.24; // cable-tray run
@@ -1734,8 +1861,10 @@ function buildTunnel(
         pt(i, sgn * wa, WALK_H), pt(i + 1, sgn * wb, WALK_H),
         pt(i + 1, sgn * kb, WALK_H), pt(i, sgn * ka, WALK_H)
       );
+      // …and its kerb, carried below the deck like the parapet's own skirt so
+      // no sliver of the drop shows at the join
       walkS.quad(
-        pt(i, sgn * ka, 0), pt(i + 1, sgn * kb, 0),
+        pt(i, sgn * ka, -0.3), pt(i + 1, sgn * kb, -0.3),
         pt(i + 1, sgn * kb, WALK_H), pt(i, sgn * ka, WALK_H)
       );
       // dark lower band — a real tube is filthy at splash height and clean
@@ -1949,7 +2078,7 @@ function buildTunnel(
     for (const sgn of [-1, 1]) {
       const lat = sgn * (cor.halfWidth(z) + TUBE_OUT - 0.06);
       glowPts.push(p.x + lat * p.nx, p.y + DADO_Y + 0.3, p.z + lat * p.nz);
-      const wlat = sgn * (cor.halfWidth(z) + TUBE_OUT - 0.3);
+      const wlat = sgn * (cor.halfWidth(z) + TUBE_OUT - 0.25);
       V.set(p.x + wlat * p.nx, p.y + DADO_Y + 0.42, p.z + wlat * p.nz);
       M.compose(V, Q, S);
       washer.setMatrixAt(nw++, M);

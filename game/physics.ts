@@ -29,8 +29,11 @@ export interface CarState {
       speed it started at, which together let the needle sweep across the
       ratio step instead of teleporting; `revHang` counts down the beat a
       real engine holds its revs for after a throttle lift; `thrPrev` is last
-      step's pedal, only used to detect that lift. */
+      step's pedal, only used to detect that lift. `engSeeded` is false until
+      the flywheel has been given its first initial condition — see the seed
+      in stepPhysics, right after rpmDrive is computed. */
   shiftLen: number; rpmShiftFrom: number; revHang: number; thrPrev: number;
+  engSeeded: boolean;
   /** Pre-intervention yaw/sideslip demand ESC is actively correcting for
       this frame, 0 when ESC isn't intervening — see stepPhysics's ESC
       block. Additive-only field for audio (a confident swerve that ESC
@@ -55,7 +58,7 @@ export function freshCarState(x: number, y: number, z: number, h: number, u = 0)
   return {
     x, y, z, h, u, v: 0, r: 0, delta: 0, gear: 1, rev: false, revT: 0,
     wvx: 0, wvz: 0, axS: 0, ayS: 0, rpm: 1200, rpmDrive: IDLE_RPM, onLimiter: false,
-    shiftLen: 0.24, rpmShiftFrom: 1200, revHang: 0, thrPrev: 0,
+    shiftLen: 0.24, rpmShiftFrom: 1200, revHang: 0, thrPrev: 0, engSeeded: false,
     thrEff: 0, brkEff: 0, slipAmt: 0, slipDemand: 0,
     slope: 0, pitchDyn: 0, rollDyn: 0, odo: 0, shiftT: 0, cut: 0, absOn: false, hold: true,
     tcOn: false, sigL: false, sigR: false, lightsUser: false, lightsOn: true,
@@ -293,6 +296,25 @@ export function stepPhysics(
     IDLE_RPM,
     spec.revLimit
   );
+
+  /* First step for this CarState: give the flywheel an initial condition
+     instead of letting it slew up from freshCarState's placeholder. The
+     player spawns already rolling (freshCarState(..., 23), engine.ts), so
+     without this the engine starts at 1200rpm and stepEngineSpeed sweeps it
+     up to whatever 83km/h in 1st implies — measured, a 1200 -> 8000rpm whoop
+     on tanuki (5308/4532/5693 on the others) inside a quarter second, with a
+     worst single step of 354rpm, at every spawn. That is the same needle
+     teleport this model exists to remove, arriving from the initial
+     condition instead of from a gear change.
+
+     Deliberately BEFORE the shift block below, not inside stepEngineSpeed: a
+     car dropped in at speed upshifts on its very first step, and the block
+     captures rpmShiftFrom from car.rpm, so a seed placed any later would be
+     read after the sweep had already been anchored to the placeholder. */
+  if (!car.engSeeded) {
+    car.engSeeded = true;
+    car.rpm = car.rpmDrive;
+  }
 
   // rev limiter: brief hard cut once the needle reaches redline, which is what
   // stops each gear from pulling forever and forces the upshift

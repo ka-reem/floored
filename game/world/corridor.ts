@@ -308,6 +308,8 @@ export const PITCH = {
   gantry: 500,
   soundwall: 400,
   reflector: 25,
+  /** parapet-mounted emergency-phone cabinets */
+  sos: 200,
   /** dashed lane line: DASH + GAP */
   dash: 16,
   /** shoulder edge line quad length */
@@ -319,6 +321,11 @@ export const PITCH = {
     inside one of its legs. */
 export const PHASE: Partial<Record<keyof typeof PITCH, number>> = {
   light: PITCH.light / 2,
+  /* 30, not 0: on phase 0 the SOS lattice shares a z with every second gantry
+     (500 and 200 both divide 1000) and the cabinet ends up inside a leg. 30
+     misses every gantry, every cantilever mast in signPlan() and both bypass
+     board runs, and clears the lamp lattice by 5 m. */
+  sos: 30,
 };
 
 export type SignKind = "exit-count" | "exit-gore" | "merge" | "toll";

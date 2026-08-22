@@ -71,9 +71,12 @@ const { CARS } = carspecs;
 const DT = 1 / 120;
 const OPTS = { mu: 1.26, tcEnabled: true, heightAt: () => 0 };
 
-/** Drive one car through a throttle/brake script, returning the rpm trace. */
-function drive(spec, script, seconds) {
-  const car = freshCarState(0, 0, 0, 0);
+/** Drive one car through a throttle/brake script, returning the rpm trace.
+    `u0` is the speed the CarState is created at — 0 for a standing start, and
+    23 m/s for the spawn the game actually performs (engine.ts drops the player
+    onto the corridor already rolling at 83km/h). */
+function drive(spec, script, seconds, u0 = 0) {
+  const car = freshCarState(0, 0, 0, 0, u0);
   const trace = [];
   for (let i = 0; i * DT < seconds; i++) {
     const t = i * DT;
@@ -137,12 +140,40 @@ for (const car of CARS) {
       `— this is the "revs teleport when you come off the gas" bug`
   );
 
+  /* 4. Spawning already rolling must not whoop. The game does not start the
+        player from rest — it drops the car onto the corridor at 23 m/s
+        (freshCarState(..., 23) in engine.ts). The flywheel therefore needs an
+        initial condition, or it starts at the placeholder rpm and sweeps up
+        to whatever the road speed implies: 1200 -> 8000rpm on tanuki inside a
+        quarter second, a full rev-up and a needle sweep to the redline, at
+        every spawn. Scripted as a coast so nothing but the initial condition
+        can be moving the needle. */
+  const spawn = drive(spec, () => ({}), 2, 23);
+  let worstSpawn = 0, worstSpawnAt = 0;
+  for (let i = 1; i < spawn.length; i++) {
+    const d = Math.abs(spawn[i].rpm - spawn[i - 1].rpm);
+    if (d > worstSpawn) { worstSpawn = d; worstSpawnAt = spawn[i].t; }
+  }
+  check(
+    worstSpawn <= MAX_STEP,
+    `${id}: rpm jumped ${worstSpawn.toFixed(0)} in one step at t=${worstSpawnAt.toFixed(2)}s ` +
+      `after spawning at 23m/s (max ${MAX_STEP}) — the flywheel is starting from ` +
+      `freshCarState's placeholder instead of from the driveline speed`
+  );
+  const spawnPeak = Math.max(...spawn.map((r) => r.rpm));
+  check(
+    spawnPeak <= spawn[0].rpm + 400,
+    `${id}: rpm rose to ${spawnPeak.toFixed(0)} from ${spawn[0].rpm.toFixed(0)} while ` +
+      `coasting away from a 23m/s spawn — the revs should not climb with the throttle shut`
+  );
+
   const peak = Math.max(...trace.map((r) => r.rpm));
   console.log(
     `${id.padEnd(11)} peak ${peak.toFixed(0).padStart(4)}rpm  ` +
       `worst step ${worst.toFixed(0).padStart(3)}rpm  ` +
       `worst step after lift ${worstLift.toFixed(0).padStart(3)}rpm  ` +
-      `rpm@0.5s ${half.rpm.toFixed(0)}`
+      `rpm@0.5s ${half.rpm.toFixed(0)}  ` +
+      `spawn@23m/s worst step ${worstSpawn.toFixed(0).padStart(3)}rpm`
   );
 }
 

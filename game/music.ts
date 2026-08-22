@@ -18,6 +18,30 @@
    only move AudioParams.
 
    ---------------------------------------------------------------------------
+   PLANNED: swapping in real recordings later
+   ---------------------------------------------------------------------------
+   Synthesis is this pass only. The intent is to replace it with real
+   public-domain recordings (Musopen CC0) once the asset budget is sorted, and
+   the seam for that is meant to fall in ONE place: everything below the
+   `spawn()` / `tick()` scheduler pair is the audio *source*, and everything
+   above it — the playlist, the transport (play/pause/next/prev/stop), the
+   pause-with-the-game gating, the autoplay unlock and the MusicTrack state the
+   dash screen reads — is source-agnostic and already knows nothing about
+   notes.
+
+   To add a recorded backend: give Piece an alternative to `build()` (a URL),
+   add a BufferSourceTrack that decodes it and answers the same four questions
+   the scheduler answers — start at a given ctx time, stop, where am I, how
+   long am I — and route `sync()` to it. `duration`/`elapsed`/`progress` are
+   already plain seconds for exactly this reason, and `unit`/`units` are the
+   only two public-ish fields that assume a score.
+
+   NOTE: that interface is NOT extracted yet — this pass ran out of time. The
+   seam is where the comment says it is, and the note data is confined to the
+   "score" region below so deleting it later is a clean cut, but someone will
+   still have to do the extraction. Do not assume it is already done.
+
+   ---------------------------------------------------------------------------
    Honesty about the transcriptions
    ---------------------------------------------------------------------------
    Every piece below is written out as readable pitch names precisely so a
@@ -159,11 +183,11 @@ const FUR_BLOCK = 50; // units in one statement of the A section
    the whole thing reduces to a list of chords: bar N is its five pitches
    arpeggiated p1 p2 p3 p4 p5 p3 p4 p5, twice, in sixteenths.
 
-   It stops at bar 11 because bar 11 is a G major chord — a dominant — so
-   looping straight back to the C major of bar 1 is a perfect cadence and the
-   seam is musical rather than a splice. Bars 12 onward were not encoded
-   because the chromatic bars past the halfway point could not be recalled
-   with confidence.                                                          */
+   It stops at bar 8: that is as far as the chords could be written out with
+   no reservation at all. Bar 8 is C major over a B bass, so the loop back to
+   bar 1 resolves the leading tone up to the tonic and the seam is musical
+   rather than a splice. Bars 9 onward are not encoded — see the note below
+   the chord table.                                                          */
 const BACH_BARS: string[][] = [
   ["C4", "E4", "G4", "C5", "E5"], // 1  C
   ["C4", "D4", "A4", "D5", "F5"], // 2  Dm7/C
@@ -173,10 +197,12 @@ const BACH_BARS: string[][] = [
   ["C4", "D4", "F#4", "A4", "D5"], // 6  D7/C
   ["B3", "D4", "G4", "D5", "G5"], // 7  G/B
   ["B3", "C4", "E4", "G4", "C5"], // 8  C/B
-  ["A3", "C4", "E4", "G4", "C5"], // 9  Am7
-  ["D3", "A3", "D4", "F#4", "C5"], // 10 D7
-  ["G3", "B3", "D4", "G4", "B4"], // 11 G   -> loops back to bar 1 as V-I
 ];
+/* Bars 9-11 (Am7, D7, G) were WRITTEN AND THEN CUT. They are probably right,
+   but "probably" is not the bar for shipping a piece this well known, and the
+   confidence fell off exactly there. Bar 8 is C major over a B bass, so the
+   loop back to bar 1 resolves a leading tone up to the tonic — a better seam
+   than the one bars 9-11 were bought with. */
 /** The figure, as indices into a bar's five pitches. Eight sixteenths, played
     twice per bar of 4/4. */
 const BACH_FIG = [0, 1, 2, 3, 4, 2, 3, 4];
@@ -285,7 +311,7 @@ const PIECES: Piece[] = [
     unit: 0.205, // sixteenth; a 4/4 bar lands at ~3.3 s
     units: BACH_BARS.length * 16,
     art: { a: "#10262b", b: "#4f9d8c", glyph: "♫", initials: "JSB", motif: 1 },
-    provenance: "Bars 1-11, transcribed; loops at the bar-11 dominant back to bar 1.",
+    provenance: "Bars 1-8, transcribed; loops from the bar-8 leading tone back to bar 1.",
     build() {
       const out: Note[] = [];
       BACH_BARS.forEach((bar, b) => {
@@ -637,7 +663,8 @@ export class MusicPlayer {
   }
 
   toggle() {
-    this.wanted ? this.pause() : this.play();
+    if (this.wanted) this.pause();
+    else this.play();
   }
 
   /** Back to the top of the current piece and silent. Distinct from pause():

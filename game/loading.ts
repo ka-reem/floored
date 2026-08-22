@@ -56,17 +56,25 @@ export function yieldToPaint(): Promise<void> {
   return new Promise((resolve) => {
     const ch = new MessageChannel();
     let done = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let raf = 0;
     const finish = () => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      /* And drop the frame callback. On the timeout path — a hidden tab — the
+         rAF has not fired and will not until the tab is looked at again, which
+         may be hours; without this, every stage boundary of a backgrounded
+         load leaves a channel and its closure pinned until then, and they all
+         wake at once to post into a closed port. */
+      cancelAnimationFrame(raf);
       // whichever path lost the race must not be left holding an open port
       ch.port1.close();
       resolve();
     };
     ch.port1.onmessage = finish;
-    const timer = setTimeout(finish, HIDDEN_TICK_MS);
-    requestAnimationFrame(() => ch.port2.postMessage(0));
+    timer = setTimeout(finish, HIDDEN_TICK_MS);
+    raf = requestAnimationFrame(() => ch.port2.postMessage(0));
   });
 }
 
@@ -100,7 +108,28 @@ export function withBudget(p: Promise<unknown>, ms: number): Promise<void> {
     Throws whatever a stage throws: the caller owns the error state, because
     only it knows what to put on screen. `cancelled` is polled at every stage
     boundary so a teardown mid-load stops promptly instead of finishing a build
-    into a destroyed renderer. */
+    into a destroyed renderer.
+
+    Cancelling is a TEARDOWN, not a pause, and the caller must treat it as one:
+
+      - the stage already running is not interrupted. Stages are individually
+        synchronous or await their own budgets, so the abandoned build keeps
+        the main thread for the rest of that stage (up to the longest budget in
+        LOAD_WEIGHTS' company — see COMPILE_BUDGET_MS) before the next poll
+        stops it. Cancel is prompt for the player, not instant for the machine.
+      - what the stages built stays built. They append to one scene graph off a
+        single seeded rng stream, so a partial run leaves a partial world with
+        no point to resume from — running the stages again over it stacks a
+        second town on the first, exactly the failure Game.loadFailed exists to
+        prevent for a thrown stage.
+
+    So the contract is: cancel, then DROP the object that owns that scene and
+    build a fresh one. Never call runStages twice against the same world, and
+    never let a later "already loading" fast path hand out the cancelled run's
+    promise as if it had finished — a cancelled run resolves like a successful
+    one. It reports no READY and returns only the timings of the stages that
+    actually ran; the caller's own cancel condition, re-checked after the
+    await, is what tells the two apart. */
 export async function runStages(
   stages: LoadStage[],
   onProgress: (r: LoadReport) => void,
