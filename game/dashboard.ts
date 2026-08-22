@@ -23,6 +23,13 @@ export interface InstrumentCluster {
   update(rpm: number, kmh: number, gearTxt: string, now: number, f: ClusterFlags): void;
 }
 
+/* One believable layer of binnacle cover glass, as a material tint. The donor
+   dash's real pane was hidden (cockpitmodel.ts) because the scan stacked it
+   several layers deep and ate ~25x; bare canvas then overshot the other way —
+   numerals near white bloom under the dashcam pass. This is the middle: dial
+   faces, info panel and needle all keep their hue and drop together. */
+const FACE_DIM = 0.62;
+
 const SWEEP_A0 = Math.PI * 0.75; // canvas angle at frac 0
 const SWEEP = Math.PI * 1.5; // total sweep
 /* Speedo scale per unit. The car tops out near 295 km/h / 183 mph; majors are
@@ -136,6 +143,7 @@ export function buildInstrumentCluster(
       : { color: 0xa8b2c4, metalness: 0.9, roughness: 0.28 }
   );
   const needleMat = new THREE.MeshBasicMaterial({ color: 0xff5058 });
+  needleMat.color.multiplyScalar(FACE_DIM);
   const capMat = new THREE.MeshStandardMaterial({ color: 0x14161e, roughness: 0.45, metalness: 0.6 });
 
   /* housing: a shallow box the dials sit in. No brow/hood on any trim — the
@@ -159,10 +167,9 @@ export function buildInstrumentCluster(
     cv.width = cv.height = S;
     const tex = new THREE.CanvasTexture(cv);
     tex.anisotropy = 4;
-    const face = new THREE.Mesh(
-      new THREE.CircleGeometry(r, 44),
-      new THREE.MeshBasicMaterial({ map: tex, transparent: true })
-    );
+    const faceMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+    faceMat.color.setScalar(FACE_DIM);
+    const face = new THREE.Mesh(new THREE.CircleGeometry(r, 44), faceMat);
     face.position.set(x, 0, 0.002);
     group.add(face);
 
@@ -198,10 +205,9 @@ export function buildInstrumentCluster(
   infoCv.height = 232;
   const infoCtx = infoCv.getContext("2d")!;
   const infoTex = new THREE.CanvasTexture(infoCv);
-  const info = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.145, 0.19),
-    new THREE.MeshBasicMaterial({ map: infoTex, transparent: true })
-  );
+  const infoMat = new THREE.MeshBasicMaterial({ map: infoTex, transparent: true });
+  infoMat.color.setScalar(FACE_DIM);
+  const info = new THREE.Mesh(new THREE.PlaneGeometry(0.145, 0.19), infoMat);
   info.position.set(0, 0, 0.004);
   group.add(info);
 
