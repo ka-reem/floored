@@ -142,7 +142,13 @@ interface Puff {
    and a pileup twenty metres ahead would smoke not at all. The pool grew by
    exactly this reserve (70 -> 96), so the wrecks still have the 70 slots they
    have always had and the spray is additive. Invisible sprites cost a
-   traversal and no draw call, so the idle price of the extra 26 is nil. */
+   traversal and no draw call, so the idle price of the extra 26 is nil.
+
+   The reserve is symmetric: wrecks are capped at `wreckMax` too. Spray is the
+   CONTINUOUS effect — it's on screen every wet lap — while wreck smoke is
+   episodic, so letting a big enough pileup swallow the last slot and delete
+   the spray outright would be the wrong way round. Neither plume can take the
+   other's floor. */
 const SPRAY_MAX = 26;
 /** Rear axle offset and half track, metres. Real specs vary by car (LB 1.44 to
  *  1.5, TRACK 1.3 to 1.58) by centimetres, which is far inside the spread of

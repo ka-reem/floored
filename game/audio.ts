@@ -2301,8 +2301,10 @@ export class GameAudio {
        ceiling as the `thr * rn * rn` it replaces and the 0.0042 coefficient
        is untouched. What changes is when the level arrives, not how loud it
        gets. The engine bus is not touched at all. */
+    const bdt = this.lastBoostT ? clampRange(now - this.lastBoostT, 0, 0.1) : 0.016;
+    this.lastBoostT = now;
     const bTau = this.boost < thr * rn ? 0.55 : 0.22;
-    this.boost += (thr * rn - this.boost) * (1 - Math.exp(-wdt / bTau));
+    this.boost += (thr * rn - this.boost) * (1 - Math.exp(-bdt / bTau));
     const turboTarget = p.turbo * this.boost * rn * 0.0042;
     /* Pitch rides boost as well as rpm — a spooling turbo audibly rises in
        pitch as the shaft picks up speed, and holding the sweep to rpm alone
@@ -2384,7 +2386,11 @@ export class GameAudio {
       if (lim && Math.random() < 0.7) {
         this.lastCrackle = now;
         this.burst(0.05, 900 + Math.random() * 1400, 0.02, 0.7);
-      } else if (overrun > 0.3 && Math.random() < 0.25 * overrun) {
+      // 0.25 -> 0.12 on the overrun term: this is the CONTINUOUS crackle, and
+      // at 0.25*overrun every 0.09s it was a near-constant sizzle whenever the
+      // gas was off at revs. A pop you get every time stops registering as an
+      // event, which is what makes the deliberate volley below land.
+      } else if (overrun > 0.3 && Math.random() < 0.12 * overrun) {
         this.lastCrackle = now;
         this.burst(0.02 + Math.random() * 0.03, 1200 + Math.random() * 2200, 0.012, 1.6);
       }
@@ -2396,13 +2402,28 @@ export class GameAudio {
        sharp high-Q crack for a backfire pop. p.burble sets both how often a
        lift queues a volley at all and how many/how sharp the pops are, so
        kaze/okami crackle readily while shirayuki/tanuki stay mostly quiet. */
+    /* Made deliberately rarer, per "subtle pops sometimes, but it's less
+       likely". Three independent gates were tightened rather than one, so the
+       volley stays a real event instead of just a quieter constant:
+         rn      0.35 -> 0.50  only high in the revs, where a lift actually
+                               dumps enough unburnt charge to pop
+         holdoff 0.5s -> 1.8s  no double volley from one messy lift
+         chance  0.25+0.75b -> 0.10+0.45b   kaze 0.89 -> 0.48, okami 0.92 ->
+                               0.51, shirayuki 0.31 -> 0.14, tanuki 0.40 ->
+                               0.19 — the per-profile SPREAD is preserved, so
+                               the cars still differ; everything just moved
+                               down together.
+       Burst amplitude and timbre are untouched: the ask was fewer, not
+       quieter, and a rare pop wants to keep its full snap. */
     const dThr = thr - this.prevThr;
     if (
-      dThr < -0.35 && rn > 0.35 && now - this.lastBurbleTrigger > 0.5 &&
-      Math.random() < 0.25 + p.burble * 0.75
+      dThr < -0.35 && rn > 0.5 && now - this.lastBurbleTrigger > 1.8 &&
+      Math.random() < 0.1 + p.burble * 0.45
     ) {
       this.lastBurbleTrigger = now;
-      this.burbleCount = 1 + Math.round(Math.random() * (1 + p.burble * 3));
+      // 1-4 -> 1-3 on kaze: a shorter volley reads as a couple of distinct
+      // pops rather than a rattle, which is the point of making them rare.
+      this.burbleCount = 1 + Math.round(Math.random() * (0.4 + p.burble * 2));
       this.burbleNext = now;
     }
     this.prevThr = thr;
