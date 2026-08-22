@@ -249,8 +249,11 @@ export abstract class RouteEdge {
   laneEdge(k: number, s: number) {
     return this.laneOffset(k, s) - this.lanePitch(s) / 2;
   }
+  /** private scratch for worldOf's intermediate pose — never handed out, and
+      read back before worldOf returns, so it cannot alias a caller's pose */
+  private _wp: RoutePose = poseScratch();
   worldOf(s: number, lat: number, out?: { x: number; y: number; z: number }) {
-    const p = this.poseAt(s);
+    const p = this.poseAt(s, this._wp);
     const o = out || { x: 0, y: 0, z: 0 };
     o.x = p.x + lat * p.nx;
     o.y = p.y + lat * p.bank;
@@ -361,6 +364,9 @@ export class MainRouteEdge extends RouteEdge {
   }
 }
 
+/** centreline segments per project() bounding block */
+const SEG_BLK = 16;
+
 /** Any station-sampled route segment: the bypass, the two connector ramps and
     the frontage link all use this. Geometry queries interpolate the stations;
     the inverse mapping scans segments with a bbox reject, exactly the pattern
@@ -397,9 +403,45 @@ export class PolyRouteEdge extends RouteEdge {
     this.x1 = x1;
     this.zb0 = z0;
     this.zb1 = z1;
+
+    /* Segment and block bounding boxes for project(). A point outside a
+       segment's box inflated by the current best distance cannot be closer to
+       that segment than that distance, so skipping it is exactly the `continue`
+       the full scan would have taken — the answer is unchanged, the scan just
+       stops paying a hypot for the ~1100 m of viaduct it is nowhere near. */
+    const nSeg = Math.max(0, stations.length - 1);
+    const nBlk = Math.ceil(nSeg / SEG_BLK);
+    const sb = (this.segBox = new Float64Array(nSeg * 4));
+    const bb = (this.blkBox = new Float64Array(nBlk * 4));
+    for (let k = 0; k < nBlk; k++) {
+      bb[k * 4] = 1e9; bb[k * 4 + 1] = -1e9;
+      bb[k * 4 + 2] = 1e9; bb[k * 4 + 3] = -1e9;
+    }
+    for (let i = 0; i < nSeg; i++) {
+      const a = stations[i], b = stations[i + 1];
+      const ax0 = Math.min(a.x, b.x), ax1 = Math.max(a.x, b.x);
+      const az0 = Math.min(a.z, b.z), az1 = Math.max(a.z, b.z);
+      sb[i * 4] = ax0; sb[i * 4 + 1] = ax1;
+      sb[i * 4 + 2] = az0; sb[i * 4 + 3] = az1;
+      const q = ((i / SEG_BLK) | 0) * 4;
+      if (ax0 < bb[q]) bb[q] = ax0;
+      if (ax1 > bb[q + 1]) bb[q + 1] = ax1;
+      if (az0 < bb[q + 2]) bb[q + 2] = az0;
+      if (az1 > bb[q + 3]) bb[q + 3] = az1;
+    }
   }
-  private seg(s: number): { a: RouteStation; b: RouteStation; t: number } {
+  /** [x0, x1, z0, z1] per centreline segment, and per block of SEG_BLK */
+  private readonly segBox: Float64Array;
+  private readonly blkBox: Float64Array;
+  /** interpolation fraction left behind by locate(); see its contract */
+  segT = 0;
+  /** Non-allocating stationAt: returns the index of the station at or before
+      `s` (its partner is the next one) and leaves the fraction in `segT`.
+      Read the index and `segT` out before calling anything else on this edge —
+      the next locate() overwrites `segT`. */
+  locate(s: number): number {
     const st = this.stations;
+    s = Math.max(0, Math.min(this.len, s));
     let lo = 0, hi = st.length - 1;
     while (lo < hi - 1) {
       const mid = (lo + hi) >> 1;
@@ -407,14 +449,18 @@ export class PolyRouteEdge extends RouteEdge {
       else hi = mid;
     }
     const a = st[lo], b = st[hi];
-    const t = Math.max(0, Math.min(1, (s - a.s) / (b.s - a.s || 1)));
-    return { a, b, t };
+    this.segT = Math.max(0, Math.min(1, (s - a.s) / (b.s - a.s || 1)));
+    return lo;
   }
   stationAt(s: number): { a: RouteStation; b: RouteStation; t: number } {
-    return this.seg(Math.max(0, Math.min(this.len, s)));
+    const st = this.stations;
+    const i = this.locate(s);
+    return { a: st[i], b: st[i + 1] ?? st[i], t: this.segT };
   }
   poseAt(s: number, out?: RoutePose): RoutePose {
-    const { a, b, t } = this.stationAt(s);
+    const st = this.stations;
+    const i = this.locate(s);
+    const a = st[i], b = st[i + 1] ?? a, t = this.segT;
     const o = poseScratch(out);
     o.x = a.x + (b.x - a.x) * t;
     o.y = a.y + (b.y - a.y) * t;
@@ -438,12 +484,16 @@ export class PolyRouteEdge extends RouteEdge {
     return this.pitch;
   }
   halfWidth(s: number) {
-    const { a, b, t } = this.stationAt(s);
+    const st = this.stations;
+    const i = this.locate(s);
+    const a = st[i], b = st[i + 1] ?? a, t = this.segT;
     return Math.min(a.hwL + (b.hwL - a.hwL) * t, a.hwR + (b.hwR - a.hwR) * t);
   }
   /** asymmetric half-widths, for mesh sweeping through the gore wedges */
   halfWidths(s: number): { hwL: number; hwR: number } {
-    const { a, b, t } = this.stationAt(s);
+    const st = this.stations;
+    const i = this.locate(s);
+    const a = st[i], b = st[i + 1] ?? a, t = this.segT;
     return {
       hwL: a.hwL + (b.hwL - a.hwL) * t,
       hwR: a.hwR + (b.hwR - a.hwR) * t,
@@ -456,27 +506,47 @@ export class PolyRouteEdge extends RouteEdge {
     )
       return null;
     const st = this.stations;
+    const sb = this.segBox, bb = this.blkBox;
+    const nSeg = st.length - 1;
     let bd = maxLat, bs = -1, bl = 0;
-    for (let i = 0; i < st.length - 1; i++) {
-      const a = st[i], b = st[i + 1];
-      const dx = b.x - a.x, dz = b.z - a.z;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < 1e-9) continue;
-      let t = ((x - a.x) * dx + (z - a.z) * dz) / d2;
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-      const px = x - (a.x + dx * t), pz = z - (a.z + dz * t);
-      const d = Math.hypot(px, pz);
-      if (d >= bd) continue;
-      bd = d;
-      bs = a.s + (b.s - a.s) * t;
-      bl = px * a.nx + pz * a.nz;
+    /* blocks then segments, in index order — same visit order as the old full
+       scan, so a tie still resolves to the earliest segment */
+    for (let i0 = 0, q = 0; i0 < nSeg; i0 += SEG_BLK, q += 4) {
+      if (
+        x < bb[q] - bd || x > bb[q + 1] + bd ||
+        z < bb[q + 2] - bd || z > bb[q + 3] + bd
+      )
+        continue;
+      const i1 = Math.min(i0 + SEG_BLK, nSeg);
+      for (let i = i0; i < i1; i++) {
+        const p = i * 4;
+        if (
+          x < sb[p] - bd || x > sb[p + 1] + bd ||
+          z < sb[p + 2] - bd || z > sb[p + 3] + bd
+        )
+          continue;
+        const a = st[i], b = st[i + 1];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const d2 = dx * dx + dz * dz;
+        if (d2 < 1e-9) continue;
+        let t = ((x - a.x) * dx + (z - a.z) * dz) / d2;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const px = x - (a.x + dx * t), pz = z - (a.z + dz * t);
+        const d = Math.hypot(px, pz);
+        if (d >= bd) continue;
+        bd = d;
+        bs = a.s + (b.s - a.s) * t;
+        bl = px * a.nx + pz * a.nz;
+      }
     }
     return bs < 0 ? null : { s: bs, lat: bl };
   }
   heightAt(x: number, z: number, pad = 0) {
     const hit = this.project(x, z, Math.max(BYPASS.half, RAMP_W / 2) + pad + 2);
     if (!hit) return null;
-    const { a, b, t } = this.stationAt(hit.s);
+    const st = this.stations;
+    const i = this.locate(hit.s);
+    const a = st[i], b = st[i + 1] ?? a, t = this.segT;
     const hwL = a.hwL + (b.hwL - a.hwL) * t;
     const hwR = a.hwR + (b.hwR - a.hwR) * t;
     if (hit.lat > hwL + pad || hit.lat < -(hwR + pad)) return null;
@@ -633,7 +703,9 @@ export class RouteGraph {
     const e = this.bypass;
     const hit = e.project(x, z, BYPASS.half + pad + 2);
     if (!hit) return null;
-    const { a, b, t } = e.stationAt(hit.s);
+    const st = e.stations;
+    const i = e.locate(hit.s);
+    const a = st[i], b = st[i + 1] ?? a, t = e.segT;
     const hwL = a.hwL + (b.hwL - a.hwL) * t;
     const hwR = a.hwR + (b.hwR - a.hwR) * t;
     if (hit.lat > hwL + pad || hit.lat < -(hwR + pad)) return null;

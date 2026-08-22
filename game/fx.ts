@@ -3,10 +3,22 @@ import { rand } from "./util";
 
 /* Camera-following rain field + pooled smoke sprites for wrecks. */
 
+/** Dashcam eye height above the car origin. Only used to place the near-clip
+ *  bubble below, so it wants the POV camera's height, not an exact figure. */
+const EYE_Y = 1.3;
+/** Squared radius around the eye inside which a drop is a smear across the
+ *  dash rather than rain, and gets thrown back out into the field. */
+const NEAR_R2 = 2 * 2;
+
 export class RainFX {
   pts: THREE.Points;
   private geo: THREE.BufferGeometry;
   private readonly N = 1700;
+  /* Where the volume sat last frame, in world x/z. The drops are stored in the
+     volume's local frame, so cancelling this delta is what keeps them pinned to
+     the world instead of riding along with it — see update(). */
+  private px = 0;
+  private pz = 0;
 
   constructor(scene: THREE.Scene, streakTex: THREE.Texture) {
     this.geo = new THREE.BufferGeometry();
@@ -36,13 +48,36 @@ export class RainFX {
   }
 
   update(dt: number, cx: number, cy: number, cz: number, vx: number, vz: number) {
-    if (!this.pts.visible) return;
+    // the volume is thrown down-road ahead of the car so that the drops which
+    // exist are the ones being driven into. Kept in locals because the
+    // near-clip below needs to know where the eye sits inside the volume.
+    const ex = vx * 0.7,
+      ez = vz * 0.7;
+    const gx = cx + ex,
+      gz = cz + ez;
+    if (!this.pts.visible) {
+      // stay synced while hidden, or the first visible frame would try to
+      // cancel however far the car drove with the rain switched off
+      this.px = gx;
+      this.pz = gz;
+      return;
+    }
     const p = this.geo.attributes.position.array as Float32Array;
-    // the three step sizes are the same for every drop; computing them per
-    // particle was 5100 redundant multiplies a frame at N=1700
-    const fall = 28 * dt,
-      dx = vx * dt * 0.4,
-      dz = vz * dt * 0.4;
+    /* Rain hangs in the world. The drops carry no horizontal motion of their
+       own; subtracting exactly how far the volume travelled leaves each one
+       world-static, so at speed they rake past at true closing velocity. The
+       old fixed 0.4*v drift only cancelled part of the volume's motion, which
+       left the whole field sliding down-road at ~0.6*v — a drizzle bubble
+       towed along by the car rather than rain being driven through. Taking the
+       delta from the previous position rather than from v*dt also absorbs the
+       lead term above, so hard acceleration doesn't jolt the field sideways. */
+    const dx = gx - this.px,
+      dz = gz - this.pz;
+    this.px = gx;
+    this.pz = gz;
+    // the fall step is the same for every drop; computing it per particle was
+    // 1700 redundant multiplies a frame at N=1700
+    const fall = 28 * dt;
     for (let i = 0; i < this.N; i++) {
       const b = i * 3;
       p[b + 1] -= fall;
@@ -57,9 +92,33 @@ export class RainFX {
         p[b] = rand(-60, 60);
         p[b + 2] = rand(-60, 60);
       }
+      // Near-clip the cabin. The eye rides at the car, i.e. `ex/ez` behind the
+      // volume's origin and about eye height up; a drop inside that bubble
+      // draws as a full-screen smear over the dash instead of as rain. Throwing
+      // it back out to a fresh x/z is enough — the bubble is 0.09% of the
+      // volume's footprint, so a single throw effectively always clears it.
+      const qx = p[b] + ex,
+        qy = p[b + 1] - EYE_Y,
+        qz = p[b + 2] + ez;
+      if (qx * qx + qy * qy + qz * qz < NEAR_R2) {
+        p[b] = rand(-60, 60);
+        p[b + 2] = rand(-60, 60);
+      }
     }
     (this.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
-    this.pts.position.set(cx + vx * 0.7, cy, cz + vz * 0.7);
+    this.pts.position.set(gx, cy, gz);
+  }
+
+  /** Drop the field. `streakTex` is deliberately NOT disposed: it belongs to
+   *  the world's material bundle and outlives any one field, the same rule the
+   *  player rig's `shared` allowlist follows. Clearing `visible` first makes a
+   *  stray `update()` after teardown a no-op rather than a write into a
+   *  disposed buffer. */
+  dispose(scene: THREE.Scene) {
+    this.pts.visible = false;
+    scene.remove(this.pts);
+    this.geo.dispose();
+    (this.pts.material as THREE.PointsMaterial).dispose();
   }
 }
 
@@ -133,5 +192,20 @@ export class SmokeFX {
       p.sprite.scale.multiplyScalar(1 + dt * 1.1);
       (p.sprite.material as THREE.SpriteMaterial).opacity = 0.5 * (1 - t);
     }
+  }
+
+  /** Drop the pool. The materials are one-per-puff and ours to release, but
+   *  every one of them carries the SAME `smokeTex` handed in at construction —
+   *  it belongs to the world's material bundle, so disposing it here would
+   *  free a texture we don't own, and free it seventy times over. Emptying the
+   *  pool also makes a stray `emit()`/`update()` after teardown a no-op. */
+  dispose(scene: THREE.Scene) {
+    for (const p of this.pool) {
+      p.sprite.visible = false;
+      scene.remove(p.sprite);
+      (p.sprite.material as THREE.SpriteMaterial).dispose();
+    }
+    this.pool.length = 0;
+    this.cursor = 0;
   }
 }

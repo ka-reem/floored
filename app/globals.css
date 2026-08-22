@@ -515,6 +515,23 @@ canvas.game {
   border-color: #fff;
   box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
 }
+/* A 22px dot is half a tap target. The dot keeps its size and the ::before
+   carries the hit area instead — a pseudo-element's clicks dispatch on its
+   parent, so the existing handler needs no change. 11px of bleed each way is
+   44x44; the gap widens to 22px to match so neighbouring targets abut exactly
+   rather than overlapping (six dots at 44px = 242px, still inside the panel on
+   a 320px phone). Touch-only: the desktop garage keeps its 8px row. */
+body.touch .paintRow {
+  gap: 22px;
+}
+body.touch .paintDot {
+  position: relative;
+}
+body.touch .paintDot::before {
+  content: "";
+  position: absolute;
+  inset: -11px;
+}
 
 /* ---------- Touch controls ---------- */
 .tc {
@@ -532,6 +549,10 @@ canvas.game {
   align-items: center;
   justify-content: center;
   backdrop-filter: blur(4px);
+  /* a drag off a puck must not become overscroll, the iOS callout menu, or a
+     double-tap zoom — the pointer handlers own the gesture outright */
+  touch-action: none;
+  -webkit-touch-callout: none;
 }
 body.touch .tc {
   display: flex;
@@ -546,6 +567,18 @@ body.touch .tc {
    none of them reach the ▲/▼ pedals on the far right. */
 #tcF { right: 104px; width: 56px; height: 56px; font-size: 16px; bottom: 90px; }
 #tcH { right: 168px; width: 56px; height: 56px; font-size: 13px; bottom: 26px; }
+/* The speed + gear block is anchored bottom-left, which on a phone is exactly
+   where the left-hand steering control lives: #tcL is a 74px puck at
+   left:16/bottom:18 (so it covers left 16-90, bottom 18-92) and in wheel mode
+   #swheel is 132px at left:14/bottom:16 (bottom 16-148). Either one buries the
+   most-read element in the HUD. Lift it clear of the taller of the two — the
+   wheel, topping out at 148 — and leave desktop, which has no pucks at all,
+   exactly where it was. */
+body.touch #hud {
+  left: 16px;
+  bottom: 160px;
+}
+
 /* phones: shrink the fixed 172px canvas to a small corner map above the pedals */
 body.touch #mmap {
   width: 84px;
@@ -577,6 +610,14 @@ body.touch #mmap {
   text-align: center;
   line-height: 0.8;
   pointer-events: none;
+}
+
+/* 44px on touch: this is the only on-screen way to reach the pause menu on a
+   phone (Esc has no equivalent), and 38px is under the minimum tap target.
+   Scoped to touch so the desktop chrome is unchanged. */
+body.touch #gearBtn {
+  width: 44px;
+  height: 44px;
 }
 
 #gearBtn {

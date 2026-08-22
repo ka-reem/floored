@@ -1685,23 +1685,110 @@ function buildTunnel(
      moon are both outside. */
   const tileMat = mats.tunnelWall;
   const ceilMat = mats.tunnelCeil;
-  const wallS = new Soup(), ceilS = new Soup();
+
+  /* ---- the bore ----------------------------------------------------------
+     What made the old tube read as a corridor of flat panels rather than as a
+     tunnel was that it was a BOX: two vertical planes and a lid, with the
+     walls 0.55 m outside the shoulder, i.e. very nearly against the lane. Two
+     things fix that and they are the same change:
+
+     - the wall face moves out to TUBE_OUT, which buys room for the raised
+       service walkway every road tunnel has. The kerb sits just outboard of
+       the analytic parapet clamp in collide.ts (halfWidth + 0.06), so the
+       walkway is somewhere the car cannot reach and nothing about how the
+       tunnel drives changes — only what is beside you while you do.
+     - the lid becomes a haunch. Above the springing the section chamfers in
+       over four short facets to a flat crown, which is what a bored or cut-
+       and-cover tube actually looks like, and — because the facets catch the
+       ceiling battens at four different angles — it is also what stops the
+       roof reading as one grey plane sliding past.
+
+     The profile is stated once, as (inward offset from the wall face, height)
+     pairs, and swept; the walkway, dado, duct and crown all come off it. */
+  const TUBE_OUT = 1.55; // wall face, outboard of the pavement edge
+  const KERB_IN = 0.14; // walkway kerb, just outboard of the parapet clamp
+  const WALK_H = 0.26;
+  const DADO_Y = 2.3; // top of the dark lower band
+  const DUCT_Y = 3.55, DUCT_H = 0.42, DUCT_OUT = 0.24; // cable-tray run
+  const SPRING_Y = 4.1; // where the wall stops being vertical
+  /** haunch facets, [offset inward from the wall face, height] */
+  const HAUNCH: readonly (readonly [number, number])[] = [
+    [0, SPRING_Y], [0.25, 4.95], [0.85, 5.65], [1.8, 6.15], [3.0, H],
+  ];
+  const CROWN_IN = HAUNCH[HAUNCH.length - 1][0];
+
+  const wallS = new Soup(), ceilS = new Soup(), dadoS = new Soup(),
+    walkS = new Soup(), ductS = new Soup();
   const i0 = Math.max(0, Math.floor((TUNNEL.z0 - cor.ZB0) / 4));
   const i1 = Math.min(cor.stations.length - 2, Math.ceil((TUNNEL.z1 - cor.ZB0) / 4));
   for (let i = i0; i < i1; i++) {
     const a = cor.stations[i], b = cor.stations[i + 1];
-    const wa = a.hw + 0.55, wb = b.hw + 0.55;
+    const wa = a.hw + TUBE_OUT, wb = b.hw + TUBE_OUT;
     for (const sgn of [-1, 1]) {
-      const lo0 = pt(i, sgn * wa), lo1 = pt(i + 1, sgn * wb);
-      const hi0 = pt(i, sgn * wa, H), hi1 = pt(i + 1, sgn * wb, H);
-      wallS.quad(lo0, lo1, hi1, hi0);
+      /** wall-relative: `o` metres inward from the face, `y` metres up */
+      const P = (i2: number, w: number, o: number, y: number) =>
+        pt(i2, sgn * (w - o), y);
+      // raised service walkway: top face, then its kerb down to the deck
+      const ka = a.hw + KERB_IN, kb = b.hw + KERB_IN;
+      walkS.quad(
+        pt(i, sgn * wa, WALK_H), pt(i + 1, sgn * wb, WALK_H),
+        pt(i + 1, sgn * kb, WALK_H), pt(i, sgn * ka, WALK_H)
+      );
+      walkS.quad(
+        pt(i, sgn * ka, 0), pt(i + 1, sgn * kb, 0),
+        pt(i + 1, sgn * kb, WALK_H), pt(i, sgn * ka, WALK_H)
+      );
+      // dark lower band — a real tube is filthy at splash height and clean
+      // above it, and the line between the two is a longitudinal speed cue
+      dadoS.quad(
+        P(i, wa, 0, WALK_H), P(i + 1, wb, 0, WALK_H),
+        P(i + 1, wb, 0, DADO_Y), P(i, wa, 0, DADO_Y)
+      );
+      // clean upper wall, up to the springing
+      wallS.quad(
+        P(i, wa, 0, DADO_Y), P(i + 1, wb, 0, DADO_Y),
+        P(i + 1, wb, 0, SPRING_Y), P(i, wa, 0, SPRING_Y)
+      );
+      // haunch facets
+      for (let k = 0; k < HAUNCH.length - 1; k++) {
+        const [o0, y0] = HAUNCH[k], [o1, y1] = HAUNCH[k + 1];
+        wallS.quad(
+          P(i, wa, o0, y0), P(i + 1, wb, o0, y0),
+          P(i + 1, wb, o1, y1), P(i, wa, o1, y1)
+        );
+      }
+      // boxed cable-tray run: underside, face, top
+      const oD = -DUCT_OUT; // outward of the wall face is a negative "inward"
+      ductS.quad(
+        P(i, wa, 0, DUCT_Y), P(i + 1, wb, 0, DUCT_Y),
+        P(i + 1, wb, oD, DUCT_Y), P(i, wa, oD, DUCT_Y)
+      );
+      ductS.quad(
+        P(i, wa, oD, DUCT_Y), P(i + 1, wb, oD, DUCT_Y),
+        P(i + 1, wb, oD, DUCT_Y + DUCT_H), P(i, wa, oD, DUCT_Y + DUCT_H)
+      );
+      ductS.quad(
+        P(i, wa, oD, DUCT_Y + DUCT_H), P(i + 1, wb, oD, DUCT_Y + DUCT_H),
+        P(i + 1, wb, 0, DUCT_Y + DUCT_H), P(i, wa, 0, DUCT_Y + DUCT_H)
+      );
     }
-    ceilS.quad(pt(i, -wa, H), pt(i + 1, -wb, H), pt(i + 1, wb, H), pt(i, wa, H));
+    // flat crown between the two haunches
+    const ca = wa - CROWN_IN, cb = wb - CROWN_IN;
+    ceilS.quad(pt(i, -ca, H), pt(i + 1, -cb, H), pt(i + 1, cb, H), pt(i, ca, H));
   }
+  const dadoMat = new THREE.MeshStandardMaterial({
+    color: 0x2b2f38, roughness: 0.92,
+  });
+  const ductMat = new THREE.MeshStandardMaterial({
+    color: 0x3a4049, roughness: 0.55, metalness: 0.55, side: THREE.DoubleSide,
+  });
   const wm = new THREE.Mesh(wallS.geom(false), tileMat);
   const cm = new THREE.Mesh(ceilS.geom(false), ceilMat);
   wm.receiveShadow = true;
   scene.add(wm, cm);
+  scene.add(new THREE.Mesh(dadoS.geom(false), dadoMat));
+  scene.add(new THREE.Mesh(walkS.geom(false), mats.concDarkDouble));
+  scene.add(new THREE.Mesh(ductS.geom(false), ductMat));
 
   /* Portal architecture. The bare collar read as a cardboard cut-out; a real
      urban tunnel mouth is a piece of civil engineering — a headwall carrying
@@ -1713,7 +1800,7 @@ function buildTunnel(
     // the hill is inside the tube: +z of the entry mouth, -z of the exit one
     const inward = entry ? 1 : -1;
     const p = cor.pose(z);
-    const hw = cor.halfWidth(z) + 0.55;
+    const hw = cor.halfWidth(z) + TUBE_OUT;
     const g = new THREE.Group();
     const top = new THREE.Mesh(new THREE.BoxGeometry(hw * 2 + 3.4, 2.2, 1.6), portalMat);
     top.position.y = H + 1.1;
@@ -1806,14 +1893,32 @@ function buildTunnel(
     scene.add(g);
   }
 
-  /* Ceiling lighting: twin-tube fluorescent fixtures every 14 m — a dark
-     housing carrying two emissive tubes — plus an additive glow sprite, which
-     is what actually reads as light without adding real lights to a scene
-     that is already at its shadow-caster budget. */
+  /* Ceiling lighting: twin-tube fluorescent fixtures — a dark housing carrying
+     two emissive tubes — plus an additive glow sprite, which is what actually
+     reads as light without adding real lights to a scene that is already at
+     its shadow-caster budget.
+
+     The spacing is not uniform, and that is the point. Every real road tunnel
+     runs a THRESHOLD ZONE at each mouth: the fittings crowd up near the portal
+     and thin out to the interior pitch a hundred metres in, because a driver
+     coming out of daylight cannot adapt fast enough otherwise. Copying that
+     gives the tube a lighting rhythm that changes as you travel through it —
+     dense, opening out, dense again — instead of one metronome from end to
+     end, and it does it by moving fixtures rather than by changing any
+     brightness, so nothing here can print an edge. */
   const battenMat = new THREE.MeshBasicMaterial({ color: 0xfff0cf, fog: false });
   const housingMat = new THREE.MeshStandardMaterial({
     color: 0x272b33, roughness: 0.6, metalness: 0.5 });
-  const NL = Math.floor((TUNNEL.z1 - TUNNEL.z0) / 14);
+  /** fixture z's: 7 m through the first and last THRESH metres, 14 m between */
+  const battenZ: number[] = [];
+  {
+    const THRESH = 70, LEN = TUNNEL.z1 - TUNNEL.z0;
+    for (let d = 3.5; d < LEN; ) {
+      battenZ.push(TUNNEL.z0 + d);
+      d += Math.min(d, LEN - d) < THRESH ? 7 : 14;
+    }
+  }
+  const NL = battenZ.length;
   const housing = new THREE.InstancedMesh(
     new THREE.BoxGeometry(1.5, 0.16, 4.9), housingMat, NL);
   const bat = new THREE.InstancedMesh(new THREE.BoxGeometry(0.16, 0.07, 4.5), battenMat, NL * 2);
@@ -1826,8 +1931,7 @@ function buildTunnel(
     E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
   const glowPts: number[] = [];
   let n = 0, nt = 0, nw = 0;
-  for (let k = 0; k < NL; k++) {
-    const z = TUNNEL.z0 + 7 + k * 14;
+  for (const z of battenZ) {
     const p = cor.pose(z);
     E.set(0, p.h, 0);
     Q.setFromEuler(E);
@@ -1840,12 +1944,13 @@ function buildTunnel(
       bat.setMatrixAt(nt++, M);
     }
     glowPts.push(p.x, p.y + H - 0.3, p.z);
-    // wall-washer strips low down on both sides
+    // wall-washer strips low down on both sides, sitting on the wall face
+    // just above the dado line rather than floating beside it
     for (const sgn of [-1, 1]) {
-      const lat = sgn * (cor.halfWidth(z) + 0.5);
-      glowPts.push(p.x + lat * p.nx, p.y + 2.6, p.z + lat * p.nz);
-      const wlat = sgn * (cor.halfWidth(z) + 0.32);
-      V.set(p.x + wlat * p.nx, p.y + 2.72, p.z + wlat * p.nz);
+      const lat = sgn * (cor.halfWidth(z) + TUBE_OUT - 0.06);
+      glowPts.push(p.x + lat * p.nx, p.y + DADO_Y + 0.3, p.z + lat * p.nz);
+      const wlat = sgn * (cor.halfWidth(z) + TUBE_OUT - 0.3);
+      V.set(p.x + wlat * p.nx, p.y + DADO_Y + 0.42, p.z + wlat * p.nz);
       M.compose(V, Q, S);
       washer.setMatrixAt(nw++, M);
     }
@@ -1902,6 +2007,57 @@ function buildTunnel(
     scene.add(shrouds, discs, bracks);
   }
 
+  /* Emergency-phone cabinets on the right-hand walkway. The walkway is the
+     whole reason these can exist — before the bore was widened there was
+     nowhere to stand one — and they are the piece of furniture that makes the
+     tube read as a serviced structure rather than a lined hole. Yellow box,
+     orange 非常電話 plate, one instanced pair for the lot of them; spaced so
+     they interleave with the green exit boards on the opposite wall rather
+     than passing at the same instant. */
+  {
+    const NP = Math.floor((TUNNEL.z1 - TUNNEL.z0 - 90) / 84);
+    if (NP > 0) {
+      const boxMat = new THREE.MeshStandardMaterial({
+        color: 0xb9812a, roughness: 0.6, metalness: 0.35,
+      });
+      const box = new THREE.InstancedMesh(new THREE.BoxGeometry(0.36, 1.15, 0.78), boxMat, NP);
+      const sosTex = makeTex(192, 96, (ctx, w2, h2) => {
+        ctx.fillStyle = "#d4531c";
+        ctx.fillRect(0, 0, w2, h2);
+        ctx.fillStyle = "#fff3e2";
+        ctx.textAlign = "center";
+        ctx.font = '700 32px "Hiragino Sans",sans-serif';
+        ctx.fillText("非常電話", w2 / 2, 40);
+        ctx.font = "800 34px sans-serif";
+        ctx.fillText("SOS", w2 / 2, 80);
+      });
+      const plate = new THREE.InstancedMesh(
+        new THREE.PlaneGeometry(0.68, 0.34),
+        new THREE.MeshBasicMaterial({ map: sosTex, fog: false }), NP);
+      let np = 0;
+      for (let k = 0; k < NP; k++) {
+        const z = TUNNEL.z0 + 72 + k * 84;
+        const p = cor.pose(z);
+        const lat = cor.halfWidth(z) + TUBE_OUT - 0.2;
+        E.set(0, p.h, 0);
+        Q.setFromEuler(E);
+        V.set(p.x + lat * p.nx, p.y + WALK_H + 0.58, p.z + lat * p.nz);
+        M.compose(V, Q, S);
+        box.setMatrixAt(np, M);
+        E.set(0, p.h - Math.PI / 2, 0); // face across the tube, at the driver
+        Q.setFromEuler(E);
+        const pl = lat - 0.2;
+        V.set(p.x + pl * p.nx, p.y + WALK_H + 0.86, p.z + pl * p.nz);
+        M.compose(V, Q, S);
+        plate.setMatrixAt(np++, M);
+      }
+      box.count = plate.count = np;
+      box.computeBoundingSphere();
+      plate.computeBoundingSphere();
+      scene.add(box, plate);
+    }
+  }
+
   /* Emergency-exit boards down the left wall — the single most recognisable
      piece of tunnel furniture there is, and their green is the only colour in
      the tube that is not sodium. Unlit like the battens: it is night in here
@@ -1924,7 +2080,7 @@ function buildTunnel(
     for (let k = 0; k < NE; k++) {
       const z = TUNNEL.z0 + 44 + k * 56;
       const p = cor.pose(z);
-      const lat = -(cor.halfWidth(z) + 0.42);
+      const lat = -(cor.halfWidth(z) + TUBE_OUT - 0.08);
       E.set(0, p.h + Math.PI / 2, 0);
       Q.setFromEuler(E);
       V.set(p.x + lat * p.nx, p.y + 2.5, p.z + lat * p.nz);

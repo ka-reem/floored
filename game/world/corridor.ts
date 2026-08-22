@@ -260,6 +260,12 @@ const SECTION_PLAN: readonly Section[] = [
   // the stretch the bypass viaduct crosses back over (routegraph puts its
   // flyover at z ≈ 812–840): railing, so the span overhead is visible
   { z0: 608, z1: 800, kind: "rail" },
+  /* Past the toll plaza the lap used to run 800 m to the first sweeper with
+     nothing in it at all — the longest undressed stretch on the road, and it
+     straddles the splice, so it is also the stretch the player sees twice in
+     a row. It is inside the canonical band, so wrapZ keying builds its twin
+     in the overrun before Z0 for free and the seam stays invisible. */
+  { z0: 1760, z1: 1920, kind: "rail" },
 ];
 
 /** Length of one perforated-screen run on the PITCH.soundwall lattice. */

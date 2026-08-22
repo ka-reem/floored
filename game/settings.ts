@@ -216,6 +216,14 @@ export interface GameSettings {
   fovBase: number;
   vol: number;
   autoTime: boolean;
+  /** hour of day, 0..24, the world starts at (R in game / the panel slider).
+      autoTime persisted without this, so the day/night *cycle* survived a
+      reload while the time it ran from did not. */
+  time: number;
+  /** wet road + rain particles (R in game) */
+  rain: boolean;
+  /** HUD minimap visible (X in game) */
+  mmap: boolean;
   /** manual render-tier override; "auto" defers to device detection */
   tierOverride: TierOverride;
 }
@@ -245,6 +253,11 @@ export const defaultSettings = (): GameSettings => ({
   fovBase: 67,
   vol: 1,
   autoTime: true,
+  /* the engine's long-standing hardcoded start hour — dusk, which is the light
+     the dashcam look was tuned in */
+  time: 21.4,
+  rain: false,
+  mmap: true,
   tierOverride: "auto",
 });
 
@@ -291,7 +304,17 @@ const KEY = "neonx.profile.v3";
 /** Settings that must survive as finite numbers — a NaN here reaches the
  *  renderer (fovBase → projection matrix), the audio graph (vol → gain) or the
  *  chunk culler (drawDist) and poisons it silently. */
-const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol"] as const;
+const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
+
+/** Booleans that a hand-edited, half-migrated or otherwise mangled entry could
+ *  hold as a string, a number or null. Anything that is not a real boolean
+ *  falls back to the DEFAULT rather than to `false`: mmap and most of the
+ *  render toggles default on, so coercing junk with `=== true` would quietly
+ *  turn them off instead of ignoring the bad value. */
+const BOOL_KEYS = [
+  "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
+  "autoTime", "rain", "mmap",
+] as const;
 
 /** Non-negative integer, or the fallback. For the persisted array indices whose
  *  consumers wrap with `%`: JS `%` keeps the sign and never rounds, so neither a
@@ -317,12 +340,18 @@ export function loadProfile(): Profile {
       settings.fog = n <= 0.05 ? "off" : n < 0.95 ? "light" : n < 1.8 ? "medium" : "heavy";
     }
     if (settings.units !== "mph" && settings.units !== "kmh") settings.units = "mph";
-    settings.dashcam = settings.dashcam === true;
+    for (const k of BOOL_KEYS)
+      if (typeof settings[k] !== "boolean") settings[k] = base.settings[k];
     if (settings.tierOverride !== "auto" && !isRenderTier(settings.tierOverride))
       settings.tierOverride = "auto";
     for (const k of NUM_KEYS)
       if (typeof settings[k] !== "number" || !Number.isFinite(settings[k]))
         settings[k] = base.settings[k];
+    /* Time of day is a 0..24 hour clock feeding the sun angle, the fog blend
+       and the HUD clock. The engine re-wraps it with `% 24` every frame, which
+       recovers an overshoot but keeps the sign of a negative — so a stored
+       -3 would sit below the curve forever. Pin the range here instead. */
+    settings.time = Math.min(24, Math.max(0, settings.time));
     const prof: Profile = { ...base, ...p, settings };
     /* paintIx and camMode index fixed tables. Their consumers wrap with `%`,
        which recovers an integer overshoot but not a negative or fractional

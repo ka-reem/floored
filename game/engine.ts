@@ -26,6 +26,7 @@ import { buildPlayerCar, type PlayerRig } from "./player";
 import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, type GaugeFlags } from "./cockpit";
 import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
+import { MusicPlayer } from "./music";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap } from "./minimap";
@@ -339,6 +340,10 @@ export class Game {
   private post: PostFX;
   private traffic!: Traffic;
   private audio = new GameAudio();
+  /** In-dash classical player (game/music.ts). Public because the dash screen
+      reads its state to draw the panel. Desktop only — `music.enabled` is
+      false on touch and every call is then a no-op. */
+  music = new MusicPlayer();
   private rainFX!: RainFX;
   private smokeFX!: SmokeFX;
   private rig!: PlayerRig;
@@ -862,6 +867,14 @@ export class Game {
     this.hiHeld = false;
     this.hiConsumed = false;
     this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
+    /* Same reasoning as hiHeld, and worse consequences: the keyup for a held B
+       never arrives either, and lookBack has no timer to fall back on — the
+       camera stays reversed for the rest of the session. */
+    this.lookBack = false;
+    /* Analog steer state is not a key and so survives the loop above. A phone
+       put down mid-corner, or left tilted through a pause, otherwise resumes
+       still steering. */
+    this.wheelVal = this.tiltVal = 0;
   };
 
   /* ---------------- rig ---------------- */
@@ -959,6 +972,20 @@ export class Game {
       const cv = document.getElementById("mmap");
       if (cv) cv.style.display = this.mmap ? "block" : "none";
       this.ui.toast("MAP " + (this.mmap ? "ON" : "OFF"));
+    }
+    /* In-dash music transport. P / , / . are the only free keys left that map
+       to the convention people already have in their fingers (P for play-
+       pause, and the , . pair which carry < > as their shifted glyphs, i.e.
+       the transport arrows). Desktop only: music.enabled is false on touch,
+       where these keys cannot be pressed anyway. */
+    if (k === "p") {
+      this.music.toggle();
+      if (this.music.enabled)
+        this.ui.toast(this.music.playing ? "♪ " + this.music.track.title : "MUSIC PAUSED");
+    }
+    if (k === "," || k === ".") {
+      k === "." ? this.music.next() : this.music.prev();
+      if (this.music.enabled) this.ui.toast("♪ " + this.music.track.title);
     }
     if (k === "b") this.lookBack = true;
     if (k === "g") this.hiBeamDown();
@@ -1084,6 +1111,16 @@ export class Game {
       this.input.horn = o.horn ?? 0;
       return;
     }
+    /* Paused, the menu owns the keyboard: W held in the pause menu, or the
+       Space that activates a focused menu button, would otherwise keep ramping
+       th/hb and resume with throttle or the handbrake already applied. Zeroed
+       rather than skipped so the ramp restarts from rest, matching the blur
+       path. Placed here, not at the top of readInput — everything above still
+       has to run while paused so a held beam key can't stall the lamps. */
+    if (!this.running) {
+      this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
+      return;
+    }
     const tT = kd["w"] || kd["arrowup"] ? 1 : 0;
     const tB = kd["s"] || kd["arrowdown"] ? 1 : 0;
     const sL = kd["a"] || kd["arrowleft"] ? 1 : 0;
@@ -1148,6 +1185,7 @@ export class Game {
     }
     this.timeSpeed = s.autoTime ? (this.timeSpeed === 0 ? 150 : this.timeSpeed) : 0;
     this.audio.setLevels(s.vol, this.running ? 1 : 0.12);
+    this.music.setLevels(s.vol);
   }
 
   /** The scanned road detail layers — the extra albedo and normal fetches, but
@@ -1190,6 +1228,8 @@ export class Game {
   primeAudio() {
     this.audio.init();
     this.audio.setCar(this.carId);
+    // The music player keeps its own AudioContext and needs the same gesture.
+    this.music.prime();
   }
 
   /** Begin the render loop. The warm-up stage of the load calls this too, so
@@ -1214,6 +1254,7 @@ export class Game {
        describes the graph — drop it, or unpausing inside the tunnel would come
        back bone dry and stay that way until the blend happened to move. */
     this.lastReverb = -1;
+    this.music.setRunning(run);
     if (run) this.acc = 0;
   }
 
@@ -1227,7 +1268,21 @@ export class Game {
     window.removeEventListener("blur", this.onWindowBlur);
     document.body.classList.remove("touch");
     this.audio.dispose();
+    this.music.dispose();
     this.post.dispose();
+    /* The rig owns ~10 env-mapped materials registered in carenv's module-level
+       `tracked` Set. Without this they stay pinned to a dead GL context, and
+       since primeCarEnv's `started` flag never clears, the next renderer after
+       a remount or HMR silently never receives the HDRI and falls back to the
+       painted cube for good. rig.dispose() untracks them (player.ts:745). */
+    this.rig?.dispose(this.scene);
+    /* Geometry, the rain PointsMaterial and 70 SpriteMaterials. Optional-chained
+       for the same reason as the rig: both are `!`-declared and only exist once
+       the world has built. Their textures (streakTex/smokeTex) are deliberately
+       NOT freed here — they belong to the material bundle and outlive the FX,
+       and smokeTex is the same object on all 70 sprites. */
+    this.rainFX?.dispose(this.scene);
+    this.smokeFX?.dispose(this.scene);
     this.renderer.dispose();
     this.renderer.domElement.remove();
     delete (window as any).__neonx;
@@ -2636,8 +2691,16 @@ export class Game {
         this.hiFlashPulse
       );
       this.hiFlashPulse = false; // one press, one gesture — consumed here
+      /* Per SECOND, not per rendered frame. This gate was a flat 0.35 chance
+         every frame, so a 120 Hz display made four times the smoke a 30 Hz one
+         did — everything inside fx.ts is dt-scaled and this was the last term
+         that wasn't. 25.85/s is the Poisson rate whose per-frame probability
+         is exactly 0.35 at 60fps, so the density there is what it always was;
+         only the other refresh rates move, and they move onto it. A long dt
+         after a stall saturates at p→1, i.e. one puff per wreck, not a burst. */
+      const pSmoke = 1 - Math.exp(-25.85 * dt);
       for (const w of this.traffic.activeWrecks())
-        if (Math.random() < 0.35) this.smokeFX.emit(w.x, w.y + 0.9, w.z, Math.random() < 0.15);
+        if (Math.random() < pSmoke) this.smokeFX.emit(w.x, w.y + 0.9, w.z, Math.random() < 0.15);
       this.smokeFX.update(dt);
       this.signalsUpdate(now);
       this.weather(dt, now);

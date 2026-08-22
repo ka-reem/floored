@@ -96,8 +96,11 @@ interface Piece {
   /** total length of one pass, in score units; the piece loops at this point */
   units: number;
   /** Album-art tile: two hex colours, a glyph and the composer's initials, so
-      the dash panel can draw a recognisable tile with no image asset. */
-  art: { a: string; b: string; glyph: string; initials: string };
+      the dash panel can draw a recognisable tile with no image asset. `motif`
+      indexes the shape vocabulary carscreen.ts already draws — carried here
+      so the panel picks a cover per track without this file knowing how a
+      cover is drawn. */
+  art: { a: string; b: string; glyph: string; initials: string; motif: number };
   /** What is transcription and what is realisation. Surfaced in the public
       track metadata so it never drifts out of sync with the notes. */
   provenance: string;
@@ -258,7 +261,7 @@ const PIECES: Piece[] = [
     voice: "piano",
     unit: 0.175, // sixteenth; a 3/8 bar lands at ~1.05 s — Beethoven's "poco moto"
     units: FUR_BLOCK * 3,
-    art: { a: "#241a33", b: "#8a6fbf", glyph: "♪", initials: "LvB" },
+    art: { a: "#241a33", b: "#8a6fbf", glyph: "♪", initials: "LvB", motif: 6 },
     provenance: "A section only, transcribed; played three times. B/C sections omitted.",
     build() {
       const out: Note[] = [];
@@ -281,7 +284,7 @@ const PIECES: Piece[] = [
     voice: "piano",
     unit: 0.205, // sixteenth; a 4/4 bar lands at ~3.3 s
     units: BACH_BARS.length * 16,
-    art: { a: "#10262b", b: "#4f9d8c", glyph: "♫", initials: "JSB" },
+    art: { a: "#10262b", b: "#4f9d8c", glyph: "♫", initials: "JSB", motif: 1 },
     provenance: "Bars 1-11, transcribed; loops at the bar-11 dominant back to bar 1.",
     build() {
       const out: Note[] = [];
@@ -314,7 +317,7 @@ const PIECES: Piece[] = [
     voice: "strings",
     unit: 1.15, // one ground-bass note
     units: 24, // three eight-note cycles
-    art: { a: "#2b1c14", b: "#b3823f", glyph: "♬", initials: "JP" },
+    art: { a: "#2b1c14", b: "#b3823f", glyph: "♬", initials: "JP", motif: 5 },
     provenance:
       "Ground bass, harmony and the first violin variation transcribed; later variations omitted.",
     build() {
@@ -342,7 +345,7 @@ const PIECES: Piece[] = [
     voice: "strings",
     unit: 0.517, // quarter note at ~116 bpm
     units: 64,
-    art: { a: "#1b1f36", b: "#6e7fc4", glyph: "♩", initials: "LvB" },
+    art: { a: "#1b1f36", b: "#6e7fc4", glyph: "♩", initials: "LvB", motif: 0 },
     provenance:
       "Melody transcribed (all 16 bars). Accompaniment is a conventional I-V realisation, not Beethoven's scoring.",
     build() {
@@ -449,6 +452,9 @@ export class MusicPlayer {
   private cursor = 0;
   /** seconds into the piece, held across a pause */
   private offset = 0;
+  /** whether the graph was actually sounding as of the last sync(); the
+      playhead is only meaningful (and only worth banking) when it was */
+  private soundOn = false;
   private vol = 1;
 
   constructor() {
@@ -493,7 +499,7 @@ export class MusicPlayer {
     return p.units * p.unit;
   }
   get elapsed() {
-    if (!this.ctx || !this.running) return this.offset;
+    if (!this.ctx || !this.soundOn) return this.offset;
     return clamp(this.ctx.currentTime - this.pieceStart, 0, this.duration);
   }
   get progress() {
@@ -639,8 +645,8 @@ export class MusicPlayer {
   stop() {
     if (!this.enabled) return;
     this.wanted = false;
-    this.offset = 0;
-    this.sync();
+    this.sync(); // banks the playhead on the way down...
+    this.offset = 0; // ...which stop() then throws away. Rewinding is the whole difference from pause().
     this.onChange?.();
   }
 
@@ -704,9 +710,21 @@ export class MusicPlayer {
       knows how to start and stop sound. */
   private sync() {
     if (!this.ready || !this.ctx) return;
-    if (this.running) {
+    const on = this.running;
+    /* Bank the playhead BEFORE tearing the schedule down — once pieceStart is
+       re-anchored the position is gone. A skip stays "running" through this
+       call and so never reaches the capture; stop() does reach it and throws
+       the captured value away afterwards. */
+    if (this.soundOn && !on)
+      this.offset = clamp(this.ctx.currentTime - this.pieceStart, 0, this.duration);
+    this.soundOn = on;
+
+    if (on) {
       if (this.ctx.state === "suspended") this.ctx.resume().catch(() => {});
-      // A small offset into the future so the first notes are scheduled
+      // A track change arrives here still "running"; the outgoing piece's
+      // notes are already scheduled and have to go.
+      this.killVoices(0.1);
+      // Anchor a little into the future so the first notes are scheduled
       // rather than fired late.
       this.pieceStart = this.ctx.currentTime + 0.06 - this.offset;
       this.syncCursor();
@@ -714,8 +732,6 @@ export class MusicPlayer {
       this.startTimer();
       this.tick();
     } else {
-      this.offset = clamp(this.offset, 0, this.duration);
-      if (this.ctx) this.offset = this.captureOffset();
       this.stopTimer();
       this.rampMaster(0, 0.12);
       // The bus fade covers the audible transition; killing the voices behind
@@ -723,11 +739,6 @@ export class MusicPlayer {
       // ringing on into the pause menu.
       this.killVoices(0.14);
     }
-  }
-
-  private captureOffset(): number {
-    if (!this.ctx || !this.wanted) return this.offset;
-    return clamp(this.ctx.currentTime - this.pieceStart, 0, this.duration);
   }
 
   /** Point `cursor` at the first note at or after the resume position. */
@@ -768,10 +779,7 @@ export class MusicPlayer {
         this.cursor = 0;
         // If the clock has run so far ahead that a whole pass fits before the
         // horizon, snap rather than render the missed pass into the past.
-        if (this.pieceStart + dur < now) {
-          this.pieceStart = now;
-          this.offset = 0;
-        }
+        if (this.pieceStart + dur < now) this.pieceStart = now;
         continue;
       }
       const n = notes[this.cursor];
@@ -882,7 +890,7 @@ export class MusicPlayer {
          thing a fake piano can do. */
       const tau = lerp(2.3, 0.34, clamp((n.midi - 36) / 48, 0, 1));
       const peak = 0.3 * n.v * n.v; // squared: velocity curve, not a linear fader
-      env.gain.setValueAtTime(0.0001, at);
+      env.gain.setValueAtTime(0, at);
       env.gain.linearRampToValueAtTime(peak, at + 0.004);
       env.gain.setTargetAtTime(0, at + 0.004, tau);
 
@@ -921,8 +929,8 @@ export class MusicPlayer {
       const held = Math.max(dur, 0.12);
       const damp = 0.14;
       const atOff = at + held;
-      env.gain.setValueAtTime(Math.max(peak * Math.exp(-held / tau), 1e-5), atOff);
-      env.gain.linearRampToValueAtTime(0.0001, atOff + damp);
+      env.gain.setValueAtTime(peak * Math.exp(-held / tau), atOff);
+      env.gain.linearRampToValueAtTime(0, atOff + damp);
       off = atOff + damp;
     } else {
       /* Strings: bowed, so it swells in and holds, and the release is the bow
@@ -930,14 +938,22 @@ export class MusicPlayer {
       const peak = 0.24 * n.v * n.v;
       const atk = 0.085;
       const rel = 0.34;
+      const sag = 0.5; // time constant of the post-attack settle
       const held = Math.max(dur, atk + 0.05);
-      env.gain.setValueAtTime(0.0001, at);
+      env.gain.setValueAtTime(0, at);
       env.gain.linearRampToValueAtTime(peak, at + atk);
       // A slight decay off the attack peak keeps a held chord from sounding
       // like an organ.
-      env.gain.setTargetAtTime(peak * 0.82, at + atk, 0.5);
-      env.gain.setValueAtTime(peak * 0.84, at + held);
-      env.gain.linearRampToValueAtTime(0.0001, at + held + rel);
+      env.gain.setTargetAtTime(peak * 0.82, at + atk, sag);
+      /* Where that settle has actually reached by the release, in closed form.
+         Hardcoding an approximation here puts a step in the envelope on short
+         notes — where the settle has barely started — and short notes are
+         exactly where a step clicks. */
+      env.gain.setValueAtTime(
+        peak * (0.82 + 0.18 * Math.exp(-(held - atk) / sag)),
+        at + held
+      );
+      env.gain.linearRampToValueAtTime(0, at + held + rel);
 
       filt.frequency.setValueAtTime(clamp(f * (3 + 5 * n.v), 500, 5200), at);
       off = at + held + rel;
@@ -954,7 +970,7 @@ export class MusicPlayer {
     const cur = g.value;
     g.cancelScheduledValues(now);
     g.setValueAtTime(cur, now);
-    g.linearRampToValueAtTime(0.0001, now + fade);
+    g.linearRampToValueAtTime(0, now + fade);
     for (const s of v.srcs) {
       try {
         s.stop(now + fade + 0.02);

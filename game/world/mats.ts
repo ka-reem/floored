@@ -208,6 +208,13 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      programs mid-drive. */
   const grimeTex = grimeTexF();
   const uWeatherK = { value: 1 };
+  /* 1 / the concrete scan's mean linear luminance, so multiplying by it turns
+     the scan into a UNIT-MEAN detail layer and the material tint becomes the
+     surface's actual albedo. Exactly the trick upgradeRoad uses for the road
+     detail albedo (uDetMean), and for the same reason: a mid-grey tint over a
+     mid-grey photo is a near-black wall. 1 until the scan lands and measures
+     itself, which is also the right value for the procedural fallback. */
+  const uConcAlb = { value: 1 };
 
   const ud = (m: THREE.MeshStandardMaterial) => m.userData as unknown as RoadUD;
 
@@ -556,6 +563,10 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     rough?: number;
     /** warm oxide tint carried by the heaviest streaks (galvanised steel) */
     rust?: number;
+    /** divide the photo scan by its own mean so the material tint IS the
+        albedo (see uConcAlb). Concrete only — every other set's level was
+        tuned against the un-normalised scan and must stay there. */
+    normalise?: boolean;
     /** world metres per repeat of the macro field */
     macroScale?: number;
     /** world metres per repeat of the streak field, before the v stretch */
@@ -610,6 +621,7 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     const topClean = o.topClean ?? 0.1;
     const rough = o.rough ?? 0.2;
     const rust = o.rust ?? 0;
+    const norm = o.normalise === true;
     const macK = 1 / (o.macroScale ?? 11.3);
     const strK = 1 / (o.streakScale ?? 2.9);
     const f = (n: number) => n.toFixed(4);
@@ -625,6 +637,7 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       prevHook?.call(mat, sh, renderer);
       sh.uniforms.tGrime = { value: grimeTex };
       sh.uniforms.uWeatherK = uWeatherK;
+      if (norm) sh.uniforms.uConcAlb = uConcAlb;
 
       sh.vertexShader = sh.vertexShader
         .replace(
@@ -652,11 +665,20 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
         .replace(
           "#include <common>",
           "#include <common>\nvarying vec3 vWeaW; varying vec3 vWeaN;\n" +
-            "uniform sampler2D tGrime; uniform float uWeatherK;"
+            "uniform sampler2D tGrime; uniform float uWeatherK;" +
+            (norm ? "\nuniform float uConcAlb;" : "")
         )
         .replace(
           "#include <map_fragment>",
-          `#include <map_fragment>
+          `#include <map_fragment>${
+            norm
+              ? `
+/* Scan → unit mean, so the tint above is the real albedo. OUTSIDE the perf
+   branch on purpose: this is not detail, it is the surface's brightness, and
+   dropping to the low preset must not repaint the world four shades darker. */
+diffuseColor.rgb *= uConcAlb;`
+              : ""
+          }
 /* declared at main scope, not inside the branch: <roughnessmap_fragment>
    further down reads them, and a zeroed set there costs one madd */
 float wMac = 0.0, wDirt = 0.0, wJnt = 0.0, wTop = 0.0;
@@ -744,7 +766,7 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
         );
     };
     mat.customProgramCacheKey = () =>
-      `weather|${f(macro)}|${f(streak)}|${f(joint)}|${f(rust)}|${prevKey}`;
+      `weather|${f(macro)}|${f(streak)}|${f(joint)}|${f(rust)}|${norm ? 1 : 0}|${prevKey}`;
   }
 
   const road = new THREE.MeshStandardMaterial({
@@ -773,31 +795,55 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
   ud(hwy).grooveAmt = 0.16;
   ud(hwy).grooveFreq = 28 * Math.PI * 2;
 
-  /* CONCRETE IS A DIELECTRIC. metalness must be ~0 on every one of these, and
-     that is a correction, not a taste call: `barrier` shipped at 0.35 with no
-     metalness map behind it, which under three's PBR model does two wrong
-     things at once — it throws away 35 % of the diffuse response (so the wall
-     was lit like 0.10-albedo asphalt when its albedo says 0.15 concrete) and
-     it hands that energy to a broad albedo-tinted specular lobe off the fake
-     env cube. A dark, evenly sheened, hue-tinted surface is the definition of
-     grey plastic, and it is the largest single reason the barriers did not
-     read as concrete.
+  /* ------------------------------------------------------------------
+     The parapets: two measured defects, and why 0x272523 is not a typo
+     ------------------------------------------------------------------
 
-     What that costs elsewhere, worked through so nobody has to guess:
-       - the beam wash is UNAFFECTED. addBeam's wash path adds
-         `diffuseColor × tint × …` at <emissivemap_fragment>, and metalness is
-         not folded into diffuseColor until <lights_physical_fragment> further
-         down. Only the tint below moves it — see the note there.
-       - lit response rises by 1/(1-0.35) = 1.54x. The tint is pulled back to
-         ~0.81 in linear to spend about half of that, leaving ~1.23x: concrete
-         that is plainly lighter than the tarmac beside it in daylight, which
-         is how a real parapet looks and how it never did here.
+     (1) CONCRETE IS A DIELECTRIC. `barrier` shipped at metalness 0.35 with no
+     metalness map behind it. Under three's PBR model that does two wrong
+     things at once: it deletes 35 % of the diffuse response, and it hands
+     that energy to a broad albedo-tinted specular lobe off the fake env cube.
+     Dark, evenly sheened, hue-tinted — that is the definition of grey
+     plastic, and no amount of texture work fixes it while metalness is set.
+     Roughness goes up with it (0.55 → 0.84): with the scan's measured mean of
+     0.686 the old base put every texel in the 0.30-0.72 semi-gloss band, i.e.
+     painted metal. 0.84 spreads the same map over 0.46-1.0, which is
+     weathered concrete and is what lets the headlight break across it.
 
-     The tint also loses its blue cast (0x8d939f had B 18 points over R).
-     Concrete's own albedo is neutral-to-warm; the blue in a night frame comes
-     from the sky and the ambient, and baking it into the albedo as well is
-     what made the wall look painted. 0x82817c is neutral, a touch warm. */
-  const CONC_TINT = 0x82817c;
+     (2) THE TINT WAS DOUBLE-DARKENING THE SCAN, by about 14x. This engine
+     runs with THREE.ColorManagement DISABLED, so a material `color` hex is
+     used RAW — 0x14161c on the deck asphalt is 0.086 *linear*, a physically
+     right asphalt albedo, and that is the convention every number here has to
+     be read in. But `barrier`'s 0x8d939f is 0.575 linear: fresh white
+     plaster, ~6.6x the road, which was tolerable only because it is the
+     no-scan fallback almost nobody sees. When the concrete scan lands it is
+     kept as a MULTIPLIER over it, and the scan's own mean linear luminance is
+     0.0734 — so the shipped parapet albedo was 0.575 × 0.0734 = 0.042, and
+     0.027 after the metalness cut. The road beside it is 0.078. The barrier
+     was reflecting ONE THIRD of the light of the tarmac it stands on: a
+     concrete wall darker than asphalt, in every frame, at every hour. That is
+     the single biggest reason it read as fake, and it is not something the
+     eye forgives however good the texture is.
+
+     The fix is the same one upgradeRoad already uses for the detail layer:
+     normalise the scan to unit mean (uConcAlb below) so the TINT alone sets
+     the albedo, in both the scanned and the procedural path. The tint is then
+     an honest linear albedo, which is why it looks so dark as a hex —
+     0x272523 is 0.146 linear, about 1.9x the road. Real weathered concrete
+     runs 0.12-0.30 against asphalt's 0.06-0.12, so this sits at the grimy end
+     of correct, which suits a sooty urban expressway. Neutral with a whisper
+     of warmth, and deliberately no longer blue: 0x8d939f carried B 18 points
+     over R, and baking the night sky's colour into the albedo as well as the
+     lighting is a large part of what made the wall look painted.
+
+     Knock-on, worked through rather than guessed:
+       - daylight: albedo 0.027 → 0.146 lit. Against a vertical face's ~0.6x
+         sky irradiance that lands the wall at ~0.34 POV display luma next to
+         the road's ~0.35 — plainly concrete, no clipping (clip is 0.72).
+       - night: the beam wash is albedo-proportional by construction, so it
+         rises with it. See the note on WALL_WASH below; it was aimed at a
+         read it could never reach on a 0.042 albedo. */
+  const CONC_TINT = 0x272523;
   const conc = new THREE.MeshStandardMaterial({
     color: 0x33363f, roughness: 0.82, metalness: 0.0,
   });
@@ -949,27 +995,31 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
      vertical face beside the road: the dipped cone is edge-pinned with
      penumbra 1.0, so barrier faces sit in the near-zero rim of its angular
      smoothstep at every distance. Numbers, worked against the POV grade:
-     albedo ≈ 0.15 linear (0x8d939f tint × concrete scan), so peak wash is
-     0.15 × 0.5 ≈ 0.08 linear → ~0.33 display luma after ACES + the dashcam
-     crush — plainly lit concrete, and well under the 0.72 blown-highlight
-     clip and the ~0.8 hue bleach. Fade is cone × range smoothsteps: the wall
-     beside the doors is outside the cone (dark), brightens in over ~3-8 m
-     ahead, and dies off 22 → 78 m with the smoothstep's own flattening tail —
+     albedo 0.146 linear (the tint above, with the scan normalised to unit
+     mean), so peak wash is 0.146 × 0.5 ≈ 0.073 linear → ~0.23 display luma
+     after ACES + the dashcam crush — plainly lit concrete, and well under the
+     0.72 blown-highlight clip and the ~0.8 hue bleach. Fade is cone × range
+     smoothsteps: the wall beside the doors is outside the cone (dark),
+     brightens in over ~3-8 m ahead, and dies off 22 → 78 m with the
+     smoothstep's own flattening tail —
      no terminator line. High beam stretches the reach via setBeam's range
      multiplier, exactly as the paint does. `barrier` (single-sided) is
      registered too so the pair can never drift apart if it gains a user. */
-  /* Gain 0.5 → 0.66, and this is a COMPENSATION, not a strengthening — the
-     night read is meant to land exactly where the previous pass tuned it. The
-     wash is `diffuseColor × tint × cone × fall × gain`, and neutralising the
-     parapet tint above took diffuseColor's linear luminance to 0.755 of what
-     it was (0.290 → 0.219 before the scan). 0.5 / 0.755 = 0.66 puts the peak
-     back on the same 0.075 linear ≈ 0.33 POV display luma the skill notes
-     record, still miles under the 0.72 blown-highlight clip. Reach, spread and
-     the two smoothstep fades are untouched. Worst case is now the weathering's
-     own +18 % ceiling on top: 0.088 linear ≈ 0.36 display. */
-  const WALL_WASH = 0.66;
-  addBeam(barrier, { near: 22, far: 78, spread: 0.55, wash: WALL_WASH });
-  addBeam(barrierDouble, { near: 22, far: 78, spread: 0.55, wash: WALL_WASH });
+  /* The gain STAYS at 0.5, and that is the interesting part of this pass.
+     The paragraph above used to claim albedo ≈ 0.15 and a ~0.33 display peak;
+     the albedo was really 0.042 (see the tint note), so the wash it was
+     actually producing peaked near 0.021 linear ≈ 0.04 display — a smudge,
+     an order of magnitude short of the read it was written for. The wash is
+     albedo-proportional by construction, so correcting the albedo is what
+     finally delivers the number that was always intended, and touching the
+     gain on top would be tuning against a defect that no longer exists.
+     0.146 × 0.5 = 0.073 linear ≈ 0.23 display, still under the 0.33 target
+     and nowhere near the 0.72 clip; the weathering's +18 % ceiling puts the
+     absolute worst case at 0.086 linear ≈ 0.25. Reach, spread and both
+     smoothstep fades are untouched, so nothing about the SHAPE of the fade
+     moves — only how much light the wall was ever able to return. */
+  addBeam(barrier, { near: 22, far: 78, spread: 0.55, wash: 0.5 });
+  addBeam(barrierDouble, { near: 22, far: 78, spread: 0.55, wash: 0.5 });
 
   /* Weathering, installed AFTER addBeam so its albedo edit lands upstream of
      the wash that reads that albedo, and BEFORE the async projectedUv so the
@@ -989,7 +1039,7 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
      whose scan UVs projectedUv cannot vary per instance anyway. */
   const PARAPET_WEATHER: WeatherOpts = {
     macro: 0.13, streak: 0.17, joint: 0.34, jointPitch: 4.6,
-    section: 0.075, topClean: 0.1, rough: 0.22,
+    section: 0.075, topClean: 0.1, rough: 0.22, normalise: true,
   };
   const FASCIA_WEATHER: WeatherOpts = {
     macro: 0.15, streak: 0.24, joint: 0.28, jointPitch: 11.5,
@@ -1266,7 +1316,13 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
        that highway.ts clones it (swMat, for DoubleSide), so adding it here
        would silently do nothing anyway — if it ever does need a scan it needs
        a shared double-sided variant first, the way the parapets got one. */
-    if (concreteSet.albedo)
+    /* Hand the parapets the scan's own mean so their tint becomes their real
+       albedo (see the CONC_TINT note). Measured, not hardcoded: re-drop the
+       concrete set and the walls stay at the same brightness. Clamped because
+       a black or unreadable albedo would otherwise divide the world by ~0 —
+       measureMean already guards that, and this is the second belt. */
+    if (concreteSet.albedo) {
+      uConcAlb.value = 1 / Math.min(Math.max(concreteSet.albedoMean, 0.02), 1);
       for (const m of [
         conc, concDouble, concDark, concDarkDouble,
         barrier, barrierDouble, tunnelCeil,
@@ -1283,6 +1339,7 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
           repeat: [1, 1], normalScale: 0.85, roughness: m.roughness,
         });
       }
+    }
     /* Tunnel walls get real ceramic tile (the classic urban-tunnel band) in
        preference to bare concrete; concrete remains the fallback so a partial
        asset drop still upgrades the tube. Roughness sits well below the

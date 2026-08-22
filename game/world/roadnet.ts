@@ -224,7 +224,9 @@ export function buildRoadNet(rng: Rng, terrain: Terrain): RoadNet {
   }
 
   function nearest(x: number, z: number) {
-    let best: { edge: REdge; s: number; dist: number } | null = null;
+    // scalars while scanning; one object at the end (this walks every sample
+    // in up to 289 cells, and used to allocate on each improvement)
+    let bEid = -1, bS = 0, bDist = Infinity;
     const ci = Math.floor(x / CELL), cj = Math.floor(z / CELL);
     for (let r = 0; r < 9; r++) {
       for (let di = -r; di <= r; di++)
@@ -232,14 +234,19 @@ export function buildRoadNet(rng: Rng, terrain: Terrain): RoadNet {
           if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
           const arr = hash.get((ci + di + 2048) * 8192 + (cj + dj + 2048));
           if (!arr) continue;
-          for (const [sx, sz, eid, s] of arr) {
-            const d = Math.hypot(sx - x, sz - z);
-            if (!best || d < best.dist) best = { edge: edges[eid], s, dist: d };
+          for (let k = 0; k < arr.length; k++) {
+            const e = arr[k];
+            const d = Math.hypot(e[0] - x, e[1] - z);
+            if (d < bDist) {
+              bDist = d;
+              bEid = e[2];
+              bS = e[3];
+            }
           }
         }
-      if (best && best.dist < (r - 1) * CELL) break;
+      if (bEid >= 0 && bDist < (r - 1) * CELL) break;
     }
-    return best;
+    return bEid < 0 ? null : { edge: edges[bEid], s: bS, dist: bDist };
   }
 
   return { nodes, edges, sampleEdge, nearest, hash };

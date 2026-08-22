@@ -34,6 +34,20 @@ const SKIP = 2;
 
 const _p = { x: 0, y: 0, z: 0 };
 
+/* The merge gore marker sits at a fixed station, so its world point is static
+   for the life of a corridor. It was being rebuilt — and freshly allocated,
+   since worldOf() without an `out` returns a new object — once per lap pass,
+   so up to three times a draw. */
+let _mergeFor: Corridor | null = null;
+const _mergePt = { x: 0, y: 0, z: 0 };
+function mergePoint(cor: Corridor) {
+  if (_mergeFor !== cor) {
+    _mergeFor = cor;
+    cor.worldOf(MERGE_Z, cor.halfWidth(MERGE_Z) + 8, _mergePt);
+  }
+  return _mergePt;
+}
+
 /** Trace the pavement outline between two z values as a closed path: out along
     one edge, back along the other. `dz` shifts the whole run by a lap. */
 function pavePath(
@@ -140,7 +154,8 @@ export function drawMiniMap(
   g.lineWidth = 2.5;
   for (const e of world.net.edges) {
     const n = e.ss.length - 1;
-    const mx = e.pts[Math.floor(n / 2) * 3], mz = e.pts[Math.floor(n / 2) * 3 + 2];
+    const mi = Math.floor(n / 2) * 3;
+    const mx = e.pts[mi], mz = e.pts[mi + 2];
     if (Math.abs(mx - car.x) > R + e.len / 2 || Math.abs(mz - car.z) > R + e.len / 2) continue;
     g.beginPath();
     let started = false;
@@ -227,7 +242,7 @@ export function drawMiniMap(
       g.lineWidth = 1.4;
       g.stroke();
       // merge gore marker on the east side, the diverge carries exit no. 3
-      const mp = cor.worldOf(MERGE_Z, cor.halfWidth(MERGE_Z) + 8);
+      const mp = mergePoint(cor);
       const MX = tx(mp.x), MZ = tz(mp.z + dz);
       if (MX > 6 && MX < Wp - 6 && MZ > 6 && MZ < Hp - 6) {
         g.fillStyle = "rgba(172,150,255,.95)";

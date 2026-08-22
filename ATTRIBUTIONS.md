@@ -121,7 +121,8 @@ size budget. Source: https://polyhaven.com/
 
 Sourced from **Poly Haven**, **CC0 1.0 (Public Domain)**, no attribution
 required. Downloaded via Poly Haven's public files API
-(`https://api.polyhaven.com/files/<slug>`) at 2K, `.hdr` (Radiance) format.
+(`https://api.polyhaven.com/files/<slug>`) at 2K, `.hdr` (Radiance) format,
+then downsampled to 512x256 for the size budget (`tools/shrink-hdri.mjs`).
 Source: https://polyhaven.com/
 
 | File | Asset | Item page |
@@ -129,10 +130,19 @@ Source: https://polyhaven.com/
 | `cobblestone_street_night_2k.hdr` | **Shanghai Bund** (see note) | https://polyhaven.com/a/shanghai_bund |
 | `modern_evening_street_2k.hdr` | Modern Evening Street | https://polyhaven.com/a/modern_evening_street |
 
-Used as an environment map (PMREM) for car-paint specular reflections, not as
-a visible skybox — 2K is sufficient at that role.
+Used as an environment map (PMREM) for car-paint specular reflections, never as
+a visible skybox, and only on the player car's exterior — which `CAM_POV`, the
+dashcam view the game actually ships in, hides outright (`engine.ts`
+`exteriorG.visible = !inside`). So these files light nothing in the shipping
+frame; they are a CHASE/HOOD nicety. `PMREMGenerator` sizes its cube at
+`equirect.width / 4`, so 512x256 buys a 128px-per-face prefiltered cube, and
+the 12.3 MB the pair used to cost was 28% of the whole asset footprint for
+pixels no player sees. Downsampling is a box filter in linear float, so mean
+radiance — the quantity `carenv.ts` rescales against the painted cube — is
+preserved exactly and `envScale` is unchanged.
 
-**Note on the filename:** the bytes at `cobblestone_street_night_2k.hdr` are
+**Note on the filenames:** the `_2k` suffixes are historical; the shipped files
+are 512x256 (see above). The bytes at `cobblestone_street_night_2k.hdr` are
 the **Shanghai Bund** night-city panorama (CC0, Poly Haven). The world-dressing
 wave replaced the original cobblestone street with the dense city-skyline glow,
 but the loader probes a fixed URL list in `game/carenv.ts` (owned by another

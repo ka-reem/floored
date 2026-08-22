@@ -92,6 +92,13 @@ export default function GameApp() {
        inside the gesture itself, and every line below this one is a task or
        more removed from the tap. */
     g.primeAudio();
+    /* Same gesture rule as primeAudio, and the reason this can't live in the
+       mount effect: iOS only grants DeviceOrientation permission from inside a
+       user gesture, and hookTilt() is one-shot (its tiltHooked guard means a
+       refused hook never retries). A profile that loads with tilt steering has
+       never hooked the listener — and the on-screen steer buttons are hidden
+       in tilt mode — so without this the player has no steering at all. */
+    if (g.settings.steerMode === "tilt") g.hookTilt();
     if (!g.loaded) {
       setLoadErr(null);
       setLoad({ label: "", frac: 0 });
@@ -129,6 +136,7 @@ export default function GameApp() {
 
   const g = gameRef.current;
   const playing = screen === "playing";
+  const tcHide = playing ? undefined : { display: "none" as const };
 
   return (
     <>
@@ -166,14 +174,16 @@ export default function GameApp() {
           </svg>
         </div>
       )}
-      {/* touch controls */}
-      <div className="tc" id="tcL" style={g && g.settings.steerMode !== "buttons" ? { display: "none" } : undefined}>⟲</div>
-      <div className="tc" id="tcR" style={g && g.settings.steerMode !== "buttons" ? { display: "none" } : undefined}>⟳</div>
-      <div className="tc" id="tcG">▲</div>
-      <div className="tc" id="tcB">▼</div>
-      <div className="tc" id="tcC">CAM</div>
-      <div className="tc" id="tcF">LTS</div>
-      <div className="tc" id="tcH">HORN</div>
+      {/* Touch controls. These stay mounted on every screen — bindInput()
+          grabs them by id once, in the Game constructor — so the menus hide
+          them with an inline display instead of unmounting them. */}
+      <div className="tc" id="tcL" style={!playing || (g && g.settings.steerMode !== "buttons" && analogSteerLive()) ? { display: "none" } : undefined}>⟲</div>
+      <div className="tc" id="tcR" style={!playing || (g && g.settings.steerMode !== "buttons" && analogSteerLive()) ? { display: "none" } : undefined}>⟳</div>
+      <div className="tc" id="tcG" style={tcHide}>▲</div>
+      <div className="tc" id="tcB" style={tcHide}>▼</div>
+      <div className="tc" id="tcC" style={tcHide}>CAM</div>
+      <div className="tc" id="tcF" style={tcHide}>LTS</div>
+      <div className="tc" id="tcH" style={tcHide}>HORN</div>
       {playing &&
         g &&
         g.settings.steerMode === "wheel" &&
@@ -263,14 +273,18 @@ export default function GameApp() {
               <b>Q / E</b><span>turn signals</span>
               <b>F</b><span>horn (traffic speeds up)</span>
               <b>L</b><span>headlights on / auto</span>
-              <b>G</b><span>high beams: hold to flash, double-tap to latch</span>
+              <b>G</b><span>high beams: tap to flash, hold 2s to latch on / off</span>
               <b>M</b><span>cockpit mirrors</span>
               <b>R</b><span>rain</span>
               <b>T</b><span>time-lapse</span>
               <b>V</b><span>dashcam grade (the DASHCAM view forces its own, harder)</span>
               <b>X</b><span>minimap</span>
               <b>N</b><span>reset to nearest road</span>
-              <b>Esc</b><span>pause menu</span>
+              <b>H</b><span>this help screen</span>
+              <b>J</b><span>dash: imported / procedural (A/B)</span>
+              <b>P</b><span>in-dash music: play / pause</span>
+              <b>, / .</b><span>previous / next piece</span>
+              <b>Esc</b><span>pause menu (music pauses with it)</span>
             </div>
             <p style={{ color: "#7d8aa8", marginTop: 12, fontSize: 12 }}>
               Follow the green EXIT boards on the expressway — each numbered exit has a lit
@@ -341,6 +355,15 @@ function LoadingScreen({
 
 /* ================= touch steering wheel ================= */
 
+/* Mirrors Game.isTouch (engine.ts): readInput only takes the wheel/tilt value
+   on a coarse-pointer touch device. Anywhere else the analog paths are dead, so
+   the on-screen steer buttons have to stay up or there is no steering at all.
+   Only ever called with a live Game in hand, i.e. after mount — never during
+   the server render, where `window` does not exist. */
+function analogSteerLive() {
+  return "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
+}
+
 function SteerWheel({ game }: { game: Game }) {
   const [rot, setRot] = useState(0);
   const active = useRef(false);
@@ -350,6 +373,9 @@ function SteerWheel({ game }: { game: Game }) {
     game.setWheelVal(0);
     setRot(0);
   };
+  /* Pausing unmounts this widget mid-drag; without zeroing here the last
+     deflection keeps feeding readInput and the car resumes at hard lock. */
+  useEffect(() => () => game.setWheelVal(0), [game]);
   return (
     <div
       id="swheel"

@@ -30,7 +30,7 @@ for (const f of ["corridor.js", "ramps.js"]) {
   const p = path.join(dir, f);
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 }
-const { getCorridor, assertPitches, signPlan, SIGN, PITCH, PHASE, TUNNEL, TOLL, TOLL_PLAZA } =
+const { getCorridor, assertPitches, signPlan, SIGN, PITCH, PHASE, TUNNEL, TOLL, TOLL_PLAZA, BRIDGE } =
   await import(path.join(dir, "corridor.js"));
 const { buildRamps, parapetGap, spawnWindow, spawnZ, RAMP_PLAN } =
   await import(path.join(dir, "ramps.js"));
@@ -402,20 +402,64 @@ if (!signs.some((s) => s.kind === "exit-gore")) bad("no board at the exit gore")
   if (clash) bad("a light pole and a gantry leg occupy the same spot");
 }
 
-/* ---- sound walls: clear of the gores, the tunnel and the toll plaza ---- */
+/* ---- sections: the edge-treatment plan --------------------------------
+   corridor.sections() decides what stands at the pavement edge over every
+   stretch of the lap — parapet, railing, perforated screen, solid noise wall,
+   or the bridge span. Three things have to hold and none of them is visible
+   from the geometry: the runs must not overlap (two treatments on one edge),
+   they must not stand a wall in the tunnel or the plaza or over a gore, and
+   `sectionAt` must give the same answer either side of the loop splice or the
+   teleport shows up as the barrier beside you changing type. */
 {
-  let nw = 0;
-  for (const z0 of c.lattice(PITCH.soundwall)) {
-    if (z0 + HWY.soundSeg > c.ZB1) continue;
-    const mid = z0 + HWY.soundSeg / 2;
-    if (c.inTunnel(mid) || c.inToll(mid)) continue;
-    if (CONNECT_Z.some((cz) => Math.abs(mid - cz) < 260)) continue;
+  const S = c.sections();
+  console.log("sections:");
+  let dressed = 0;
+  for (const s of S) {
+    console.log(`  z ∈ [${String(s.z0).padStart(6)}, ${String(s.z1).padStart(6)}]` +
+      ` ${String(s.z1 - s.z0).padStart(4)} m  ${s.kind}`);
+    if (s.z0 >= c.Z0 && s.z1 <= c.Z1) dressed += s.z1 - s.z0;
+    if (s.z1 <= s.z0) bad(`section ${s.kind} @${s.z0} has no length`);
+    if (s.z0 < c.Z0 || s.z1 > c.Z1) bad(`section ${s.kind} @${s.z0} leaves the canonical band`);
+    if (s.kind !== "bridge") {
+      if (s.z0 < TUNNEL.z1 && s.z1 > TUNNEL.z0) bad(`section ${s.kind} @${s.z0} is in the tunnel`);
+      if (s.z0 < TOLL.z1 && s.z1 > TOLL.z0) bad(`section ${s.kind} @${s.z0} is in the toll zone`);
+    }
+    if (s.kind === "mesh" || s.kind === "screen")
+      for (const cz of CONNECT_Z)
+        if (s.z0 < cz + 260 && s.z1 > cz - 260)
+          bad(`opaque section ${s.kind} @${s.z0} stands over the gore at ${cz}`);
     // the wall plane sits inside the parapet box, where its base is hidden
     if (HWY.soundOut < HWY.WALL_T / 2 + 0.06 || HWY.soundOut > HWY.WALL_T + 0.06)
-      bad(`sound wall z=${z0}: plane is not inside the parapet, its base will float`);
-    nw++;
+      bad(`sound wall z=${s.z0}: plane is not inside the parapet, its base will float`);
   }
-  console.log(`sound walls: ${nw}, none over a gore, none in the tunnel or plaza`);
+  for (let i = 1; i < S.length; i++)
+    if (S[i].z0 < S[i - 1].z1)
+      bad(`sections [${S[i - 1].z0}, ${S[i - 1].z1}] and [${S[i].z0}, ${S[i].z1}] overlap`);
+  console.log(`  ${S.length} runs, ${dressed} m of ${c.LOOP} m dressed` +
+    ` (${((100 * dressed) / c.LOOP).toFixed(0)}%)`);
+  let mismatch = null;
+  for (let z = c.ZB0; z + c.LOOP <= c.ZB1; z += 1)
+    if (c.sectionAt(z) !== c.sectionAt(z + c.LOOP) && mismatch === null) mismatch = z;
+  if (mismatch !== null)
+    bad(`sectionAt disagrees across the splice at z=${mismatch}` +
+      ` (${c.sectionAt(mismatch)} vs ${c.sectionAt(mismatch + c.LOOP)})`);
+  else console.log("  sectionAt repeats across the splice");
+  /* The bridge replaces piers with an arch, so its abutments must land on the
+     pier lattice — otherwise the two suppressed-pier ends leave a stub pier
+     standing a metre from an abutment block. */
+  for (const z of [BRIDGE.z0, BRIDGE.z1])
+    if (z % PITCH.pier !== 0) bad(`bridge abutment z=${z} is not on the pier lattice`);
+  const bSpan = BRIDGE.z1 - BRIDGE.z0;
+  console.log(`bridge: ${bSpan} m clear span, ${BRIDGE.rise} m rise` +
+    `, deck ${c.centerY(BRIDGE.z0).toFixed(2)} → ${c.centerY(BRIDGE.z1).toFixed(2)} m` +
+    `, ribs ±${(c.halfWidth((BRIDGE.z0 + BRIDGE.z1) / 2) + BRIDGE.ribOut).toFixed(2)} m`);
+  // nothing may hang under the arch into vehicle clearance
+  const lowBrace = Math.min(...BRIDGE.braceAt.map((t) => BRIDGE.rise * 4 * t * (1 - t)));
+  if (lowBrace < SIGN.CLEAR + 2) bad(`a bridge cross-brace hangs at ${f(lowBrace)} m`);
+  // the ribs stand outboard of the parapet clamp, like the gantry legs
+  for (let z = BRIDGE.z0; z <= BRIDGE.z1; z += 4)
+    if (c.halfWidth(z) + BRIDGE.ribOut - BRIDGE.ribW / 2 < c.halfWidth(z) + 0.06)
+      bad(`bridge rib at z=${z} is inboard of the parapet clamp`);
 }
 
 /* ---- toll plaza fits between its lanes ---- */
