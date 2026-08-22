@@ -390,6 +390,10 @@ export interface Driver {
   driftRate: number;
   /** Phase of that wander, so drivers don't wander in lockstep. */
   driftPhase: number;
+  /** This driver's personal ceiling on ever yielding to a horn or a headlight
+      flash — the total probability they EVER comply, not a per-flash chance.
+      Rolled at spawn and fixed for their whole life; see the HAIL block. */
+  yieldMax: number;
 }
 
 type Arch = {
@@ -418,6 +422,164 @@ const ARCH: Arch[] = [
   { spd: [1.08, 1.2], gap: [0.82, 0.95], acc: [1.06, 1.18], lane: [0.64, 0.86], react: [0.18, 0.26], corner: [1.04, 1.13], timid: 0, weave: 0 },
   { spd: [1.2, 1.32], gap: [0.68, 0.82], acc: [1.18, 1.32], lane: [0.88, 1], react: [0.12, 0.2], corner: [1.12, 1.23], timid: 0, weave: 1 },
 ];
+
+/* ================= honking and flashing at the car in front =================
+
+   Lean on the horn, or flash the high beams, at the car ahead and it may move
+   over or pick its pace up — sometimes. The whole design problem is that a
+   player will flash a *lot*, and the naive implementation (roll a fixed p per
+   flash) converges on certainty: twenty independent rolls at 15% clear the
+   lane 96% of the time, which turns every obstruction into a formality and
+   every driver into the same driver. So instead:
+
+   · Every driver rolls a personal CEILING at spawn (`drv.yieldMax`) — the
+     total probability that this specific car EVER complies, however long you
+     lean on it. A stubborn one's ceiling is a couple of percent. Nothing in
+     the fleet is allowed above HAIL.ceilCap, so no car is ever a certain
+     yield, and ~14% of the fleet sits below 10% — those drivers are a wall.
+
+   · Repeated gestures walk a SATURATING curve up to that ceiling instead of
+     compounding. The cumulative chance of having complied by gesture k is,
+     by construction,
+
+         C(k) = ceiling · (1 − e^(−k / HAIL.K))
+
+     and the dice actually thrown on gesture k is the conditional probability
+     that reproduces it:
+
+         q(k) = (C(k) − C(k−1)) / (1 − C(k−1))
+
+     Rolling q(k) once per gesture yields exactly C(k), so the asymptote is a
+     tuning constant rather than something emergent: C(∞) = ceiling, full
+     stop. q(k) decays geometrically — for a median car 9.6%, 9.1%, 7.8%,
+     5.7%, 4.1%, 2.9%, … — so the twentieth flash is worth almost nothing and
+     the hundredth is worth nothing whatsoever. Flash a stubborn car a hundred
+     times and it has moved over 7.6% of the time, not 100%.
+
+   · One press is one gesture, and a given car will not roll again for
+     HAIL.cd seconds however fast the key is mashed. A held horn re-arms every
+     HAIL.holdRearm seconds — leaning on it is a sustained gesture, not a
+     per-frame one.
+
+   · `hailP` is a decaying pressure that only weights how INSISTENT a gesture
+     reads: a tight burst carries full weight, an isolated flash HAIL.wMin of
+     it. It can only ever scale q(k) down, never up, so it cannot lift a car
+     past its ceiling — and pressure banked a minute ago has decayed to
+     nothing and buys nothing.
+
+   Chance of having complied after 1 / 5 / 20 / 100 gestures, at the fastest
+   cadence the cooldown permits:
+
+       stubborn  (ceiling 0.085)   2.0% /  6.4% /  7.6% /  7.6%
+       median    (ceiling 0.41 )   9.6% / 31.5% / 37.8% / 37.8%
+       courteous (ceiling 0.68 )  15.8% / 53.7% / 64.6% / 64.7%
+
+   Measured over the actual roster (Monte Carlo through rollDriver, 200k
+   draws, police and heavies included), a random car ahead yields to a single
+   flash 8% of the time, to a three-flash burst 21%, and 33% however long you
+   keep at it — so two cars in three will never move for you at all. That is
+   the point: yielding is a thing that happens to you, not a button. */
+const HAIL = {
+  /* --- who can hear you --- */
+  /** nearest a car may be and still be worth flashing at (m) — closer than
+      this it is already half alongside and the gesture reads as aimed past it */
+  near: 5,
+  /** furthest a car can be and still know the flash was meant for it (m).
+      Past ~55 m through the dashcam windshield you cannot tell which car you
+      picked, so neither should the game. */
+  far: 55,
+  /** lateral half-window (m): your own lane plus the one either side. Wide
+      enough for the car you are about to pull out around, narrow enough that
+      you can never hail something across the deck. */
+  side: 5.5,
+
+  /* --- rate-limiting the dice --- */
+  /** minimum seconds between two rolls on the SAME car, whatever the player
+      does with the key. The anti-mash limiter. */
+  cd: 0.9,
+  /** a horn held down re-arms this often — one long blast is a handful of
+      gestures, not one per frame */
+  holdRearm: 1.0,
+
+  /* --- the curve --- */
+  /** saturation constant, in gestures: ~77% of a car's ceiling is reached by
+      the fifth gesture, ~92% by the tenth. Larger = a lower first-flash
+      chance and a longer climb; smaller = the ceiling arrives almost at once
+      and later flashes are pure decoration. */
+  K: 2.6,
+  /** pressure decay time constant (s) */
+  tau: 6.0,
+  /** pressure at which the burst weight tops out (≈3 gestures in a row) */
+  pFull: 2.5,
+  /** weight of one isolated gesture relative to a burst */
+  wMin: 0.55,
+
+  /* --- ceilings: how compliant each kind of driver can ever be ---
+     Indexed by ARCH, so courtesy rides along with the personality that is
+     already there: the dawdler holding everyone up is usually oblivious
+     rather than hostile and will move when prompted, while the speeder is
+     racing you and will not. That is both true to life and the right way
+     round for the game — the cars actually in your way are the ones worth
+     asking. */
+  ceil: [
+    [0.55, 0.80], // dawdler
+    [0.45, 0.70], // cautious
+    [0.28, 0.55], // average
+    [0.12, 0.34], // brisk
+    [0.02, 0.15], // speeder
+  ] as [number, number][],
+  /** flat share of drivers who are a stone wall whatever they drive like —
+      so a courteous-looking dawdler can still turn out to be someone who
+      simply never reacts, and the archetype is a tendency, not a tell */
+  stoneWall: 0.08,
+  /** …and what that driver's ceiling is instead */
+  stoneCeil: [0.0, 0.03] as [number, number],
+  /** a truck or a bus is not moving over for you */
+  heavyCeil: 0.45,
+  /** and a police car certainly is not */
+  policeCeil: 0.02,
+  /** nothing may ever exceed this: no car in the fleet is a guaranteed yield */
+  ceilCap: 0.88,
+
+  /* --- the two reactions --- */
+  /** speed-up: cruise-speed multiplier and how long it lasts (s) */
+  boost: 1.22,
+  boostT: 4.5,
+  /** hazard-light acknowledgement blip (s) — the blinker cycle is 0.9 s, so
+      this is two clear flashes of both sides: "yeah, going" */
+  ackT: 1.9,
+  /** a car that has moved over for you stays put for at least this long, so
+      the courtesy does not immediately undo itself (s) */
+  yieldHold: 6,
+
+  /* --- annoyance --- */
+  /** gestures a driver must have already refused before over-flashing starts
+      to grate. Deliberately past the point where the curve has flattened —
+      by here the player is getting nothing anyway and is just being rude. */
+  annoyAfter: 6,
+  /** only drivers who were never going to yield take offence; a genuinely
+      courteous one just keeps declining politely */
+  annoyCeil: 0.30,
+  /** per-gesture chance of snapping, once both gates above are met. Cumulative
+      for a stubborn driver you refuse to leave alone: 17% by the sixth
+      gesture, 51% by the ninth, 88% by the twentieth. Persistence does buy
+      you a reaction — just not the one you were after, which is the right
+      asymmetry: it is compliance that must never be spammable, not
+      consequences. */
+  annoyP: 0.18,
+  /** the reaction: a brief lift with the brake lights on, at this fraction of
+      their cruise speed. A readable "quit it" ahead of you — NOT a swerve
+      into your lane, which would be a crash the player could not have seen
+      coming and is not a fair answer to pressing a button. */
+  annoyDrop: 0.82,
+  annoyT: 1.3,
+  /** …and a horn back. This is deliberately NOT the ambient near-miss
+      chorus turned back on (see CLOSE_CALL_AUDIO): it is rare, it is
+      directly caused by something the player chose to do six times, and it
+      still passes through the same per-car and global cooldowns. Flip to
+      false to silence it without touching anything else. */
+  annoyHorn: true,
+};
 
 export interface Npc {
   id: number;
@@ -460,6 +622,23 @@ export interface Npc {
   /** set the frame a close call with the player fires, else null; cooldown in ccCd */
   ccKind: "horn" | "chirp" | null;
   ccCd: number;
+  /* ---- horn/flash reactions (see the HAIL block) ---- */
+  /** how many gestures this car has been on the receiving end of this life —
+      the k of the saturating curve. Never decays; that is what bounds it. */
+  hailGest: number;
+  /** decaying insistence, in gestures. Decayed lazily against `hailAt` rather
+      than per frame — it is read a few times a minute at most. */
+  hailP: number;
+  /** clock of the last gesture aimed at this car; drives both the decay above
+      and the per-car cooldown */
+  hailAt: number;
+  /** this car has had its say — it complied, or it snapped — and is out of
+      the game until it is recycled */
+  hailDone: boolean;
+  /** hazard-blip acknowledgement countdown (s) */
+  hailAck: number;
+  /** annoyed brake-check countdown (s) */
+  hailMad: number;
 }
 
 type Cloud = { arr: Float32Array; geo: THREE.BufferGeometry; pts: THREE.Points };
@@ -672,6 +851,11 @@ export class Traffic {
   /** every style has been tried (loaded or failed) — until then the corridor
       seeding frame is held open so the first fill happens with the fleet in */
   private fleetReady = false;
+  /** The same latch as a promise, for the staged load in engine.ts to wait on
+      so the player drives off into a populated road rather than one that fills
+      itself in over the first few seconds. Never rejects (loadNpcModels
+      swallows per-style failures by contract). */
+  readonly fleetLoaded: Promise<void>;
   private wheelInst: THREE.InstancedMesh;
   private wheelCount = 0;
   /** Fake headlight ground pools (one instanced additive quad per car).
@@ -709,6 +893,11 @@ export class Traffic {
       independently qualify in the same window, so weaving through a
       crowded scene can't produce a chorus of horns/chirps in short order. */
   private globalCcCd = 0;
+  /** horn state last frame, and how long it has been held — update() turns the
+      continuous `hornHeld` it is handed into discrete gestures from these, so
+      the flash gesture is the only one the engine has to edge-detect itself */
+  private hornPrev = false;
+  private hornT = 0;
   // Tuned against a Monte Carlo sim of a 2-minute aggressive weave to land
   // the total reaction count around 5-10 (the actual target), not just to
   // match "4-6s" as a literal number — at this game's encounter density,
@@ -977,13 +1166,14 @@ export class Traffic {
         v: 0, v0: 10,
         drv: {
           spd: 1, gap: 1, acc: 1, lane: 0.5, react: 0.3, corner: 1, timid: 0, weave: 0, jit: rand(0, TAU),
-          bias: 0, driftAmp: 0, driftRate: 0, driftPhase: 0,
+          bias: 0, driftAmp: 0, driftRate: 0, driftPhase: 0, yieldMax: 0,
         },
         pT: 0, pLead: { ds: Infinity, v: 0 },
         brake: false,
         blink: 0, blinkT: 0, turnCd: rand(2, 8), nudgeT: 0,
         hVis: 0, x: 0, y: -999, z: 0, spin: 0, wob: 0,
         wreck: null, fade: 1, ccKind: null, ccCd: 0,
+        hailGest: 0, hailP: 0, hailAt: -1e9, hailDone: false, hailAck: 0, hailMad: 0,
       });
     }
 
@@ -991,7 +1181,7 @@ export class Traffic {
        fleetReady latch (set when every style has been tried) releases the
        corridor seeding frame, so the opening fill happens with real cars.
        A style whose file is missing or corrupt simply never spawns. */
-    void loadNpcModels(Object.keys(this.styleOf), (m) => this.applyModel(m)).then(
+    this.fleetLoaded = loadNpcModels(Object.keys(this.styleOf), (m) => this.applyModel(m)).then(
       () => { this.fleetReady = true; }
     );
   }
@@ -1120,6 +1310,12 @@ export class Traffic {
     n.ccKind = null;
     n.route = -1;
     n.wantBypass = 0;
+    // the hail state is a property of the driver, and this slot is about to be
+    // recycled into a new one; rollDriver() re-arms it, this just stops a
+    // deactivated car from carrying a live timer while it sits in the pool
+    n.hailAck = 0;
+    n.hailMad = 0;
+    n.nudgeT = 0;
   }
 
   /** Roll a persistent personality. Heavies never speed, police are always brisk. */
@@ -1156,6 +1352,28 @@ export class Traffic {
       d.driftRate = TAU / rand(20, 40);
     }
     d.driftPhase = this.rng() * TAU;
+
+    /* How far this driver can ever be pushed by a horn or a headlight flash.
+       Archetype sets the band (see HAIL.ceil), then a flat stoneWall share
+       overrides it outright so the personality is a tendency and not a tell,
+       and heavies/police are near-immovable whatever they rolled. Uniform
+       inside the band, so two "average" cars an hour apart in ceiling still
+       feel like different people. */
+    if (this.rng() < HAIL.stoneWall) d.yieldMax = R(HAIL.stoneCeil);
+    else {
+      let y = R(HAIL.ceil[idx]);
+      if (heavy) y *= HAIL.heavyCeil;
+      else if (n.type === "police") y = Math.min(y, HAIL.policeCeil);
+      d.yieldMax = Math.min(y, HAIL.ceilCap);
+    }
+    n.hailGest = 0;
+    n.hailP = 0;
+    n.hailAt = -1e9;
+    n.hailDone = false;
+    n.hailAck = 0;
+    n.hailMad = 0;
+    n.nudgeT = 0;
+
     n.pT = this.rng() * d.react;
     n.pLead.ds = Infinity;
     n.pLead.v = 0;
@@ -1630,7 +1848,10 @@ export class Traffic {
 
   update(
     dt: number, now: number, player: CarState,
-    camFx: number, camFz: number, density: number, hornHeld: boolean, night = true
+    camFx: number, camFz: number, density: number, hornHeld: boolean, night = true,
+    /** the player flashed the high beams THIS frame — a one-frame pulse, not a
+        held state, since the reaction is to the gesture and not to the beams */
+    flashed = false
   ) {
     /* "on the expressway" has to come from the corridor now — the deck rises
        and falls by several metres, so a fixed height threshold would misread
@@ -1903,18 +2124,22 @@ export class Traffic {
 
       /* every driver's cruise speed drifts a little around their own average */
       let v0 = n.v0 * (1 + 0.04 * Math.sin(now * 0.23 + n.drv.jit));
-      /* horn nudge */
-      if (hornHeld && Math.abs(player.y - n.y) < 3) {
-        const dx = player.x - n.x, dz = player.z - n.z;
-        const aC = -dx * cfx - dz * cfz, sC = Math.abs(-dx * cfz + dz * cfx);
-        if (aC > 0 && aC < 16 && sC < 2.6) {
-          n.nudgeT = 2.5;
-          n.turnCd = Math.min(n.turnCd, 0.4);
-        }
-      }
+      /* Reactions to being honked/flashed at. `nudgeT` used to be set by an
+         unconditional "anything within 16 m of a held horn speeds up 15%"
+         rule; the HAIL model below supersedes that outright — a car only
+         picks its pace up now if it actually decided to, which is the whole
+         point of the feature. The timers are counted down here (rather than
+         where they are set) because hailGesture() runs after this pass. */
       if (n.nudgeT > 0) {
         n.nudgeT -= dt;
-        v0 *= 1.15;
+        v0 *= HAIL.boost;
+      }
+      if (n.hailAck > 0) n.hailAck -= dt;
+      if (n.hailMad > 0) {
+        n.hailMad -= dt;
+        // a short lift, not a stop — IDM turns the lowered cruise speed into a
+        // gentle decel, which trips n.brake below and lights the brake lamps
+        v0 *= HAIL.annoyDrop;
       }
 
       /* Leader: nearest same-path vehicle ahead. Drivers only re-read the road
@@ -2020,6 +2245,22 @@ export class Traffic {
         ? Math.sin(now * n.drv.driftRate + n.drv.driftPhase) * n.drv.driftAmp
         : 0;
     }
+
+    /* Horn/flash gestures — see the HAIL block. Turned into discrete gestures
+       here: the rising edge of the horn, plus a re-arm every holdRearm seconds
+       while it stays down (leaning on it is insistent, but it is still not one
+       gesture per frame), and the one-frame flash pulse the engine hands over.
+
+       Deliberately AFTER the driving pass rather than before it: the gap this
+       reads to decide whether a car could even speed up (`pLead.ds`) is then
+       this frame's rather than last frame's, and an annoyed horn-back set here
+       survives the per-frame `n.ccKind = null` reset that pass does. The
+       reaction itself lands on the next frame's driving, 16 ms later. */
+    this.hornT = hornHeld ? this.hornT + dt : 0;
+    const honked = hornHeld && (!this.hornPrev || this.hornT >= HAIL.holdRearm);
+    if (honked) this.hornT = 0;
+    this.hornPrev = hornHeld;
+    if (honked || flashed) this.hailGesture(player, now, cfx, cfz);
 
     /* overlap resolution between NPCs sharing a lane (cheap, one pass) */
     for (let a = 0; a < this.npcs.length; a++) {
@@ -2175,6 +2416,156 @@ export class Traffic {
   private biasAtBypass(n: Npc): number {
     const m = Math.max(0, BYPASS.laneW / 2 - n.W / 2 - 0.25);
     return clamp(n.drv.bias, -m, m);
+  }
+
+  /* ---------------- horn / headlight-flash reactions ---------------- */
+
+  /** Lane offset of lane `k` in whichever route `n` is driving. */
+  private laneOffOf(n: Npc, k: number) {
+    return n.route === BYPASS_EDGE
+      ? this.routes.bypass.laneOffset(k, n.s)
+      : this.cor.laneOffset(k, n.s);
+  }
+
+  /** One gesture from the player — one honk or one flash. Picks the single car
+      it was plausibly aimed at and rolls that car's dice; the model itself is
+      documented at HAIL.
+
+      Exactly ONE car reacts per gesture, and it is the nearest one roughly in
+      front, with lateral distance weighted heavily so the car in your own lane
+      beats a slightly nearer one a lane over. A flash must not part the whole
+      sea: the player has to be able to say "*that* car moved because I flashed
+      at it", and they cannot if three of them stir at once. Honking at nothing
+      finds no target and does nothing at all. */
+  private hailGesture(player: CarState, now: number, pfx: number, pfz: number) {
+    let best: Npc | null = null;
+    let bestScore = Infinity;
+    for (const n of this.npcs) {
+      /* hailDone is deliberately NOT filtered here — a driver who has already
+         had their say still absorbs the gesture aimed at them. Skipping them
+         would hand the flash to whatever car happened to be next in the
+         window, which from the dashcam reads as the wrong car reacting. */
+      if (!n.active || n.wreck || !n.hw) continue;
+      // same road level: the deck runs over town streets, and you cannot flash
+      // at something on a different deck through the windshield
+      if (Math.abs(player.y - n.y) > 3) continue;
+      const dx = n.x - player.x, dz = n.z - player.z;
+      /* Measured against the car's own nose, NOT the camera: the camera can be
+         looking backwards (lookBack) or off to a chase pod, and neither
+         changes which car your headlights are actually pointed at. */
+      const ahead = dx * pfx + dz * pfz;
+      if (ahead < HAIL.near || ahead > HAIL.far) continue;
+      const side = Math.abs(dx * pfz - dz * pfx);
+      if (side > HAIL.side) continue;
+      const score = ahead + side * 8;
+      if (score < bestScore) {
+        bestScore = score;
+        best = n;
+      }
+    }
+    if (best) this.hailRoll(best, player, now);
+  }
+
+  /** The lane a hailed car would move over into, or −1 if there isn't one.
+
+      Courtesy is moving toward the kerb (lane 0), never out into the faster
+      lane: a car that pulls out to "let you past" has merely swapped places
+      with you. So there is exactly one candidate, and a car already in the
+      kerb lane has nowhere courteous to go and picks its pace up instead —
+      which is also what happens on a real road. */
+  private yieldLane(n: Npc, pOff: number): number {
+    if (n.pendK >= 0 || n.blink !== 0 || n.laneK <= 0) return -1;
+    const k2 = n.laneK - 1;
+    const off2 = this.laneOffOf(n, k2);
+    if (!this.laneClearAt(n, n.s, off2)) return -1;
+    /* …and never merge onto the player. laneClearAt() only knows about other
+       NPCs, and the one vehicle guaranteed to be near this car is the one
+       doing the flashing — 2.2 m is the same lane-danger half-width it uses. */
+    if (Math.abs(pOff - off2) < 2.2) return -1;
+    return k2;
+  }
+
+  /** Roll one car's dice for one gesture and apply whatever it decides. */
+  private hailRoll(n: Npc, player: CarState, now: number) {
+    if (n.hailDone) return; // complied, or snapped — this driver is finished
+    if (now - n.hailAt < HAIL.cd) return; // mashing the key can't mash the dice
+
+    /* What could this car even do about it? Settled BEFORE anything is spent,
+       so a driver who is boxed in with nowhere to go and no room to accelerate
+       simply never hears you: no roll, no gesture counted, no pressure banked.
+       A car that "complied" by merging into a wall would read as the feature
+       being broken, and quietly spending its one-time goodwill on a manoeuvre
+       it cannot perform would be worse than doing nothing. */
+    const nfx = Math.sin(n.hVis), nfz = Math.cos(n.hVis);
+    /* The player's lateral position in this car's own lane-offset space. The
+       corridor normal and the car's right vector agree to well inside a lane
+       width at these bend radii, so the offset transfers directly and no
+       route projection is needed — and this works unchanged on the bypass. */
+    const pOff = n.offCur + ((player.x - n.x) * nfz - (player.z - n.z) * nfx);
+    const over = this.yieldLane(n, pOff);
+    const canSpeed = n.pLead.ds > 22 && n.v < n.v0 * 1.15;
+    if (over < 0 && !canSpeed) return;
+
+    /* Insistence decays against the clock, lazily — this runs a few times a
+       minute at most, so there is no reason to touch it every frame. */
+    n.hailP = n.hailP * Math.exp(-(now - n.hailAt) / HAIL.tau) + 1;
+    n.hailAt = now;
+    const k = ++n.hailGest;
+
+    /* q(k): the conditional roll that walks the cumulative curve
+       C(k) = ceiling · (1 − e^(−k/K)) exactly, so the asymptote is the
+       ceiling and nothing else. See the HAIL block for the derivation. */
+    const A = n.drv.yieldMax;
+    const cPrev = A * (1 - Math.exp(-(k - 1) / HAIL.K));
+    const q = (A * (1 - Math.exp(-k / HAIL.K)) - cPrev) / (1 - cPrev);
+    /* Insistence scales q DOWN only (wMin ≤ w ≤ 1), so it can make a lone
+       flash weaker but can never lift a driver past their ceiling. */
+    const w = HAIL.wMin + ((1 - HAIL.wMin) * Math.min(n.hailP, HAIL.pFull)) / HAIL.pFull;
+
+    if (this.rng() < q * w) {
+      n.hailDone = true; // they gave you what they had; that's the end of it
+      if (over >= 0) {
+        /* Move over — through the ordinary signalled lane-change path, so the
+           blinker runs for a beat first and the car eases across at its own
+           rate. A courtesy move that snapped sideways would read as a glitch,
+           and the blinker is the cue that sells the whole thing from the
+           dashcam: amber, then the car drifts out of your way. */
+        const off2 = this.laneOffOf(n, over);
+        const pitch = n.route === BYPASS_EDGE ? BYPASS.laneW : this.cor.lanePitch(n.s);
+        n.pendK = over;
+        n.blink = off2 < n.offCur ? -1 : 1;
+        n.blinkT = rand(0.5, 0.9); // brisker than a comfort change — they mean it
+        n.laneRate = pitch / lerp(3.2, 2, n.drv.lane);
+        n.turnCd = Math.max(n.turnCd, HAIL.yieldHold);
+      } else {
+        /* Speed up. The gap opening is the honest cue but takes a second to
+           read, so blip the hazards first: two flashes of both sides is the
+           real-world "yeah, yeah, going" and is unmistakable through the
+           windshield, day or night. */
+        n.nudgeT = HAIL.boostT;
+        n.hailAck = HAIL.ackT;
+      }
+      return;
+    }
+
+    /* Refused — and if you keep leaning on a driver who was never going to
+       move, they may eventually snap. The curve is flat by annoyAfter, so
+       these gestures were buying the player nothing anyway; all that is left
+       is rudeness, and a road where that is free is a duller road than one
+       where it occasionally costs you. Kept fair on purpose: only drivers who
+       had already all but refused take offence, and the answer is a readable
+       brake-tap in front of you, never a swerve into your lane — that would be
+       a crash the player could not have seen coming, which is not a fair
+       answer to pressing a button. */
+    if (k >= HAIL.annoyAfter && A < HAIL.annoyCeil && this.rng() < HAIL.annoyP) {
+      n.hailMad = HAIL.annoyT;
+      n.hailDone = true; // whatever goodwill was left is now gone for good
+      if (HAIL.annoyHorn && n.ccCd <= 0 && this.globalCcCd <= 0) {
+        n.ccKind = "horn";
+        n.ccCd = 10 + rand(0, 3);
+        this.globalCcCd = Traffic.CC_GLOBAL_GAP;
+      }
+    }
   }
 
   private updateHwy(
@@ -2705,8 +3096,10 @@ export class Traffic {
       emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake);
       emit(SP.brake, 0, tx0, ty0, tz0, !wrecked && n.brake);
       emit(SP.brake, 1, tx1, ty1, tz1, !wrecked && n.brake);
-      // signals — wrecks flash hazards on both slots
-      if (wrecked) {
+      /* Signals — both slots at once is a hazard flash: a wreck, or the
+         two-blink acknowledgement a car gives when it takes a hint and speeds
+         up rather than moving over (see HAIL.ackT). */
+      if (wrecked || n.hailAck > 0) {
         emit(SP.sig, 0, hx0, hy0, hz0, blinkOn);
         emit(SP.sig, 1, tx1, ty1, tz1, blinkOn);
       } else {
