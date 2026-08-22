@@ -280,7 +280,16 @@ const hit: RampHit = { y: 0, lat: 0, s: 0, ramp: null as unknown as Ramp };
     centreline wins (a tight curve can bring two stretches within a half-width
     of each other); between ramps the highest surface wins, so the deck-level
     end of a gore beats the ramp descending underneath it. `pad` widens the
-    half-width test — use slack for physics, none for rendering queries. */
+    half-width test — use slack for physics, none for rendering queries.
+
+    The test is against the *real* pavement half-widths, per side: hIn toward
+    the deck (clipped through the gore wedge), hOut outboard (opening from the
+    nose). It used to be a bare distance-to-centreline < HALF + pad, which
+    claimed a band of the deck's own shoulder wherever the two pavements run
+    side by side — a car passing the gore in the outside lane was classified as
+    ON the ramp, handed the ramp's descending surface, and visibly teleported
+    down onto it. A point is on the ramp only if the ramp's pavement is
+    actually under it. */
 export function rampAt(ramps: Ramp[], x: number, z: number, pad = 0): RampHit | null {
   let best: RampHit | null = null;
   const lim = HALF + pad;
@@ -298,9 +307,14 @@ export function rampAt(ramps: Ramp[], x: number, z: number, pad = 0): RampHit | 
       const px = x - (a.x + dx * t), pz = z - (a.z + dz * t);
       const lat = Math.hypot(px, pz);
       if (lat >= bd) continue;
+      // signed offset (positive = deck side) against this side's real width
+      const sl = px * a.nx + pz * a.nz;
+      const hI = a.hIn + (b.hIn - a.hIn) * t;
+      const hO = a.hOut + (b.hOut - a.hOut) * t;
+      if (sl > hI + pad || sl < -(hO + pad)) continue;
       bd = lat;
       by = a.y + (b.y - a.y) * t;
-      bl = px * a.nx + pz * a.nz;
+      bl = sl;
       bs = a.s + (b.s - a.s) * t;
     }
     if (bd >= lim) continue;

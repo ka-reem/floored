@@ -243,12 +243,28 @@ export function buildHighway(
   /** the bypass gores cut the parapet too — west at the diverge, and the
       east wall's first-ever gap at the merge (routegraph.ts computes both) */
   const newGaps = world.routes ? world.routes.newParapetGaps() : [];
-  const wallOk = (z: number, east: boolean) => {
-    for (const g of newGaps)
-      if ((east ? g.side > 0 : g.side < 0) && z > g.z0 && z < g.z1) return false;
-    if (east) return true; // ramps only ever leave on the west side
-    for (const g of gapZ) if (z > g.z0 && z < g.z1) return false;
-    return true;
+  /** [z0, z1] minus this side's gap windows (ramps only ever leave on the
+      west side; the bypass cuts both). The old whole-segment test — keep the
+      segment iff its *start* z was outside every gap — quantised every gap to
+      the 8 m wall pitch, leaving up to a segment of extra missing barrier
+      past each gore mouth; clipping ends the runs exactly at the gap edges. */
+  const wallSpans = (z0: number, z1: number, east: boolean): [number, number][] => {
+    let spans: [number, number][] = [[z0, z1]];
+    const cut = (g: { z0: number; z1: number }) => {
+      const next: [number, number][] = [];
+      for (const [a, b] of spans) {
+        if (g.z1 <= a || g.z0 >= b) {
+          next.push([a, b]);
+          continue;
+        }
+        if (g.z0 > a) next.push([a, g.z0]);
+        if (g.z1 < b) next.push([g.z1, b]);
+      }
+      spans = next;
+    };
+    for (const g of newGaps) if ((east ? g.side > 0 : g.side < 0)) cut(g);
+    if (!east) for (const g of gapZ) cut(g);
+    return spans.filter(([a, b]) => b - a > 0.3); // drop unbuildable slivers
   };
   /** z's the bypass gores keep clear of long deck furniture */
   const nearNewGore = (z: number, r: number) =>
@@ -286,21 +302,26 @@ export function buildHighway(
     F.quad(la, lb, lbd, lad); // west side
     F.quad(ra, rad, rbd, rb); // east side
     F.quad(lad, lbd, rbd, rad); // soffit
-    // parapets
+    // parapets, clipped exactly to the gap windows (worldOf at a clipped z is
+    // identical to pt() at a station, so uncut segments are unchanged)
     if (i % WALL_EVERY === 0 && i + WALL_EVERY < ST.length && !inTube(a.z)) {
       const e = ST[i + WALL_EVERY];
       for (const sgn of [-1, 1]) {
-        if (!wallOk(a.z, sgn > 0)) continue;
-        const W = soup(walls, c);
-        const lo = sgn * (a.hw + WALL_T / 2 + 0.06), hi = sgn * (e.hw + WALL_T / 2 + 0.06);
-        const a0 = pt(i, lo - sgn * WALL_T / 2), a1 = pt(i, lo + sgn * WALL_T / 2);
-        const b0 = pt(i + WALL_EVERY, hi - sgn * WALL_T / 2);
-        const b1 = pt(i + WALL_EVERY, hi + sgn * WALL_T / 2);
-        const up = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
-        const dn = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
-        W.quad(dn(a0), dn(b0), up(b0), up(a0));
-        W.quad(dn(a1), dn(b1), up(b1), up(a1));
-        W.quad(up(a0), up(b0), up(b1), up(a1));
+        for (const [zA, zB] of wallSpans(a.z, e.z, sgn > 0)) {
+          const W = soup(walls, c);
+          const P = (z: number, out: number): Vec3 => {
+            const lat = sgn * (cor.halfWidth(z) + WALL_T / 2 + 0.06) + out;
+            const w = cor.worldOf(z, lat);
+            return [w.x, w.y, w.z];
+          };
+          const a0 = P(zA, -sgn * WALL_T / 2), a1 = P(zA, sgn * WALL_T / 2);
+          const b0 = P(zB, -sgn * WALL_T / 2), b1 = P(zB, sgn * WALL_T / 2);
+          const up = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
+          const dn = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
+          W.quad(dn(a0), dn(b0), up(b0), up(a0));
+          W.quad(dn(a1), dn(b1), up(b1), up(a1));
+          W.quad(up(a0), up(b0), up(b1), up(a1));
+        }
       }
     }
   }
@@ -1921,6 +1942,7 @@ function buildRampMeshes(
   postPts: number[]
 ) {
   const { concDark, ramp } = mats;
+  const cor = terrain.corridor;
   const surf = new Soup(), skirt = new Soup(), wallS = new Soup();
   const WALL_H = 1.0, WALL_T = 0.3, DECKTH = 0.62;
   const colG = new THREE.BoxGeometry(1.25, 1, 1.25);
@@ -1960,7 +1982,17 @@ function buildRampMeshes(
       for (const sgn of [-1, 1]) {
         const la = sgn > 0 ? a.hIn : -a.hOut, lb = sgn > 0 ? b.hIn : -b.hOut;
         if (a.s > wallEnd) continue;
-        if (sgn > 0 && a.s < r.sSep) continue;
+        if (sgn > 0) {
+          /* Inner wall: only once the slot between the ramp's inner edge and
+             the deck edge is wide enough to hold it. At sSep the two edges
+             still touch, and a wall started there (as this used to) stood
+             with its collider face inside the deck's own shoulder — a car
+             hugging the outside lane line got kicked by it. The deck parapet
+             (clipped to the gap window) takes over on the deck side. */
+          const zc = cor.zAt(a.x, a.z);
+          const clear = -cor.halfWidth(zc) - (cor.latAt(a.x, a.z) + a.hIn);
+          if (clear < 0.75) continue;
+        }
         const off = sgn * (WALL_T / 2 + 0.12);
         const a0 = edge(i, la + off - (sgn * WALL_T) / 2), a1 = edge(i, la + off + (sgn * WALL_T) / 2);
         const b0 = edge(i + 1, lb + off - (sgn * WALL_T) / 2);
@@ -2000,6 +2032,46 @@ function buildRampMeshes(
           y0: 0, y1: a.gy + upA - 1.2,
         });
       }
+    }
+    /* Close the approach gap at the gore nose. The parapet-gap window opens a
+       short lead on the far side of the nose from the mouth (see parapetGap),
+       and the ramp's outer wall only begins AT the nose, ~0.7 m outboard of
+       the parapet line — which left a hole in the barrier right where the two
+       runs should hand over. One angled piece from the clipped parapet end to
+       the outer wall's first post makes the run continuous; the mouth itself
+       (the other side of the nose) stays open. */
+    {
+      const g = parapetGap(r);
+      const zP = r.dir > 0 ? g.z0 : g.z1;
+      // deck parapet centreline at its clipped end (0.34/0.06 match buildHighway)
+      const latP = -(cor.halfWidth(zP) + 0.34 / 2 + 0.06);
+      const wP = cor.worldOf(zP, latP);
+      const p0 = pts[0];
+      const nOff = WALL_T / 2 + 0.12; // the outer wall's centre offset at hOut = 0
+      const nx0 = p0.x - p0.nx * nOff, nz0 = p0.z - p0.nz * nOff;
+      const dx = nx0 - wP.x, dz = nz0 - wP.z;
+      const dl = Math.hypot(dx, dz) || 1;
+      const px = dz / dl, pz = -dx / dl; // horizontal perpendicular
+      const face = (s: number) => {
+        const a: Vec3 = [wP.x + px * s, wP.y, wP.z + pz * s];
+        const b: Vec3 = [nx0 + px * s, p0.y, nz0 + pz * s];
+        return [a, b] as const;
+      };
+      const [aL, bL] = face(-WALL_T / 2), [aR, bR] = face(WALL_T / 2);
+      const top = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
+      const bot = (p: Vec3): Vec3 => [p[0], p[1] - 0.25, p[2]];
+      wallS.quad(bot(aL), bot(bL), top(bL), top(aL));
+      wallS.quad(bot(aR), bot(bR), top(bR), top(aR));
+      wallS.quad(top(aL), top(bL), top(bR), top(aR));
+      /* Slim lateral pad: the deck end sits exactly on the parapet line, and a
+         fatter box would stand proud of the analytic parapet clamp beside it,
+         nudging cars that slide legally along the wall into the junction. */
+      world.colliders.addObb({
+        x: (wP.x + nx0) / 2, z: (wP.z + nz0) / 2,
+        hw: WALL_T / 2 + 0.05, hd: dl / 2 + 0.1,
+        cos: dz / dl, sin: dx / dl,
+        y0: Math.min(wP.y, p0.y) - 1.2, y1: Math.max(wP.y, p0.y) + WALL_H + 1.2,
+      });
     }
     // flat apron where the ramp meets the frontage road
     const apron = new THREE.Mesh(new THREE.PlaneGeometry(24, RAMP_W), ramp);
