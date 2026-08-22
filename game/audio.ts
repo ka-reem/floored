@@ -2015,6 +2015,10 @@ export class GameAudio {
     this.inG.gain.value = 0;
     this.exG.gain.value = 0;
     this.turboG.gain.value = 0;
+    // Boost is integrated state, so it has to be dumped with the node it
+    // drives — otherwise unpausing resumes from whatever boost was standing
+    // when the pause landed and the whistle comes straight back up.
+    this.boost = 0;
     this.whineG.gain.value = 0;
     this.limDepth.gain.value = 0;
     this.engG.gain.cancelScheduledValues(this.ctx.currentTime);
