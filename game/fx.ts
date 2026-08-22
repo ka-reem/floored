@@ -158,8 +158,18 @@ export class SmokeFX {
   /** Live spray puffs, against SPRAY_MAX. Kept as a counter because the
       alternative is scanning 96 slots per emit to find out. */
   private sprayLive = 0;
+  /** Live wreck puffs, against `wreckMax` — the other half of the reserve. */
+  private wreckLive = 0;
+  private wreckMax: number;
   /** Fractional puffs carried between frames — see sprayEmit(). */
   private sprayAcc = 0;
+  /* Which rear wheel the next puff comes off. This has to persist ACROSS
+     frames: the emit count is 0 or 1 on almost every frame at any realistic
+     rate, so deriving the side from the inner loop index picked the same wheel
+     essentially every time and the car sprayed out of one corner like a
+     puncture. A standing counter alternates properly however the puffs fall
+     across frames. Unbounded growth is fine — `& 1` holds to 2^53. */
+  private sprayFlip = 0;
   /* Where the next free-slot scan starts. `emit` runs once per active wreck
      per frame and the wreck pool is 120 deep, so the old `pool.find(q => ...)`
      allocated up to 120 closures a frame and always rescanned the busy head of
@@ -168,6 +178,12 @@ export class SmokeFX {
   private cursor = 0;
 
   constructor(scene: THREE.Scene, smokeTex: THREE.Texture, n = 70 + SPRAY_MAX) {
+    // The other half of the reserve. Wrecks keep exactly the 70 they had
+    // before the pool grew, so this caps nothing they could reach anyway —
+    // what it buys is that a big enough pileup can no longer take the last
+    // slot out from under the spray. Guarded so a small custom `n` still
+    // leaves the wrecks something.
+    this.wreckMax = Math.max(1, n - SPRAY_MAX);
     for (let i = 0; i < n; i++) {
       const mat = new THREE.SpriteMaterial({
         map: smokeTex, transparent: true, opacity: 0, depthWrite: false,
@@ -201,8 +217,10 @@ export class SmokeFX {
   }
 
   emit(x: number, y: number, z: number, big = false) {
+    if (this.wreckLive >= this.wreckMax) return;
     const p = this.take();
     if (!p) return;
+    this.wreckLive++;
     p.active = true;
     p.spray = false;
     p.age = 0;
@@ -266,7 +284,7 @@ export class SmokeFX {
       // leaves the tyre. This is what keeps it reading as spray and not smoke.
       p.life = rand(0.22, 0.42);
       // one wheel or the other, a little behind the contact patch
-      const side = k & 1 ? 1 : -1;
+      const side = this.sprayFlip++ & 1 ? 1 : -1;
       const back = REAR_OFF + rand(0, 0.5);
       const lat = side * (HALF_TRACK + rand(-0.12, 0.22));
       p.sprite.position.set(
@@ -301,6 +319,7 @@ export class SmokeFX {
       if (p.age >= p.life) {
         p.active = false;
         if (p.spray) this.sprayLive--;
+        else this.wreckLive--;
         p.sprite.visible = false;
         continue;
       }
@@ -335,6 +354,8 @@ export class SmokeFX {
     this.pool.length = 0;
     this.cursor = 0;
     this.sprayLive = 0;
+    this.wreckLive = 0;
     this.sprayAcc = 0;
+    this.sprayFlip = 0;
   }
 }

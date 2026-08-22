@@ -431,6 +431,12 @@ export class GameAudio {
   private lastBurbleTrigger = -10;
   private burbleCount = 0;
   private burbleNext = 0;
+  /** Manifold boost, 0..1 — see the turbo block in update(). Its own state
+      because boost LAGS the pedal; that lag is what reads as "turbocharged"
+      rather than as a whistle mixed in. */
+  private boost = 0;
+  private lastBoostT = 0;
+  private lastChuff = -10;
   /* engine-mix state + debug (cruise-hum fix / growl-under-load tuning).
      whineLiftEnv charges to 1 on an actual throttle lift-off edge and
      decays; whineDecelEnv is a smoothed actual-deceleration estimate — both
@@ -2282,9 +2288,46 @@ export class GameAudio {
        cabin lowpass (5200 Hz) is only applied in the cockpit camera, so in POV
        the top of this sweep is not rolled off at all. If that gate is ever
        widened to POV this can likely come back up. */
-    const turboTarget = p.turbo * thr * rn * rn * 0.0042;
-    this.sp(this.turboOsc.frequency, 2200 + rn * 4400, 0.08);
+    /* Boost, not pedal. A turbo is driven by exhaust flow, so it takes time
+       to come up and it does not fall the instant the pedal does — spooling
+       is the whole difference between "this car is turbocharged" and "there
+       is a whistle in the mix". The demand is `thr * rn` (a turbo makes no
+       boost at idle however hard you press) and `boost` chases it with an
+       asymmetric time constant: ~0.55s to build, ~0.22s to bleed away. Both
+       framerate-independent.
+
+       Deliberately a LEVEL-NEUTRAL change: at steady throttle `boost`
+       converges on `thr * rn`, so the expression below has exactly the same
+       ceiling as the `thr * rn * rn` it replaces and the 0.0042 coefficient
+       is untouched. What changes is when the level arrives, not how loud it
+       gets. The engine bus is not touched at all. */
+    const bTau = this.boost < thr * rn ? 0.55 : 0.22;
+    this.boost += (thr * rn - this.boost) * (1 - Math.exp(-wdt / bTau));
+    const turboTarget = p.turbo * this.boost * rn * 0.0042;
+    /* Pitch rides boost as well as rpm — a spooling turbo audibly rises in
+       pitch as the shaft picks up speed, and holding the sweep to rpm alone
+       made it a second tachometer rather than a turbo. Weighted so rpm still
+       owns a third of it (the compressor never drops to its floor while the
+       engine is screaming), and the endpoints are unchanged: 2200 Hz at rest,
+       6600 Hz at full boost and full revs, exactly as before. */
+    this.sp(this.turboOsc.frequency, 2200 + (rn * 0.35 + this.boost * 0.65) * 4400, 0.08);
     this.sp(this.turboG.gain, turboTarget, 0.12);
+
+    /* Blow-off / recirculation chuff: lift off while the turbo is actually
+       spun up and the compressor dumps its pressure. Gated on `boost`, not on
+       the pedal, so it only fires when there was genuinely boost to release —
+       which makes it rare by construction (never at low rpm, never off a
+       part-throttle lift, and never on the low-boost profiles) rather than
+       rare by a random roll. Reuses burst(); no new node, no new asset. */
+    if (
+      thr < this.prevThr - 0.3 && this.boost > 0.45 && p.turbo > 0.3 &&
+      now - this.lastChuff > 0.9
+    ) {
+      this.lastChuff = now;
+      // Broad, soft and high — a pressure release, not a crack. Level scales
+      // with both how much boost there was and how much turbo the car has.
+      this.burst(0.035 * p.turbo * this.boost, 2600 + Math.random() * 1200, 0.075, 0.55);
+    }
 
     // Gearbox whine: constant-mesh gears spin at output-shaft speed, which
     // for a fixed final drive is set by road speed alone — the same at a
