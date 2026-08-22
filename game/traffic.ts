@@ -313,9 +313,26 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
            canopy) and it lands here as albedo-proportional bounce, weighted
            toward up-facing panels so the roof/hood carry the wash the way a
            downlight would. Rides inside outgoingLight, so the anti-blowout
-           knee below caps it along with everything else. */
+           knee below caps it along with everything else.
+
+           The bias was 0.55 + 0.45, and it is shared with the player-beam
+           wash (HLW_*) which is NOT a downlight — headlights arrive from
+           behind, horizontally, and land on the car's vertical rear panel.
+           That panel has normal.y ~ 0, so it was taking the floor of this
+           term, 0.55: the one surface the player is actually looking at got
+           the weakest share of the wash, which is most of why the effect read
+           as absent while the arithmetic said it was there.
+
+           Flattened to 0.72 + 0.28. Vertical panels gain ~31% and up-facing
+           ones lose ~5%, so the streetlight read is very nearly unchanged
+           while the headlight read — the one that lands on rear ends — comes
+           up to where it was always supposed to be. Properly separating the
+           two would need a second per-instance attribute and a facing term
+           off vViewPosition; that is the right fix if this ever needs to be
+           exact, and is deliberately not done here because it cannot be
+           verified without running the game. */
         totalEmissiveRadiance +=
-          vWashCol * diffuseColor.rgb * (0.55 + 0.45 * saturate(normal.y));`
+          vWashCol * diffuseColor.rgb * (0.72 + 0.28 * saturate(normal.y));`
       )
       .replace(
         "#include <aomap_fragment>",
@@ -923,7 +940,7 @@ const TOLL_WASH_TINT_R = 0.92, TOLL_WASH_TINT_G = 0.95, TOLL_WASH_TINT_B = 1.0;
    reading as self-lit.
 
    If it needs to move again, move it ALONE and leave HLW_CORE_D at 5. */
-const HLW_GAIN = 0.17;
+const HLW_GAIN = 0.22;
 /** Along-beam falloff, metres ahead of the player's nose: full only to 5 m,
     then a long smoothstep tail to zero at 60 m.
 
