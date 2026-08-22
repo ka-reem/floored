@@ -27,8 +27,9 @@ export interface InstrumentCluster {
    dash's real pane was hidden (cockpitmodel.ts) because the scan stacked it
    several layers deep and ate ~25x; bare canvas then overshot the other way —
    numerals near white bloom under the dashcam pass. This is the middle: dial
-   faces, info panel and needle all keep their hue and drop together. */
-const FACE_DIM = 0.62;
+   faces, info panel and needle all keep their hue and drop together.
+   0.62 read hot on the user's screen; 0.40 is their requested ~35% cut. */
+const FACE_DIM = 0.40;
 
 const SWEEP_A0 = Math.PI * 0.75; // canvas angle at frac 0
 const SWEEP = Math.PI * 1.5; // total sweep
