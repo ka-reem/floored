@@ -255,6 +255,23 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
        would hang out either side of its own frame. Inset slightly so a bezel
        still reads around it. */
     glassScale = Math.min(1, (size.x * 0.88) / 0.30) * sx;
+
+    /* The donor's mirror BODY is hidden, and only its glass survives.
+
+       Two reasons. The read one: the Volvo's housing is a moulded shell that
+       was authored to be seen from outside the car in a showroom render, and
+       from 12 cm in front of a 105-degree dashcam lens it fills a chunk of
+       the frame as an unlit plastic lump behind the mirror — the reported
+       "plastic mirror holder, it's glitched". The geometric one: it was
+       modelled around ITS OWN glass, and ours is a different size and gets
+       rescaled to fit the aperture, so the shell and the glass it frames no
+       longer agree.
+
+       The parts stay in the scene graph rather than being removed, because
+       the bbox above is what positions the glass — deleting them would take
+       the anchor with them. Hiding is also what keeps the imported/procedural
+       A/B toggle honest: setActive() below walks these same parts. */
+    for (const p of mirrorParts) p.visible = false;
   }
 
   /* --- steering ----------------------------------------------------------- */

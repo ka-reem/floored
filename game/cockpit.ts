@@ -1577,14 +1577,14 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      the glass about a twentieth of the POV frame's width, clear of the frame's
      right edge without walking into the road ahead. */
   const MIR = { x: 0.06, y: Math.min(EYE.y + 0.085, 1.545), z: 0.63 };
-  /* A plain square of glass — no letterbox, no bevel, nothing else. The
-     rearCam RT is 2.5:1, so a square plane showing all of it would squash the
-     view vertically; cropUV takes the middle 1/2.5 of the frame instead, which
-     is exactly a square of the rear view at its true proportions. The cost is
-     honest and worth naming: the glass sees 40% of the wide render's width, so
-     the far flanks that the old letterbox showed are no longer in it. */
-  const mirrorGeo = new THREE.PlaneGeometry(0.13, 0.13);
-  cropUV(mirrorGeo, 0.3, 0.7);
+  /* Back to a letterbox rectangle, which is what a rear-view mirror is. It
+     was briefly square, and squaring it cost the thing the mirror is FOR: the
+     rearCam RT is 2.5:1, so a square of glass can only show the middle 40% of
+     that render without squashing it, and the far flanks — where a car about
+     to overtake actually appears — fell out of frame. A 0.3 x 0.096 plane is
+     close to the render's own 2.5:1, so it shows the whole width at very
+     nearly true proportions and needs no crop at all. */
+  const mirrorGeo = new THREE.PlaneGeometry(0.3, 0.096);
   const mirrorMesh = new THREE.Mesh(mirrorGeo, mirrorMat);
   mirrorMesh.position.set(MIR.x, MIR.y, MIR.z - 0.012);
   mirrorMesh.rotation.x = -0.07;
@@ -1598,10 +1598,9 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      shielded from the dashcam degrade by post.ts — stays put and moves into
      the donor's housing. */
   beginRegion("mirror");
-  /* Square housing to match the square glass — same thin lip it always had,
-     just no longer a letterbox. */
-  put(bezel(0.155, 0.155, 0.036, 0.045, 0.02), piano, [MIR.x, MIR.y, MIR.z], [-0.07, 0, 0]);
-  put(rbox(0.145, 0.145, 0.05, 0.04), piano, [MIR.x, MIR.y, MIR.z + 0.024], [-0.07, 0, 0]);
+  /* Letterbox housing, back in proportion with the glass above. */
+  put(bezel(0.322, 0.118, 0.036, 0.04, 0.02), piano, [MIR.x, MIR.y, MIR.z], [-0.07, 0, 0]);
+  put(rbox(0.312, 0.108, 0.05, 0.036), piano, [MIR.x, MIR.y, MIR.z + 0.024], [-0.07, 0, 0]);
   /* The screen leans back as it rises, so the stalk has to run up and
      rearward — longer than it was, because the housing now hangs ~3.5 cm
      lower while the header it grows from did not move. */
