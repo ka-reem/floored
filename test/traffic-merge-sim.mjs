@@ -85,7 +85,7 @@ function makeSim(mode, seed) {
   /* new rules: back/fwd are required clear-road gaps, lengths added per
      pair, both ends stretched by closing speed. old rules: the pre-fix
      static centre-to-centre box. */
-  function laneClearAt(n, s, off2, back, fwd) {
+  function laneClearAt(n, s, off2, back, fwd, backC, fwdC) {
     for (const m of cars) {
       if (m === n) continue;
       if (Math.abs(m.offCur - off2) > 2.2) continue;
@@ -93,8 +93,8 @@ function makeSim(mode, seed) {
       let backNeed, fwdNeed;
       if (mode === "new") {
         const halfL = (m.L + n.L) / 2;
-        backNeed = halfL + (back ?? 13.5) + 3.0 * Math.max(0, m.v - n.v);
-        fwdNeed = halfL + (fwd ?? 23.5) + 2.0 * Math.max(0, n.v - m.v);
+        backNeed = halfL + (back ?? 13.5) + (backC ?? 3.0) * Math.max(0, m.v - n.v);
+        fwdNeed = halfL + (fwd ?? 23.5) + (fwdC ?? 2.0) * Math.max(0, n.v - m.v);
       } else {
         backNeed = back ?? 18;
         fwdNeed = fwd ?? 28;
@@ -158,7 +158,7 @@ function makeSim(mode, seed) {
             const urgent = c.lanes(n.s + Math.max(n.v, 8) * 3) - 1 < n.laneK;
             const clear = urgent
               ? laneClearAt(n, n.s, off2, 1.2 + 0.25 * n.v, 2.5 + 0.35 * n.v)
-              : laneClearAt(n, n.s, off2);
+              : laneClearAt(n, n.s, off2, 9, 16);
             if (clear) {
               const brisk = urgent || n.v < 15;
               n.pendK = k2;
@@ -170,7 +170,7 @@ function makeSim(mode, seed) {
                 : c.lanePitch(n.s) / lerp(3, 2, drv.lane);
               n.turnCd = Math.max(n.turnCd, 2);
             } else {
-              mergeCap = urgent ? -2.6 : -0.9;
+              mergeCap = urgent ? -2.6 : -0.35;
               if (process.env.MERGE_SIM_DEBUG) {
                 const ystate = `yield u=${urgent}`;
                 if (n.lastY !== ystate) { n.lastY = ystate; note(n, `${ystate} s=${n.s.toFixed(0)} v=${n.v.toFixed(1)}`); }
