@@ -95,12 +95,19 @@ const BASE_LANES = 3;
 const LANE_STEPS: LaneStep[] = [
   { z0: -1550, z1: -1400, to: 2 }, // drop to two through the first sweeper
   { z0: -1150, z1: -1000, to: 3 },
-  { z0: -700, z1: -560, to: 4 }, // fourth lane fully open ahead of the exit gore
-  /* Lane drop into the tunnel, and the last change of count before the splice:
-     everything must be settled by Z1 − DECK_EXT, because the mirrors show the
-     overrun behind the player and it has to already match the other end. The
-     toll plaza deliberately does NOT change the lane count — see LANE_PITCH. */
-  { z0: 700, z1: 860, to: 3 },
+  /* Widest section of the lap: five lanes, fully open ahead of the exit gore.
+     Δ = 3.7 m (two lanes added shift every centre by pitch), so the 140 m step
+     sits at 1.875·3.7/140 ≈ 0.050 lateral slope — inside the 0.053 budget. */
+  { z0: -700, z1: -560, to: 5 },
+  /* Lane drops into the tunnel, and the last change of count before the
+     splice: everything must be settled by Z1 − DECK_EXT, because the mirrors
+     show the overrun behind the player and it has to already match the other
+     end. The toll plaza deliberately does NOT change the lane count — see
+     LANE_PITCH. Two single-lane drops rather than one 5→3 fan-in: traffic
+     chains one forced merge at a time, and a two-lane taper in one step is
+     exactly the pileup shape the zipper logic in traffic.ts has to fight. */
+  { z0: 640, z1: 745, to: 4 },
+  { z0: 765, z1: 860, to: 3 },
 ];
 
 /** Lane pitch — the spacing between lane centres, which is *not* constant.

@@ -447,6 +447,14 @@ export interface Npc {
   pendK: number;
   /** lateral m/s this driver crosses a lane at, once committed (2-4s/lane) */
   laneRate: number;
+  /** Nonzero while a FORCED taper merge is wanted but blocked: the driver
+      leans this far off their lane centre toward the target lane (body still
+      inside their own lane), blinker running, waiting for a slot. Followers
+      in the target lane perceive a signalling car at a wider lateral window,
+      so the lean is what makes them hold back and open the zipper gap.
+      Transient — rewritten every updateHwy, cleared the moment the merge is
+      accepted or stops being needed. */
+  mergeLean: number;
   /** corridor z for expressway cars, edge arclength for town cars */
   s: number;
   v: number; v0: number;
@@ -925,7 +933,8 @@ export class Traffic {
         wheelOffs: [[d.wz, hw2], [d.wz, -hw2], [-d.wz, hw2], [-d.wz, -hw2]],
         hw: true, edge: null, eDir: 1, segHint: { i: 0 }, nextEdgeId: -1,
         dir: 1, route: -1, wantBypass: 0,
-        laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: this.cor.lanePitch(0) / 3, s: 0,
+        laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: this.cor.lanePitch(0) / 3,
+        mergeLean: 0, s: 0,
         v: 0, v0: 10,
         drv: {
           spd: 1, gap: 1, acc: 1, lane: 0.5, react: 0.3, corner: 1, timid: 0, weave: 0, jit: rand(0, TAU),
@@ -1068,6 +1077,7 @@ export class Traffic {
     n.wreck = null;
     n.fade = 1;
     n.pendK = -1;
+    n.mergeLean = 0;
     n.blink = 0;
     n.ccKind = null;
     n.route = -1;
@@ -1246,7 +1256,13 @@ export class Traffic {
         ? rand(55, hd + 330)
         : rand(hd + 15, hd + 330);
       const z = cor.wrapZ(player.z + ahead);
-      const nl = cor.lanes(z);
+      /* Seed for the DOWNSTREAM lane count: a car dropped into a lane that
+         ends within the next ~10 s of travel only feeds the pileup at the
+         taper, so upstream of a shrink the spawner fills just the lanes that
+         survive it — which also thins density to what the narrower section
+         can actually carry (the per-lane 20 m spacing check below does the
+         throttling once the doomed lanes are off the menu). */
+      const nl = Math.min(cor.lanes(z), cor.lanes(cor.wrapZ(z + 300)));
       // faster drivers gravitate to the outside (fast) lanes, slower ones to
       // lane 0, which is the kerb lane the ramps feed
       let laneK: number;
@@ -1883,7 +1899,13 @@ export class Traffic {
           const ahead = dx * fx + dz * fz;
           if (ahead <= 0 || ahead > 70) continue;
           const side = Math.abs(dx * fz - dz * fx);
-          if (side > (m.wreck ? 2.6 : 1.9)) continue;
+          /* a signalling car reads wider: the follower sees the blinker and
+             the nose easing over (mergeLean carries a blocked merger to its
+             lane edge, ~2.8 m off the neighbour's centre) and yields BEFORE
+             the body is in-lane — that early give is what makes a zipper
+             merge close cleanly instead of two cars discovering each other
+             mid-crossing */
+          if (side > (m.wreck ? 2.6 : m.hw && m.blink !== 0 ? 2.9 : 1.9)) continue;
           if (n.hw && m.hw && !m.wreck && m.dir !== n.dir) continue;
           const d = Math.max(ahead - (m.L + n.L) / 2, 0.1);
           if (d < ds) {
@@ -2110,15 +2132,32 @@ export class Traffic {
       near position `s` on route `route` — shared by comfort lane changes,
       forced taper merges, and the bypass merge's gap acceptance. `s` and
       `off2` are in the route's own space (corridor z / bypass arclength);
-      only cars on the same route are compared, so the two spaces never mix. */
-  private laneClearAt(n: Npc, s: number, off2: number, route = n.route): boolean {
+      only cars on the same route are compared, so the two spaces never mix.
+      `back`/`fwd` are required CLEAR-ROAD gaps (bumper to bumper — the two
+      half-lengths are added per pair, so a bus needs more room than a
+      compact): comfort changes keep the roomy default, a zipper merge into a
+      closing taper passes a tighter, speed-scaled pair (see updateHwy).
+      Both ends also stretch with CLOSING SPEED: a static box calls a gap
+      fine even when the car behind it is arriving 8 m/s faster and will be
+      on the merger's bumper before the crossing finishes — which was one of
+      the ways the old taper merges ended in overlapping bodies (the sim in
+      test/traffic-merge-sim.mjs steps all of this headlessly). */
+  private laneClearAt(
+    n: Npc, s: number, off2: number, route = n.route, back = 13.5, fwd = 23.5
+  ): boolean {
     const cor = this.cor;
     for (const m of this.npcs) {
       if (m === n || !m.active || !m.hw || m.wreck) continue;
       if (m.route !== route) continue;
       if (Math.abs(m.offCur - off2) > 2.2) continue;
       const ds = route === BYPASS_EDGE ? m.s - s : cor.deltaZ(s, m.s);
-      if (ds > -18 && ds < 28) return false;
+      const halfL = (m.L + n.L) / 2;
+      // 3.0 s of rear closing: a lane change exposes the merger for several
+      // seconds (signal + crossing), and a rear car keeps its speed for most
+      // of that before it can see, react and brake
+      const backNeed = halfL + back + 3.0 * Math.max(0, m.v - n.v);
+      const fwdNeed = halfL + fwd + 2.0 * Math.max(0, n.v - m.v);
+      if (ds > -backNeed && ds < fwdNeed) return false;
     }
     return true;
   }
@@ -2168,27 +2207,106 @@ export class Traffic {
     }
 
     /* Merge out of a lane that is about to end well before it does — a
-       lookahead many seconds up the road (a multi-lane fan-in, like the toll
-       plaza's merge-back, needs to start several lane changes early enough
-       to chain them), signalled and gradual, same as any other lane
-       change, so a taper never reads as a sideways teleport. Re-triggers on
-       its own once each pendK clears, so a multi-lane drop chains through
-       consecutive single-lane merges rather than waiting for the whole taper. */
-    if (n.pendK < 0 && n.laneK <= nl - 1) {
+       lookahead many seconds up the road (a multi-lane fan-in needs to start
+       several lane changes early enough to chain them), signalled and
+       gradual, same as any other lane change, so a taper never reads as a
+       sideways teleport. Re-triggers on its own once each pendK clears, so a
+       multi-lane drop chains through consecutive single-lane merges rather
+       than waiting for the whole taper.
+
+       When the target lane has no gap the driver YIELDS instead of holding
+       speed until the pavement runs out: a gentle lift far from the taper,
+       a real brake once the lane is due to vanish within a few seconds —
+       braking is what opens a slot behind the through-lane car alongside,
+       which is the zipper. Close to the end the gap acceptance also tightens
+       (still clear of both bumpers) the way real forced merges do. `mergeCap`
+       carries the yield deceleration into the IDM result below.
+
+       Gated on blink === 0 as well as pendK: a chained multi-lane drop must
+       finish (settle) one crossing before accepting the next, or the second
+       hop re-targets offT mid-drift and the car cuts a continuous diagonal
+       across an intermediate lane nobody gap-checked. A car whose blinker is
+       on because it is lean-waiting (mergeLean) is re-admitted — that IS the
+       pending forced merge, not a crossing in progress. */
+    let mergeCap = Infinity;
+    let stopDs = -1; // ≥0: virtual stopped leader this far ahead (lane end)
+    const wasLean = n.mergeLean !== 0;
+    n.mergeLean = 0;
+    if (n.pendK < 0 && (n.blink === 0 || wasLean) && n.laneK <= nl - 1 && n.laneK > 0) {
       const aheadZ = cor.wrapZ(n.s + clamp(n.v, 15, 32) * 9);
       const nlAhead = cor.lanes(aheadZ);
       if (n.laneK > nlAhead - 1) {
-        const k2 = Math.max(0, Math.min(n.laneK - 1, nlAhead - 1));
+        /* ONE lane per hop, always — never min(laneK−1, nlAhead−1): across a
+           multi-step drop that shortcut targets a lane two over and the car
+           cuts a continuous diagonal through the lane between, which was
+           never gap-checked. The chain re-triggers after this hop settles. */
+        const k2 = n.laneK - 1;
         const off2 = cor.laneOffset(k2, n.s);
-        if (k2 !== n.laneK && this.laneClearAt(n, n.s, off2)) {
-          n.pendK = k2;
-          n.blink = off2 < n.offCur ? -1 : 1;
-          n.blinkT = rand(1, 2);
-          // the local lane pitch, not the nominal LANE_W — the toll plaza
-          // spreads lanes to ~6m, and a lane change there still needs to
-          // take 2-4s rather than crossing the wider gap at the same speed
-          n.laneRate = cor.lanePitch(n.s) / lerp(3, 2, drv.lane); // merges run a touch brisker than a comfort change
-          n.turnCd = Math.max(n.turnCd, 2);
+        {
+          // lane gone within ~3 s of travel → zipper urgency
+          const urgent =
+            cor.lanes(cor.wrapZ(n.s + Math.max(n.v, 8) * 3)) - 1 < n.laneK;
+          /* the urgent gap requirement scales with speed: at 25 m/s it wants
+             ~8 m of clear road behind and ~11 ahead, at a jam crawl a real
+             zipper takes a slot with a couple of metres to spare */
+          const clear = urgent
+            ? this.laneClearAt(
+                n, n.s, off2, n.route, 1.2 + 0.25 * n.v, 2.5 + 0.35 * n.v)
+            : this.laneClearAt(n, n.s, off2);
+          if (clear) {
+            /* brisk when urgent AND when merging from a crawl: a stopped car
+               pulling into a gap takes it in one motion — a leisurely 4 s
+               signal-and-drift from standstill leaves the accepted gap a
+               whole highway-speed approach window in which to rot */
+            const brisk = urgent || n.v < 15;
+            n.pendK = k2;
+            n.blink = off2 < n.offCur ? -1 : 1;
+            n.blinkT = brisk ? rand(0.2, 0.5) : rand(1, 2);
+            // the local lane pitch, not the nominal LANE_W — the toll plaza
+            // spreads lanes to ~6m, and a lane change there still needs to
+            // take 2-4s rather than crossing the wider gap at the same speed.
+            // An urgent zipper slot is taken briskly (the emergency rate):
+            // a leisurely 2-4 s drift leaves the accepted gap time to close
+            // under the car mid-crossing.
+            n.laneRate = brisk
+              ? cor.lanePitch(n.s) / 1.4
+              : cor.lanePitch(n.s) / lerp(3, 2, drv.lane); // merges run a touch brisker than a comfort change
+            n.turnCd = Math.max(n.turnCd, 2);
+          } else {
+            mergeCap = urgent ? -2.6 : -0.9;
+            if (urgent) {
+              /* No slot: lean to the lane edge, blinker on, and wait. The
+                 body stays inside its own lane (maxBias + 0.2 puts the flank
+                 ~5 cm short of the line), but the lean carries the car into
+                 the widened perception window below, so target-lane
+                 followers adopt it as a leader and hold back — which is what
+                 actually opens the zipper gap in packed traffic. */
+              n.mergeLean =
+                (off2 < n.offCur ? -1 : 1) * (this.maxBias(n, n.s) + 0.2);
+              n.blink = off2 < n.offCur ? -1 : 1;
+              n.laneRate = Math.max(n.laneRate, LANE_FOLLOW_RATE);
+              /* Still no slot and the pavement is running out: place a
+                 VIRTUAL STOPPED LEADER a few metres short of where lanes()
+                 says this lane ends (bisection — a handful of arithmetic
+                 lanes() calls, only for a blocked urgent merger) and let IDM
+                 brake to it, exactly the way town cars stop for a red. A
+                 fixed decel cap can't do this: capping at some −v·k decays
+                 with v and delivers the car to the taper end still moving,
+                 and the snap net then slides its body across into an
+                 occupied lane — which is exactly the pileup glitch. A car
+                 that WAITS at the end of a closing lane zippers in cleanly
+                 as soon as the yielding follower alongside leaves it room. */
+              let lo = 0, hi = Math.max(n.v, 4) * 3;
+              if (cor.lanes(cor.wrapZ(n.s + hi)) - 1 < n.laneK) {
+                for (let i = 0; i < 5; i++) {
+                  const mid = (lo + hi) / 2;
+                  if (cor.lanes(cor.wrapZ(n.s + mid)) - 1 < n.laneK) hi = mid;
+                  else lo = mid;
+                }
+                stopDs = Math.max(0.3, lo - 6);
+              }
+            }
+          }
         }
       }
     }
@@ -2196,7 +2314,8 @@ export class Traffic {
        merge, or a driver that never got a clear gap in time) — snap the lane
        index so later math stays in range, but still signal it and still ease
        the visible offset over via offCur/offT below, just at the brisker
-       emergency rate, rather than teleporting. */
+       emergency rate, rather than teleporting. Brake hard while forcing the
+       entry so the overlap resolver has a slow car to absorb, not a fast one. */
     if (n.laneK > nl - 1) {
       const k2 = Math.max(0, nl - 1);
       const off2 = cor.laneOffset(k2, n.s);
@@ -2204,6 +2323,14 @@ export class Traffic {
       n.laneRate = Math.max(n.laneRate, cor.lanePitch(n.s) / 1.4);
       n.laneK = k2;
       n.pendK = -1;
+      mergeCap = Math.min(mergeCap, -2.6);
+    }
+
+    // the blocked merger's stop-at-the-taper-end target, as an IDM leader
+    if (stopDs >= 0 && (!lead || stopDs < lead.ds)) {
+      this._stop.ds = stopDs;
+      this._stop.v = 0;
+      lead = this._stop;
     }
 
     const aMax = 1.6 * drv.acc, bCom = 2.3, T = 1.25 * drv.gap, s0 = 2.2 + 1.4 * (drv.gap - 1);
@@ -2213,6 +2340,7 @@ export class Traffic {
       const sStar = s0 + n.v * T + (n.v * dv) / (2 * Math.sqrt(aMax * bCom));
       acc = aMax * (1 - Math.pow(n.v / v0, 4) - Math.pow(sStar / Math.max(lead.ds, 0.55), 2));
     } else acc = aMax * (1 - Math.pow(n.v / v0, 4));
+    if (mergeCap < Infinity) acc = Math.min(acc, mergeCap); // blocked taper: yield
     if (panic) acc = Math.min(acc, -6.5);
     acc = clamp(acc, -8.5, 3.2);
     n.brake = acc < -1.2;
@@ -2245,9 +2373,12 @@ export class Traffic {
 
     n.turnCd -= dt;
     /* Lane change when stuck behind slower traffic — how long a driver puts up
-       with it is their own business, and speeders weave for no reason at all. */
+       with it is their own business, and speeders weave for no reason at all.
+       Restless odds 0.35 → 0.28/s and the cooldown band 12-3.5 → 15-4.5 s
+       (here and in updateBypass): a ~20-25% trim of voluntary lane changes,
+       per user call — a tuning nudge, not a behaviour change. */
     const held = !!lead && lead.ds < 18 + 30 * drv.lane && lead.v < n.v0 * (0.8 + 0.12 * drv.lane);
-    const restless = drv.weave > 0 && (!lead || lead.ds > 30) && this.rng() < 0.35 * dt;
+    const restless = drv.weave > 0 && (!lead || lead.ds > 30) && this.rng() < 0.28 * dt;
     if (n.pendK < 0 && n.blink === 0 && n.turnCd <= 0 && (held || restless)) {
       // pushy drivers reach for the outside lane first, patient ones move over
       const first = drv.lane > 0.55 ? 1 : -1;
@@ -2263,7 +2394,7 @@ export class Traffic {
           n.blink = off2 < n.offCur ? -1 : 1;
           n.blinkT = rand(1, 2);
           n.laneRate = cor.lanePitch(n.s) / lerp(4, 2, drv.lane); // 2-4s to cross a lane, eager drivers quicker
-          n.turnCd = lerp(12, 3.5, drv.lane);
+          n.turnCd = lerp(15, 4.5, drv.lane);
           break;
         }
       }
@@ -2283,16 +2414,22 @@ export class Traffic {
        geometry is sized against it — while an active, signalled lane change
        (blink is on) is deliberately throttled to the slower, driver-specific
        laneRate so the manoeuvre itself reads as gradual. */
-    n.offT = cor.laneOffset(n.laneK, n.s) + this.biasAt(n, n.s);
+    // a lean-waiting car aims at its lane edge instead of centre + bias; the
+    // blinker must not clear while the lean holds, or followers lose the
+    // widened perception that makes them yield
+    n.offT = cor.laneOffset(n.laneK, n.s) +
+      (n.mergeLean !== 0 ? n.mergeLean : this.biasAt(n, n.s));
     const dOff = n.offT - n.offCur;
     const rate = n.blink !== 0 ? n.laneRate || cor.lanePitch(n.s) / 3 : LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) {
       n.offCur += clamp(dOff, -rate * dt, rate * dt);
-      if (n.blink !== 0 && n.pendK < 0 && Math.abs(dOff) < 0.35 && n.wantBypass !== 1)
+      if (n.blink !== 0 && n.pendK < 0 && n.mergeLean === 0 &&
+        Math.abs(dOff) < 0.35 && n.wantBypass !== 1)
         n.blink = 0;
     } else {
       n.offCur = n.offT;
-      if (n.blink !== 0 && n.pendK < 0 && n.wantBypass !== 1) n.blink = 0;
+      if (n.blink !== 0 && n.pendK < 0 && n.mergeLean === 0 && n.wantBypass !== 1)
+        n.blink = 0;
     }
   }
 
@@ -2358,7 +2495,7 @@ export class Traffic {
     n.turnCd -= dt;
     /* comfort lane change between the two lanes, clear of the merge run */
     const held = !!lead && lead.ds < 18 + 30 * drv.lane && lead.v < n.v0 * (0.8 + 0.12 * drv.lane);
-    const restless = drv.weave > 0 && (!lead || lead.ds > 30) && this.rng() < 0.35 * dt;
+    const restless = drv.weave > 0 && (!lead || lead.ds > 30) && this.rng() < 0.28 * dt;
     if (
       n.pendK < 0 && n.blink === 0 && n.turnCd <= 0 && (held || restless) &&
       n.s < mw.s0 - 150
@@ -2370,7 +2507,7 @@ export class Traffic {
         n.blink = off2 < n.offCur ? -1 : 1;
         n.blinkT = rand(1, 2);
         n.laneRate = BYPASS.laneW / lerp(4, 2, drv.lane);
-        n.turnCd = lerp(12, 3.5, drv.lane);
+        n.turnCd = lerp(15, 4.5, drv.lane);
       }
     }
     if (n.pendK >= 0) {
