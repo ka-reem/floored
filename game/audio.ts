@@ -298,10 +298,20 @@ const ENGINE_TUNE_DEFAULT = {
       baseline; with makeup at 1.15 the bus now runs +1.2dB overall rather
       than the +8.9dB it shipped at, so the engine sits just forward of where
       it was before any of this started. If it needs to come down again,
-      `level` is still the knob — but below about 0.8 the engine starts
-      losing to the wind layer at speed, and the right fix at that point is
-      bringing tyre/wind/traffic down rather than the engine further. */
-  level: 1.0,
+      `level` is still the knob.
+
+      1.0 -> 0.5: a further 50% cut (-6dB), asked for after listening. The
+      bus now runs 0.5 * 1.15 = 0.575, i.e. -4.8dB against the pre-2026-08
+      baseline and -13.7dB against what 085e9b1 shipped. The engine is now
+      deliberately quieter than it has ever been in this game.
+
+      Worth knowing if this gets revisited: tyre, wind, road-rumble and
+      traffic have not moved through any of these cuts, so what is changing
+      is purely the engine's position against them. Past this point the
+      engine can start losing to the wind layer at speed rather than reading
+      as pleasantly quiet — if that happens, the fix is to bring those layers
+      down and leave `level` here, not to push `level` lower still. */
+  level: 0.5,
   /** Low-shelf boost in dB applied to the engine bus below `rumbleHz` — the
       "beef" control specifically, as opposed to `level` which lifts the whole
       band. Positive = more chest rumble; 0 = flat (old response). Kept in dB
