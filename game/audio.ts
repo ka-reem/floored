@@ -138,13 +138,71 @@ const SAMPLE_FILES: Record<string, string> = {
   hornTruck: "horns/truck.wav",
 };
 
-/** Nominal rpm each ladder loop represents. Tuning anchors, not measured
-    engine speeds: within a band the two neighbouring loops crossfade
-    equal-power while each plays at playbackRate = rpm/anchor, so pitch keeps
-    moving continuously inside the band and the crossfade only morphs
-    timbre. Spacing rises like a real ladder so playbackRate stays near 1 at
-    each band centre. */
+/** MEASURED firing fundamental of each ladder loop, Hz. Obtained by
+    autocorrelation over each WAV (confidence 0.83-0.95) and confirmed
+    against the spectral peaks, which sit on these frequencies and their
+    integer multiples — loop_0 also shows the half-order at 21.5Hz, exactly
+    what a four-stroke does.
+
+    These four numbers are the reason the engine did not sound like it was
+    revving. The loops span only 42.9 -> 69.9Hz, a ratio of 1.63; the tuning
+    anchors below claimed they spanned 1050 -> 6400rpm, a ratio of 6.1. With
+    playbackRate set to rpm/anchor, as it was, the pitch you actually heard
+    was f_measured * rpm/anchor — which RISES about 2.3x inside a band and
+    then FALLS ~38% the instant the crossfade moves to the next loop, three
+    times over the rev range. Net pitch from idle to redline was 42.9 ->
+    69.9Hz: barely a musical fifth, non-monotonic, with three backward jumps
+    in it. Meanwhile the mixer's level terms (thr*0.23 on the ladder,
+    thr*0.105 on the synth) climbed monotonically with throttle. An engine
+    whose loudness rises while its pitch goes nowhere is precisely the
+    reported "it sounds like it's idling and then just getting louder — it
+    doesn't sound like the rpm is increasing".
+
+    Worse, inside a band the two crossfading loops were a fifth or more
+    apart in pitch, so the equal-power crossfade blended two dissonant
+    voices rather than morphing one timbre into another. That is the muddy,
+    beating quality on top of the missing rev sweep.
+
+    playbackRate is now derived from these measured values against the
+    engine's true firing frequency (see the sampled block in update()), so
+    all four loops sound in UNISON at the correct pitch at every rpm, the
+    crossfade only changes texture the way the comment below always claimed,
+    and pitch tracks rpm monotonically across the whole range. */
+const LOOP_F0 = [42.9, 60.0, 64.7, 69.9];
+
+/** rpm at which each ladder loop is the dominant TIMBRE. Purely a texture
+    schedule now, not a pitch one: pitch comes from LOOP_F0 above, so which
+    loop is playing no longer changes what note you hear, only its character.
+    Spread across the rev range so the recording's colour still evolves from
+    idle to redline. */
 const RPM_ANCHORS = [1050, 2400, 4200, 6400];
+
+/** Hard bounds on ladder playbackRate — a sanity clamp, not a taste one.
+    Pitch must keep TRACKING rpm right to the redline: a loop pinned at a
+    fixed rate turns into a drone sitting a musical third under a synth voice
+    that is still climbing, and two engine voices at different pitches beat
+    against each other. Better a heavily stretched loop, at the low level it
+    is mixed at up there, than a stationary one. */
+const RATE_MIN = 0.5, RATE_MAX = 3.6;
+
+/** The stretch beyond which the recordings stop reading as an engine and
+    start reading as a chipmunk — where the synth should be carrying the
+    tone, with the ladder demoted to texture underneath it. Distinct from
+    RATE_MAX above: this one is a judgement about timbre and decides the
+    crossfade, that one only stops the rate running away. The engine needs
+    850 -> 7400rpm (8.7x) and these recordings span 1.63x, so the top of the
+    range genuinely cannot be covered by stretching them; this is where that
+    is conceded. */
+const LADDER_STRETCH = 2.8;
+
+/** How much of the synth tonal body stays mixed in underneath the recordings
+    at ordinary rpm. Was 0 — sampled mode muted the oscillator path outright
+    (driveTrim -> 0) and handed the whole engine to four recordings that, per
+    LOOP_F0, could not actually carry a rev sweep. A floor keeps a correctly
+    pitched fundamental present at every rpm, so "the revs are climbing" is
+    audible even where the ladder is thin, without the synth reading as a
+    separate voice on top. */
+const SYNTH_FLOOR = 0.2;
 
 /** One crash() invocation, as recorded into the debug log (see
     getCrashLog()) — lets the headless test assert which layers/variants a
@@ -217,13 +275,35 @@ const smoothstep = (e0: number, e1: number, x: number) => {
 const ENGINE_TUNE_DEFAULT = {
   /** Linear gain on the whole engine bus (both voices). 1.0 = the pre-2026-08
       balance, higher = louder engine relative to tyres/wind/traffic. This is
-      the knob to reach for first. */
-  level: 1.85,
+      the knob to reach for first.
+
+      1.85 -> 1.25. With makeup below at 1.15 the bus now runs about +3.2dB on
+      the pre-2026-08 balance instead of +8.9dB, i.e. ~5.7dB quieter than it
+      shipped at, while still sitting forward of where it was before anyone
+      touched it. 1.85 was set to fix an engine that was too quiet, but
+      tyre/wind/traffic were left where they were, so the fix was applied
+      entirely by making one source dominate — which is the reported "the
+      engine drowns out the other car sounds".
+
+      There is a second reason to come down that has nothing to do with the
+      meter: a correctly pitched engine sweeping through its rev range is
+      perceptually louder than a droning one at the same gain, because the
+      moving pitch keeps recruiting fresh critical bands instead of sitting in
+      one. The pitch fix (LOOP_F0) therefore made the old number louder to the
+      ear than it measured, and some of this reduction is just paying that
+      back. */
+  level: 1.25,
   /** Low-shelf boost in dB applied to the engine bus below `rumbleHz` — the
       "beef" control specifically, as opposed to `level` which lifts the whole
       band. Positive = more chest rumble; 0 = flat (old response). Kept in dB
-      because that's what BiquadFilterNode.gain wants for a shelf. */
-  rumbleDb: 10,
+      because that's what BiquadFilterNode.gain wants for a shelf.
+
+      10 -> 5: +10dB of shelf under 140Hz is most of the reason the engine was
+      burying the traffic. Low frequencies mask higher ones far more than the
+      reverse (upward spread of masking), so a big low shelf on the loudest
+      source in the mix eats the NPC engines and tyre detail sitting above it
+      even when the broadband levels look reasonable on a meter. */
+  rumbleDb: 5,
   /** Corner of that shelf, Hz. ~140 is the exhaust/body region a car actually
       rumbles in and that laptop speakers can still reproduce; pushing it up
       toward 250 makes it boomy/muddy, down toward 60 makes it a sub thump
@@ -241,20 +321,38 @@ const ENGINE_TUNE_DEFAULT = {
       non-tonal part of the low end). Turning this up thickens the rumble with
       texture rather than with more of the same tone, which is what keeps a
       loud engine from reading as a synth drone. It rides engG, so it is
-      already gated by throttle/load and cannot leak at idle. */
-  exhaust: 2.0,
+      already gated by throttle/load and cannot leak at idle.
+
+      2.0 -> 1.35: doubling the exhaust bed was compensating for a tonal
+      engine that had no rev sweep in it (see LOOP_F0) — noise stood in for
+      the movement the pitch was not providing. Now that pitch tracks rpm
+      properly the bed can go back to being texture rather than bulk, which
+      also stops it competing with the tyre and road-rumble layers. */
+  exhaust: 1.35,
   /** Engine-bus limiter threshold in dBFS — the peak ceiling for everything
       the engine makes. Lower = the limiter grabs earlier, so the sound gets
       denser and more even (and, with `makeup` below, louder on average) at
       the cost of dynamic range between idle and WOT. Above about -3 it
-      barely engages and the loud end goes back to being peaky. */
-  ceilingDb: -8,
+      barely engages and the loud end goes back to being peaky.
+
+      -8 -> -5: at -8 with ratio 8 the limiter was working on ordinary signal,
+      not just peaks, which flattens the difference between idling and wide
+      open into a constant loud drone. That costs realism directly — dynamic
+      range between idle and WOT is a large part of what makes an engine read
+      as an engine — and it costs headroom for everything else, because a
+      limited source has a high AVERAGE level even when its peaks are
+      controlled. Backing the threshold off restores the swing. */
+  ceilingDb: -5,
   /** Linear gain AFTER the limiter. This is what turns limiting into
       loudness: the limiter flattens the peaks, makeup lifts the whole
-      flattened signal back up. Up = louder. Keep ceilingDb + makeup such
+      flattened signal back up. Up = louder. 1.5 -> 1.15, in step with
+      `level` and the raised ceiling above: with the limiter no longer
+      grinding on ordinary signal there is much less flattening to make up
+      for, and leaving makeup high would just hand the level straight back.
+      Keep ceilingDb + makeup such
       that the engine peaks under ~0.8 into master (master itself is
       0.9 * volume), or the sum with tyres/wind can clip the destination. */
-  makeup: 1.5,
+  makeup: 1.15,
 };
 export type AudioTune = typeof ENGINE_TUNE_DEFAULT;
 
@@ -1995,6 +2093,27 @@ export class GameAudio {
        because partial 2 of the wave is the firing order. */
     const base = (rpm * p.cyl) / 240;
     for (const o of this.oscs) this.sp(o.frequency, base, 0.018);
+    /* The firing frequency itself — the note an engine is heard AT. The
+       oscillators run an octave below it (partial 2 of their wave is the
+       firing order), but the sampled ladder has no such trick available: a
+       recording has to be played at whatever rate puts its own fundamental
+       here. */
+    const base2 = base * 2;
+
+    /* Where the recordings run out of rev range. LOOP_F0[3] is the
+       highest-pitched loop, so LADDER_STRETCH * LOOP_F0[3] is the highest firing
+       frequency the ladder can reach before its pitch stops tracking rpm;
+       converting that back to rpm gives the point past which stretching the
+       recordings further stops sounding like an engine and starts sounding
+       like a chipmunk. On a four that lands near 5900rpm, on a six much
+       lower (a six fires 1.5x more often at the same rpm, and these are
+       four-cylinder recordings). Above it the synth tonal body — which is
+       generated at exactly the right frequency and has no range limit at all
+       — fades up and takes the top end, which is also where an engine most
+       needs to sound sharp and angry. */
+    const ladderTop = (LADDER_STRETCH * LOOP_F0[3] * 120) / p.cyl;
+    const takeover = smoothstep(ladderTop * 0.78, ladderTop * 1.06, rpm);
+    const synthMix = SYNTH_FLOOR + (1 - SYNTH_FLOOR) * takeover;
 
     // Idle wobble: the uneven, hunting quality of an engine at rest.
     const idleness = clamp01(1 - (rpm - 850) / 1100) * (1 - thr * 0.8);
@@ -2018,7 +2137,12 @@ export class GameAudio {
        fixed recordings can't provide. engG still gates the beds, so
        bodyLevel keeps shaping them. */
     const sampled = this.sampledActive();
-    const bedMix = sampled ? 0.5 + thr * 0.35 : 1;
+    // ...and it returns to full as `takeover` hands the top of the rev range
+    // back to the synth: engG gates the tonal body as well as the beds, so
+    // leaving it ducked up there would quietly cap the voice that is supposed
+    // to be carrying redline on its own.
+    const bedMixLo = 0.5 + thr * 0.35;
+    const bedMix = sampled ? bedMixLo + (1 - bedMixLo) * takeover : 1;
 
     /* Loudness/rumble knobs, re-read every frame so console edits to
        window.__audioTune are audible immediately (see ENGINE_TUNE_DEFAULT).
@@ -2034,7 +2158,10 @@ export class GameAudio {
     this.sp(this.engMakeup.gain, tune.makeup, 0.05);
 
     this.sp(this.drivePre.gain, 0.9 + load * 2.6 + (lim ? 1.4 : 0), 0.04);
-    this.sp(this.driveTrim.gain, (sampled ? 0 : 1) / (0.9 + load * 1.2), 0.04);
+    // synthMix, not a hard 0, in sampled mode: the oscillator body stays
+    // underneath the recordings as the correctly pitched fundamental and
+    // takes over entirely at the top of the rev range. See SYNTH_FLOOR.
+    this.sp(this.driveTrim.gain, (sampled ? synthMix : 1) / (0.9 + load * 1.2), 0.04);
 
     /* Growl raised on the THROTTLE term only (0.075 -> 0.105, +2.9dB at wide
        open) so accelerating gets meatier while idle and closed-throttle cruise
@@ -2069,19 +2196,34 @@ export class GameAudio {
         g0 = Math.cos((x * Math.PI) / 2);
         g1 = Math.sin((x * Math.PI) / 2);
       }
+      /* Pitch: every loop is played at whatever rate puts ITS measured
+         fundamental (LOOP_F0) on the engine's true firing frequency `base2`.
+         Not rpm/anchor — see the long note on LOOP_F0 for why that made the
+         pitch fall backwards three times on the way to redline instead of
+         rising. Because the target is the same for all four, the loops are
+         always in unison and the crossfade morphs texture only. */
       for (let i = 0; i < 4; i++) {
         const g = !sampled ? 0 : i === band ? g0 : i === band + 1 ? g1 : 0;
         this.sp(this.loopGains[i].gain, g, 0.045);
-        this.sp(this.loopSrcs[i].playbackRate, clampRange(rpm / A[i], 0.45, 2.2), 0.02);
+        this.sp(
+          this.loopSrcs[i].playbackRate,
+          clampRange(base2 / LOOP_F0[i], RATE_MIN, RATE_MAX),
+          0.02
+        );
       }
       // thr coefficient 0.23 (0.11 -> 0.17 -> 0.23): +3.2dB on the ladder at WOT
       // throttle while closed-throttle cruise level is untouched — paired
       // with the bed trim above and the faster-opening airbox below, this is
       // the "elevate the engine growl when accelerating" change.
+      // The (1 - 0.8*takeover) factor is the other half of the handover: past
+      // the ladder's usable range the recordings are being stretched too far
+      // to read as pitch, so they step back to being texture under the synth
+      // rather than stacking a chipmunked copy on top of it.
       const sampLevel = !sampled
         ? 0
         : (0.07 + thr * 0.23 + rn * 0.05) *
-          (1 - overrun * 0.35) * cutMul * p.level * (lim ? 0.65 : 1);
+          (1 - overrun * 0.35) * cutMul * p.level * (lim ? 0.65 : 1) *
+          (1 - 0.8 * takeover);
       sampLevelTarget = sampLevel;
       this.sp(this.sampBus.gain, sampLevel, 0.02);
       this.sp(this.sampLimDepth.gain, lim && sampled ? -sampLevel * 0.8 : 0, 0.005);

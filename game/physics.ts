@@ -1,4 +1,4 @@
-import { clamp, lerp } from "./util";
+import { clamp, lerp, sstep } from "./util";
 import type { PhysicsSpec } from "./carspecs";
 
 /* Bicycle-model vehicle sim with Pacejka lateral tires, longitudinal load
@@ -12,7 +12,25 @@ export interface CarState {
   gear: number;
   rev: boolean; revT: number;
   wvx: number; wvz: number; axS: number; ayS: number;
-  rpm: number; onLimiter: boolean; thrEff: number; brkEff: number; slipAmt: number;
+  /** Engine speed as the tachometer draws it and the audio pitches to: the
+      flywheel model in stepEngineSpeed(), NOT the raw driveline kinematics.
+      Has inertia, sweeps across gear changes, and can leave idle against a
+      stationary car. Read this for anything a human sees or hears. */
+  rpm: number;
+  /** Driveline-kinematic engine speed — road speed through the current gear,
+      clamped to [IDLE_RPM, revLimit] and nothing more. This is what `rpm`
+      used to be, and it stays the signal the torque lookup, the rev limiter
+      and the shift scheduler run on, so the handling model is untouched by
+      the flywheel model above. Physics reads this; humans read `rpm`. */
+  rpmDrive: number;
+  onLimiter: boolean; thrEff: number; brkEff: number; slipAmt: number;
+  /** Flywheel-model state (see stepEngineSpeed). `shiftLen` is the duration
+      the in-flight shift was scheduled for and `rpmShiftFrom` the engine
+      speed it started at, which together let the needle sweep across the
+      ratio step instead of teleporting; `revHang` counts down the beat a
+      real engine holds its revs for after a throttle lift; `thrPrev` is last
+      step's pedal, only used to detect that lift. */
+  shiftLen: number; rpmShiftFrom: number; revHang: number; thrPrev: number;
   /** Pre-intervention yaw/sideslip demand ESC is actively correcting for
       this frame, 0 when ESC isn't intervening — see stepPhysics's ESC
       block. Additive-only field for audio (a confident swerve that ESC
@@ -36,7 +54,8 @@ export interface DriverInput {
 export function freshCarState(x: number, y: number, z: number, h: number, u = 0): CarState {
   return {
     x, y, z, h, u, v: 0, r: 0, delta: 0, gear: 1, rev: false, revT: 0,
-    wvx: 0, wvz: 0, axS: 0, ayS: 0, rpm: 1200, onLimiter: false,
+    wvx: 0, wvz: 0, axS: 0, ayS: 0, rpm: 1200, rpmDrive: IDLE_RPM, onLimiter: false,
+    shiftLen: 0.24, rpmShiftFrom: 1200, revHang: 0, thrPrev: 0,
     thrEff: 0, brkEff: 0, slipAmt: 0, slipDemand: 0,
     slope: 0, pitchDyn: 0, rollDyn: 0, odo: 0, shiftT: 0, cut: 0, absOn: false, hold: true,
     tcOn: false, sigL: false, sigR: false, lightsUser: false, lightsOn: true,
@@ -73,6 +92,138 @@ function limiterFactor(rpm: number, revLimit: number) {
   const soft = revLimit * 0.99;
   if (rpm <= soft) return 1;
   return clamp(1 - (rpm - soft) / (revLimit - soft), 0, 1) * 0.9 + 0.1;
+}
+
+/** Engine speed a torque converter pulls the engine to at full throttle with
+    the car held still — "stall speed". It is what makes a standing start
+    sound like a launch: the engine climbs to here first and the car catches
+    up to it, rather than the revs waiting for the wheels. */
+const STALL_RPM = 2450;
+/** Seconds the revs hang after a throttle lift before they start to fall. A
+    real engine has a closing throttle plate working against a spinning mass,
+    and every modern ECU adds deliberate anti-shunt hang on top; without it a
+    lift reads as a fuel cut rather than a release. */
+const REV_HANG = 0.16;
+
+/* ---- Engine speed: the needle and the sound ----------------------------
+   `car.rpmDrive`, computed in stepPhysics, is road speed through the current
+   gear and nothing else. That is the right input to the torque lookup and it
+   stays the physics signal — but it is a poor *engine speed*, and it is the
+   one the tachometer draws and the audio pitches to:
+
+   - It has no inertia, so a gear change teleports it. 1st->2nd is a
+     3.54:2.13 ratio step, so a wide-open upshift dropped the needle ~2900rpm
+     between two frames, and the audio's pitch with it. Heard, that is a
+     glitch, not a shift.
+   - It is clamped at IDLE_RPM, so it cannot leave idle while the car is
+     stationary. Pinning the throttle at a standstill therefore moved the
+     needle not at all and moved the engine's PITCH not at all — only its
+     level, because the audio mixer's throttle term is the one thing that
+     responded. That is exactly the reported "it sounds like it's idling and
+     just getting louder, it doesn't sound like the revs are climbing".
+
+   So the engine gets its own state: a flywheel with inertia, coupled to the
+   driveline through a clutch that opens across shifts and slips at low speed
+   the way a converter does. The result is deliberately NOT fed back into the
+   torque path — engineTorque()/limiterFactor()/the shift map all still read
+   rpmDrive — so the handling model is bit-identical to before this existed.
+   This is a fidelity change to what the driver sees and hears, and it is
+   confined to that on purpose: feeding a lagged rpm into the torque curve
+   would retune every car's acceleration as a side effect. */
+function stepEngineSpeed(
+  car: CarState, spec: PhysicsSpec, dt: number, thrCmd: number, thrEff: number
+) {
+  const wheel = car.rpmDrive;
+  let target: number;
+
+  if (car.shiftT > 0 && car.shiftLen > 0) {
+    /* Mid-shift: the clutch is open, so the engine is not tied to the wheels
+       and is free to be swept. Drive it from where it was when the gear
+       changed to where the new ratio puts it, on an S-curve over the shift's
+       own duration — ease out of the old speed, ease into the new one. That
+       shape is the whole point: a linear ramp still starts and stops
+       abruptly, and abrupt is what read as a teleport. Works in both
+       directions, so a downshift flares the revs UP across the shift the way
+       a real box blips into the lower gear. */
+    const s = sstep(1 - car.shiftT / car.shiftLen);
+    target = lerp(car.rpmShiftFrom, wheel, s);
+  } else {
+    /* Converter slip. The engine runs at whichever is HIGHER: the speed the
+       driveline is turning it at, or the speed it pulls itself to against a
+       slipping converter on this much throttle (idle closed, stall wide
+       open). Below stall the converter is slipping and the engine leads the
+       car — that is a launch. Above it the converter is effectively locked
+       and the wheels win, which is also what makes lifting off at speed drop
+       you to the road's rpm rather than to idle: engine braking.
+
+       Taking the max, rather than crossfading the two on a lock factor, is
+       deliberate. A crossfade SAGS: the engine flares to stall, then the
+       rising lock factor drags the target back down toward a wheel speed
+       that has not caught up yet, so the needle climbs to 2450, falls to
+       ~1900, and climbs again. Nothing with a torque converter in it does
+       that — engine speed off the line is monotonic — and a sag is doubly
+       wrong here because the audio pitches to this number, so it would be
+       audible as the revs dipping mid-launch. */
+    const free = IDLE_RPM + thrCmd * (STALL_RPM - IDLE_RPM);
+    target = Math.max(wheel, free);
+  }
+
+  /* Rev hang, detected against the lagged pedal below: thrPrev still high
+     while thrCmd has gone to nothing means the lift happened just now. It is
+     suppressed across a shift — the clutch is open there, the sweep above
+     already owns the whole trajectory, and letting the hang veto it froze the
+     needle for the length of the shift and then dumped the entire ratio step
+     in three frames once the hang expired. That is the same teleport this
+     model exists to remove, reintroduced from the other side. */
+  const shifting = car.shiftT > 0;
+  if (shifting) car.revHang = 0;
+  else if (thrCmd < 0.05 && car.thrPrev > 0.3) car.revHang = REV_HANG;
+  if (car.revHang > 0) car.revHang -= dt;
+  target = clamp(target, IDLE_RPM, spec.revLimit);
+
+  if (shifting) {
+    /* Mid-shift the S-curve above IS the trajectory, and it is smooth by
+       construction, so the slew limiter below is not merely unnecessary but
+       actively harmful: with the throttle cut to a quarter through a shift
+       its downward allowance works out around 40rpm per step, well under the
+       ~150 the sweep needs at its steepest, so the needle fell behind its own
+       sweep for the whole shift and then closed the gap in three frames the
+       moment the limits opened up again. Same teleport, one step removed. */
+    car.rpm = clamp(target, IDLE_RPM, spec.revLimit);
+  } else {
+    /* Slew: a flywheel has mass, so engine speed is rate-limited both ways,
+       and asymmetrically — the pull-up is whatever spare torque the engine
+       has to accelerate its own inertia with (so it scales with throttle),
+       while the fall-off is only pumping and friction losses dragging it
+       back. That asymmetry is the "vroom, and then it comes down slowly"
+       shape, and it is the half the old kinematic rpm had none of.
+
+       Both limits open right up once the clutch is locked, because there the
+       driveline is physically turning the engine and can change its speed
+       faster than the engine could change it alone (hard braking from
+       200km/h, for instance). So the limiter only bites where it should: at
+       launch and on a lift.
+
+       Rev hang lands here too, as a brake on the DOWNWARD rate rather than as
+       a floor under the target. A floor plateaus the revs dead flat for its
+       duration, and a plateau is its own artefact once the audio is pitching
+       to this number — a sixth of a second of frozen note, then a fall.
+       Slowing the decay instead gives the droop-then-fall that a real
+       throttle plate closing against a spinning mass actually produces. */
+    const open = wheel > IDLE_RPM + 900 ? 9 : 1;
+    const hang = car.revHang > 0 ? 0.18 : 1;
+    const up = (2600 + thrEff * 7400) * open;
+    const down = (2200 + (1 - thrEff) * 3400) * open * hang;
+    const d = target - car.rpm;
+    const step = d > 0 ? Math.min(d, up * dt) : Math.max(d, -down * dt);
+    car.rpm = clamp(car.rpm + step, IDLE_RPM, spec.revLimit);
+  }
+
+  /* Lagged pedal. Feeds the rev-hang edge detector above and, more
+     importantly, the upshift map in stepPhysics — see the comment there for
+     why the shift scheduler must not see the raw pedal. ~0.35s trail,
+     framerate-independent. */
+  car.thrPrev += (thrCmd - car.thrPrev) * (1 - Math.exp(-dt / 0.35));
 }
 
 function pacejka(a: number, B: number, D: number) {
@@ -137,7 +288,7 @@ export function stepPhysics(
   if (car.rev) car.gear = -1;
   else if (car.gear < 1) car.gear = 1;
 
-  car.rpm = clamp(
+  car.rpmDrive = clamp(
     (Math.abs(car.u) / WR) * gearRatio(spec, car.gear) * FINAL * 9.549,
     IDLE_RPM,
     spec.revLimit
@@ -146,7 +297,7 @@ export function stepPhysics(
   // rev limiter: brief hard cut once the needle reaches redline, which is what
   // stops each gear from pulling forever and forces the upshift
   car.onLimiter = false;
-  if (car.rpm >= spec.revLimit * REDLINE_FRAC && thr > 0.05) {
+  if (car.rpmDrive >= spec.revLimit * REDLINE_FRAC && thr > 0.05) {
     car.onLimiter = true;
     if (car.cut <= 0) car.cut = 0.07;
   }
@@ -156,26 +307,48 @@ export function stepPhysics(
     thr *= 0.25;
   } else if (!car.rev) {
     const top = RATIOS.length;
-    // part throttle short-shifts; wide-open runs each gear into the limiter.
-    // The wide-open point is deliberately the same rpm that arms the limiter:
-    // any higher and the fuel cut would stop the revs ever reaching the shift
-    // point, leaving the box stuck bouncing off redline in a low gear.
-    const upR = lerp(spec.revLimit * 0.7, spec.revLimit * REDLINE_FRAC, thrCmd);
-    if (car.rpm > upR && car.gear < top) {
+    /* part throttle short-shifts; wide-open runs each gear into the limiter.
+       The wide-open point is deliberately the same rpm that arms the limiter:
+       any higher and the fuel cut would stop the revs ever reaching the shift
+       point, leaving the box stuck bouncing off redline in a low gear.
+
+       The shift map reads a LAGGED pedal (car.thrPrev, a ~0.35s trail of
+       thrCmd) rather than thrCmd itself. With the raw pedal, lifting off at
+       speed collapsed upR from revLimit*0.985 to revLimit*0.7 within a single
+       frame, which instantly satisfied the upshift test at whatever rpm the
+       car happened to be pulling — and, because each upshift only drops the
+       revs by one ratio step, could satisfy it AGAIN 0.24s later. Lifting off
+       in 4th at 6800rpm fired two upshifts in a quarter of a second and threw
+       the needle from 6800 to ~4500. That is the "the revs teleport when I
+       come off the gas" report: not the engine model, the shift scheduler
+       reacting to the pedal faster than any gearbox does. Trailing the pedal
+       makes the lift-off upshift arrive once, deliberately, the way a real
+       automatic's ~0.5s of pedal filtering does. */
+    const upR = lerp(spec.revLimit * 0.7, spec.revLimit * REDLINE_FRAC, car.thrPrev);
+    if (car.rpmDrive > upR && car.gear < top) {
       car.gear++;
       car.shiftT = 0.24;
-    } else if (car.rpm < 1900 && car.gear > 1) {
+    } else if (car.rpmDrive < 1900 && car.gear > 1) {
       car.gear--;
       car.shiftT = 0.2;
-    } else if (thrCmd > 0.85 && car.gear > 1 && car.rpm < spec.revLimit * 0.49) {
+    } else if (thrCmd > 0.85 && car.gear > 1 && car.rpmDrive < spec.revLimit * 0.49) {
       // kickdown: only if the lower gear won't bounce off the limiter
-      const rN = (car.rpm * gearRatio(spec, car.gear - 1)) / gearRatio(spec, car.gear);
+      const rN = (car.rpmDrive * gearRatio(spec, car.gear - 1)) / gearRatio(spec, car.gear);
       if (rN < spec.revLimit * 0.85) {
         car.gear--;
         car.shiftT = 0.26;
       }
     }
+    // A gear actually changed this step: freeze where the needle was and how
+    // long it has to get to the new gear's speed, so stepEngineSpeed() can
+    // sweep it across the ratio step instead of letting it jump (see there).
+    if (car.shiftT > 0) {
+      car.shiftLen = car.shiftT;
+      car.rpmShiftFrom = car.rpm;
+    }
   }
+
+  stepEngineSpeed(car, spec, dt, thrCmd, thr);
 
   /* loads */
   const FzT = M * 9.81 + aero;
@@ -209,9 +382,12 @@ export function stepPhysics(
   const sgn = Math.tanh(car.u * 2.5);
   const driveT =
     thr *
-    engineTorque(spec, car.rpm) *
-    limiterFactor(car.rpm, spec.revLimit) *
-    (car.rpm < 1400 && Math.abs(car.u) < 6 ? 1.55 : 1);
+    // rpmDrive, not rpm: the torque path deliberately keeps reading the raw
+    // driveline kinematics so the flywheel model above stays a display/audio
+    // change and cannot retune how any car accelerates. See stepEngineSpeed.
+    engineTorque(spec, car.rpmDrive) *
+    limiterFactor(car.rpmDrive, spec.revLimit) *
+    (car.rpmDrive < 1400 && Math.abs(car.u) < 6 ? 1.55 : 1);
   const driveF = (driveT * gearRatio(spec, car.gear) * FINAL) / WR;
   const fSplit = spec.awd ? 0.42 : 0;
   const capF = muF * Fzf, capR = muR * Fzr;

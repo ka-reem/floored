@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "smoke": "node test/smoke.mjs"
+    "smoke": "node test/smoke.mjs",
+    "engine-rpm": "node test/engine-rpm-check.mjs"
   },
   "dependencies": {
     "next": "^16.3.0",
