@@ -1542,6 +1542,40 @@ function buildTunnel(
 
 /* ============================ toll plaza ================================ */
 
+/** Cool-white light carpet under the toll canopy. The lamp lattice and its
+    ground pools both skip cor.inToll(z), so without this the whole 280 m toll
+    stretch is the darkest hole on the road — exactly where the player needs
+    to read gates at 200 km/h. Built like poolGradientTex (decaltex.ts): a
+    per-pixel rounded-rect falloff sampled from a smooth decelerating curve
+    with a long low tail, so the POV pass's black crush meets a fade, not a
+    printed edge. Flat core under the canopy (where the troffers are), tails
+    spilling out ahead of and behind it the way canopy light really does. */
+function tollCarpetTex(): THREE.Texture {
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = 256;
+  const ctx = cv.getContext("2d")!;
+  const img = ctx.createImageData(256, 256);
+  // u = lateral (across the road), v = longitudinal (along it)
+  const CORE_U = 0.42, CORE_V = 0.5;
+  for (let y = 0; y < 256; y++)
+    for (let x = 0; x < 256; x++) {
+      const u = Math.abs(x / 127.5 - 1), v = Math.abs(y / 127.5 - 1);
+      const du = Math.max(0, (u - CORE_U) / (1 - CORE_U));
+      const dv = Math.max(0, (v - CORE_V) / (1 - CORE_V));
+      const t = Math.min(1, Math.hypot(du, dv));
+      /* decelerating, monotone, zero exactly at the quad edge; most of the
+         outer third sits near the crush floor instead of diving through it */
+      const a = 0.6 * Math.pow(1 - t, 1.55) * (1 - 0.3 * t);
+      const i = (y * 256 + x) * 4;
+      img.data[i] = 226; img.data[i + 1] = 234; img.data[i + 2] = 247;
+      img.data[i + 3] = Math.round(a * 255);
+    }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 function buildToll(
   scene: THREE.Scene,
   mats: Mats,
@@ -1647,32 +1681,100 @@ function buildToll(
     f.position.set(x2, 7.15, z2);
     plaza.add(f);
   }
-  // fascia name board, centred over the middle gate, facing the approach
-  const fasciaTex = makeTex(512, 112, (ctx, w2, h2) => {
-    ctx.fillStyle = "#173a63";
+  /* Illuminated fascia band across the WHOLE approach face — the beacon.
+     A real plaza's canopy fascia is an internally lit amber band with the
+     name board and hazard chevrons painted on it, and it is the single
+     thing that reads from hundreds of metres out (the corridor is dead
+     straight from z = 880, so this band is framed in the tunnel portal for
+     the entire tube). MeshBasic so it stays lit with no dynamic light, but
+     fogged — an unfogged band would hang in the haze as a hard rectangle
+     (see the cantilever board note). The amber field is deliberately held
+     around 0.72 luma: the ACES grade bleaches ≳0.8 to white, and a band
+     that stays AMBER at its brightest is what reads as sodium-lit signage
+     rather than a blown strip light. */
+  const bandTex = makeTex(1024, 144, (ctx, w2, h2) => {
+    const g2 = ctx.createLinearGradient(0, 0, 0, h2);
+    g2.addColorStop(0, "#c09a3c");
+    g2.addColorStop(0.45, "#e0b84e");
+    g2.addColorStop(1, "#c7a244");
+    ctx.fillStyle = g2;
     ctx.fillRect(0, 0, w2, h2);
-    ctx.strokeStyle = "#dfe7f2";
-    ctx.lineWidth = 5;
-    ctx.strokeRect(5, 5, w2 - 10, h2 - 10);
-    ctx.fillStyle = "#f2f7fc";
+    // yellow/black hazard chevron blocks: both ends + centred over the gates
+    const chev = (x0: number, cw: number) => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, 10, cw, h2 - 20);
+      ctx.clip();
+      ctx.fillStyle = "#14161d";
+      ctx.fillRect(x0, 10, cw, h2 - 20);
+      ctx.strokeStyle = "#e8c44c";
+      ctx.lineWidth = 16;
+      for (let x = x0 - h2; x < x0 + cw + h2; x += 34) {
+        ctx.beginPath();
+        ctx.moveTo(x, h2 - 6);
+        ctx.lineTo(x + h2, 6);
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
+    chev(24, 120);
+    chev(452, 120);
+    chev(880, 120);
+    ctx.fillStyle = "#101826";
     ctx.textAlign = "center";
-    ctx.font = '800 52px "Hiragino Sans","Yu Gothic",sans-serif';
-    ctx.fillText("料金所", w2 / 2, 58);
-    ctx.font = "700 30px sans-serif";
-    ctx.fillText("TOLL GATE", w2 / 2, 96);
+    ctx.font = '800 62px "Hiragino Sans","Yu Gothic",sans-serif';
+    ctx.fillText("料金所", 298, 74);
+    ctx.fillText("料金所", 726, 74);
+    ctx.font = "800 32px sans-serif";
+    ctx.fillText("TOLL GATE", 298, 122);
+    ctx.fillText("TOLL GATE", 726, 122);
+    ctx.strokeStyle = "#10151f";
+    ctx.lineWidth = 10;
+    ctx.strokeRect(5, 5, w2 - 10, h2 - 10);
   });
-  const fasciaSign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.55),
-    new THREE.MeshBasicMaterial({ map: fasciaTex, fog: false }));
-  fasciaSign.position.set(0, 7.15, -CL / 2 - 0.25);
-  fasciaSign.rotation.y = Math.PI;
-  plaza.add(fasciaSign);
+  const bandGeo = new THREE.PlaneGeometry(CW + 0.3, 1.9);
+  const band = new THREE.Mesh(bandGeo, new THREE.MeshBasicMaterial({ map: bandTex }));
+  band.position.set(0, 7.15, -CL / 2 - 0.24);
+  band.rotation.y = Math.PI;
+  plaza.add(band);
+  // the rear face carries the same band dimmed, so the mirrors after the
+  // gates show a lit plaza receding, not a hole where one used to be
+  const bandRear = new THREE.Mesh(bandGeo,
+    new THREE.MeshBasicMaterial({ map: bandTex, color: 0x878c98 }));
+  bandRear.position.set(0, 7.15, CL / 2 + 0.24);
+  plaza.add(bandRear);
+  /* Marker-light string along the fascia top: a row of unfogged amber points
+     (same recipe as the parapet delineators — fog:false, constant pixel
+     size) so the canopy edge survives the haze as a horizontal string of
+     lights long before the fogged band carries any colour. A horizontal
+     row of lights over the road is the oldest "structure ahead" cue there
+     is, and it costs one draw call. */
+  if (FX_TOLL_GLOW && worldTierCaps().tollGlow !== false) {
+    const NMK = 13;
+    const mp: number[] = [];
+    // above the band's top edge (8.1) and proud of its plane (−0.24), so the
+    // band never depth-occludes its own marker lights on the approach
+    for (let i = 0; i < NMK; i++)
+      mp.push(-CW / 2 + 0.6 + i * ((CW - 1.2) / (NMK - 1)), 8.28, -CL / 2 - 0.3);
+    const mg = new THREE.BufferGeometry();
+    mg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(mp), 3));
+    const mm = new THREE.PointsMaterial({
+      size: 2.7, sizeAttenuation: false, color: 0xffb055, map: mats.glowTex,
+      transparent: true, opacity: 0.95, fog: false, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const mpts = new THREE.Points(mg, mm);
+    mpts.frustumCulled = false;
+    plaza.add(mpts);
+    world.neonMats.push(mm); // a lit string by night is a dead fitting by day
+  }
   /* The soffit fakes its own bounce light: nothing dynamic ever reaches it
      (the troffers are emissive props, not lights), so without the emissive
      term the canopy underside is a black slab over a lit plaza. */
   const soffit = new THREE.Mesh(new THREE.BoxGeometry(CW - 1.2, 0.16, CL - 1.2),
     new THREE.MeshStandardMaterial({
       color: 0xe6e9ef, roughness: 0.6,
-      emissive: 0x40444e, emissiveIntensity: 1 }));
+      emissive: 0x4b515d, emissiveIntensity: 1 }));
   soffit.position.y = 6.92;
   plaza.add(soffit);
   /* Underside lighting: rows of emissive troffers plus a cloud of additive
@@ -1681,13 +1783,15 @@ function buildToll(
      neonMats: the canopy shades its own soffit, so these stay lit by day. */
   if (FX_TOLL_GLOW && worldTierCaps().tollGlow !== false) {
     const troffMat = new THREE.MeshBasicMaterial({ color: 0xf4f6ff, fog: false });
-    const NTR = 2 * 7;
+    // three rows — the old two left a dark stripe down the middle gate, the
+    // one lane the player is most likely to thread
+    const NTR = 3 * 7;
     const troff = new THREE.InstancedMesh(new THREE.BoxGeometry(1.9, 0.09, 0.55), troffMat, NTR);
     const TM = new THREE.Matrix4(), TV = new THREE.Vector3(),
       TQ = new THREE.Quaternion(), TS = new THREE.Vector3(1, 1, 1);
     const canopyGlow: number[] = [];
     let ntr = 0;
-    for (const sx of [-1, 1])
+    for (const sx of [-1, 0, 1])
       for (let j = 0; j < 7; j++) {
         const dz = -CL / 2 + 4 + j * ((CL - 8) / 6);
         TV.set(sx * CW / 4.4, 6.82, dz);
@@ -1702,8 +1806,8 @@ function buildToll(
     const cg = new THREE.BufferGeometry();
     cg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(canopyGlow), 3));
     const cgm = new THREE.PointsMaterial({
-      size: 7, sizeAttenuation: false, color: 0xeef2ff, map: mats.glowTex,
-      transparent: true, opacity: 0.85, fog: false, depthWrite: false,
+      size: 6.5, sizeAttenuation: false, color: 0xeef2ff, map: mats.glowTex,
+      transparent: true, opacity: 0.8, fog: false, depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
     const cgp = new THREE.Points(cg, cgm);
@@ -1743,10 +1847,50 @@ function buildToll(
       ctx.fillText(etc ? "専用" : "CASH", w / 2, 120);
     });
   const etcTex = laneSign(true), cashTex = laneSign(false);
-  const sigGreenMat = new THREE.MeshBasicMaterial({ color: 0x3dff8a, fog: false });
+  /* Per-lane OPEN signal: green down-arrow over a dark red-X slot, the
+     universal toll-lane state light. Drawn as a lens texture — glow ring
+     first in saturated green, then a lighter core kept off pure white, so
+     the fixture fades outward instead of reading as a blown dot (the grade
+     bleaches ≳0.8 luma; hue is saturated early and held). fog:false: a
+     signal lens is the one thing that must stay legible in the haze. */
+  const sigTex = makeTex(160, 256, (ctx, w2, h2) => {
+    ctx.fillStyle = "#0a0c11";
+    ctx.fillRect(0, 0, w2, h2);
+    ctx.strokeStyle = "#272c35";
+    ctx.lineWidth = 8;
+    ctx.strokeRect(4, 4, w2 - 8, h2 - 8);
+    // the dark red X above the arrow is what sells this as a signal that
+    // COULD close, rather than a decorative lamp — unlit: every gate is open
+    ctx.strokeStyle = "#471310";
+    ctx.lineWidth = 15;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(52, 34); ctx.lineTo(108, 90);
+    ctx.moveTo(108, 34); ctx.lineTo(52, 90);
+    ctx.stroke();
+    const arrow = (wd: number, col: string, blur: number, glow: string) => {
+      ctx.strokeStyle = col;
+      ctx.lineWidth = wd;
+      ctx.shadowColor = glow;
+      ctx.shadowBlur = blur;
+      ctx.beginPath();
+      ctx.moveTo(80, 122); ctx.lineTo(80, 218);
+      ctx.moveTo(48, 186); ctx.lineTo(80, 222);
+      ctx.moveTo(112, 186); ctx.lineTo(80, 222);
+      ctx.stroke();
+    };
+    arrow(18, "#1fae5e", 26, "#17c96b");
+    arrow(9, "#7df0ae", 8, "#3ce487");
+    ctx.shadowBlur = 0;
+  });
+  const sigHousG = new THREE.BoxGeometry(0.78, 1.28, 0.22);
+  const sigHousMat = new THREE.MeshStandardMaterial({
+    color: 0x1c1f26, roughness: 0.55, metalness: 0.5 });
+  const sigLensG = new THREE.PlaneGeometry(0.66, 1.06);
+  const sigLensMat = new THREE.MeshBasicMaterial({ map: sigTex, fog: false });
   const sigHaloMat = new THREE.SpriteMaterial({
     map: mats.glowTex, color: 0x4dffa0, transparent: true,
-    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.8,
   });
   const sigHaloWhite = new THREE.SpriteMaterial({
     map: mats.glowTex, color: 0xdfe9ff, transparent: true,
@@ -1759,28 +1903,23 @@ function buildToll(
     s.position.set(cor.laneOffset(k, zc), 5.3, -CL / 2 + 1.2);
     s.rotation.y = Math.PI;
     plaza.add(s);
-    /* Lane status signal under each sign: a real fixture — dark housing, a
-       hard emissive ↓ lens, an additive halo. Every gate runs green because
-       every gate is open (the plaza deliberately never closes a lane the
-       player can thread); the housing still carries the dark red-lens slot
-       above it, which is what sells it as a signal rather than a lamp. */
+    /* Lane status signal under each sign: dark housing, the arrow/X lens
+       texture, and a wide soft halo. Every gate runs green because every
+       gate is open (the plaza deliberately never closes a lane the player
+       can thread). The halo is wider than the old one rather than brighter:
+       a wider footprint keeps more pixels above the POV black crush, which
+       is what makes it carry at distance. */
     const sig = new THREE.Group();
     sig.position.set(cor.laneOffset(k, zc), 4.15, -CL / 2 + 1.05);
-    const hous = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.1, 0.24),
-      new THREE.MeshStandardMaterial({ color: 0x1c1f26, roughness: 0.55, metalness: 0.5 }));
+    const hous = new THREE.Mesh(sigHousG, sigHousMat);
     sig.add(hous);
-    const red = new THREE.Mesh(new THREE.CircleGeometry(0.17, 12),
-      new THREE.MeshStandardMaterial({ color: 0x3a0c0c, roughness: 0.3 }));
-    red.position.set(0, 0.26, -0.125);
-    red.rotation.y = Math.PI;
-    sig.add(red);
-    const green = new THREE.Mesh(new THREE.CircleGeometry(0.19, 12), sigGreenMat);
-    green.position.set(0, -0.2, -0.125);
-    green.rotation.y = Math.PI;
-    sig.add(green);
+    const lens = new THREE.Mesh(sigLensG, sigLensMat);
+    lens.position.set(0, 0, -0.13);
+    lens.rotation.y = Math.PI;
+    sig.add(lens);
     const halo = new THREE.Sprite(sigHaloMat);
-    halo.scale.set(1.3, 1.3, 1);
-    halo.position.set(0, -0.2, -0.2);
+    halo.scale.set(2.0, 2.0, 1);
+    halo.position.set(0, -0.28, -0.2);
     sig.add(halo);
     plaza.add(sig);
   }
@@ -1905,6 +2044,85 @@ function buildToll(
         halo.position.set(x, 6.35, -CL / 2 - 0.35);
         plaza.add(halo);
       }
+    }
+  }
+  /* ---- approach furniture: the near-field targets ----
+     Striped attenuator boards standing on every island nose and on the two
+     outer barrier-run ends, with an amber marker glow above each. These are
+     the last thing the driver fixates before committing to a gate, and the
+     stripes are retroreflective paint — MeshBasic, fogged like the
+     cantilever boards, so the headlights "find" them naturally. */
+  {
+    const noseTex = makeTex(128, 128, (ctx, w2, h2) => {
+      ctx.fillStyle = "#16171c";
+      ctx.fillRect(0, 0, w2, h2);
+      ctx.strokeStyle = "#e2bf46";
+      ctx.lineWidth = 17;
+      for (let x = -h2; x < w2 + h2; x += 44) {
+        ctx.beginPath();
+        ctx.moveTo(x, h2 + 8);
+        ctx.lineTo(x + h2, -8);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#0c0d12";
+      ctx.lineWidth = 8;
+      ctx.strokeRect(4, 4, w2 - 8, h2 - 8);
+    });
+    const noseSlots: [number, number][] = [];
+    for (let k = 1; k < lanes; k++)
+      noseSlots.push([cor.laneEdge(k, zc), -IL / 2 - 6.2]);
+    for (const s of [-1, 1]) noseSlots.push([s * (hw - 0.55), -CL / 2 - 0.6]);
+    const noseIm = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(0.95, 1.15),
+      new THREE.MeshBasicMaterial({ map: noseTex }),
+      noseSlots.length);
+    const NM = new THREE.Matrix4(), NV = new THREE.Vector3(),
+      NQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.PI, 0)),
+      NS = new THREE.Vector3(1, 1, 1);
+    noseSlots.forEach(([lat, dz], i) => {
+      NV.set(lat, 0.78, dz);
+      NM.compose(NV, NQ, NS);
+      noseIm.setMatrixAt(i, NM);
+    });
+    noseIm.computeBoundingSphere();
+    plaza.add(noseIm);
+    if (FX_TOLL_GLOW && worldTierCaps().tollGlow !== false) {
+      // amber marker on each board — the same unfogged glow-point recipe as
+      // the gore beacons, so the island noses read before the paint does
+      const bpts: number[] = [];
+      // just above the board's top edge, so the glow reads as a lamp mounted
+      // on the board rather than a dot floating over it
+      for (const [lat, dz] of noseSlots) bpts.push(lat, 1.48, dz);
+      const bg2 = new THREE.BufferGeometry();
+      bg2.setAttribute("position", new THREE.BufferAttribute(new Float32Array(bpts), 3));
+      const bm2 = new THREE.PointsMaterial({
+        size: 3.2, sizeAttenuation: false, color: 0xffb143, map: mats.glowTex,
+        transparent: true, opacity: 0.95, fog: false, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const bp2 = new THREE.Points(bg2, bm2);
+      bp2.frustumCulled = false;
+      plaza.add(bp2);
+      world.neonMats.push(bm2);
+
+      /* The light carpet (see tollCarpetTex). The troffers light the cars
+         (traffic.ts's TOLL_WASH) but nothing was lighting the ROAD — the
+         lamp lattice skips the whole toll stretch, so the plaza floated in
+         a black hole. One additive quad, flat core under the canopy, long
+         spill tails up and down the road. Sized from the corridor's own
+         half-width so it never hangs off the deck edge, and registered in
+         neonMats so daylight dims it with the rest of the night dressing. */
+      const carpetG = new THREE.PlaneGeometry(2 * (hw + 0.7), 74);
+      carpetG.rotateX(-Math.PI / 2);
+      const carpetMat = new THREE.MeshBasicMaterial({
+        map: tollCarpetTex(), transparent: true, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const carpet = new THREE.Mesh(carpetG, carpetMat);
+      carpet.position.y = 0.06;
+      carpet.layers.set(LAYER_NOREF);
+      plaza.add(carpet);
+      world.neonMats.push(carpetMat);
     }
   }
   // the approach boards are cantilevers like the exit ones, so they are placed
