@@ -1310,6 +1310,13 @@ export class Game {
     // unfogged behind everything
     sky.skylineMat.opacity =
       (1 - f * 0.8) * clamp(1.9 - fogMultiplier(this.settings.fog), 0.12, 1);
+    // the abstract-city light masses go with it: daylight kills a glow dome
+    // long before it kills a silhouette, and heavy fog swallows both
+    for (const m of sky.cityAbstractMats)
+      (m as THREE.MeshBasicMaterial).opacity =
+        ((m.userData.nightO as number) ?? 0.4) *
+        (1 - f * 0.85) *
+        clamp(1.9 - fogMultiplier(this.settings.fog), 0.12, 1);
     this.mats.sfMat.emissiveIntensity = lerp(0.78, 0.12, f);
     if (world.glowPts) (world.glowPts.material as THREE.PointsMaterial).opacity = 1 - f * 0.92;
     /* The pools carry more of the road now that there is no ambient fill left
