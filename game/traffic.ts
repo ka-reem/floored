@@ -907,12 +907,23 @@ const TOLL_WASH_TINT_R = 0.92, TOLL_WASH_TINT_G = 0.95, TOLL_WASH_TINT_B = 1.0;
    Raise HLW_GAIN in ~0.03 steps if it must read stronger; past ~0.25 the
    car ahead starts looking self-lit and the effect gives itself away.
 
-   0.12 -> 0.085 on "really really soft". Note the falloff change below does
-   more here than this number does: at a 30 m following distance the two
-   together take the wash from 0.096 to 0.048, i.e. half, while up close it
-   only comes down by a third. Soft where it was flat, still present where
-   the beam really is strong. */
-const HLW_GAIN = 0.085;
+   0.12 -> 0.085 -> 0.17, and the round trip is worth recording so nobody
+   repeats it. 0.085 was a mistake: it was cut on a "too bright" report at the
+   same time HLW_CORE_D came down from 18 m to 5 m, and the two compounded.
+   Shortening the core is a large reduction on its own at following distance
+   (factor 0.80 -> 0.57 at 30 m), so cutting the gain as well took the wash to
+   about half of what this file already called "subtle by construction" — and
+   the next report was that the effect had disappeared.
+
+   The gain is now set so the shape change is level-neutral where it matters:
+   0.17 x 0.57 = 0.097 at 30 m, which is the documented 0.096. What changed is
+   only the distribution — up close it is stronger than the old flat core
+   (0.17 at 3 m, where your beam really is on their bumper) and past 40 m it
+   falls away faster. Peak stays well under the ~0.25 where a car starts
+   reading as self-lit.
+
+   If it needs to move again, move it ALONE and leave HLW_CORE_D at 5. */
+const HLW_GAIN = 0.17;
 /** Along-beam falloff, metres ahead of the player's nose: full only to 5 m,
     then a long smoothstep tail to zero at 60 m.
 
