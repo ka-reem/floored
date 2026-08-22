@@ -2323,7 +2323,23 @@ export class Game {
       rig.cockpit.drawGauges(
         car.rpm, Math.abs(car.u) * 3.6, car.rev ? "R" : "D" + car.gear, now, flags
       );
-      rig.cockpit.drawScreen(this.world, car, this.traffic.npcs, this.time, now);
+      /* Hand the head unit the LIVE player rather than letting carscreen run
+         its mock rotation — the card was showing "Midnight Loop / Neon
+         Arcade" while the real player was part-way through Beethoven. Undefined
+         on mobile, where music is disabled and the fallback rotation is still
+         the right thing to draw. */
+      rig.cockpit.drawScreen(
+        this.world, car, this.traffic.npcs, this.time, now,
+        this.music.enabled
+          ? {
+              title: this.music.track.title,
+              composer: this.music.track.composer,
+              art: this.music.track.art,
+              playing: this.music.playing,
+              progress: this.music.progress,
+            }
+          : undefined
+      );
     }
     if (this.dropT > 0.033) {
       rig.cockpit.dropletsUpdate(this.dropT, wiping, rig.cockpit.wiperA.rotation.z, this.rain, Math.abs(car.u));

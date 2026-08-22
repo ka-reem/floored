@@ -88,6 +88,7 @@ interface ScreenState {
   trackStart: number;      // performance.now() when the track began
   paintedIdx: number;      // last track painted into the music canvas
   paintedPx: number;       // last progress-bar width painted
+  paintedTitle: string;    // last live-player title painted; "" when on TRACKS
   /** on-bypass latch: the pane has no y, so under/over the bridge crossing is
       disambiguated by continuity (see drawNav) */
   wasBy: boolean;
@@ -127,7 +128,8 @@ function stateFor(cv: HTMLCanvasElement): ScreenState {
   music.height = H * scale;
   s = {
     g, reflect, vign, music, mg: music.getContext("2d")!,
-    trackIdx: 0, trackStart: 0, paintedIdx: -1, paintedPx: -1, wasBy: false,
+    trackIdx: 0, trackStart: 0, paintedIdx: -1, paintedPx: -1, paintedTitle: "",
+    wasBy: false,
     scale, nav: null, navAt: -1e9, navCX: 0, navCZ: 0,
   };
   // Same trick for the card's offscreen context: logical coords, scaled store.
@@ -214,8 +216,16 @@ function paintArt(mg: CanvasRenderingContext2D, t: Track, x: number, y: number, 
     track flips or the progress bar grows a pixel. Coordinates here are in the
     card's own canvas space (origin at screen x = 0 — the music pane is the
     left pane, blitted at 0). */
-function paintMusic(st: ScreenState, px: number) {
-  const mg = st.mg, t = TRACKS[st.trackIdx];
+function paintMusic(st: ScreenState, px: number, live?: ScreenMusic) {
+  /* `live` is the real player when one is running; TRACKS is the fallback
+     rotation for when it is not (mobile, where music is disabled, and any
+     caller that does not pass it). Without this the card cheerfully showed
+     "Midnight Loop / Neon Arcade" while Beethoven was actually playing. */
+  const mg = st.mg;
+  const t = live
+    ? { title: live.title, artist: live.composer, dur: 1,
+        c0: live.art.a, c1: live.art.b, motif: st.trackIdx }
+    : TRACKS[st.trackIdx];
   const x0 = CARD.x, y0 = CARD.y, cw = CARD.w, ch = CARD.h;
   const cx = x0 + cw / 2;
   mg.clearRect(0, 0, st.music.width, st.music.height);
@@ -425,27 +435,57 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
     in hours; the music player runs on real time so the accelerated day/night
     clock doesn't spin the playlist. `now` is the engine's seconds clock, and
     goes straight through to the map (it blinks the police blips). */
+/** What the card needs from the live player (game/music.ts). Structural, not
+    an import of MusicPlayer, so carscreen stays independent of the audio
+    layer and the mock rotation below still works when it is absent. */
+export interface ScreenMusic {
+  title: string;
+  composer: string;
+  art: { a: string; b: string };
+  playing: boolean;
+  /** 0..1 through the current piece. */
+  progress: number;
+}
+
 export function drawCarScreen(
   cv: HTMLCanvasElement, world: WorldData, car: CarState, npcs: Npc[],
-  timeH: number, now: number
+  timeH: number, now: number, music?: ScreenMusic
 ) {
   const st = stateFor(cv);
   const g = st.g;
 
   // ---- music state: advance on real time, repaint only on visible change --
   const ms = performance.now();
-  if (!st.trackStart) st.trackStart = ms;
-  let t = TRACKS[st.trackIdx];
-  if ((ms - st.trackStart) / 1000 > t.dur) {
-    st.trackIdx = (st.trackIdx + 1) % TRACKS.length;
-    st.trackStart = ms;
-    t = TRACKS[st.trackIdx];
-  }
-  const px = Math.min(BAR_W, ((ms - st.trackStart) / 1000 / t.dur * BAR_W) | 0);
-  if (st.trackIdx !== st.paintedIdx || px !== st.paintedPx) {
-    paintMusic(st, px);
-    st.paintedIdx = st.trackIdx;
-    st.paintedPx = px;
+  let px: number;
+  if (music) {
+    /* Real player: the progress bar and the artwork follow it, and a PAUSED
+       player freezes the bar rather than letting the mock timer walk it on.
+       trackIdx is only carried so the motif (the art pattern) still varies
+       per piece — the title/composer/colours come from the player. */
+    px = Math.min(BAR_W, (music.progress * BAR_W) | 0);
+    if (st.paintedTitle !== music.title) {
+      st.trackIdx = (st.trackIdx + 1) % TRACKS.length;
+      st.paintedTitle = music.title;
+      st.paintedPx = -1;
+    }
+    if (px !== st.paintedPx) {
+      paintMusic(st, px, music);
+      st.paintedPx = px;
+    }
+  } else {
+    if (!st.trackStart) st.trackStart = ms;
+    let t = TRACKS[st.trackIdx];
+    if ((ms - st.trackStart) / 1000 > t.dur) {
+      st.trackIdx = (st.trackIdx + 1) % TRACKS.length;
+      st.trackStart = ms;
+      t = TRACKS[st.trackIdx];
+    }
+    px = Math.min(BAR_W, ((ms - st.trackStart) / 1000 / t.dur * BAR_W) | 0);
+    if (st.trackIdx !== st.paintedIdx || px !== st.paintedPx) {
+      paintMusic(st, px);
+      st.paintedIdx = st.trackIdx;
+      st.paintedPx = px;
+    }
   }
 
   // ---- right: nav map (baked minimap blit + live marker + overlays) -------

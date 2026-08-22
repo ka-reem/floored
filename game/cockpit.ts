@@ -4,7 +4,7 @@ import { rand, randi, TAU } from "./util";
 import { makeTex, loadPbrSet } from "./textures";
 import { buildInstrumentCluster } from "./dashboard";
 import { loadProfile, resolveRenderTier, TIER_CAPS, type SpeedUnits } from "./settings";
-import { drawCarScreen } from "./carscreen";
+import { drawCarScreen, type ScreenMusic } from "./carscreen";
 import type { WorldData } from "./world/data";
 import type { CarState } from "./physics";
 import type { Npc } from "./traffic";
@@ -47,7 +47,8 @@ export interface Cockpit {
   /** Repaint the head unit. Takes the world/car/traffic the HUD minimap
    * takes, because the nav pane now draws that same map (carscreen.ts).
    * `time` is the in-game clock in hours, `now` the engine seconds clock. */
-  drawScreen(world: WorldData, car: CarState, npcs: Npc[], time: number, now: number): void;
+  drawScreen(world: WorldData, car: CarState, npcs: Npc[], time: number, now: number,
+            music?: ScreenMusic): void;
   dropletsUpdate(dt: number, wiping: boolean, wiperRotZ: number, raining: boolean, speed: number): void;
 
   /* --- swap points for an imported dash (cockpitmodel.ts) ------------------
@@ -1419,12 +1420,13 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     [SCR.x, SCR.y - 0.15, SCR.z + 0.03], [SCR.tilt * 1.6, -SCR.yaw, 0]);
   endRegion();
 
-  function drawScreen(world: WorldData, car: CarState, npcs: Npc[], time: number, now: number) {
+  function drawScreen(world: WorldData, car: CarState, npcs: Npc[], time: number, now: number,
+                      music?: ScreenMusic) {
     /* CarPlay-style split head unit — music card left, live nav map right.
        All rendering lives in carscreen.ts; this canvas/texture and the call
        cadence (engine.ts, every ~45 ms in cockpit/POV) are unchanged. The map
        throttles itself below that cadence — see NAV_MS there. */
-    drawCarScreen(scrCv, world, car, npcs, time, now);
+    drawCarScreen(scrCv, world, car, npcs, time, now, music);
     scrTex.needsUpdate = true;
   }
 
