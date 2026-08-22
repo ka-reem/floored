@@ -64,13 +64,54 @@ export interface PadEdge {
   lights?(): void;
 }
 
-/** Previous-frame pressed state, by button index. Cleared whenever the pad we
-    are reading changes (unplug/replug, or a second pad taking slot 0) so a
-    reconnect cannot look like a fresh press. */
+/** Previous-frame pressed state, by button index. Re-primed (NOT cleared —
+    see `prime`) whenever the pad we are reading changes, or whenever polling
+    itself has been interrupted. */
 let prev: boolean[] = [];
 let prevIndex = -1;
 /** Seconds left of pad ownership; see HOLD. */
 let hold = 0;
+/** Timestamp of the last poll, seconds. See GAP. */
+let lastPoll = -Infinity;
+
+/** A gap longer than this between polls means we stopped watching the pad and
+    cannot trust `prev` any more. Two things cause it and neither is rare:
+
+      - pause. readInput returns at the pause guard, above our call site, so
+        the pad is not polled at all while the menu is up.
+      - window blur / background tab, where rAF is throttled to a crawl or
+        stopped outright and the whole frame loop goes with it.
+
+    400 ms is comfortably longer than any real frame (a 4 fps frame would have
+    to miss it) and far shorter than any pause or tab switch a human performs. */
+const GAP = 0.4;
+
+/** Seconds, monotonic where available. */
+function nowSec() {
+  return typeof performance !== "undefined" ? performance.now() / 1000 : Date.now() / 1000;
+}
+
+/** Seed `prev` from what the pad is doing RIGHT NOW, and give up ownership.
+
+    This is the whole trick, and it is why the two callers below must not just
+    do `prev = []`. Clearing makes every `was` false, so a button still held
+    across the gap reads as `now && !was` on the very next poll and fires the
+    edge — it guarantees the press it was supposed to swallow. Priming records
+    the button as already-down, so it stays silent until it is genuinely
+    released and pressed again.
+
+    Concretely: hold RB through a pause, or replug the pad with RB down, and
+    the camera must not cycle the instant play resumes. The keyboard already
+    holds this line — the high-beam flash is gated on `running` so a flash
+    banked in a menu cannot fire on resume — and the pad has to match it. */
+function prime(gp: Gamepad) {
+  prev = [];
+  for (let i = 0; i < gp.buttons.length; i++) prev[i] = down(gp, i);
+  /* Ownership is dropped too: a HOLD grace banked before the gap would
+     otherwise let a neutral pad write the input on the resume frame, which is
+     exactly what the pause guard above us just finished zeroing. */
+  hold = 0;
+}
 
 /** First usable pad. Slots can hold nulls, and a disconnected pad may linger
     in the array with `connected === false`. Standard mapping is preferred
@@ -128,6 +169,10 @@ export function pollGamepad(
   steerRate: number,
   edge: PadEdge
 ): boolean {
+  const t = nowSec();
+  const gapped = t - lastPoll > GAP;
+  lastPoll = t;
+
   const gp = pick();
   if (!gp) {
     prev = [];
@@ -135,9 +180,14 @@ export function pollGamepad(
     hold = 0;
     return false;
   }
-  if (gp.index !== prevIndex) {
-    prev = [];
+  /* Prime and bail on the first poll after a gap (pause, blur, first frame
+     ever) or after the pad changed. Costs one frame of pad input — the
+     keyboard path runs instead, writing nothing a released key would not —
+     and buys immunity to a press banked while nobody was looking. */
+  if (gapped || gp.index !== prevIndex) {
+    prime(gp);
     prevIndex = gp.index;
+    return false;
   }
 
   const ax = gp.axes.length > 0 ? gp.axes[0] : 0;
