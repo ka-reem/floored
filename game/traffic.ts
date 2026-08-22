@@ -873,6 +873,11 @@ export class Traffic {
   private poolInst: THREE.InstancedMesh;
   private poolColor: THREE.InstancedBufferAttribute;
   private clouds: Record<string, Cloud> = {};
+  /** The same clouds as a dense array. `clouds` is built once in the
+      constructor and never re-keyed, so this is just the per-frame iteration
+      order: updateLights walks every cloud twice for each of the N pool slots,
+      and a `for…in` over the record does that with a key lookup per step. */
+  private cloudList: Cloud[] = [];
   private pose: EdgePose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
   private pose2: EdgePose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
   private cor = getCorridor();
@@ -1154,6 +1159,7 @@ export class Traffic {
       roof: mkCloud(0xffb040, 0.95), polR: mkCloud(0xff3040, 1.5),
       polB: mkCloud(0x3d74ff, 1.5),
     };
+    this.cloudList = Object.values(this.clouds);
 
     const C = new THREE.Color();
     for (let i = 0; i < N; i++) {
@@ -1326,6 +1332,18 @@ export class Traffic {
     n.hailAck = 0;
     n.hailMad = 0;
     n.nudgeT = 0;
+    // ...and the same for the close-call cooldown, which is otherwise the one
+    // timer in that family nothing re-arms: a slot recycled mid-cooldown used
+    // to hand its remaining ~10 s to the next driver, silently barring a brand
+    // new car from the annoyed horn-back at hailRoll()'s `n.ccCd <= 0` gate
+    n.ccCd = 0;
+    /* Manoeuvre state, not personality — it belongs with pendK/blink above.
+       Zero selects the `n.laneRate || <route pitch>/3` fallback both offset
+       trackers already carry, so a fresh car signalling before anything sets
+       a rate (the bypass exit signal in updateHwy, the merge signal in
+       updateBypass) crosses at this route's own default instead of at
+       whatever rate the slot's previous occupant happened to leave behind. */
+    n.laneRate = 0;
   }
 
   /** Roll a persistent personality. Heavies never speed, police are always brisk. */
@@ -1544,6 +1562,12 @@ export class Traffic {
       let blocked = false;
       for (const m of this.npcs) {
         if (!m.active || !m.hw) continue;
+        /* corridor cars only: a bypass car's `s` is viaduct arclength and its
+           `offCur` a bypass-frame lateral, so feeding either into these
+           corridor-space comparisons is meaningless — it just vetoes deck
+           spawns at unrelated places while the viaduct is populated.
+           laneClearAt() and trySpawnBypass() both filter by route already. */
+        if (m.route !== -1) continue;
         if (Math.abs(m.offCur - off) > 2.2) continue;
         if (Math.abs(cor.deltaZ(m.s, z)) < 20) blocked = true;
       }
@@ -1661,13 +1685,21 @@ export class Traffic {
       the player, so far) without changing x/y, which are already periodic. */
   private placeHwy(n: Npc, refZ: number) {
     if (n.route === BYPASS_EDGE) {
-      // the bypass never leaves the canonical band, so no lap re-anchoring —
-      // and worldOf folds the banked cross-fall into y (the deck-height snap
-      // the corridor's heightAt used to provide comes from the graph here)
-      const p = this.routes.bypass.worldOf(n.s, n.offCur + (n.wob || 0), this._cw);
-      n.x = p.x;
-      n.y = p.y;
-      n.z = p.z;
+      /* The bypass never leaves the canonical band, so no lap re-anchoring —
+         and the banked cross-fall folds into y (the deck-height snap the
+         corridor's heightAt used to provide comes from the graph here).
+
+         Open-coded rather than routes.bypass.worldOf(): RouteEdge.worldOf
+         calls poseAt() WITHOUT an out-param (routegraph.ts), so it allocates
+         a fresh RoutePose on every call however the `out` is passed — once
+         per bypass car per frame, which is exactly the churn the reused
+         `bpose` exists to avoid. This is that method's body verbatim against
+         a pose sampled into bpose instead. */
+      const lat = n.offCur + (n.wob || 0);
+      const p = this.routes.bypass.poseAt(n.s, this.bpose);
+      n.x = p.x + lat * p.nx;
+      n.y = p.y + lat * p.bank;
+      n.z = p.z + lat * p.nz;
       return;
     }
     const p = this.cor.worldOf(n.s, n.offCur + (n.wob || 0), this._cw);
@@ -3176,6 +3208,7 @@ export class Traffic {
   /* light sprites + headlight ground pools */
   private updateLights(now: number, night: boolean, player: CarState) {
     const SP = this.clouds;
+    const CL = this.cloudList;
     /* Indicator blink phase. This used to be one global `now % 0.9`, which
        put every signalling car and every wreck's hazards in perfect lockstep
        — two cars indicating in exact sync is unmistakably synthetic, and it
@@ -3209,9 +3242,9 @@ export class Traffic {
       li = i;
       const n = this.npcs[i];
       if (!n.active) {
-        for (const key in SP) {
-          SP[key].arr[i * 2 * 3 + 1] = -999;
-          SP[key].arr[(i * 2 + 1) * 3 + 1] = -999;
+        for (const cl of CL) {
+          cl.arr[i * 2 * 3 + 1] = -999;
+          cl.arr[(i * 2 + 1) * 3 + 1] = -999;
         }
         continue;
       }
@@ -3294,7 +3327,7 @@ export class Traffic {
       emit(SP.polB, 0, fb ? fb[0] : -0.24, fb ? fb[1] : 1.38, fb ? fb[2] : 0, isPol && !flash);
       emit(SP.polB, 1, 0, -999, 0, false);
     }
-    for (const key in SP) (SP[key].geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    for (const cl of CL) (cl.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
     this.poolInst.count = pk;
     this.poolInst.visible = pk > 0;
     if (pk) {

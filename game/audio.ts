@@ -291,8 +291,17 @@ const ENGINE_TUNE_DEFAULT = {
       moving pitch keeps recruiting fresh critical bands instead of sitting in
       one. The pitch fix (LOOP_F0) therefore made the old number louder to the
       ear than it measured, and some of this reduction is just paying that
-      back. */
-  level: 1.25,
+      back.
+
+      1.25 -> 1.0: a further 20% cut (-1.9dB) on user feedback after hearing
+      the rebalanced mix. That lands the trim exactly on the pre-2026-08
+      baseline; with makeup at 1.15 the bus now runs +1.2dB overall rather
+      than the +8.9dB it shipped at, so the engine sits just forward of where
+      it was before any of this started. If it needs to come down again,
+      `level` is still the knob — but below about 0.8 the engine starts
+      losing to the wind layer at speed, and the right fix at that point is
+      bringing tyre/wind/traffic down rather than the engine further. */
+  level: 1.0,
   /** Low-shelf boost in dB applied to the engine bus below `rumbleHz` — the
       "beef" control specifically, as opposed to `level` which lifts the whole
       band. Positive = more chest rumble; 0 = flat (old response). Kept in dB

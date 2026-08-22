@@ -315,6 +315,14 @@ export class SmokeFX {
       // the whole life, so the plume hugs the road the way spray does.
       p.vy = rand(0.2, 0.8);
       p.drag = 3.4;
+      /* `grow` is bounded by the beltline, not by taste. The puff CENTRE never
+         clears 0.41m, but the quad grows ~2.7x over its life, so it's the top
+         EDGE that decides whether spray creeps up the glass. Worst case — every
+         rand() at its max at once — that edge sits at 0.73m while the puff is
+         still clearly visible (>=58% of peak) and only reaches ~1.0m once it's
+         under 20% of peak, i.e. it rises only as it disappears. Raising this,
+         `life` or the scale-y range moves the visible part up into the
+         windshield; 1.6 is the lever to pull if it ever reads too high. */
       p.grow = 2.4;
       // much fainter than smoke, and thinner still in light rain
       p.peak = rand(0.14, 0.26) * rain;
