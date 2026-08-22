@@ -23,9 +23,22 @@ export interface Sky {
   towersMat: THREE.PointsMaterial;
   beaconMat: THREE.SpriteMaterial;
   ferris: THREE.Group;
+  /** Everything painted "at infinity" — dome, stars, moon, skyline ring,
+      mountains, city rings. The engine re-centres this on the car every frame
+      (weather()): the lap is 4 km long but these rings sit only ~2.1–2.5 km
+      from the origin, so left world-fixed the far end of the corridor ran
+      *into* them — a wall of skyline across the road just before the loop
+      splice, which then snapped it 4 km away. A backdrop at infinity is
+      direction-only; gluing it to the viewer keeps it on the horizon at both
+      ends of the lap and makes the splice's pure translation invisible.
+      In-map landmarks (ferris wheel, broadcast tower, airport tower) stay
+      world-fixed — they are scenery you drive past, not backdrop. */
+  backdrop: THREE.Group;
 }
 
 export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
+  const backdrop = new THREE.Group();
+  scene.add(backdrop);
   const skyCache: THREE.Texture[] = [];
   for (let i = 0; i < 8; i++) skyCache.push(new THREE.CanvasTexture(skyCanvas(i / 7)));
   const skyMat = new THREE.MeshBasicMaterial({
@@ -33,7 +46,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   });
   const sky = new THREE.Mesh(new THREE.SphereGeometry(2800, 20, 12), skyMat);
   sky.renderOrder = -10;
-  scene.add(sky);
+  backdrop.add(sky);
 
   const starGeo = new THREE.BufferGeometry();
   {
@@ -50,7 +63,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     size: 2.2, sizeAttenuation: false, color: 0xcdd8ff, map: glowTex,
     transparent: true, opacity: 0.8, fog: false, depthWrite: false,
   });
-  scene.add(new THREE.Points(starGeo, starMat));
+  backdrop.add(new THREE.Points(starGeo, starMat));
 
   const moonMat = new THREE.SpriteMaterial({
     map: glowTex, color: 0xf2ecda, fog: false, depthWrite: false, transparent: true,
@@ -58,7 +71,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   const moon = new THREE.Sprite(moonMat);
   moon.scale.set(150, 150, 1);
   moon.position.set(-900, 1250, -1700);
-  scene.add(moon);
+  backdrop.add(moon);
 
   const skylineTex = skylineTexF();
   skylineTex.repeat.set(9, 1);
@@ -68,7 +81,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   const skyline = new THREE.Mesh(new THREE.CylinderGeometry(2340, 2340, 340, 48, 1, true), skylineMat);
   skyline.position.y = 150;
   skyline.renderOrder = -9;
-  scene.add(skyline);
+  backdrop.add(skyline);
 
   // mountains
   {
@@ -82,7 +95,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
         new THREE.ConeGeometry(rand(300, 700), rand(220, 520), 5), mMat);
       m.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
       m.rotation.y = rand(0, TAU);
-      scene.add(m);
+      backdrop.add(m);
     }
   }
   /* The distant city, as three staggered rings of window-lights between the
@@ -146,7 +159,7 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
       });
       const pts = new THREE.Points(g, m);
       pts.renderOrder = -8; // over the skyline ring, under everything real
-      scene.add(pts);
+      backdrop.add(pts);
     }
 
     /* Airport control tower on the east horizon: flared cab on a slim shaft,
@@ -186,10 +199,12 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     sizeAttenuation: false, depthWrite: false,
   });
   {
+    /* red obstruction beacons on far towers — horizon dressing, and the one at
+       z = 2200 stood right past the corridor's far end, so these follow too */
     const p = new Float32Array([1500, 560, -1700, -2100, 480, 900, 800, 430, 2200]);
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(p, 3));
-    scene.add(new THREE.Points(g, towersMat));
+    backdrop.add(new THREE.Points(g, towersMat));
   }
 
   /* broadcast tower */
@@ -267,5 +282,5 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   }
   scene.add(fwG);
 
-  return { skyMat, skyCache, starMat, moonMat, skylineMat, towersMat, beaconMat, ferris };
+  return { skyMat, skyCache, starMat, moonMat, skylineMat, towersMat, beaconMat, ferris, backdrop };
 }

@@ -1287,6 +1287,16 @@ export class Game {
     this.sun.position.set(car.x - Math.cos(sa) * 520, Math.max(120, Math.sin(sa) * 640), car.z - 260);
     this.sun.target.position.set(car.x, 0, car.z);
     this.sun.castShadow = f > 0.22 && !this.perfMode && this.settings.shadows;
+    /* Keep the at-infinity backdrop (dome, skyline ring, mountains, city
+       rings) centred on the car. World-fixed it sat centred on the ORIGIN,
+       whose rings the 4 km lap physically outruns: nearing z = +Z1 the
+       skyline ring stood a few hundred metres past the deck — a wall across
+       the road — and the loop splice then snapped it 4 km away, which is the
+       visible "drive into a wall, then teleport" at the end of the map.
+       Glued to the viewer it stays on the horizon at both ends, so the
+       splice's pure z-translation leaves the whole frame unchanged. y stays
+       0: the deck's own ±5 m grade must not bob the horizon. */
+    sky.backdrop.position.set(car.x, 0, car.z);
     sky.starMat.opacity = 0.8 * (1 - f);
     sky.moonMat.opacity = 0.95 * (1 - f);
     for (const m of this.mats.winMats) {
