@@ -32,6 +32,16 @@ const _byPose: RoutePose = {
   x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0, bank: 0,
 };
 
+/* The analytic wall clamps below depenetrate by the full overlap in one frame.
+   Against a wall you actually drove into that is at most v_lat·dt (~0.15 m at
+   120 Hz), but when a clamp *re-arms* — the car crosses out of a parapet-gap
+   window, or an on-ramp/on-bypass exemption stops holding — the "penetration"
+   is however far outside the wall line the car legitimately got, and applying
+   it whole teleports the car sideways. Classification changes must not move
+   the car, so the positional correction is capped per call; the velocity
+   reflection still kills the outward speed immediately. */
+const CLAMP_STEP = 0.35;
+
 function collideAABB(car: CarState, px: number, pz: number, rr: number, bb: any): boolean {
   if (bb.y0 !== undefined && (car.y + 1.4 < bb.y0 || car.y > bb.y1)) return false;
   const cx = Math.max(bb.x0, Math.min(px, bb.x1));
@@ -169,7 +179,7 @@ export function collidePlayer(
       }
     }
     if (guarded && Math.abs(lat) > lim) {
-      const pen = Math.abs(lat) - lim;
+      const pen = Math.min(Math.abs(lat) - lim, CLAMP_STEP);
       const m = cor.slopeX(zc), inv = 1 / Math.hypot(m, 1);
       const nx = side * inv, nz = side * -m * inv; // outward wall normal
       car.x -= nx * pen;
@@ -200,7 +210,7 @@ export function collidePlayer(
         if (hwSide > BYPASS.half - 0.05) {
           const lim = hwSide + 0.06 - halfW;
           if (Math.abs(bHit.lat) > lim) {
-            const pen = Math.abs(bHit.lat) - lim;
+            const pen = Math.min(Math.abs(bHit.lat) - lim, CLAMP_STEP);
             const sgn = bHit.lat >= 0 ? 1 : -1;
             const nx = sgn * p.nx, nz = sgn * p.nz; // outward wall normal
             car.x -= nx * pen;
