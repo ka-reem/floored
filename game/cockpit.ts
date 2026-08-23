@@ -1623,10 +1623,16 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   mirrorFrame.position.set(MIR.x, MIR.y, MIR.z);
   mirrorFrame.rotation.x = -0.07;
   {
-    const lip = new THREE.Mesh(bezel(0.336, 0.132, 0.042, 0.045, 0.023), piano);
-    lip.position.z = 0.004;
-    const shell = new THREE.Mesh(rbox(0.322, 0.118, 0.056, 0.04), piano);
-    shell.position.z = 0.03;
+    /* Thin. Both senses of it, because the first pass was heavy in both:
+       the rim overhung the 0.30 x 0.096 glass by 18 mm a side and the shell
+       behind it was 56 mm deep, which from a lens 30 cm away is a slab with a
+       mirror in it. Now a 7 mm rim and 24 mm of total depth — a real interior
+       mirror is a sliver of glass in a thin surround, and at this distance
+       the depth is most of what reads as bulk. */
+    const lip = new THREE.Mesh(bezel(0.314, 0.110, 0.010, 0.018, 0.007), piano);
+    lip.position.z = 0.002;
+    const shell = new THREE.Mesh(rbox(0.306, 0.102, 0.014, 0.016), piano);
+    shell.position.z = 0.010;
     mirrorFrame.add(lip, shell);
   }
   interiorG.add(mirrorFrame);
