@@ -1634,15 +1634,23 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
        mirror is a sliver of glass in a thin surround, and at this distance
        the depth is most of what reads as bulk. */
     /* Wall 0.008, not 0.007: the aperture is outer minus twice the wall, so
-       0.007 gave exactly 0.300 x 0.096 — the glass size to the millimetre.
-       Edge-to-edge with zero overlap is where a hairline of background shows
-       through between rim and glass at some angles. 0.008 laps the rim 1 mm
-       over the glass all the way round, which is also how a real mirror is
-       retained. */
-    const lip = new THREE.Mesh(bezel(0.314, 0.110, 0.010, 0.018, 0.008), piano);
+       a wall equal to half the outer-minus-glass difference gives exactly the
+       glass size, and edge-to-edge with zero overlap is where a hairline of
+       background shows through between rim and glass at some angles. The wall
+       is kept 1 mm inside the glass edge instead, which is also how a real
+       mirror is retained in its housing.
+
+       Thinner again: the visible rim — outer edge to glass edge — is now 3 mm
+       of face plus the 1 mm lap, where it was 7 + 1. The overlap is held at
+       1 mm rather than scaled down with it, because that is the part doing
+       the retaining, and eating further into a 96 mm-tall mirror to save a
+       millimetre of trim is a bad trade. Depth follows the same way, 25 mm to
+       17 mm, since at this viewing distance depth is most of what reads as
+       bulk. */
+    const lip = new THREE.Mesh(bezel(0.306, 0.102, 0.007, 0.014, 0.004), piano);
     lip.position.z = 0.002;
-    const shell = new THREE.Mesh(rbox(0.306, 0.102, 0.014, 0.016), piano);
-    shell.position.z = 0.010;
+    const shell = new THREE.Mesh(rbox(0.300, 0.096, 0.010, 0.013), piano);
+    shell.position.z = 0.009;
     mirrorFrame.add(lip, shell);
   }
   interiorG.add(mirrorFrame);
