@@ -1590,7 +1590,11 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      nearly true proportions and needs no crop at all. */
   const mirrorGeo = new THREE.PlaneGeometry(0.3, 0.096);
   const mirrorMesh = new THREE.Mesh(mirrorGeo, mirrorMat);
-  mirrorMesh.position.set(MIR.x, MIR.y, MIR.z - 0.012);
+  /* z = MIR.z + 0.002 puts the glass in the PLANE OF THE LIP rather than in
+     front of the whole assembly. It used to sit at MIR.z - 0.012, i.e. 9 mm
+     proud of the rim's front face, so the rim was a ring floating behind a
+     pane instead of a surround the pane sits in. */
+  mirrorMesh.position.set(MIR.x, MIR.y, MIR.z + 0.002);
   mirrorMesh.rotation.x = -0.07;
   mirrorMesh.scale.x = -1;
   interiorG.add(mirrorMesh);
@@ -1629,7 +1633,13 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
        mirror in it. Now a 7 mm rim and 24 mm of total depth — a real interior
        mirror is a sliver of glass in a thin surround, and at this distance
        the depth is most of what reads as bulk. */
-    const lip = new THREE.Mesh(bezel(0.314, 0.110, 0.010, 0.018, 0.007), piano);
+    /* Wall 0.008, not 0.007: the aperture is outer minus twice the wall, so
+       0.007 gave exactly 0.300 x 0.096 — the glass size to the millimetre.
+       Edge-to-edge with zero overlap is where a hairline of background shows
+       through between rim and glass at some angles. 0.008 laps the rim 1 mm
+       over the glass all the way round, which is also how a real mirror is
+       retained. */
+    const lip = new THREE.Mesh(bezel(0.314, 0.110, 0.010, 0.018, 0.008), piano);
     lip.position.z = 0.002;
     const shell = new THREE.Mesh(rbox(0.306, 0.102, 0.014, 0.016), piano);
     shell.position.z = 0.010;

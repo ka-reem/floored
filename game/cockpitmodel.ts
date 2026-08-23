@@ -415,9 +415,11 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
          to un-mirror the rear camera's image and the frame has no image to
          un-mirror. Negating it too would turn the shell inside out — its faces
          would wind backwards and it would render as the far side of itself.
-         Nudged a few mm back along z so the glass sits INSIDE the rim rather
-         than z-fighting its front face. */
-      frame.position.set(glassAt.x, glassAt.y, glassAt.z + 0.004);
+         The glass sits at frame z +0.002 in cockpit.ts — in the plane of the
+         lip, not in front of it — so the frame origin is 2 mm BEHIND the
+         glass, and the sign matters: +0.004 here used to push the rim further
+         back still and leave the pane standing proud of it. */
+      frame.position.set(glassAt.x, glassAt.y, glassAt.z - 0.002 * glassScale);
       frame.quaternion.copy(glass.quaternion);
       frame.scale.setScalar(glassScale);
     } else {
