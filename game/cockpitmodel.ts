@@ -225,10 +225,21 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
 
   const mirrorParts = byRole("mirror");
   const glass = cockpit.mirrorGlass;
+  const frame = cockpit.mirrorFrame;
   const glassHome = {
     position: glass.position.clone(),
     quaternion: glass.quaternion.clone(),
     scale: glass.scale.clone(),
+  };
+  /* The frame travels with the glass. It lives outside the "mirror" merge
+     region precisely so it survives this donor taking that region over — see
+     cockpit.ts — but surviving is only half of it: parked at its procedural
+     home while the glass moved to the donor's mounting point, it would frame
+     empty air a hand's width from the mirror. */
+  const frameHome = {
+    position: frame.position.clone(),
+    quaternion: frame.quaternion.clone(),
+    scale: frame.scale.clone(),
   };
   let glassAt: THREE.Vector3 | null = null;
   let glassScale = 1;
@@ -400,10 +411,22 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
          that sign would silently un-mirror the reflection. */
       glass.position.copy(glassAt);
       glass.scale.set(-glassScale, glassScale, glassScale);
+      /* Same place and the same scale, but NOT the negative x: the flip exists
+         to un-mirror the rear camera's image and the frame has no image to
+         un-mirror. Negating it too would turn the shell inside out — its faces
+         would wind backwards and it would render as the far side of itself.
+         Nudged a few mm back along z so the glass sits INSIDE the rim rather
+         than z-fighting its front face. */
+      frame.position.set(glassAt.x, glassAt.y, glassAt.z + 0.004);
+      frame.quaternion.copy(glass.quaternion);
+      frame.scale.setScalar(glassScale);
     } else {
       glass.position.copy(glassHome.position);
       glass.quaternion.copy(glassHome.quaternion);
       glass.scale.copy(glassHome.scale);
+      frame.position.copy(frameHome.position);
+      frame.quaternion.copy(frameHome.quaternion);
+      frame.scale.copy(frameHome.scale);
     }
   };
   setActive(true);

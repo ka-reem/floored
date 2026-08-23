@@ -38,6 +38,10 @@ export interface Cockpit {
    * dashcam degrade, so it needs the mesh — geometry + live matrixWorld — by
    * name rather than by array position. */
   mirrorGlass: THREE.Mesh;
+  /** Bezel + shell around the glass. Outside the "mirror" merge region on
+      purpose, so a donor that replaces the region does not leave the glass
+      unframed — see where it is built. */
+  mirrorFrame: THREE.Group;
   /** The cool "city light through the glass" point light. Exposed because the
    * engine rakes it front-to-back once per streetlight pitch, so a passing
    * lamp reads as a wash sweeping over the trim; see LAMP_WASH in engine.ts. */
@@ -1597,10 +1601,37 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      So the shell can be swapped while the glass — ours, RT-fed, UV-cropped and
      shielded from the dashcam degrade by post.ts — stays put and moves into
      the donor's housing. */
+  /* The frame — bezel lip plus the shell behind it — is its own group rather
+     than part of the "mirror" merge region, and that is load-bearing.
+
+     A donor that supplies a mirror BODY (the Volvo does) takes over the
+     region, so everything in it is hidden when the donor dash is active. The
+     donor's own moulded shell is hidden too — it was authored to be seen from
+     outside the car and reads as an unlit plastic lump from 12 cm in front of
+     a 105-degree lens, and it is sized around ITS glass rather than ours. Net
+     effect, before this: on the Volvo the glass floated in mid-air with
+     nothing around it at all.
+
+     Out here the frame survives the region hide, and cockpitmodel.ts moves it
+     with the glass, so the mirror is framed in both dashes. Costs two extra
+     draw calls (the two meshes below are not merged into a region); worth it
+     for a thing that sits in the top of the shipping camera's frame.
+
+     Sized to sit proud of the 0.30 x 0.096 glass on every edge, so it reads
+     as a rim the glass is set INTO rather than a slab behind it. */
+  const mirrorFrame = new THREE.Group();
+  mirrorFrame.position.set(MIR.x, MIR.y, MIR.z);
+  mirrorFrame.rotation.x = -0.07;
+  {
+    const lip = new THREE.Mesh(bezel(0.336, 0.132, 0.042, 0.045, 0.023), piano);
+    lip.position.z = 0.004;
+    const shell = new THREE.Mesh(rbox(0.322, 0.118, 0.056, 0.04), piano);
+    shell.position.z = 0.03;
+    mirrorFrame.add(lip, shell);
+  }
+  interiorG.add(mirrorFrame);
+
   beginRegion("mirror");
-  /* Letterbox housing, back in proportion with the glass above. */
-  put(bezel(0.322, 0.118, 0.036, 0.04, 0.02), piano, [MIR.x, MIR.y, MIR.z], [-0.07, 0, 0]);
-  put(rbox(0.312, 0.108, 0.05, 0.036), piano, [MIR.x, MIR.y, MIR.z + 0.024], [-0.07, 0, 0]);
   /* The screen leans back as it rises, so the stalk has to run up and
      rearward — longer than it was, because the housing now hangs ~3.5 cm
      lower while the header it grows from did not move. */
@@ -1733,8 +1764,14 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     wiperB,
     mirrorParts,
     mirrorGlass: mirrorMesh,
+    mirrorFrame,
     glassLight,
-    setMirrorVis: (v) => mirrorParts.forEach((m) => (m.visible = v)),
+    setMirrorVis: (v) => {
+      mirrorParts.forEach((m) => (m.visible = v));
+      // the frame is not in mirrorParts (it is a Group, not a glass plane), so
+      // it has to be told separately or M leaves an empty rim hanging there
+      mirrorFrame.visible = v;
+    },
     drawGauges,
     drawScreen,
     dropletsUpdate,
