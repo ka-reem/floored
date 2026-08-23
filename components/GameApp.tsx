@@ -282,6 +282,7 @@ export default function GameApp() {
               <b>N</b><span>reset to nearest road</span>
               <b>H</b><span>this help screen</span>
               <b>J</b><span>dash: imported / procedural (A/B)</span>
+              <b>K</b><span>test mode: extra grip, brakes &amp; power (for testing, off on reload)</span>
               <b>P</b><span>in-dash music: play / pause</span>
               <b>, / .</b><span>previous / next piece</span>
               <b>Esc</b><span>pause menu (music pauses with it)</span>

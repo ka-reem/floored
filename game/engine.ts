@@ -7,7 +7,7 @@ import {
   fogMultiplier, speedInUnits, unitLabel, resolveRenderTier, TIER_CAPS,
   type GameSettings, type Profile, type RenderTier, type TierCaps,
 } from "./settings";
-import { getCar, PAINTS, type CarSpec } from "./carspecs";
+import { getCar, PAINTS, testDriveSpec, type CarSpec, type PhysicsSpec } from "./carspecs";
 import { pollGamepad, type PadEdge } from "./gamepad";
 import { buildMats, type Mats } from "./world/mats";
 import { primeCarEnv } from "./carenv";
@@ -283,6 +283,11 @@ export class Game {
   rain = false;
   grade = false; // set from settings.dashcam in the constructor
   dashImported = true; // J toggles; only meaningful once a donor dash has loaded
+  /** K toggles: drive the car on testDriveSpec() instead of its own spec —
+      grip, brakes and power up, for getting somewhere in the world quickly.
+      A dev tool, so it is deliberately not in GameSettings and not persisted:
+      a reload always hands back the real car. */
+  testMode = false;
 
   /** Lens height for the dash currently on screen. Reads live rather than
       being cached, so the J toggle moves the camera in the same frame it
@@ -940,6 +945,27 @@ export class Game {
     return this.rig.spec;
   }
 
+  /** The PhysicsSpec the car is actually driven with — its own, or the test
+      mode derivation of it. stepPhysics reads this every substep and holds no
+      state derived from it, so the K toggle takes effect on the next step
+      with nothing to invalidate.
+
+      The derived spec is memoised against the spec object it came FROM, not
+      against the testMode flag: the garage is reachable from the pause menu,
+      so the active car can change while test mode is on, and a cache keyed on
+      the flag would keep driving the previous car's boosted numbers. */
+  private testPhys: PhysicsSpec | null = null;
+  private testPhysFor: PhysicsSpec | null = null;
+  get phys(): PhysicsSpec {
+    const own = this.spec.phys;
+    if (!this.testMode) return own;
+    if (this.testPhysFor !== own) {
+      this.testPhysFor = own;
+      this.testPhys = testDriveSpec(own);
+    }
+    return this.testPhys!;
+  }
+
   /* ---------------- input ---------------- */
   private onKeyDown = (e: KeyboardEvent) => {
     const k = e.key.toLowerCase();
@@ -1001,6 +1027,14 @@ export class Game {
     if (k === "n") {
       this.resetCar();
       this.ui.toast("RESET");
+    }
+    /* Test mode — see Game.testMode. K because it is free, it is under the
+       right hand next to the other A/B toggles (J, L), and W is the throttle.
+       The toast is the only way to tell the two states apart from inside the
+       car, so it is not optional decoration. */
+    if (k === "k") {
+      this.testMode = !this.testMode;
+      this.ui.toast("TEST MODE " + (this.testMode ? "ON" : "OFF"));
     }
     if (k === "h") this.ui.helpRequest();
     if (k === "x") {
@@ -2833,7 +2867,7 @@ export class Game {
       this.acc += dt;
       let it = 0;
       while (this.acc >= 1 / 120 && it++ < 6) {
-        stepPhysics(this.car, this.input, this.spec.phys, 1 / 120, {
+        stepPhysics(this.car, this.input, this.phys, 1 / 120, {
           mu: this.rain ? 0.84 : 1.26,
           tcEnabled: this.settings.tc,
           heightAt: this.terrain.heightAt,

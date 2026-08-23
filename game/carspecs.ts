@@ -44,7 +44,72 @@ export interface PhysicsSpec {
   steerAy?: number;
   revLimit: number;
   drag: number;
+  /** Peak brake force at full pedal, N, before EBD splits it and ABS and the
+   *  friction circle take their cut. Optional because every car in the roster
+   *  wants the same pedal — see BRAKE_F. */
+  brakeF?: number;
   awd?: boolean;
+}
+
+/** Defaults for the optional PhysicsSpec fields. They live next to the
+ *  interface rather than inline in physics.ts so that anything DERIVING a
+ *  spec from another one (testDriveSpec below) scales the same number the sim
+ *  would have used, instead of quietly scaling a hardcoded 1. */
+export const BRAKE_F = 16400;
+export const STEER_AY = 19.5;
+
+/* ---- Test mode ---------------------------------------------------------
+   A dev toggle (K in engine.ts), not a difficulty and not a car: a way to
+   cross the map, reach a corner, or stop at a landmark quickly while shaking
+   the game out. Derived from whichever car is active rather than written out
+   as a fifth spec, so it works for all four and cannot drift out of sync when
+   someone retunes one of them.
+
+   Why each multiplier is what it is:
+
+   - gripF/gripR x1.6 — the ask ("super grippy"). This is the Pacejka D
+     multiplier, so it scales peak tyre force without moving the slip angle
+     that peak arrives at: the car holds far more, and still lets go at the
+     same steering angle rather than turning into an ice rink at the limit.
+   - brakeF x2 — required, not cosmetic. At stock grip the pedal (16400 N) is
+     already about the whole tyre budget, so raising grip alone would leave
+     braking exactly where it was and the extra grip would be invisible under
+     the pedal. Doubling it puts the pedal above the raised tyre ceiling, so
+     stopping goes back to being grip-limited (~2g) — which is what ABS and
+     the friction ellipse in physics.ts are there to police.
+   - TQ_T x1.8 and FINAL x0.86 — torque up for the shove, final drive taller
+     so the extra torque buys top end instead of just arriving at the rev
+     limiter sooner in top gear. Net wheel force is still ~1.55x in every
+     gear. revLimit and RATIOS are deliberately untouched: revLimit is
+     duplicated in the audio engine profile and cached by the tacho face in
+     dashboard.ts, and neither should have to follow a dev toggle.
+   - drag x0.85 — top speed set by the gearing, not by the air.
+   - steerAy/steerHi x1.15, steerMax x1.1 — a deliberately small bump, and
+     NOT the 1.6 the grip gets. The steering schedule hands out a steer ANGLE
+     (dmax = steerAy*L/u², floored at steerHi), and the slip angle at which an
+     axle saturates is a property of the Pacejka B/C curve, which grip does
+     not move: raising D lets the tyre hold much more force at the same slip
+     angle, but it does not let the rear axle survive a bigger one. Scaling
+     the schedule with the grip therefore buys a tighter possible corner at
+     the price of spinning on inputs that stock survives — measured, x1.5 put
+     the kei car into a spin at half lock at 160 km/h, which stock takes. At
+     x1.15 the failure boundary sits exactly where stock's does and every car
+     still pulls ~30% more lateral at a given stick. The rest of the extra
+     grip shows up as speed KEPT through a corner rather than angle: kaze at
+     full lock at 45 m/s settles at 174 km/h against stock's 152. */
+export function testDriveSpec(spec: PhysicsSpec): PhysicsSpec {
+  return {
+    ...spec,
+    TQ_T: spec.TQ_T.map((t) => t * 1.8),
+    FINAL: spec.FINAL * 0.86,
+    drag: spec.drag * 0.85,
+    gripF: spec.gripF * 1.6,
+    gripR: spec.gripR * 1.6,
+    brakeF: (spec.brakeF ?? BRAKE_F) * 2,
+    steerMax: spec.steerMax * 1.1,
+    steerHi: spec.steerHi * 1.15,
+    steerAy: (spec.steerAy ?? STEER_AY) * 1.15,
+  };
 }
 
 export interface CarSpec {

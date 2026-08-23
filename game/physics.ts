@@ -1,5 +1,5 @@
 import { clamp, lerp, sstep } from "./util";
-import type { PhysicsSpec } from "./carspecs";
+import { BRAKE_F, STEER_AY, type PhysicsSpec } from "./carspecs";
 
 /* Bicycle-model vehicle sim with Pacejka lateral tires, longitudinal load
    transfer, friction ellipse, ABS, TC and slope forces. Ported from v2 and
@@ -421,7 +421,7 @@ export function stepPhysics(
      which is what a modern ABS/EBD car does; previously both were computed
      independently, the tyres went straight past the limit, and a braked corner
      ended in a spin every time. */
-  const brakeF = brk * 16400;
+  const brakeF = brk * (spec.brakeF ?? BRAKE_F);
   car.absOn = false;
   // how much of each axle's grip the corner is already using, 0..1
   const useF = clamp(Math.abs(Fyf) / Math.max(capF, 1), 0, 1);
@@ -534,7 +534,7 @@ export function stepPhysics(
      character. steerMax caps it at parking speed, steerHi is the high-speed
      floor so there is always some authority left. */
   const sp2 = Math.max(Math.abs(car.u), 1) ** 2;
-  const dmax = clamp(((spec.steerAy ?? 19.5) * LWB) / sp2, spec.steerHi, spec.steerMax);
+  const dmax = clamp(((spec.steerAy ?? STEER_AY) * LWB) / sp2, spec.steerHi, spec.steerMax);
   const target = input.st * dmax;
   // rate limit scales with the available travel so lock-to-lock takes about the
   // same time at any speed — a fixed rad/s limit was effectively infinite once
