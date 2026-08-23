@@ -1640,17 +1640,24 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
        is kept 1 mm inside the glass edge instead, which is also how a real
        mirror is retained in its housing.
 
-       Thinner again: the visible rim — outer edge to glass edge — is now 3 mm
-       of face plus the 1 mm lap, where it was 7 + 1. The overlap is held at
-       1 mm rather than scaled down with it, because that is the part doing
-       the retaining, and eating further into a 96 mm-tall mirror to save a
-       millimetre of trim is a bad trade. Depth follows the same way, 25 mm to
-       17 mm, since at this viewing distance depth is most of what reads as
-       bulk. */
-    const lip = new THREE.Mesh(bezel(0.306, 0.102, 0.007, 0.014, 0.004), piano);
+       Thinner across three passes: the visible rim — outer edge to glass edge
+       — has gone 7 mm -> 3 mm -> 1.25 mm of face, and total depth 25 -> 16 ->
+       11 mm. Depth came down hardest each time because at 30 cm from the lens
+       it is most of what reads as bulk.
+
+       The 1 mm lap over the glass is held constant through all of it rather
+       than scaled down with the rest. That overlap is the part doing the
+       retaining and is what stops a hairline of background showing between
+       rim and glass at an angle; eating further into a 96 mm-tall mirror to
+       save trim would be the wrong trade. So the rim thins from the OUTSIDE,
+       which is the side you see.
+
+       This is close to the floor. Below about 1 mm of face the rim is just
+       the lap, and the shell behind it starts to poke out past the lip. */
+    const lip = new THREE.Mesh(bezel(0.3025, 0.0985, 0.005, 0.012, 0.00225), piano);
     lip.position.z = 0.002;
-    const shell = new THREE.Mesh(rbox(0.300, 0.096, 0.010, 0.013), piano);
-    shell.position.z = 0.009;
+    const shell = new THREE.Mesh(rbox(0.2975, 0.0935, 0.007, 0.012), piano);
+    shell.position.z = 0.007;
     mirrorFrame.add(lip, shell);
   }
   interiorG.add(mirrorFrame);
