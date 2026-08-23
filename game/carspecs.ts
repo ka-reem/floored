@@ -100,15 +100,40 @@ export const STEER_AY = 19.5;
 export function testDriveSpec(spec: PhysicsSpec): PhysicsSpec {
   return {
     ...spec,
-    TQ_T: spec.TQ_T.map((t) => t * 1.8),
-    FINAL: spec.FINAL * 0.86,
-    drag: spec.drag * 0.85,
-    gripF: spec.gripF * 1.6,
-    gripR: spec.gripR * 1.6,
-    brakeF: (spec.brakeF ?? BRAKE_F) * 2,
-    steerMax: spec.steerMax * 1.1,
-    steerHi: spec.steerHi * 1.15,
-    steerAy: (spec.steerAy ?? STEER_AY) * 1.15,
+    /* Second pass, deliberately arcade — "like No Hesi, where the cars drive
+       like F1 cars". The numbers are no longer road-car plausible and are not
+       meant to be; this is the toy mode.
+
+       Grip x2.8 is the headline. Real downforce-era grip is ~3g against a
+       road car's ~1.1g, so this is roughly the right ratio, and because it
+       multiplies Pacejka's D it raises the ceiling without moving the slip
+       angle the peak arrives at — the car takes far more and still lets go at
+       the same stick position rather than turning to ice at the limit.
+
+       Torque x3.2 with a 0.72 final drive: torque alone would just spin the
+       tyres, and the shorter final is what turns it into speed rather than
+       noise. Drag x0.6 lifts the top end, which is where the final drive
+       would otherwise cost it.
+
+       Brakes x4 are not optional at this grip. Braking force is capped by
+       what the tyre can hold, so a pedal sized for stock grip is invisible
+       under 2.8x tyres — the car would corner like an F1 car and stop like a
+       saloon, which is the worst of both.
+
+       Steering only x1.25/x1.4 — much less than the grip. The schedule hands
+       out a steer ANGLE, and angle is what causes a spin: matching it to the
+       grip multiplier would make half lock at speed an instant spin. Keeping
+       it well under means the extra grip mostly shows up as speed KEPT
+       through a corner rather than as a sharper turn-in. */
+    TQ_T: spec.TQ_T.map((t) => t * 3.2),
+    FINAL: spec.FINAL * 0.72,
+    drag: spec.drag * 0.6,
+    gripF: spec.gripF * 2.8,
+    gripR: spec.gripR * 2.8,
+    brakeF: (spec.brakeF ?? BRAKE_F) * 4,
+    steerMax: spec.steerMax * 1.25,
+    steerHi: spec.steerHi * 1.4,
+    steerAy: (spec.steerAy ?? STEER_AY) * 1.4,
   };
 }
 
