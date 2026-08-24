@@ -131,9 +131,25 @@ export function testDriveSpec(spec: PhysicsSpec): PhysicsSpec {
     gripF: spec.gripF * 2.8,
     gripR: spec.gripR * 2.8,
     brakeF: (spec.brakeF ?? BRAKE_F) * 4,
+    /* HCG (centre-of-gravity height) x0.55 is the important one, and it is a
+       real physical parameter rather than a fudge: load transfer under
+       braking is (M * ax * HCG) / LWB, so halving the CG height halves how
+       much weight leaves the rear axle when you hit the pedal. That unloading
+       is what drops the rear's lateral capacity mid-corner and spins the car
+       — measured, every stock car spun at 50% brake in a 120 km/h corner, and
+       raising grip alone did not help because it scales both axles equally
+       and leaves the balance untouched. A car that corners like this one
+       should sit that low anyway.
+
+       steerAy is NOT boosted, and that is deliberate. The steer schedule is
+       ay*L/u², so it opens UP as speed falls; boosting it meant that braking
+       into a corner on a held stick fed the front ever more lock as the car
+       slowed, and the yaw rate ran away — 0.50 to 1.76 rad/s in the trace.
+       steerMax/steerHi still rise, so parking-speed and top-end authority are
+       up without the mid-corner schedule getting sharper. */
+    HCG: spec.HCG * 0.55,
     steerMax: spec.steerMax * 1.25,
     steerHi: spec.steerHi * 1.4,
-    steerAy: (spec.steerAy ?? STEER_AY) * 1.4,
   };
 }
 

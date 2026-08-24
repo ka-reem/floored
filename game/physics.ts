@@ -243,6 +243,13 @@ export function stepPhysics(
     mu: number;
     tcEnabled: boolean;
     heightAt: (x: number, z: number, refY: number) => number;
+    /** Test/arcade drive mode (the K toggle). Gates the two handling changes
+        that cannot live in the spec because they are behaviour, not numbers:
+        a tighter ESC deadband and a rear brake that gives up more of the
+        pedal while cornering. Absent or false everywhere in normal play, and
+        every branch it guards is written so that `false` reproduces the
+        previous arithmetic exactly — normal driving is untouched. */
+    arcade?: boolean;
   }
 ) {
   const { M, IZ, LA, LB, HCG, TRACK, WR, FINAL, RATIOS } = spec;
@@ -432,7 +439,14 @@ export function stepPhysics(
      kept asking the rear for a third of the braking while load transfer had left
      it a quarter of the weight — the rear spent its whole budget stopping and
      had none left to hold the corner. Understeer is the safe failure. */
-  const bias = clamp(Fzf / FzT + 0.1 * lat, 0.62, 0.88);
+  /* arcade shades the pedal harder toward the front as lateral load climbs
+     (0.1 -> 0.28) and lifts the forward cap, so the rear keeps more of its
+     grip budget for holding the corner instead of spending it stopping.
+     Understeer is the safe failure; a rear that runs out mid-corner is the
+     spin. Stock keeps the 0.1/0.88 it always had. */
+  const bias = opts.arcade
+    ? clamp(Fzf / FzT + 0.28 * lat, 0.62, 0.94)
+    : clamp(Fzf / FzT + 0.1 * lat, 0.62, 0.88);
   let bF = bias * brakeF, bR = (1 - bias) * brakeF + hb * 5600;
   if (brk > 0.02 && Math.abs(car.u) > 2.5) {
     // reserve < 1 on the front lets a little braking bleed past the pure-circle
@@ -440,7 +454,10 @@ export function stepPhysics(
     // pedal scrubbing speed even at full lateral. The rear holds further back
     // the harder it is cornering — a locked rear axle is what starts a spin.
     const lF = capF * Math.max(0.3, 0.98 * Math.sqrt(Math.max(0, 1 - useF * useF * 0.85)));
-    const lR = capR * Math.max(0.12, lerp(0.97, 0.84, lat) * Math.sqrt(Math.max(0, 1 - useR * useR)));
+    const lR = capR * Math.max(
+      0.12,
+      lerp(0.97, opts.arcade ? 0.45 : 0.84, lat) * Math.sqrt(Math.max(0, 1 - useR * useR))
+    );
     if (bF > lF) { bF = lF; car.absOn = true; }
     if (bR > lR + hb * 5600) { bR = lR + hb * 5600; car.absOn = true; }
   }
@@ -482,8 +499,16 @@ export function stepPhysics(
     );
     // yaw rate beyond what the steer angle asked for, and sideslip beyond the
     // ~9 deg a tidy car ever shows — either one alone can pitch you into a spin
-    const eR = Math.max(0, Math.abs(car.r) - (escRef * 1.15 + 0.07));
-    const eB = Math.max(0, Math.abs(Math.atan2(car.v, Math.max(Math.abs(car.u), 4))) - 0.16);
+    /* Arcade tightens both deadbands and catches the slide much earlier. The
+       stock numbers let sideslip reach 0.16 rad (9.2 deg) before ESC does
+       anything, which is past the point a mid-corner brake is recoverable —
+       measured, every car spun. 0.06 rad (3.4 deg) is still slack enough for
+       a deliberate slide to read as one. Stock values unchanged. */
+    const yawSlack = opts.arcade ? 1.04 : 1.15;
+    const yawPad = opts.arcade ? 0.025 : 0.07;
+    const slipPad = opts.arcade ? 0.06 : 0.16;
+    const eR = Math.max(0, Math.abs(car.r) - (escRef * yawSlack + yawPad));
+    const eB = Math.max(0, Math.abs(Math.atan2(car.v, Math.max(Math.abs(car.u), 4))) - slipPad);
     if (eR > 0 || eB > 0) {
       // The excess bleeds off over ~0.3 s rather than being opposed outright, so
       // the intervention reads as the car settling, not a handbrake grab. The
@@ -491,7 +516,8 @@ export function stepPhysics(
       // otherwise it keeps pulling against a slide it has already caught and the
       // car judders instead of settling.
       const bFade = clamp(Math.abs(car.r) / (escRef + 0.15), 0, 1);
-      escMz = -Math.sign(car.r) * clamp(eR * 4.5 + eB * 8 * bFade, 0, 3.5) * IZ;
+      const escK = opts.arcade ? 2.2 : 1;
+      escMz = -Math.sign(car.r) * clamp(eR * 4.5 * escK + eB * 8 * escK * bFade, 0, 3.5 * escK) * IZ;
       escDrag = clamp(eR * 0.25 + eB * 0.45 * bFade, 0, 0.25) * M;
       car.tcOn = true;
       // Audio-only, additive: the same eR/eB excess that's about to be

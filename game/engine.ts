@@ -1288,7 +1288,28 @@ export class Game {
     let sTarget = sL - sR;
     const analog = this.isTouch && this.settings.steerMode !== "buttons";
     if (analog) sTarget = this.settings.steerMode === "wheel" ? -this.wheelVal : -this.tiltVal;
-    const sRate = analog ? 7 : lerp(3.4, 1.7, clamp(Math.abs(this.car.u) / 40, 0, 1));
+    let sRate = analog ? 7 : lerp(3.4, 1.7, clamp(Math.abs(this.car.u) / 40, 0, 1));
+    /* Test mode only: a PROGRESSIVE ramp instead of a flat one.
+
+       The flat ramp is the single biggest source of the "it takes a bit to
+       actually turn" feel, and it is worse the faster you go — measured, 0 to
+       full stick is 0.39 s at 72 km/h and 0.59 s at 144 km/h, against just
+       0.15 s for the steer angle itself to follow. The keyboard filter, not
+       the physics, is the lag.
+
+       Rather than raise it flat — which makes the whole range twitchy and
+       removes the thing stopping an instant full-lock spin — the rate is
+       scaled by how far from full stick you still are: quick off centre where
+       turn-in bite lives, settling back to roughly the stock rate as it
+       approaches the stop. Small corrections feel immediate, full lock still
+       takes deliberate effort.
+
+       `1 - |st|` at centre is 1, so the first part of the travel runs at
+       BOOST x the stock rate; at 80% stick it is back to ~1.4x. */
+    if (this.testMode && !analog) {
+      const BOOST = 3.2;
+      sRate *= 1 + (BOOST - 1) * (1 - Math.abs(this.input.st));
+    }
     this.input.st += clamp(sTarget - this.input.st, -sRate * dt, sRate * dt);
     if (!sL && !sR && !analog) this.input.st *= Math.max(0, 1 - 6.5 * dt);
     this.input.hb = kd[" "] ? 1 : 0;
@@ -2871,6 +2892,7 @@ export class Game {
           mu: this.rain ? 0.84 : 1.26,
           tcEnabled: this.settings.tc,
           heightAt: this.terrain.heightAt,
+          arcade: this.testMode,
         });
         this.acc -= 1 / 120;
       }
