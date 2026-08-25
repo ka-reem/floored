@@ -301,6 +301,19 @@ export function drawMiniMap(
     g.fillStyle = ((now * 3) | 0) % 2 ? "#ff4050" : "#3d74ff";
     g.fillRect(X - 1.4, Z - 1.4, 2.8, 2.8);
   }
+  /* The rival, on the same "gameplay signal" grounds as the police blips: it
+     spends most of its life beyond the windshield's useful range, and where
+     it went is the one piece of information the chase actually turns on.
+     Drawn last and larger so it reads over a police car sharing its pixel. */
+  for (const n of npcs) {
+    if (!n.active || !n.rival) continue;
+    const X = tx(n.x), Z = tz(n.z);
+    if (X < 3 || X > Wp - 3 || Z < 3 || Z > Hp - 3) continue;
+    g.fillStyle = "#ff7a3c";
+    g.beginPath();
+    g.arc(X, Z, 3, 0, Math.PI * 2);
+    g.fill();
+  }
 
   // ---- player ----
   if (!opts?.noPlayer) {

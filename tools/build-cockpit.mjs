@@ -41,10 +41,10 @@ const OUT_NAME = flag("--out", "volvo-s90");
 const TEX = Number(flag("--tex", 0)) || 0;   // 0 = leave source resolution
 const DRY = argv.includes("--dry");
 const CLIP = !argv.includes("--no-clip");
-const OUT_DIR = path.resolve(import.meta.dirname, "../public/models/cockpits");
+const OUT_DIR = path.resolve(flag("--outdir", path.resolve(import.meta.dirname, "../public/models/cockpits")));
 
 if (!SRC || !fs.existsSync(SRC)) {
-  console.error("usage: node tools/build-cockpit.mjs <donor.glb> [--out NAME] [--tex N] [--no-clip] [--dry]");
+  console.error("usage: node tools/build-cockpit.mjs <donor.glb> [--out NAME] [--tex N] [--clip-h D] [--clip-v D] [--jpeg-q N] [--margin M] [--outdir DIR] [--no-clip] [--dry]");
   process.exit(1);
 }
 
@@ -52,7 +52,7 @@ if (!SRC || !fs.existsSync(SRC)) {
 
 /* The dashcam lens, in cockpit-local metres, mirroring engine.ts: POV_MOUNT
    (with the imported-dash height) offset from cockpit.ts's EYE, pitched down
-   POV_TILT, at POV_HFOV horizontal.
+   POV_TILT.
 
    Clipping to this is worth an unusual amount here because the lens is RIGIDLY
    MOUNTED. It has no head springs, no lean and no lookahead, so unlike a
@@ -66,26 +66,76 @@ if (!SRC || !fs.existsSync(SRC)) {
    can extract them — but only 9% of that mesh is ever in frame, and clipping
    takes exactly that 9%.
 
-   The margins are deliberately loose. Vertical especially: three's fov is
-   vertical and engine.ts derives it from the aspect each frame, so a portrait
-   phone sees materially more than a 16:9 desktop. Cutting to a desktop frame
-   would print a hard geometry edge across a phone's view. Cheap insurance —
-   the parts near the frame edge are the thin ones. */
+   THE ANGLES BELOW ARE NOT A LENS, THEY ARE A BUDGET. The dashcam used to run
+   one fixed 105 deg lens and this file clipped to it with loose margins on the
+   guess that a portrait phone would need the slack. It now honours the Field
+   of view slider (58..95), so the frame is no longer one shape: engine.ts's
+   povFov() can be asked for anything from 34 deg horizontal on a phone at the
+   bottom of the slider to 125.5 deg on a 16:9 screen at the top of it, and
+   118.8 deg vertical on a phone. Those two maxima — swept over the slider range
+   crossed with every aspect from 9:21 to 32:9, not estimated — are what gets
+   clipped to, because any triangle inside them is a triangle the player can be
+   shown. Anything narrower prints a hard sliced edge across the dash at some
+   legal combination of slider and screen.
+
+   MARGIN is small precisely because the maxima are now exact rather than
+   guessed. It covers the near-field parallax that the flat-frustum test does
+   not model, and nothing else. */
 const CAM = [0.28, 1.35 - 0.15, -0.30 + 0.61];
 const TILT = 0.227;
-const H_HALF = Math.tan((105 / 2) * Math.PI / 180);
-const V_HALF = H_HALF / (16 / 9);
-const H_MARGIN = 1.25, V_MARGIN = 1.7;
+/** Widest horizontal and vertical engine.ts's povFov() can produce, degrees,
+    over the whole Field-of-view slider range crossed with every aspect. These
+    two numbers ARE the slider maximum expressed as geometry — at a maximum of
+    95 they are 125.5 and 118.8; at 80 they were 118 and 100. Raise the slider
+    without raising these and the dash shows the edge it was sliced on.
+    Overridable so a deliberately over-wide control build can be made and
+    diffed against the shipped one — that diff is how "the clip is wide enough"
+    gets demonstrated rather than asserted. */
+const CLIP_HFOV = Number(flag("--clip-h", 125.5));
+const CLIP_VFOV = Number(flag("--clip-v", 118.8));
+/* Base mozjpeg quality for the colour maps; normal maps get +5 on top, since a
+   normal map's error tilts the lighting rather than softening a photograph.
+   90 reproduces the byte count of the hand-shrunk file this pass replaced;
+   dropping to 84 saves ~180 KB for a worst-case texel error of 1.6/255, which
+   is the cheapest lever available if this asset ever has to fit a budget. */
+const JPEG_Q = Number(flag("--jpeg-q", 90));
+/* A NaN here does not throw, it just makes every comparison in inFrustum()
+   false and quietly ships 0.1% of the dash — which is exactly what a mistyped
+   `--clip-h` with no value did once. Fail loudly instead. */
+for (const [n, v] of [["--clip-h", CLIP_HFOV], ["--clip-v", CLIP_VFOV]])
+  if (!Number.isFinite(v) || v <= 0 || v >= 180) {
+    console.error(`${n} must be an angle in (0,180) degrees, got ${JSON.stringify(v)}`);
+    process.exit(1);
+  }
+const MARGIN = Number(flag("--margin", 1.15));
+const H_HALF = Math.tan((CLIP_HFOV / 2) * Math.PI / 180) * MARGIN;
+const V_HALF = Math.tan((CLIP_VFOV / 2) * Math.PI / 180) * MARGIN;
 const NEAR = 0.02;
 
+/* The `mirror` role is exempt from the widening, and stays cut to the frame
+   the 105 deg lens gave it. It is the one role that is never RENDERED: the
+   donor's housing is hidden the moment it loads (cockpitmodel.ts) because it
+   was authored to be seen from outside the car and reads as a plastic lump
+   12 cm from the lens. What survives the cut exists only so its bounding box
+   can anchor the game's own RT-fed glass — position, and the scale that fits
+   the glass to the aperture, both come straight off that box.
+
+   So widening it cannot fix a sliced edge (there is no visible edge to fix)
+   and can only move the mirror: a wider cut keeps more housing, the box grows,
+   and the glass silently slides back and scales up. Freezing this one role
+   keeps the tuned mirror placement bit-for-bit identical across the rebuild. */
+const LEGACY_H_HALF = Math.tan((105 / 2) * Math.PI / 180) * 1.25;
+const LEGACY_V_HALF = Math.tan((105 / 2) * Math.PI / 180) / (16 / 9) * 1.7;
+const ANCHOR_ROLES = new Set(["mirror"]);
+
 /** Is a cockpit-local point inside the dashcam frustum (with margin)? */
-function inFrustum(x, y, z) {
+function inFrustum(x, y, z, hHalf, vHalf) {
   const dx = x - CAM[0], dy = y - CAM[1], dz = z - CAM[2];
   // rotate into camera space; the lens looks along +z, pitched down by TILT
   const cz = dz * Math.cos(TILT) - dy * Math.sin(TILT);
   if (cz <= NEAR) return false;
   const cy = dz * Math.sin(TILT) + dy * Math.cos(TILT);
-  return Math.abs(dx) <= H_HALF * cz * H_MARGIN && Math.abs(cy) <= V_HALF * cz * V_MARGIN;
+  return Math.abs(dx) <= hHalf * cz && Math.abs(cy) <= vHalf * cz;
 }
 
 /* Clip one primitive to the frustum, keeping any triangle with a vertex
@@ -93,7 +143,7 @@ function inFrustum(x, y, z) {
    original vertex in the buffers — the triangle count would fall and the file
    would not, which is the opposite of the point. Vertices are therefore
    remapped and every attribute rebuilt against the survivors. */
-function clipPrimitive(doc, prim, matrix) {
+function clipPrimitive(doc, prim, matrix, hHalf, vHalf) {
   const pos = prim.getAttribute("POSITION");
   if (!pos) return { before: 0, after: 0 };
   const idx = prim.getIndices();
@@ -108,7 +158,7 @@ function clipPrimitive(doc, prim, matrix) {
     const x = matrix[0] * el[0] + matrix[4] * el[1] + matrix[8] * el[2] + matrix[12];
     const y = matrix[1] * el[0] + matrix[5] * el[1] + matrix[9] * el[2] + matrix[13];
     const z = matrix[2] * el[0] + matrix[6] * el[1] + matrix[10] * el[2] + matrix[14];
-    vis[v] = inFrustum(x, y, z) ? 1 : 0;
+    vis[v] = inFrustum(x, y, z, hHalf, vHalf) ? 1 : 0;
   }
 
   const kept = [];
@@ -278,7 +328,9 @@ for (const { node, role, matrix } of keep) {
   if (CLIP) {
     let live = 0;
     for (const prim of mesh.listPrimitives()) {
-      const r = clipPrimitive(doc, prim, matrix);
+      const anchor = ANCHOR_ROLES.has(role);
+      const r = clipPrimitive(doc, prim, matrix,
+        anchor ? LEGACY_H_HALF : H_HALF, anchor ? LEGACY_V_HALF : V_HALF);
       clipBefore += r.before; clipAfter += r.after;
       if (r.after === 0) prim.dispose(); else live++;
     }
@@ -322,6 +374,96 @@ root.setDefaultScene(scene);
 await doc.transform(prune(), dedup());
 if (TEX) await doc.transform(textureCompress({ encoder: sharp, resize: [TEX, TEX], resizeFilter: "lanczos3" }));
 
+/* ---------------------------------------------------------------- shrink -- */
+
+/* Container, not content. The clipped dash is ~340k triangles of float32
+   everything in PNG wrappers, which lands around 18 MB; the same model with
+   its buffers packed honestly is 7. Everything here is either exactly lossless
+   or below the threshold the shipped rendering can resolve, and NONE of it
+   touches POSITION — cockpitmodel.ts anchors the live gauge cluster and the
+   mirror glass off bounding boxes computed from those vertices, so drifting
+   them by even a millimetre silently misplaces both. (14-bit position
+   quantisation was tried when this pass was first done by hand: another
+   880 KB, but it shredded the A-pillar and drifted the boxes by up to 10 mm.)
+
+   This used to live outside the repo — the shipped GLB was shrunk once, in
+   place, by a pass that was never committed. That drift is why a rebuild from
+   this tool produced a file two and a half times the size of the one next to
+   it in git. Folded in here so the tool reproduces what it ships. */
+function shrinkBuffers() {
+  let idxSaved = 0, tanSaved = 0, attrSaved = 0;
+  for (const mesh of root.listMeshes()) for (const prim of mesh.listPrimitives()) {
+    /* three derives a per-fragment tangent frame from screen-space derivatives
+       when TANGENT is absent, which every other mesh in this game already
+       relies on. */
+    const tan = prim.getAttribute("TANGENT");
+    if (tan) { tanSaved += tan.getArray().byteLength; prim.setAttribute("TANGENT", null); }
+
+    // Uint32 indices on primitives that cannot hold more than 65,535 vertices
+    const ix = prim.getIndices(), verts = prim.getAttribute("POSITION").getCount();
+    if (ix && verts <= 65535 && ix.getArray().BYTES_PER_ELEMENT > 2) {
+      idxSaved += ix.getArray().byteLength / 2;
+      ix.setArray(new Uint16Array(ix.getArray()));
+    }
+
+    /* Unit normals in float32 spend 32 bits describing a number that is always
+       within [-1,1]: byte-normalised costs a quarter of that and 0.5 deg of
+       angular error, well under what a 512px normal map already contributes.
+       UVs go to normalised Uint16 — 1/65535 of a texture, i.e. a hundredth of
+       a texel at this resolution — but only when they are inside [0,1], since
+       normalised integers cannot express a tiled UV at all. */
+    const nrm = prim.getAttribute("NORMAL");
+    if (nrm && !nrm.getNormalized()) {
+      const src = nrm.getArray(), out = new Int8Array(src.length);
+      for (let i = 0; i < src.length; i++) out[i] = Math.max(-127, Math.min(127, Math.round(src[i] * 127)));
+      attrSaved += src.byteLength - out.byteLength;
+      nrm.setArray(out).setNormalized(true);
+    }
+    const uv = prim.getAttribute("TEXCOORD_0");
+    if (uv && !uv.getNormalized()) {
+      const src = uv.getArray();
+      let inRange = true;
+      for (let i = 0; i < src.length; i++) if (src[i] < 0 || src[i] > 1) { inRange = false; break; }
+      if (inRange) {
+        const out = new Uint16Array(src.length);
+        for (let i = 0; i < src.length; i++) out[i] = Math.round(src[i] * 65535);
+        attrSaved += src.byteLength - out.byteLength;
+        uv.setArray(out).setNormalized(true);
+      }
+    }
+  }
+  return { idxSaved, tanSaved, attrSaved };
+}
+const shrunk = shrinkBuffers();
+// detaching TANGENT leaves its accessors orphaned in the document, and an
+// orphaned accessor is still written out — 3.8 MB of it, here
+await doc.transform(prune());
+
+/* PNG is a lossless wrapper around a photograph, which is the wrong trade for
+   a 512px car-interior map. mozjpeg at 4:4:4 for the normal maps specifically:
+   a normal's X and Y live in the R and G channels, and ordinary 4:2:0 chroma
+   subsampling smears exactly those two while leaving Z alone, which tilts the
+   lighting rather than softening it. Anything with real transparency is left
+   as it is — JPEG has no alpha channel to leave it in. */
+const normalTex = new Set();
+for (const mat of root.listMaterials()) if (mat.getNormalTexture()) normalTex.add(mat.getNormalTexture());
+let imgBefore = 0, imgAfter = 0;
+for (const tex of root.listTextures()) {
+  const img = tex.getImage(); if (!img) continue;
+  imgBefore += img.byteLength;
+  if (tex.getMimeType() === "image/jpeg") { imgAfter += img.byteLength; continue; }
+  const pipe = sharp(Buffer.from(img));
+  const { hasAlpha } = await pipe.metadata();
+  if (hasAlpha && (await pipe.clone().stats()).isOpaque === false) { imgAfter += img.byteLength; continue; }
+  const isNormal = normalTex.has(tex);
+  const out = await pipe
+    .flatten({ background: "#000000" })
+    .jpeg({ mozjpeg: true, quality: isNormal ? JPEG_Q + 5 : JPEG_Q, chromaSubsampling: isNormal ? "4:4:4" : "4:2:0" })
+    .toBuffer();
+  tex.setImage(out).setMimeType("image/jpeg");
+  imgAfter += out.byteLength;
+}
+
 const after = { tris: root.listMeshes().reduce((a, m) => a + triCount(m), 0), img: root.listTextures().length };
 const vram = root.listTextures().reduce((a, t) => { const s = t.getSize() || [0, 0]; return a + s[0] * s[1] * 4 * 1.333; }, 0);
 
@@ -332,6 +474,8 @@ console.log(`\n${path.basename(SRC)} -> ${OUT_NAME}.glb`);
 console.log(`  triangles : ${before.tris.toLocaleString()} -> ${after.tris.toLocaleString()}  (${pc(after.tris, before.tris)})`);
 console.log(`  textures  : ${before.img} -> ${after.img}${TEX ? `  resized to ${TEX}px` : "  (source resolution)"}`);
 console.log(`  VRAM      : ${(vram / 1e9).toFixed(2)} GB decoded RGBA8 + mips`);
+console.log(`  shrink    : indices -${(shrunk.idxSaved / 1e6).toFixed(2)} MB, tangents -${(shrunk.tanSaved / 1e6).toFixed(2)} MB, ` +
+            `normals+UVs -${(shrunk.attrSaved / 1e6).toFixed(2)} MB, images ${(imgBefore / 1e6).toFixed(2)} -> ${(imgAfter / 1e6).toFixed(2)} MB`);
 console.log(`  parts     :`);
 for (const [role, list] of Object.entries(manifest.parts))
   console.log(`    ${role.padEnd(13)} ${list.map((p) => `${p.name} <- ${p.donorName} (${p.tris.toLocaleString()}t)`).join(", ")}`);

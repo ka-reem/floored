@@ -3,6 +3,8 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { rand, TAU } from "../util";
 import { skyCanvas, skylineTexF } from "../textures";
 import { worldTierCaps } from "../settings";
+import { buildAurora, FX_AURORA, type Aurora } from "./aurora";
+import { buildNightClouds, FX_NIGHT_CLOUDS, type NightClouds } from "./nightclouds";
 
 /* Sky dome, stars, moon, distant skyline ring, mountains, and the two
    landmarks (broadcast tower west, ferris wheel east). Ported from v2.
@@ -38,6 +40,10 @@ export interface Sky {
   /** the abstract-city layer (glow domes + light-column slabs): the engine
       dims each material to userData.nightO × its day/fog factor */
   cityAbstractMats: THREE.Material[];
+  /** procedural aurora curtains on the dome — engine.weather() ticks it */
+  aurora?: Aurora;
+  /** procedural lit-edge cloud deck over the aurora — ticked alongside it */
+  clouds?: NightClouds;
 }
 
 export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
@@ -52,6 +58,34 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
   const sky = new THREE.Mesh(new THREE.SphereGeometry(2800, 20, 12), skyMat);
   sky.renderOrder = -10;
   backdrop.add(sky);
+
+  /* Aurora, painted onto the dome one renderOrder step above it. It joins the
+     backdrop group for the same reason everything else here does — it is a
+     direction, not a place, and must not be outrun by the lap. */
+  let aurora: Aurora | undefined;
+  let clouds: NightClouds | undefined;
+  if (FX_AURORA) {
+    aurora = buildAurora();
+    backdrop.add(aurora.mesh);
+    if (FX_NIGHT_CLOUDS) {
+      clouds = buildNightClouds(aurora.roll.seed);
+      clouds.tint(aurora.palLo, aurora.palHi);
+      // keep the deck on the aurora's palette across rerolls
+      aurora.onPalette = (lo, hi) => clouds!.tint(lo, hi);
+      backdrop.add(clouds.mesh);
+    }
+    /* Live preview handle. The sky is the one thing here a player can't
+       audition without a rebuild, so the whole control surface goes on the
+       console: __aurora.next() to flick through rolls, .gain to dial
+       brightness, .lock() to keep the one you like. */
+    try {
+      const w = window as unknown as { __aurora?: unknown; __clouds?: unknown };
+      w.__aurora = aurora;
+      w.__clouds = clouds;
+    } catch {
+      /* non-browser / locked-down global — the sky still renders */
+    }
+  }
 
   const starGeo = new THREE.BufferGeometry();
   {
@@ -68,7 +102,14 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     size: 2.2, sizeAttenuation: false, color: 0xcdd8ff, map: glowTex,
     transparent: true, opacity: 0.8, fog: false, depthWrite: false,
   });
-  backdrop.add(new THREE.Points(starGeo, starMat));
+  {
+    const stars = new THREE.Points(starGeo, starMat);
+    /* Behind the cloud deck (-9.8). Stars are transparent, so without an
+       explicit order they would sort to 0 and draw on top of the clouds —
+       a starfield shining straight through an overcast. */
+    stars.renderOrder = -9.85;
+    backdrop.add(stars);
+  }
 
   const moonMat = new THREE.SpriteMaterial({
     map: glowTex, color: 0xf2ecda, fog: false, depthWrite: false, transparent: true,
@@ -429,6 +470,6 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
 
   return {
     skyMat, skyCache, starMat, moonMat, skylineMat, towersMat, beaconMat, ferris,
-    backdrop, cityAbstractMats,
+    backdrop, cityAbstractMats, aurora, clouds,
   };
 }

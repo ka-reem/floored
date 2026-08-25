@@ -7,6 +7,7 @@ import { CARS, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
+  syncRivalMode,
   type Profile, type GameSettings,
 } from "@/game/settings";
 
@@ -39,6 +40,10 @@ export default function GameApp() {
     if (gameRef.current || !hostRef.current) return;
     const profile = loadProfile();
     profileRef.current = profile;
+    /* traffic.ts reads rival mode from a live module value rather than from
+       the engine (see the rival-mode block in settings.ts), so it has to be
+       primed from the restored profile before the first frame. */
+    syncRivalMode(profile.settings);
     const game = new Game(hostRef.current, profile, {
       toast: showToast,
       exitHint: (t) => setExitHint(t),
@@ -202,6 +207,25 @@ export default function GameApp() {
           </p>
           <div className="menuBtns">
             <button className="menuBtn primary" onClick={drive}>▶ &nbsp;DRIVE</button>
+            {/* The same setting the panel carries, surfaced here so the mode
+                is discoverable without going three screens deep. */}
+            <button
+              className="menuBtn"
+              onClick={() => {
+                const p = profileRef.current;
+                if (!p) return;
+                const on = !p.settings.rival;
+                p.settings.rival = on;
+                if (g) {
+                  g.settings.rival = on;
+                  syncRivalMode(g.settings);
+                } else syncRivalMode(p.settings);
+                saveProfile(p);
+                rerender();
+              }}
+            >
+              RIVAL 好敵手 — {(g?.settings ?? profileRef.current?.settings)?.rival ? "ON" : "OFF"}
+            </button>
             <button className="menuBtn" onClick={() => setScreen("garage")}>GARAGE 車庫</button>
             <button className="menuBtn" onClick={() => setScreen("settings")}>SETTINGS 設定</button>
             <button className="menuBtn" onClick={() => setScreen("controls")}>CONTROLS 操作</button>
@@ -282,7 +306,8 @@ export default function GameApp() {
               <b>N</b><span>reset to nearest road</span>
               <b>H</b><span>this help screen</span>
               <b>J</b><span>dash: imported / procedural (A/B)</span>
-              <b>K</b><span>test mode: extra grip, brakes &amp; power (for testing, off on reload)</span>
+              <b>U</b><span>body: imported / procedural (A/B, chase cameras only)</span>
+              <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
               <b>P</b><span>in-dash music: play / pause</span>
               <b>, / .</b><span>previous / next piece</span>
               <b>Esc</b><span>pause menu (music pauses with it)</span>
@@ -513,6 +538,9 @@ function SettingsPanel({
   const upd = (fn: (s: GameSettings) => void) => {
     fn(game.settings);
     game.applySettings(game.settings);
+    // one call covers every row, so a new rival toggle can never be wired up
+    // and then forgotten here
+    syncRivalMode(game.settings);
     force((n) => n + 1);
   };
   const s = game.settings;
@@ -603,9 +631,33 @@ function SettingsPanel({
             onChange={(e) => upd((x) => (x.traffic = +e.target.value / 100))}
           />
         </Row>
+        {/* game.testMode is a view onto s.testMode (see Game.testMode), so
+            writing either one here is the same write — but go through the
+            setting, which is what persist() copies out. The K key in game
+            flips the same value. */}
+        <Check
+          label="Test mode — extra grip, brakes & power"
+          checked={s.testMode}
+          onChange={(v) => upd((x) => (x.testMode = v))}
+        />
+        {/* The rival pace car. A mode rather than a difficulty: it costs
+            nothing at all while it is off (game/traffic.ts claims its pool
+            slot on the toggle, not at construction). */}
+        <Check
+          label="Rival car (chase the orange one)"
+          checked={s.rival}
+          onChange={(v) => upd((x) => (x.rival = v))}
+        />
+        {s.rival && (
+          <Check
+            label="⤷ rival uses its indicators"
+            checked={s.rivalSignals}
+            onChange={(v) => upd((x) => (x.rivalSignals = v))}
+          />
+        )}
         <Row label={`Field of view — ${s.fovBase}°`}>
           <input
-            type="range" min={58} max={80} value={s.fovBase}
+            type="range" min={58} max={95} value={s.fovBase}
             onChange={(e) => upd((x) => (x.fovBase = +e.target.value))}
           />
         </Row>

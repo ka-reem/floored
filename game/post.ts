@@ -107,10 +107,14 @@ const POV_TUNE_DEFAULT = {
   mirrorShield: MIRROR_SHIELD, screenShield: SCREEN_SHIELD,
 };
 
-/* ---- Cinematic night look (desktop tier only — engine wires tierCaps
-   .dualBloom/.filmLook through setCinema; mobile tiers pass false and every
-   uniform below reads 0, leaving the composite bit-identical to the single-
-   bloom pipeline).
+/* ---- Cinematic night look (engine wires tierCaps.dualBloom/.filmLook
+   through setCinema; mobile tiers pass false, which zeroes uFilmVig/uFilmCA/
+   uFilmDirt and skips the halo passes, leaving the composite bit-identical to
+   the single-bloom pipeline).
+
+   NOT everything below is tier-gated any more: FILM_GRAIN and FILM_TONE cost
+   nothing but ALU and were making the mobile frame worse rather than cheaper,
+   so they now run on every tier. See the uFilm* block in process().
 
    TWO-SCALE BLOOM: the single quarter-res chain had to be wide enough to give
    lamps an atmosphere, which also meant every taillight core was already a
@@ -142,6 +146,26 @@ const FILM_TONE = true;     // deeper black toe + tiny black-point pull
  *  turns on, so mobile tiers never download it. */
 const FILM_DIRT = true;
 const DIRT_URL = "/assets/lens/dirt_02.png";
+/** Exposure time constant of the dashcam POV's frame blend, in SECONDS.
+ *
+ * This used to be a bare retention fraction (`mb = pov ? 0.66`), which is only
+ * a duration if the frame rate never moves. `mix(cur, prev, 0.66)` decays with
+ * a time constant of dt/ln(1/0.66) — 40 ms at 60 fps, which is the long night
+ * exposure the look was authored around, but 80 ms at the 30 fps a phone
+ * actually runs, i.e. exactly double the intended smear on the smallest screen
+ * and the one place the doubling of every lane line and car edge is least
+ * affordable. Expressed as a time constant it is the same 40 ms everywhere:
+ * retention = exp(-dt / this), which evaluates to 0.6600 at 60 fps, so the
+ * desktop frame is unchanged to four decimal places.
+ *
+ * Lower this to shorten the smear; it is a real exposure time, so 0.030 reads
+ * as a faster sensor rather than as "motion blur turned down". */
+const POV_MB_TAU = 0.0401;
+/** dt clamp for the blend above. The floor keeps a hitched or zero-length
+ *  frame from resolving to a retention of ~1 (a frozen image); the ceiling
+ *  matches engine.ts's own dt clamp, so a long stall cuts rather than drags. */
+const POV_MB_DT_MIN = 1 / 240, POV_MB_DT_MAX = 0.1;
+
 function readPovTune() {
   if (typeof window === "undefined") return POV_TUNE_DEFAULT;
   if (!window.__povTune) window.__povTune = { ...POV_TUNE_DEFAULT };
@@ -1002,6 +1026,10 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
   process(opts: {
     exposure: number; grade: boolean; bloom: boolean; fxaa: boolean;
     mblur: number; time: number;
+    /** wall-clock seconds since the previous frame. Only the dashcam POV's
+        frame blend reads it (see POV_MB_TAU) — the settings-driven motion
+        blur keeps its own curve, which engine.ts already shapes by speed. */
+    dt: number;
   }) {
     const u = this.compMat.uniforms;
     // two-scale bloom runs on the desktop tier only, and steps aside with the
@@ -1056,10 +1084,35 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     u.uBloomStr.value = opts.bloom ? (dual ? bloomBase * DUAL_CORE_MUL : bloomBase) : 0;
     u.uHaloStr.value = opts.bloom && dual ? bloomBase * DUAL_HALO_MUL : 0;
     const film = this.cineFilm ? 1 : 0;
-    u.uFilmGrain.value = FILM_GRAIN ? film : 0;
+    /* FILM_GRAIN and FILM_TONE are NOT tier-gated, unlike the three below.
+       Both are pure ALU inside a pass that runs on every tier anyway — no
+       extra pass, no extra fetch, no download — so gating them bought no
+       frame time, and switching them OFF did not give the mobile tiers a
+       cheaper version of the look, it gave them a worse one:
+
+       - grain: the composite's amplitude is `.018 * (1 - uFilmGrain*.45)`
+         over cells of `uv*uRes*mix(.5,1.,uFilmGrain)`. At 0 that is 0.018
+         over 2x2-px cells; at 1 it is 0.0099 over 1x1-px cells. The mobile
+         tiers were therefore getting 1.8x the amplitude spread over 4x the
+         cell area — coarser, louder noise than the desktop frame, on the
+         smaller screen.
+       - tone: with uFilmTone at 0 the black-point pull never runs, so the
+         last ~1.5/255 of grey wash (fog floor, bounce fill) stayed in the
+         frame and mobile shadows sat milky instead of closing to black.
+
+       Together those are most of what read as a murky, hard-to-parse dashcam
+       POV on a phone. Turning them on moves mobile TOWARD the authored look
+       rather than away from it, which is why this is not a film-look
+       concession — the POV degrade's own heavy 15 Hz grain (povMat) and its
+       crushed blacks are untouched.
+
+       uFilmVig / uFilmCA stay desktop-only because they cost legibility
+       rather than frame time, and uFilmDirt because it is a real texture
+       fetch plus a lazily fetched asset mobile should not download. */
+    u.uFilmGrain.value = FILM_GRAIN ? 1 : 0;
+    u.uFilmTone.value = FILM_TONE ? 1 : 0;
     u.uFilmVig.value = FILM_VIGNETTE ? film : 0;
     u.uFilmCA.value = FILM_CA ? film : 0;
-    u.uFilmTone.value = FILM_TONE ? film : 0;
     u.uFilmDirt.value = FILM_DIRT && this.dirtTex ? film : 0;
     u.uSpeedT.value = speedT;
     const pov = this.pov;
@@ -1127,7 +1180,16 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // POV pins the blend hard and ignores the settings curve: a cheap sensor
       // at night runs a long exposure, so everything drags. The one-frame
       // history invalidation after a view change wins over it.
-      const mb = pov ? 0.66 : doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
+      //
+      // As a TIME CONSTANT, not a per-frame fraction — see POV_MB_TAU. At
+      // 60 fps this is 0.6600, i.e. the value that was hardcoded here; below
+      // 60 it stops over-smearing instead of dragging twice as long, which is
+      // the whole point (the mobile tiers run this path even with mblur off,
+      // because POV forces doMbSetting on).
+      const povDt = Math.min(POV_MB_DT_MAX, Math.max(POV_MB_DT_MIN, opts.dt));
+      const mb = pov
+        ? Math.exp(-povDt / POV_MB_TAU)
+        : doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
       this.mbMat.uniforms.tCur.value = cur.texture;
       this.mbMat.uniforms.tPrev.value = this.prevRT.texture;
       this.mbMat.uniforms.uMB.value = this.histValid ? mb : 0;

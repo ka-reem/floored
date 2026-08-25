@@ -6,6 +6,7 @@ import {
 import { paintTexF, carbonTexF } from "./textures";
 import { buildCockpit, COCKPIT_REF, type Cockpit } from "./cockpit";
 import { attachCockpitModel, type CockpitModelHandle } from "./cockpitmodel";
+import { attachBodyModel, type BodyModelHandle } from "./bodymodel";
 import type { RenderTier } from "./settings";
 
 import { carEnvMap, isSharedEnv, trackEnvMaterial, untrackEnvMaterial } from "./carenv";
@@ -35,6 +36,13 @@ const COCKPIT_MODEL: Record<RenderTier, string> = {
   "mobile-high": "volvo-s90",
   "mobile-base": "",
 };
+/* Which cars have an imported EXTERIOR body, by spec id. Only kaze: the donor
+   is a real S90 and kaze is the one shell close enough to it to be fitted by
+   scaling alone — the 3.14 m kei car is not, and never will be. Keyed by car
+   rather than by tier because it is a 0.5 MB static shell that only shows in
+   the chase cameras; there is nothing here for a weaker device to opt out of
+   that hiding the exterior does not already handle. */
+const BODY_MODEL: Record<string, string> = { kaze: "volvo-s90-body-lite" };
 /* The headlight carpet's alpha field: a WEDGE spreading forward from the
    bumper, not a radial pool.
 
@@ -294,6 +302,9 @@ export interface PlayerRig {
   /** Settles once the donor dash has landed or been given up on; already
       settled on a tier that configures no donor. Never rejects. */
   readonly cockpitReady: Promise<void>;
+  /** The imported exterior body once it has loaded, else null — null is the
+      normal steady state for every car but kaze, and for a failed fetch. */
+  readonly bodyModel: BodyModelHandle | null;
   pivFL: THREE.Group;
   pivFR: THREE.Group;
   wheels: THREE.Group[];
@@ -591,11 +602,16 @@ export function buildPlayerCar(
     map: glowTex, color: 0xcfe0ff, transparent: true,
     blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0,
   });
+  /* Kept aside for the imported body below: the donor's lamps are inert
+     geometry, so these sprites are what still reads as headlights at night
+     once the procedural emissive boxes are hidden under it. */
+  const glowSprites: THREE.Sprite[] = [];
   for (const s of [-1, 1]) {
     const sp = new THREE.Sprite(hlGlowMat);
     sp.scale.set(0.85, 0.85, 1);
     sp.position.set(s * hlX, hlY, L2 + 0.24);
     exteriorG.add(sp);
+    glowSprites.push(sp);
   }
   const plateGlowMat = new THREE.SpriteMaterial({
     map: glowTex, color: 0xffe9c0, transparent: true,
@@ -606,6 +622,7 @@ export function buildPlayerCar(
     pg.scale.set(0.5, 0.28, 1);
     pg.position.set(0, P.tail * 0.8, -L2 - 0.24);
     exteriorG.add(pg);
+    glowSprites.push(pg);
   }
   // decay (last arg) is overwritten every frame in engine.ts's per-mode
   // block — low beam and high beam no longer share one value — so this is
@@ -731,10 +748,22 @@ export function buildPlayerCar(
   if (donor) attachCockpitModel(cockpit, donor, (h) => { rigRef.model = h; dashDone(); });
   else dashDone();
 
+  /* Imported exterior body, if this car has one. Same fire-and-forget shape as
+     the dash above and the same fallback rule, but it lands INACTIVE: the
+     procedural body is what the game ships and the import is A/B'd in by key,
+     not swapped in under the player. Nothing waits on it — it is invisible in
+     the POV the game is played in. */
+  const bodyRef = { model: null as BodyModelHandle | null };
+  const bodyDonor = BODY_MODEL[spec.id];
+  if (bodyDonor)
+    attachBodyModel(exteriorG, P, bodyDonor, [pivFL, pivFR, wRL, wRR, ...glowSprites],
+      (h) => { bodyRef.model = h; });
+
   return {
     spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,
     get cockpitModel() { return rigRef.model; },
     cockpitReady,
+    get bodyModel() { return bodyRef.model; },
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
     beamCarpet, beamCarpetMat, beamCarpetG: carpetG,

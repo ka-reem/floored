@@ -266,10 +266,42 @@ const POV_MOUNT_DY_IMPORTED = -0.15;
    walks the whole interior up the frame and eats the road. */
 const POV_TILT = 0.227;
 /* Real dashcam lenses are quoted diagonally at 130-170; the useful figure is
-   the horizontal one, and 105 is a typical mid-range unit. three's fov is
-   vertical, so it is derived from the aspect each frame and clamped so a
-   portrait phone does not end up with a fisheye. */
-const POV_HFOV = 105;
+   the horizontal one, and a typical mid-range unit is around 105. The dashcam
+   used to hard-code exactly that and ignore the Field of view slider entirely,
+   which meant the only view that ships was the one view the slider could not
+   touch. It reads the slider now, through the four constants below.
+
+   The slider (58..80, default 67, GameApp.tsx) is taken as a VERTICAL angle at
+   16:9 and converted once into the horizontal the lens then holds constant on
+   every other aspect. That hybrid is deliberate, because neither pure reading
+   works on its own:
+
+   - Read as vertical everywhere, a portrait phone at 80 would get 42 deg of
+     horizontal — a telephoto slit through the windscreen — because holding
+     vertical constant on a tall frame throws the width away.
+   - Read as horizontal everywhere, the number on the slider would stop meaning
+     what it means for every other camera, which feed it to three's vertical
+     fov directly.
+
+   Taken as vertical-at-16:9, it is literally the vertical fov on a 16:9
+   screen — same as the other cameras — while off 16:9 it behaves like the
+   fixed-horizontal dashcam lens it replaced, so the dash keeps the same share
+   of frame width on every device and the interior framing survives rotation.
+
+   POV_V_CAP and POV_V_FLOOR are the old 62..100 clamp, generalised. The cap
+   became RELATIVE because an absolute one is what made the slider dead on a
+   phone: holding horizontal constant on a 9:21 frame asks for 130-150 deg of
+   vertical at every slider position, so an absolute cap swallowed the whole
+   range and every setting rendered identically. At 1.25x the top of the slider
+   still lands on exactly the old 100 deg, so portrait never gets WIDER than it
+   is today — it just gets narrower when the slider is lowered, which is the
+   point. POV_H_CEIL is new: the floor blows the horizontal out on very wide
+   screens (129.8 deg at 32:9 today, past what the dash is even clipped for),
+   and this bounds it. */
+const POV_REF_ASPECT = 16 / 9;
+const POV_V_CAP = 1.25;
+const POV_V_FLOOR = 62;
+const POV_H_CEIL = 118;
 
 export class Game {
   // public state the UI reads
@@ -283,11 +315,20 @@ export class Game {
   rain = false;
   grade = false; // set from settings.dashcam in the constructor
   dashImported = true; // J toggles; only meaningful once a donor dash has loaded
-  /** K toggles: drive the car on testDriveSpec() instead of its own spec —
-      grip, brakes and power up, for getting somewhere in the world quickly.
-      A dev tool, so it is deliberately not in GameSettings and not persisted:
-      a reload always hands back the real car. */
-  testMode = false;
+  bodyImported = false; // U toggles; the imported exterior body starts off
+  /** Drive the car on testDriveSpec() instead of its own spec — grip, brakes
+      and power up, for getting somewhere in the world quickly. Toggled by K
+      in game and by a row in the settings panel.
+
+      A VIEW onto settings.testMode rather than a field of its own, so the two
+      cannot drift: the settings panel writes the setting, K writes through
+      this setter, and every reader sees one value. (`grade` above solves the
+      same problem by mirroring the flag into settings by hand on each K-style
+      toggle, which works but has to be remembered at every write site.)
+      persist() copies this.settings out, so it survives a reload — it used to
+      be deliberately session-only, and that is no longer true. */
+  get testMode() { return this.settings.testMode; }
+  set testMode(v: boolean) { this.settings.testMode = v; }
 
   /** Lens height for the dash currently on screen. Reads live rather than
       being cached, so the J toggle moves the camera in the same frame it
@@ -295,6 +336,37 @@ export class Game {
       whichever one it does not suit loses unfairly. */
   private povMountDy(): number {
     return this.rig.cockpitModel && this.dashImported ? POV_MOUNT_DY_IMPORTED : POV_MOUNT.dy;
+  }
+
+  /** The dashcam lens, in three's vertical degrees, for a given viewport
+      aspect. See the POV_V_CAP block above for why the slider is read as
+      vertical-at-16:9 and then held horizontally constant.
+
+      The widest this can return, swept over the whole slider range (58..95,
+      GameApp.tsx) crossed with every aspect from 9:21 to 32:9, is 118.8 deg
+      vertical (portrait, slider at 95) and 125.5 deg horizontal (16:9, slider
+      at 95 — above 88 the slider itself overtakes POV_H_CEIL, which from there
+      on only bounds the ultrawide floor). tools/build-cockpit.mjs clips the
+      imported dash to exactly those two numbers plus margin.
+
+      RAISING THE SLIDER MAXIMUM IS NOT A UI CHANGE. Every degree added here
+      widens the frustum the dash has to survive, and the dash is clipped
+      geometry — go past the clip and the player sees the edge it was sliced
+      on. The slider maximum, these constants, and CLIP_HFOV/CLIP_VFOV in
+      build-cockpit.mjs are one contract; move one and the GLB has to be
+      rebuilt. It is also not free: 80 -> 95 cost the shipped GLB 1.29 MB
+      (7.66 -> 8.95), which is most of what test/size-budget.mjs had spare. */
+  private povFov(aspect: number): number {
+    const halfTan = (deg: number) => Math.tan((deg * Math.PI) / 360);
+    const fullAng = (t: number) => (2 * Math.atan(t) * 180) / Math.PI;
+    // the slider is the vertical fov at 16:9; that fixes the horizontal
+    const h = fullAng(halfTan(this.settings.fovBase) * POV_REF_ASPECT);
+    let v = fullAng(halfTan(h) / aspect);
+    // a tall frame must not become a fisheye...
+    v = Math.min(v, this.settings.fovBase * POV_V_CAP);
+    // ...and a wide one must not become a letterbox slit, up to the point
+    // where propping the vertical up would push the horizontal past the clip
+    return Math.max(v, Math.min(POV_V_FLOOR, fullAng(halfTan(POV_H_CEIL) / aspect)));
   }
   mirror = true;
   mmap = true;
@@ -1035,6 +1107,20 @@ export class Game {
     if (k === "k") {
       this.testMode = !this.testMode;
       this.ui.toast("TEST MODE " + (this.testMode ? "ON" : "OFF"));
+    }
+    /* A/B the imported exterior body against the procedural one, the same way
+       J does for the dash. Only visible in the chase cameras — the dashcam POV
+       hides the whole exterior group, this body included — so the toast is the
+       only feedback there is from inside the car. U because it is free and it
+       sits with J and K on the same hand. */
+    if (k === "u") {
+      const b = this.rig.bodyModel;
+      if (!b) this.ui.toast("NO IMPORTED BODY");
+      else {
+        this.bodyImported = !this.bodyImported;
+        b.setActive(this.bodyImported);
+        this.ui.toast("BODY " + (this.bodyImported ? "IMPORTED" : "PROCEDURAL"));
+      }
     }
     if (k === "h") this.ui.helpRequest();
     if (k === "x") {
@@ -1794,6 +1880,10 @@ export class Game {
        splice's pure z-translation leaves the whole frame unchanged. y stays
        0: the deck's own ±5 m grade must not bob the horizon. */
     sky.backdrop.position.set(car.x, 0, car.z);
+    // aurora rides the same day/fog curve as the rest of the backdrop glow;
+    // the cloud deck over it is there at any hour and only shifts palette
+    sky.aurora?.update(now, f, fogMultiplier(this.settings.fog));
+    sky.clouds?.update(now, f, fogMultiplier(this.settings.fog));
     sky.starMat.opacity = 0.8 * (1 - f);
     sky.moonMat.opacity = 0.95 * (1 - f);
     for (const m of this.mats.winMats) {
@@ -2202,7 +2292,9 @@ export class Game {
     // narrow section cannot invert the quad
     const carpetHW = Math.max(2.4, this.cor.halfWidth(car.z + carpetZ) - 0.4);
     /* POV-only lateral widening. The wash is the same metres of road in every
-       view, but POV_HFOV is 105 deg — at 20 m ahead that frame spans ~52 m of
+       view, but the POV lens is 89-112 deg horizontal at 16:9 depending on
+       where the Field of view slider sits — at 20 m ahead that frame spans
+       40-60 m of
        road width, where a ~60 deg chase view spans ~23 m. So the identical
        13 m wedge fills about a quarter of the POV frame against over half of a
        chase frame, and reads as too narrow purely because a wide-angle lens
@@ -2739,17 +2831,14 @@ export class Game {
         -this.rig.bodyG.rotation.z + clamp(car.u * car.r * 0.0035, -0.06, 0.06) + this.head.roll;
     }
     const kickM = this.camMode === CAM_CHASE ? 0.18 : this.camMode === CAM_HOOD ? 0.6 : 1;
-    /* The dashcam runs a fixed lens: no speed FOV kick (a bracket-mounted
-       camera has no zoom, and the kick is a driver-sensation cue, not an
-       optical one) and no user FOV preference either. 105 deg horizontal at
-       16:9 works out at ~72.5 vertical / ~112 diagonal. */
+    /* The dashcam still runs a FIXED lens in the sense that matters: no speed
+       FOV kick, because a bracket-mounted camera has no zoom and the kick is a
+       driver-sensation cue rather than an optical one. What it no longer
+       ignores is the user's own setting — povFov() turns the slider into the
+       lens, once per frame, per aspect. */
     const fovT =
       this.camMode === CAM_POV
-        ? clamp(
-          (2 * Math.atan(Math.tan((POV_HFOV * Math.PI) / 360) / this.camera.aspect) * 180) /
-          Math.PI,
-          62, 100
-        )
+        ? this.povFov(this.camera.aspect)
         : this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
     if (Math.abs(this.camera.fov - fovT) > 0.25) {
       this.camera.fov = fovT;
@@ -3018,9 +3107,13 @@ export class Game {
     this.post.setSpeed(Math.abs(this.car.u) * 3.6);
     // the extreme degrade is a property of the camera, not a user filter — the
     // V-key `grade` below stays independent and keeps driving the mild look.
-    // Both dashcam passes are desktop-tier only: on mobile the POV camera
-    // still works as a clean hard-mounted view, it just skips the half-res
-    // degrade chain (and the forced frame blend that rides along with it).
+    // tierCaps.dashcam is true on EVERY tier (settings.ts: the POV filter is
+    // core to the game's look, a user call), so the gate below only ever fires
+    // if a future tier turns it off. An earlier comment here claimed both
+    // dashcam passes were desktop-only and that mobile got a clean
+    // hard-mounted view instead; that has not been true since the cap was
+    // opened up, and reasoning about the mobile POV frame from it leads
+    // straight to the wrong conclusion.
     this.post.setDashcamPov(this.camMode === CAM_POV && this.tierCaps.dashcam);
     this.post.process({
       // inside the tunnel the eye adapts to a much darker box: lift exposure
@@ -3038,6 +3131,11 @@ export class Game {
           ? clamp((Math.abs(this.car.u) * 3.6 - 70) / 170, 0, 0.42)
           : 0,
       time: now,
+      // the dashcam POV's frame blend is an exposure TIME, so it needs the
+      // frame delta to stay 40 ms at any frame rate (post.ts POV_MB_TAU).
+      // Note this path runs on mobile even though tierCaps.mblur is false
+      // there — POV forces the blend on regardless of the setting.
+      dt,
     });
     this.perfCheck(performance.now() - t0, dt);
   };

@@ -199,8 +199,15 @@ texture — and none of it ships as authored. `tools/build-cockpit.mjs` keeps
 only what that camera can physically see and discards the rest: the bodywork,
 wheels, seats, rear cabin and every material that went with them, then the
 remaining geometry is clipped triangle-by-triangle to the POV frustum and the
-surviving textures are resized to 512 px. What ships is 341,161 triangles and
-18 textures — 10.4% of the source geometry and under 1% of its texture memory.
+surviving textures are resized to 512 px and packed down (Uint16 indices, no
+tangents, byte normals, mozjpeg maps). What ships is 372,690 triangles and 18
+textures — 11.4% of the source geometry and under 1% of its texture memory.
+
+The clip frustum is sized to the WIDEST view the Field of view slider can ask
+for (118 deg horizontal, 100 deg vertical, plus margin), not to one fixed lens,
+because the dashcam now honours that slider. The `mirror` role is deliberately
+exempt and stays cut to the old 105 deg frame: it is never rendered, only used
+as the bounding box that anchors the live mirror glass.
 
 Modified further at runtime (`game/cockpitmodel.ts`): the model's painted-on
 instrument cluster is hidden in favour of a live one, and its centre screen is
@@ -210,12 +217,37 @@ The 386 MB source download is not in this repository. It is listed in
 `public/assets-staging/CATALOG.md` with the URL and licence above; rebuild the
 shipped GLB with:
 
-    node tools/build-cockpit.mjs <source.glb> --out volvo-s90 --tex 512
+    node --max-old-space-size=12288 tools/build-cockpit.mjs <source.glb> \
+      --out volvo-s90 --tex 512
 
 Sibling asset from the same author's page: the description links a Google
 Drive `.blend` bundle offered as a higher-quality alternative to Sketchfab's
 own export. It is not used here — the shipped cut comes from the Sketchfab
 glTF export.
+
+## Player car body — `public/models/player/volvo-s90-body-lite.glb`
+
+Same donor, same author, same CC BY 4.0 licence as the cockpit above — see that
+section for the source URL. This is the other half of the car: the exterior
+shell the chase cameras see, which `tools/build-cockpit.mjs` throws away.
+
+Built by `tools/build-car-body.mjs` (meshoptimizer edge-collapse simplification
+under a per-part budget, textures down to 128 px webp), then cut down further:
+the donor's wheels, tyres, brake discs, calipers and hubs are stripped
+entirely, because the game keeps its own — they steer and spin, and the donor's
+would not. That is 119k of its 207k triangles gone for nothing lost. Re-encoded
+from Draco to plain meshopt so no decoder file has to be served: 87,962
+triangles, 0.48 MB on disk.
+
+Not the default body. `game/bodymodel.ts` loads it inactive and the U key A/Bs
+it against the procedural one; only kaze (`BODY_MODEL` in `game/player.ts`) has
+one, and it is invisible in the shipping DASHCAM view, which hides the exterior
+group entirely. Fitted to kaze's shell box by a non-uniform scale at runtime.
+
+Rebuild the pre-strip source with:
+
+    node --max-old-space-size=12288 tools/build-car-body.mjs <source.glb> \
+      --out volvo-s90-body-lite --tris 300000 --tex 128 --compress draco
 
 ## Sourcing notes / other candidates evaluated but not shipped
 

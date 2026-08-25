@@ -226,6 +226,17 @@ export interface GameSettings {
   mmap: boolean;
   /** manual render-tier override; "auto" defers to device detection */
   tierOverride: TierOverride;
+  /** Test mode: drive on testDriveSpec() — extra grip, brakes and power (the
+      K key in game, and a row in the settings panel). A testing aid rather
+      than a difficulty setting, but persisted like any other toggle so it
+      survives a reload; game/engine.ts reads it straight off here. */
+  testMode: boolean;
+  /** the rival pace car is running (see the RIVAL block in game/traffic.ts) */
+  rival: boolean;
+  /** ...and whether it indicates its lane changes. Off by default: a car that
+      cuts through traffic and still signals is a contradiction, and the
+      ABSENCE of a blinker is characterisation the player reads immediately. */
+  rivalSignals: boolean;
 }
 
 export interface Profile {
@@ -259,6 +270,12 @@ export const defaultSettings = (): GameSettings => ({
   rain: false,
   mmap: true,
   tierOverride: "auto",
+  /* A mode, not a difficulty: off until it is switched on, from either the
+     start menu or the settings panel. Off costs one boolean test per frame —
+     no pool slot is reserved and no controller runs (game/traffic.ts). */
+  rival: false,
+  rivalSignals: false,
+  testMode: false,
 });
 
 export const defaultProfile = (): Profile => ({
@@ -313,7 +330,7 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
  *  turn them off instead of ignoring the bad value. */
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
-  "autoTime", "rain", "mmap",
+  "autoTime", "rain", "mmap", "rival", "rivalSignals", "testMode",
 ] as const;
 
 /** Non-negative integer, or the fallback. For the persisted array indices whose
@@ -393,6 +410,31 @@ export function worldTierCaps(): TierCaps {
     worldCaps = TIER_CAPS.desktop;
   }
   return worldCaps;
+}
+
+/* ---------------- rival mode, live ----------------
+ *
+ * game/traffic.ts owns the rival car, but Traffic is constructed by the engine
+ * and handed only a density number per frame — it has no route to GameSettings
+ * at all. That is the same problem worldTierCaps() above solves for the world
+ * builders ("cannot reach the engine instance"), so it gets the same solution:
+ * a module-level live value the UI syncs on every settings change and the
+ * traffic update reads once a frame.
+ *
+ * Deliberately NOT wired through Game.applySettings: engine.ts needs no edit
+ * for this feature, and keeping it that way means the rival can never be the
+ * reason a camera, a light or a post pass moves.
+ */
+const rivalLive = { on: false, signals: false };
+
+/** Live rival-mode flags. Read-only for callers — mutate via syncRivalMode. */
+export const rivalMode = () => rivalLive;
+
+/** Push a settings object into the live flags. Safe to call every frame; the
+ *  UI calls it on every settings change and once at startup. */
+export function syncRivalMode(s: GameSettings) {
+  rivalLive.on = s.rival === true;
+  rivalLive.signals = s.rivalSignals === true;
 }
 
 export function saveProfile(p: Profile) {
