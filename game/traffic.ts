@@ -55,16 +55,30 @@ import type { NpcHit } from "./collide";
    whose bodywork can plausibly be any colour are recoloured in the shader
    from the albedo texel instead. See PAINT_TINT. */
 
+/* W is deliberately 1 cm UNDER the visible bodyshell, and must be kept in sync
+   with the per-style W in tools/build-orchids-models.mjs — that table is the
+   source of truth, because each GLB is non-uniformly fitted so its whole
+   bounding box (mirrors included) lands on exactly those numbers. Do not
+   "correct" these back up.
+
+   They used to run 8 cm OVER the visible width, which is what made traffic
+   feel like it sideswiped through thin air: player and NPC half-widths meet
+   in collidePlayer()'s OBB test, so a crash fired ~6 cm before the two bodies
+   touched on screen. Under-sizing by 1 cm is the other half of the same idea
+   as the player's own half-width in player.ts — a gap that looks clear IS
+   clear, with a hair of leeway rather than a phantom margin.
+
+   L, wr, wz and mass are unrelated to this and are left alone. */
 const TYPE_DIM: Record<string, { L: number; W: number; wr: number; wz: number; mass: number }> = {
-  hybrid: { L: 4.54, W: 1.84, wr: 0.32, wz: 1.4, mass: 1400 },
-  sedan: { L: 4.44, W: 1.87, wr: 0.32, wz: 1.37, mass: 1380 },
-  compact: { L: 3.94, W: 1.79, wr: 0.30, wz: 1.24, mass: 1080 },
-  suv: { L: 4.72, W: 1.98, wr: 0.36, wz: 1.46, mass: 1950 },
-  taxi: { L: 4.44, W: 1.87, wr: 0.32, wz: 1.37, mass: 1380 },
-  police: { L: 4.44, W: 1.87, wr: 0.32, wz: 1.37, mass: 1450 },
-  van: { L: 4.64, W: 1.86, wr: 0.31, wz: 1.5, mass: 1750 },
-  truck: { L: 6.3, W: 2.1, wr: 0.42, wz: 2.3, mass: 4200 },
-  bus: { L: 9.4, W: 2.36, wr: 0.44, wz: 3.4, mass: 9000 },
+  hybrid: { L: 4.54, W: 1.75, wr: 0.32, wz: 1.4, mass: 1400 },
+  sedan: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1380 },
+  compact: { L: 3.94, W: 1.70, wr: 0.30, wz: 1.24, mass: 1080 },
+  suv: { L: 4.72, W: 1.89, wr: 0.36, wz: 1.46, mass: 1950 },
+  taxi: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1380 },
+  police: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1450 },
+  van: { L: 4.64, W: 1.77, wr: 0.31, wz: 1.5, mass: 1750 },
+  truck: { L: 6.3, W: 2.09, wr: 0.42, wz: 2.3, mass: 4200 },
+  bus: { L: 9.4, W: 2.25, wr: 0.44, wz: 3.4, mass: 9000 },
 };
 
 /* Town/side-street traffic is parked for now at the user's request: the whole

@@ -738,7 +738,17 @@ export function buildPlayerCar(
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
     beamCarpet, beamCarpetMat, beamCarpetG: carpetG,
-    halfW: P.W / 2 + 0.02,
+    /* 1 cm under the visible bodyshell, matching the rule TYPE_DIM in
+       traffic.ts now follows on the NPC side: the two half-widths meet in
+       collidePlayer()'s OBB test, so padding either one makes a crash fire
+       before the bodies touch on screen. The flanks land on |x| = W/2 exactly
+       (see HULL_SKIN in carshape.ts), so W/2 - 0.005 is the visible edge less
+       a hair of leeway. The door mirrors sit further out still, at W/2 + 0.09,
+       and are deliberately outside the box — a mirror that passes through is
+       the forgiving direction and is what folding mirrors do anyway.
+       halfL keeps its pad: nose-to-tail contact has no phantom-sideswipe
+       problem, and shortening it would let the nose enter a wall. */
+    halfW: P.W / 2 - 0.005,
     halfL: L2 + 0.02,
     dispose(sceneRef: THREE.Scene) {
       sceneRef.remove(carGroup);
