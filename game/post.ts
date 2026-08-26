@@ -1131,17 +1131,18 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.mbMat.uniforms.uPanStr.value[i] = str;
       this.povMat.uniforms.uPanStr.value[i] = str;
     }
-    /* The dashcam's frame blend USED to be forced on here ("|| pov"), on the
-       reasoning that the smear is part of the camera rather than a quality
-       option. That reasoning is defensible but it made the Motion blur
-       checkbox a lie in the one view the game is actually played in: turning
-       it off changed the chase camera and nothing else, so a player who did
-       not want smear had no way to say so. Reported twice.
+    /* `|| pov` is STRUCTURAL, not a strength — do not remove it to disable the
+       dashcam smear. The block it gates ends with `cur = this.mbRT`, and the
+       POV degrade below consumes `cur` as its input ("the blended frame is the
+       INPUT to the degrade, not the output"). Skipping the block leaves the
+       degrade sampling a stale target and histValid unset, and the dashcam
+       tears itself apart. That is exactly what happened when this was first
+       switched to a bare `opts.mblur > 0.001`.
 
-       Now the setting governs both. The 40 ms exposure (POV_MB_TAU) is still
-       the default and still what the night look was authored around — this
-       only means it can be switched off. */
-    const doMbSetting = opts.mblur > 0.001;
+       To turn the dashcam smear OFF, zero the blend AMOUNT instead — see `mb`
+       below. The pass still runs, the chain stays intact, and mixing by 0 is
+       a copy. */
+    const doMbSetting = opts.mblur > 0.001 || pov;
     const dash = !!opts.grade;
     // Peripheral (fovea) blur is the same trick the dashcam corners already
     // sell via the soft/chroma-bleed mix, so skip it there to avoid stacking
@@ -1195,8 +1196,14 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // the whole point (the mobile tiers run this path even with mblur off,
       // because POV forces doMbSetting on).
       const povDt = Math.min(POV_MB_DT_MAX, Math.max(POV_MB_DT_MIN, opts.dt));
+      /* POV honours the setting by AMOUNT, not by skipping the pass. With
+         motion blur off the retention is 0, which makes the blend a straight
+         copy of the current frame — no smear, and the degrade downstream still
+         gets the target it expects. This is the supported way to have a
+         dashcam with no exposure drag; see the doMbSetting note above for what
+         happens if you try to do it by skipping. */
       const mb = pov
-        ? Math.exp(-povDt / POV_MB_TAU)
+        ? (opts.mblur > 0.001 ? Math.exp(-povDt / POV_MB_TAU) : 0)
         : doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
       this.mbMat.uniforms.tCur.value = cur.texture;
       this.mbMat.uniforms.tPrev.value = this.prevRT.texture;
