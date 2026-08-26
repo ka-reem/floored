@@ -162,6 +162,12 @@ export interface CarSpec {
   phys: PhysicsSpec;
   stats: { speed: number; accel: number; grip: number; handling: number }; // 0..1 for UI bars
   cockpitAccent: number;
+  /** In the garage, but not driveable yet: the card renders locked with a
+   *  COMING SOON badge and nothing can select it. The spec below stays whole
+   *  and untouched — the card still draws its own art from `shell` — so
+   *  putting a car back on the roster is deleting this one line. getCar()
+   *  treats a locked id exactly like an unknown one; see the note there. */
+  comingSoon?: true;
 }
 
 /** Paint system, in the automotive sense:
@@ -217,6 +223,7 @@ export const CARS: CarSpec[] = [
   },
   {
     id: "shirayuki",
+    comingSoon: true,
     name: "SHIRAYUKI",
     jp: "白雪",
     blurb: "Executive sedan. Soft, stable, quietly quick.",
@@ -237,6 +244,7 @@ export const CARS: CarSpec[] = [
   },
   {
     id: "tanuki",
+    comingSoon: true,
     name: "TANUKI KEI",
     jp: "狸",
     blurb: "660cc of pure alleyway agility. The town is its home turf.",
@@ -257,6 +265,7 @@ export const CARS: CarSpec[] = [
   },
   {
     id: "okami",
+    comingSoon: true,
     name: "OKAMI TOURER",
     jp: "狼",
     blurb: "AWD estate. Plants all four paws and launches into the rain.",
@@ -278,4 +287,38 @@ export const CARS: CarSpec[] = [
   },
 ];
 
-export const getCar = (id: string) => CARS.find((c) => c.id === id) || CARS[0];
+/** The cars the player may actually drive, in roster order. */
+export const PLAYABLE_CARS = CARS.filter((c) => !c.comingSoon);
+
+/** Where every bad or locked car id lands. Derived rather than hardcoded to
+ *  "kaze" so that unlocking or reordering the roster cannot leave a stale
+ *  default pointing at a car that is no longer first — or no longer playable.
+ *  `|| CARS[0]` only matters if every car is ever marked comingSoon, which
+ *  would be a bug; falling back to a driveable car beats crashing on load. */
+const DEFAULT_CAR: CarSpec = PLAYABLE_CARS[0] || CARS[0];
+export const DEFAULT_CAR_ID = DEFAULT_CAR.id;
+
+/** Raw lookup that IGNORES the lock — for the garage art and card copy, which
+ *  have to draw a COMING SOON car as itself rather than as the fallback.
+ *  Never hand the result to the engine; use getCar() for anything driveable. */
+export const carById = (id: string): CarSpec | undefined =>
+  CARS.find((c) => c.id === id);
+
+/** Is this an id the player is allowed to drive? game/settings.ts uses it to
+ *  scrub a persisted carId on load. */
+export const isPlayableCar = (id: string): boolean => {
+  const c = carById(id);
+  return !!c && !c.comingSoon;
+};
+
+/** DRIVEABLE lookup. A locked id falls back exactly like an unknown one: a
+ *  profile written while the roster was four cars long can still hold
+ *  carId:"tanuki", and the engine must never boot into a car the garage
+ *  refuses to select. This is the downstream half of that guard — the profile
+ *  loader scrubs the stored value too (game/settings.ts, loadProfile), for the
+ *  same belt-and-braces reason the fovBase clamp in engine.ts spells out: a
+ *  downstream clamp alone leaves the bad value in storage. */
+export const getCar = (id: string): CarSpec => {
+  const c = carById(id);
+  return c && !c.comingSoon ? c : DEFAULT_CAR;
+};

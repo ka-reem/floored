@@ -1,3 +1,5 @@
+import { DEFAULT_CAR_ID, isPlayableCar } from "./carspecs";
+
 export type SpeedUnits = "mph" | "kmh";
 export type FogLevel = "off" | "light" | "medium" | "heavy";
 
@@ -280,7 +282,7 @@ export const defaultSettings = (): GameSettings => ({
 
 export const defaultProfile = (): Profile => ({
   settings: defaultSettings(),
-  carId: "kaze",
+  carId: DEFAULT_CAR_ID,
   paintIx: 0,
   seed: 1987,
   /* DASHCAM. The POV camera is the view this game is played in — AGENTS.md is
@@ -379,6 +381,15 @@ export function loadProfile(): Profile {
        with the consumers, so an overshoot is still theirs to wrap. */
     prof.paintIx = normIx(prof.paintIx, base.paintIx);
     prof.camMode = normIx(prof.camMode, base.camMode);
+    /* The roster can SHRINK under a saved profile: a car that was driveable
+       when this entry was written may since have been marked comingSoon, and
+       the stored id would boot the engine straight into a locked car. This is
+       the same class of hole as the stale fovBase that outlived a lowered
+       slider maximum, and it gets the same two-sided fix — getCar() falls back
+       downstream, and the stored value is scrubbed here so the next save does
+       not carry it forward. */
+    if (typeof prof.carId !== "string" || !isPlayableCar(prof.carId))
+      prof.carId = DEFAULT_CAR_ID;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     return prof;
   } catch {

@@ -437,6 +437,7 @@ canvas.game {
   margin: 14px 0;
 }
 .carCard {
+  position: relative; /* anchors .soonBadge */
   border: 1px solid rgba(120, 145, 200, 0.25);
   border-radius: 12px;
   padding: 12px 14px;
@@ -446,6 +447,39 @@ canvas.game {
 }
 .carCard:hover {
   border-color: rgba(140, 180, 255, 0.6);
+}
+
+/* COMING SOON. The roster is down to one driveable car; the rest keep their
+   full spec and their live-rendered art and are shelved rather than deleted.
+   Dim the CONTENTS, not the card — opacity on .carCard would take the badge
+   down with everything else, and the badge is the one thing that has to stay
+   legible. */
+.carCard.locked {
+  cursor: default;
+  background: rgba(14, 17, 28, 0.55);
+}
+.carCard.locked:hover {
+  border-color: rgba(120, 145, 200, 0.25); /* no hover affordance on a dead card */
+}
+.carCard.locked > *:not(.soonBadge) {
+  opacity: 0.42;
+  filter: saturate(0.2);
+}
+.carCard.locked .statBar i {
+  background: linear-gradient(90deg, #56607e, #7d8aa8);
+}
+.soonBadge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(160, 185, 240, 0.4);
+  background: rgba(8, 11, 20, 0.85);
+  color: #cddaf5;
+  font-size: 9px;
+  letter-spacing: 0.14em;
 }
 .carCard.sel {
   border-color: #6f9dff;

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { buildPlayerCar } from "./player";
-import { getCar } from "./carspecs";
+import { carById, getCar } from "./carspecs";
 import { envFaceCanvas, glowTexF } from "./textures";
 
 /* Offscreen studio renders of the player car rigs for the garage UI.
@@ -65,7 +65,10 @@ export function carPreviewURL(carId: string, paintHex: number): string {
   if (hit) return hit;
 
   const st = getStudio();
-  const spec = getCar(carId);
+  /* carById, not getCar: this renders the GARAGE CARD, and a COMING SOON car
+     has to be drawn as itself. getCar() would resolve every locked id to the
+     fallback car and put four identical shots on the shelf. */
+  const spec = carById(carId) || getCar(carId);
   /* "mobile-base" purely because it is the tier that configures no donor dash.
      This shot is rendered and read back SYNCHRONOUSLY on the next line and the
      rig is disposed immediately after, so an imported dash could never arrive

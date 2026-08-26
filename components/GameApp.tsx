@@ -305,8 +305,7 @@ export default function GameApp() {
               <b>X</b><span>minimap</span>
               <b>N</b><span>reset to nearest road</span>
               <b>H</b><span>this help screen</span>
-              <b>J</b><span>dash: imported / procedural (A/B)</span>
-              <b>U</b><span>body: imported / procedural (A/B, chase cameras only)</span>
+              <b>J</b><span>imported Volvo dash + body / the procedural car (A/B)</span>
               <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
               <b>P</b><span>in-dash music: play / pause</span>
               <b>, / .</b><span>previous / next piece</span>
@@ -448,7 +447,10 @@ function CarPreview({ carId, paintHex }: { carId: string; paintHex: number }) {
 }
 
 function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
-  const [carId, setCarId] = useState(game.carId);
+  /* Resolved through getCar rather than taken raw: an engine still carrying a
+     locked id from an old profile would otherwise light up a COMING SOON card
+     as the current selection. */
+  const [carId, setCarId] = useState(() => getCar(game.carId).id);
   const [paintIx, setPaintIx] = useState(game.paintIx);
   const sel = (id: string, pi: number) => {
     setCarId(id);
@@ -461,30 +463,42 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
         <h2>GARAGE</h2>
         <div className="jp2">車庫 — pick your machine</div>
         <div className="garageCars">
-          {CARS.map((c) => (
-            <div
-              key={c.id}
-              className={"carCard" + (carId === c.id ? " sel" : "")}
-              onClick={() => sel(c.id, paintIx)}
-            >
-              <CarPreview carId={c.id} paintHex={PAINTS[paintIx % PAINTS.length].hex} />
-              <h3>{c.name} <span style={{ opacity: 0.6 }}>{c.jp}</span></h3>
-              <div className="carJp">{c.blurb}</div>
-              {(
-                [
-                  ["speed", c.stats.speed],
-                  ["accel", c.stats.accel],
-                  ["grip", c.stats.grip],
-                  ["agility", c.stats.handling],
-                ] as const
-              ).map(([label, v]) => (
-                <div className="statRow" key={label}>
-                  <span>{label}</span>
-                  <div className="statBar"><i style={{ width: `${v * 100}%` }} /></div>
-                </div>
-              ))}
-            </div>
-          ))}
+          {CARS.map((c) => {
+            /* A locked car keeps its whole card — the live-rendered shot, the
+               name, the blurb, the bars — and loses only the ability to be
+               picked. sel() is the sole route to game.setCar(), so dropping
+               the handler is the whole lock; the dimming is just how it reads.
+               The stat bars stay (greyed) because they are what the card is
+               teasing, and because a card without them would sit at a
+               different height and break the grid row it shares with KAZE. */
+            const locked = !!c.comingSoon;
+            return (
+              <div
+                key={c.id}
+                className={"carCard" + (locked ? " locked" : carId === c.id ? " sel" : "")}
+                onClick={locked ? undefined : () => sel(c.id, paintIx)}
+                aria-disabled={locked || undefined}
+              >
+                {locked && <span className="soonBadge">COMING SOON</span>}
+                <CarPreview carId={c.id} paintHex={PAINTS[paintIx % PAINTS.length].hex} />
+                <h3>{c.name} <span style={{ opacity: 0.6 }}>{c.jp}</span></h3>
+                <div className="carJp">{c.blurb}</div>
+                {(
+                  [
+                    ["speed", c.stats.speed],
+                    ["accel", c.stats.accel],
+                    ["grip", c.stats.grip],
+                    ["agility", c.stats.handling],
+                  ] as const
+                ).map(([label, v]) => (
+                  <div className="statRow" key={label}>
+                    <span>{label}</span>
+                    <div className="statBar"><i style={{ width: `${v * 100}%` }} /></div>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
         </div>
         <div className="paintRow">
           {PAINTS.map((p, i) => (
@@ -657,7 +671,7 @@ function SettingsPanel({
         )}
         <Row label={`Field of view — ${s.fovBase}°`}>
           <input
-            type="range" min={58} max={95} value={s.fovBase}
+            type="range" min={58} max={100} value={s.fovBase}
             onChange={(e) => upd((x) => (x.fovBase = +e.target.value))}
           />
         </Row>
