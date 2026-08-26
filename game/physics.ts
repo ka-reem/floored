@@ -5,6 +5,80 @@ import { BRAKE_F, STEER_AY, type PhysicsSpec } from "./carspecs";
    transfer, friction ellipse, ABS, TC and slope forces. Ported from v2 and
    parameterised per car; AWD splits drive torque across both axles. */
 
+/* ---- Arcade (test mode) steering feel ---------------------------------
+   Test mode multiplies grip by 2.8 (carspecs.ts, testDriveSpec) but three
+   constants in THIS file were sized for a 1.0-grip road car and do not scale
+   with it, so the car ends up with F1 tyres and a saloon's idea of how much
+   of them it is allowed to use. These are those constants. Every one is read
+   ONLY behind `opts.arcade`, and each non-arcade path still uses its original
+   literal inline, so nothing in here can move normal driving.
+
+   The important structural point is `brakeFade`. e2e0fe0 established, with a
+   trace, that anything which hands the car MORE steering authority while it
+   is braking brings back the trail-braking spin — the rear axle is unloaded
+   exactly then, and extra front lock is what tips it over. So both authority
+   knobs below are faded back to their stock road-car values by the brake
+   pedal, and are only at full value off the brake. Turn-in and a held
+   high-speed corner get the arcade numbers; the moment the pedal goes down
+   the car is governed exactly as it is today. Measured, this is the
+   difference between "no new spins on any car" and "spins tanuki at
+   150 km/h" — see test/steer-response-sim.mjs.
+
+   Live on the console as `window.__arcadeSteer` (same pattern as
+   __povMount / __aurora): these are read fresh every physics step, so
+   assigning to them retunes the car between one corner and the next with no
+   rebuild. test/steer-response-sim.mjs sweeps the same object headlessly. */
+export const ARCADE_STEER = {
+  /** Steer-travel rate, as a multiple of dmax (the travel available at this
+   *  speed) per second — so 1/rate is roughly lock-to-lock time, and it is
+   *  the same at every speed. Stock 6.5 is 0.154 s, which is SLOWER than the
+   *  keyboard filter that feeds it, i.e. it was quietly the floor on how
+   *  snappy the car could ever be made from the input side. Costs nothing in
+   *  stability (every trail-brake row is unchanged by it), so it is set well
+   *  clear of the input rather than just above it. */
+  rate: 12,
+  /** The lateral acceleration, m/s², that ESC believes the tyres can hold;
+   *  it ceilings the yaw rate ESC will allow at all. Stock 10.5 is ~1.07 g —
+   *  right for a road car, and less than half what a 2.8-grip arcade tyre
+   *  actually delivers, so ESC spends a steady 250 km/h corner fighting a car
+   *  that has not run out of grip. Faded to 10.5 by the brake, see above.
+   *  Only the yaw-rate half of ESC moves; the sideslip term (slipPad) is
+   *  untouched, and that is the half that catches a slide. Above ~26 the
+   *  kinematic term of the min() binds instead and it stops doing anything. */
+  escAy: 26,
+  /** Multiplier on spec.steerHi, the high-speed FLOOR under the steer
+   *  schedule — so this is the one lever that adds steering ANGLE, and it
+   *  adds it only where the schedule has bottomed out, i.e. only at speed.
+   *  That is what makes it safe where boosting steerAy was not: steerAy
+   *  scales a term that GROWS as the car slows, which is the runaway
+   *  e2e0fe0 measured at 0.50 -> 1.76 rad/s; a floor can only ever make the
+   *  schedule FLATTER, never steeper, so braking into a corner hands the
+   *  front less extra lock than it does today, not more. Faded out by the
+   *  brake as well, belt and braces. */
+  hiBoost: 2.4,
+  /** Yaw damping, N·m per rad/s, opposing rotation — a first-order lag on
+   *  how fast the car answers the wheel, so lowering it looks like an
+   *  obvious snap lever. It is not: measured, it buys under 1% more yaw and
+   *  costs a lot of trail-brake margin (700 spun the car at 150 km/h where
+   *  1450 held). Left at the stock 1450 on purpose; here as a knob, not as a
+   *  change. */
+  yawDamp: 1450,
+  /** How steeply escAy and hiBoost fade back to stock as the brake goes on:
+   *  fade = clamp(pedal * this, 0, 1). Must be steep. 50% pedal is the
+   *  position e2e0fe0 found spun every car, and 35% is worse still on some,
+   *  so anything that leaves the car boosted at a third of a pedal is the old
+   *  bug wearing a new name. At 5, a fifth of a pedal is already fully stock. */
+  brakeFade: 5,
+};
+
+/* Console handle. Wrapped because this module is imported during SSR, where
+   there is no window at all. */
+try {
+  (window as unknown as { __arcadeSteer?: unknown }).__arcadeSteer = ARCADE_STEER;
+} catch {
+  /* non-browser (SSR, tests) — the sim imports the object directly */
+}
+
 export interface CarState {
   x: number; y: number; z: number; h: number;
   u: number; v: number; r: number; delta: number;
@@ -283,6 +357,14 @@ export function stepPhysics(
   }
   car.thrEff = car.rev ? 0 : thr;
   car.brkEff = brk;
+  /* How much of the arcade steering-authority boost applies this step: 1 off
+     the brake, 0 with the pedal down. Both consumers (the ESC yaw ceiling and
+     the high-speed steer floor) share it so they can never disagree about
+     whether the car is braking. Always 0 outside test mode, which is what
+     keeps every stock number in this file exactly where it was. */
+  const arcadeAuth = opts.arcade
+    ? 1 - clamp(brk * ARCADE_STEER.brakeFade, 0, 1)
+    : 0;
 
   /* Auto-hold, as a modern automatic has: once stopped, stay stopped until the
      driver asks for something. Creep alone would crawl the car away at 8 km/h
@@ -493,9 +575,24 @@ export function stepPhysics(
      off entirely so deliberate drifts still work. */
   let escMz = 0, escDrag = 0, slipDemand = 0;
   if (opts.tcEnabled && hb < 0.3 && Math.abs(car.u) > 4) {
+    /* The second term is a grip ceiling: the yaw rate a tyre of this mu can
+       sustain at this speed. 10.5 m/s² is a road-car number, and an arcade
+       tyre holds nearly three times it — left alone, ESC caps a steady
+       250 km/h corner at 1.35 g while the tyres still have 3 g, which is
+       exactly the "it refuses to turn at speed" feel.
+
+       Raising it flat, however, hands the trail-brake spin straight back:
+       measured, escAy 18 applied at all times spun tanuki at 150 km/h on the
+       manoeuvre e2e0fe0 fixed. So it rides arcadeAuth back down to the stock
+       road-car number under brake, which is both the safe answer and the
+       honest one — a tyre spending its budget stopping genuinely has less
+       lateral ceiling left, and the friction ellipse a few lines up already
+       says so. Off the brake the car uses the grip it has; on the brake ESC
+       is exactly as tight as it is today. Stock keeps a flat 10.5. */
+    const escAy = lerp(10.5, ARCADE_STEER.escAy, arcadeAuth);
     const escRef = Math.min(
       Math.abs((car.u * Math.tan(car.delta)) / LWB),
-      (mu * 10.5) / Math.max(Math.abs(car.u), 4)
+      (mu * escAy) / Math.max(Math.abs(car.u), 4)
     );
     // yaw rate beyond what the steer angle asked for, and sideslip beyond the
     // ~9 deg a tidy car ever shows — either one alone can pitch you into a spin
@@ -531,7 +628,8 @@ export function stepPhysics(
     slopeF +
     car.v * car.r;
   const dv = (Fyf * Math.cos(car.delta) + Fyr) / M - car.u * car.r;
-  const dr = (LA * Fyf * Math.cos(car.delta) - LB * Fyr - car.r * 1450 + escMz) / IZ;
+  const yawDamp = opts.arcade ? ARCADE_STEER.yawDamp : 1450;
+  const dr = (LA * Fyf * Math.cos(car.delta) - LB * Fyr - car.r * yawDamp + escMz) / IZ;
   car.axS = lerp(car.axS, du, clamp(9 * dt, 0, 1));
   car.ayS = lerp(car.ayS, dv + car.u * car.r, clamp(9 * dt, 0, 1));
   car.u += du * dt;
@@ -560,12 +658,21 @@ export function stepPhysics(
      character. steerMax caps it at parking speed, steerHi is the high-speed
      floor so there is always some authority left. */
   const sp2 = Math.max(Math.abs(car.u), 1) ** 2;
-  const dmax = clamp(((spec.steerAy ?? STEER_AY) * LWB) / sp2, spec.steerHi, spec.steerMax);
+  /* Test mode lifts the FLOOR, never the ay term. The floor is the only part
+     of this schedule that can be raised without making it steeper: below the
+     speed where it binds it does nothing at all, and above that speed it
+     replaces a 1/u² curve with a constant, so the schedule gets FLATTER. That
+     is the opposite of the steerAy boost e2e0fe0 reverted, where slowing down
+     fed the front more and more lock until the yaw rate ran away. It also
+     rides arcadeAuth down under brake, so a car being slowed is never handed
+     the extra lock in the first place. */
+  const steerHi = spec.steerHi * lerp(1, ARCADE_STEER.hiBoost, arcadeAuth);
+  const dmax = clamp(((spec.steerAy ?? STEER_AY) * LWB) / sp2, steerHi, spec.steerMax);
   const target = input.st * dmax;
   // rate limit scales with the available travel so lock-to-lock takes about the
   // same time at any speed — a fixed rad/s limit was effectively infinite once
   // dmax shrank, making high-speed inputs step discontinuities
-  const rate = Math.max(dmax * 6.5, 0.1);
+  const rate = Math.max(dmax * (opts.arcade ? ARCADE_STEER.rate : 6.5), 0.1);
   car.delta += clamp(target - car.delta, -rate * dt, rate * dt);
 
   /* integrate pose */

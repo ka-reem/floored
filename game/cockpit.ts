@@ -68,6 +68,11 @@ export interface Cockpit {
   /** The live instrument cluster. Re-anchored onto the donor's binnacle rather
       than rebuilt: the needles are real geometry, not a texture. */
   clusterGroup: THREE.Group;
+  /** The five hand-placed window panes (front doors, rear doors, backlight).
+      Exposed so a donor cabin can hide them: they sit outside every merge
+      region, so the donor's "cabin" takeover does not reach them, and their
+      positions describe the PROCEDURAL cabin's openings only. */
+  windowGlass: THREE.Mesh[];
   /** The head unit's glass plane. Hidden when a donor supplies its own. */
   screenMesh: THREE.Mesh;
   /** The canvas behind that plane. Bound onto the donor's screen material so
@@ -1325,20 +1330,36 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const winGlassM = new THREE.MeshBasicMaterial({
     color: 0x9fc4ee, transparent: true, opacity: 0.07, depthWrite: false, side: THREE.DoubleSide,
   });
+  /* Collected rather than fire-and-forgotten, because a donor cabin has to be
+     able to turn them OFF. These five panes are hand-placed against the
+     PROCEDURAL cabin's window openings, and they are added straight to
+     interiorG rather than through put(), so they are in no merge region —
+     which means the donor taking over "cabin" does not hide them the way it
+     hides the procedural door cards. Left visible under the Volvo they hang in
+     its cabin at coordinates that no longer describe any opening, and the rear
+     pair in particular read as a flat pale square floating over the quarter
+     window. Reported exactly that way: "theres like a window pane its like
+     opaque square kinda random".
+
+     The donor brings its own glazing, so there is nothing to replace. */
+  const windowGlass: THREE.Mesh[] = [];
   for (const s of [-1, 1]) {
     const wgF = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.5), winGlassM);
     wgF.position.set(s * 0.86, 1.38, 0.32);
     wgF.rotation.y = (s * Math.PI) / 2;
     interiorG.add(wgF);
+    windowGlass.push(wgF);
     const wgR = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 0.44), winGlassM);
     wgR.position.set(s * 0.86, 1.36, -0.86);
     wgR.rotation.y = (s * Math.PI) / 2;
     interiorG.add(wgR);
+    windowGlass.push(wgR);
   }
   const wgB = new THREE.Mesh(new THREE.PlaneGeometry(1.35, 0.42), winGlassM);
   wgB.position.set(0, 1.34, -1.28);
   wgB.rotation.x = 0.42;
   interiorG.add(wgB);
+  windowGlass.push(wgB);
 
   /* ------------------------------------------- cluster (see dashboard.ts) */
 
@@ -1887,6 +1908,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     wiperA,
     wiperB,
     mirrorParts,
+    windowGlass,
     mirrorGlass: mirrorMesh,
     mirrorFrame,
     glassLight,

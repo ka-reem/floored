@@ -460,6 +460,11 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
       gp.visible = on ? !supplies.has(name) : true;
     }
     cockpit.screenMesh.visible = !on;
+    /* The procedural window panes go with the procedural cabin. They are
+       hand-placed against ITS openings and live outside every merge region, so
+       nothing else here hides them — under a donor they float as pale squares
+       in the middle of that car's glazing. The donor brings its own. */
+    for (const w of cockpit.windowGlass) w.visible = !on;
     for (const c of proceduralWheel) c.visible = !on;
     for (const p of wheelParts) p.visible = on;
     /* wheelGroup is the engine's handle and has to keep steering either way,
