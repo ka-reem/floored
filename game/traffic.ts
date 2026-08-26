@@ -699,58 +699,29 @@ const NUDGE = {
    NPC-vs-NPC interaction in this file — and is fully SOLID to the player
    (collide.ts needs no special case: it walks `npcs` and the rival is in it).
 
-   IT IS A CARROT, AND ITS PACE IS TIED TO YOURS. Per the design call: it
-   stays close enough to see, it goes slow when the player goes slow, and when
-   the player charges it leans on the throttle so they do not get past. That
-   is station-keeping — a rubber band, openly — and the honest risk with any
-   rubber band is that it reads as fake the moment the player notices their
-   throttle does not change the gap. Everything below is aimed at that one
-   problem, because the mechanism itself is four lines:
+   IT IS SIMPLY FASTER THAN YOU, AND YOU CHASE IT. That is the whole design
+   now, and it is deliberately smaller than what came before. It leads, it
+   drives quickly, and the player's job is to keep up.
 
-   · IT TRACKS A LAGGED PACE, NOT YOUR SPEEDOMETER. riv.pace eases toward the
-     player's speed over ~1.5 s, so it responds like a driver checking mirrors
-     rather than like a mirror. Matching instantly is what gives the game away.
+   WHAT IT DOES NOT DO, and this is the important half: it never blocks,
+   covers, defends or gets in the player's way. It has no idea where they are
+   laterally and picks its lane on traffic alone. Earlier versions defended the
+   pass and drifted back for close moments, and those two pulled against each
+   other constantly — one asked it to ease off, the other to prevent the very
+   thing easing off allows. Both are gone, along with the tuning tension.
 
-   · IT IS NEVER AT ONE GAP, AND THE RANGE IS THE POINT. riv.gapWant re-rolls
-     every 6-14 s across everything from sitting right on its bumper to a
-     BREAK out at 140-260 m. A single polite following distance is the most
-     detectable thing a pace car can do; the spread is what a rubber band has
-     to buy back.
-
-   · THE BEST MOMENT IS EARNED, NOT SCRIPTED. Bumper-to-bumper is a design
-     goal, not an edge case, and the generator for it is the HOLD-UP: the
-     rival gets genuinely stuck behind a truck it cannot phase past this
-     second, the player arrives on its bumper with its brake lights filling
-     the windshield, and sits there until it finds a way through. Then the
-     player has to thread the same pack it just walked through, and the gap
-     opens again. Clear road → it goes → it gets stuck → you are on it → it
-     slips away. Nothing in this controller is allowed to cut that short.
-
-   · IT HAS MOODS. riv.mood drifts over 0.93-1.10 on its own clock, so its
-     pace is never exactly a multiple of the player's.
-
-   · IT DEFENDS THE PASS, NOT THE APPROACH. The throttle response that stops
-     the player getting by fires only when they are BOTH inside defendAt AND
-     have pulled laterally out of its tyre tracks — i.e. actually going for a
-     move. Sit square on its bumper and it does nothing at all, which is what
-     keeps the close phase alive; pull out to go around and it leans on the
-     throttle. That is also just what a real defending driver does. Gating on
-     closing speed alone (which this did first) meant the rival ran away from
-     the player the moment they started to catch it, which is the exact
-     opposite of the thing being aimed for.
-
-   · IT LOSES TIME WHERE YOU CAN SEE WHY. A HOLD-UP drops it back into normal
-     leader perception for a couple of seconds and it gets genuinely stuck
-     behind a real car, brake lamps lit. It does not decide to wait for you.
-
-   RIVAL.top is an absolute ceiling under the player's ~82 m/s (295 km/h,
-   dashboard.ts), so a maxed-out car on a clear stretch can still just about
-   draw alongside. That crack is deliberate: it is the difference between hard
-   to pass and provably impossible, and the player who finds it has earned it.
-
-   It is unbeatable in the sense that there is no win state — no ram-kill, no
-   escape. It is NOT immovable: see applyImpact, where contact is a real shove
-   and slide rather than either a wreck or a wall.
+   THE ONE REAL TENSION LEFT is that "always faster" and "stays in sight" end
+   with a car that eventually disappears. Three soft, legible mechanisms hold
+   it near, in the order they should be reached for:
+     · IT EASES OFF WHEN IT IS A LONG WAY CLEAR (the lift in updateRival). One
+       direction only, slow-acting, and the only place its speed refers to the
+       player at all. Nothing ever pulls it FORWARD toward them, and nothing
+       responds to what they are doing this second — that is the thing that
+       reads as a leash, and it is not in this file.
+     · IT GETS GENUINELY HELD UP, occasionally, behind traffic it cannot get
+       past this second. Legible, honest, and not the norm.
+     · AND IT IS QUIETLY PUT BACK IN FRONT if it ever ends up hopelessly
+       behind and out of sight (see reseedBehind) — a backstop, not a crutch.
 
    The other half of the character is HOW IT GETS THROUGH TRAFFIC. It does NOT
    phase through it — an earlier build did, and a car sliding visibly through
@@ -777,348 +748,178 @@ const NUDGE = {
    does, and the player may well get past. That is the honest version, and it
    is the source of the best moments in the mode. */
 const RIVAL = {
-  /** Absolute ceiling, m/s. Now a shade OVER the player's ~82 rather than
-      under it, because the ceiling was binding exactly when the rival was
-      trying to close a gap it had lost to traffic — the one time it genuinely
-      needs to out-run the player. It only ever asks for this much while it is
-      behind where it wants to be (see gapUp); once it is back on station the
-      gap term goes to zero and it settles onto the player's own pace, so this
-      does not turn into a car that disappears up the road. */
-  top: 84,
-  /** Time constant on the pace it tracks the player at, seconds. The whole
-      difference between "a driver watching their mirrors" and "a mirror". */
+  /** Absolute ceiling, m/s — over the player's ~82 on purpose. It is meant to
+      be faster than them, not plausibly matched to them. */
+  top: 95,
+  /** Time constant on the lagged read of the player's pace, seconds. Only the
+      out-of-sight ease uses it now. */
   paceTau: 1.5,
-  /** Pace mood drifts in this range, on its own clock (see moodEvery). */
+  /** Its ambition drifts in this range, on its own slow clock, so its pace is
+      never an exact constant. */
   moodLo: 0.93, moodHi: 1.10,
-  /** Seconds between mood re-rolls, and how fast it slews to a new one. The
-      slew is deliberately slow: at 0.15/s the full 0.17 range crosses in about
-      a second, which at 50 m/s asks the car for 8 m/s² and leaves it
-      permanently chasing its own target (and permanently on the brakes). At
-      0.02/s the same swing takes ~8 s and costs about 1 m/s² — a mood, which
-      is what it is supposed to be, rather than a lurch. */
   moodEvery: [6, 14] as [number, number], moodRate: 0.02,
-  /** Target gap, metres. Rolled from one of three ranges rather than a single
-      band — see gapNearP/breakP below. NEAR is close enough to be looking at
-      its bumper; MID is the readable middle distance; a BREAK is a stint spent
-      well up the road.
 
-      The near end deliberately goes to a couple of car lengths. An earlier
-      version floored this at 35 m to stop the rival occluding the road the
-      player is threading — but at bumper-to-bumper, not being able to see past
-      it IS the tension, so occlusion is the feature and not the cost. It does
-      mean its brake lamps are the player's only warning at that range, which
-      is what makes the telegraphing rule below non-negotiable. */
-  gapNear: [4, 26] as [number, number],
-  gapMid: [26, 95] as [number, number],
-  breakLo: 140, breakHi: 260,
-  /** seconds between target-gap re-rolls */
-  gapEvery: [6, 14] as [number, number],
-  /** share of re-rolls that land in gapNear, and the share that are a BREAK;
-      the remainder is gapMid */
-  gapNearP: 0.4, breakP: 0.18,
-  /** Gap error → relative speed, and how much authority that has in each
-      direction (m/s).
+  /** Distance beyond which it starts easing off (m), and the span over which
+      that ease reaches full strength.
 
-      ASYMMETRIC, and this is the fix for "the ai car is literally so slow".
-      The target speed here is the PLAYER'S pace plus this correction, so the
-      correction is the rival's entire ability to be anywhere other than
-      exactly alongside. At the original ±7 it had almost none: respecting
-      traffic costs it ground continuously, 7 m/s could not win that ground
-      back, and it simply receded into the distance and stayed there. A car you
-      never see is not a rival, however good its lap time.
+      THIS IS THE ANSWER TO "IT'S SO SLOW", and it is a change of shape rather
+      than of numbers. Every earlier version eased whenever it was past a
+      target gap of a few tens of metres, so the player spent most of their
+      time watching it dawdle in front of them. Its sprint was already 2.3x the
+      flow speed — the WAITING was what read as slow.
 
-      Up is larger than down on purpose. Catching up is a thing it should do
-      decisively — that is the chase — while dropping back wants to stay gentle
-      or it reads as braking for no reason. Neither is a floor tied to the
-      player's throttle: both are driven by the GAP, so a player who drives
-      away is still driving away, they just have to keep doing it. */
-  /** Gap error → relative speed, and its authority each way (m/s).
-      gapDown is deliberately much smaller than gapUp. The target gap is often
-      only a few car lengths (see gapNear), and at 12 m/s of drop-back
-      authority the rival would fling itself backwards to reach it — which
-      threw away the lead it is supposed to keep, and left it unable to win it
-      back because traffic limits both cars equally. It should DRIFT back to a
-      small gap, and hurry to a big one. */
-  /** How hard being past its target gap lifts it (m/s of lift per metre over),
-      and the floor that lift may reach relative to the player's pace (m/s).
-      gapP is far larger than it was because it now acts on ONE side only — it
-      is a lift, not a two-way correction, so it can be decisive without ever
-      reading as a car being dragged along. */
-  gapP: 0.25, gapDown: 5,
-  /* ---- keeping the lead ----
+      So it does not ease AT ALL inside easeBeyond. Everything the player can
+      see is the car driving flat out. The ease exists only past the fog wall
+      (hideDist bottoms out at 260 m), which is exactly where a correction
+      cannot be perceived — the same principle that governs where this file
+      spawns and recycles all its other traffic.
 
-     The rival is always the car in front: the player can close right onto its
-     bumper and can never get by, but the gap does not stay large to achieve
-     that. Skill and pace carry most of it — the lane planning, the split
-     horizons, the gap authority above — but they cannot carry all of it, and
-     it is worth being precise about why rather than pretending. In dense
-     traffic the flow is a hard ceiling for BOTH cars: measured, the corridor
-     flows at ~21 m/s and neither the rival nor a player threading well beats
-     it by much. Two cars limited by the same traffic cannot be guaranteed to
-     stay in a particular order by driving skill, however good one of them is.
-     So there is a floor, and this is it.
+      The cost is accepted rather than hidden: it WILL sometimes be a speck, or
+      briefly gone. That is the trade this design now takes. */
+  easeBeyond: 240, easeSpan: 200,
+  /** How far under the player's pace that ease may reach, m/s. It has to go
+      UNDER rather than merely match, or the gap stops growing without ever
+      actually coming back. */
+  gapDown: 5,
 
-     It is built to be felt as little as possible:
-     · It only exists inside leadKeep metres. Beyond that the rival is on its
-       own merits entirely and the player closes freely.
-     · It RAMPS with how close the player is rather than clamping, so there is
-       no line where behaviour changes.
-     · It is a target, not a guarantee — traffic still limits what it can
-       actually do, so a player who catches it in a jam really can draw level.
-     · And `concede` above still applies: a pass that genuinely gets done is
-       let go for a few seconds before it comes back. That is deliberate. A
-       car that can never once be beaten reads as a wall; one that is beaten
-       for three seconds and then takes the place back reads as a driver. */
-  leadKeep: 14, leadMargin: 6,
-  /** How far the ramp extends BEHIND the player, as a multiple of leadKeep,
-      and the cap on the resulting boost.
-
-      Two-sided on purpose. A floor that only fires while the rival is already
-      in front defends a lead but can never regain one — measured, the rival
-      spent as little as 1% of a run ahead, because a single bad pack put it
-      behind and nothing there could bring it back. Traffic limits both cars
-      equally, so "get back in front" needs its own authority. */
-  leadBack: 2.5, leadBoostMax: 16,
-  /** How far BEHIND the player it may fall before it is quietly put back in
-      front, m — and where it reappears.
-
-      This is the answer to "what if it gets boxed in badly enough to lose the
-      lead". The three options were: let it clip (forbidden, and rightly), let
-      it grind back over several minutes at full ambition (which is what
-      happens now, and it is a long time to have no rival), or recycle it out
-      of sight. This file already answers that question everywhere else the
-      same way — the entire fleet is spawned and recycled only where the player
-      cannot see it happen, which is what hideDist and hidden() exist for.
-
-      320 m astern is past the fog wall for every fog setting (hideDist is
-      260-470 m) and far beyond what the mirror resolves, so nothing pops. It
-      is a genuine fallback rather than a crutch: with the ambition model above
-      it fires rarely, and every firing means the rival had a properly bad run,
-      not that the design needs it to keep up. */
-  reseedBehind: 320, reseedAhead: 110,
-  /** Slack around the target gap, m, inside which it does not correct at all —
-      a driver does not trim a 50 m gap to the metre. Measured effect in the
-      sim is a tighter gap distribution (it stops diving at the player when the
-      gap drifts a few metres under target); it did NOT reduce brake-lamp time,
-      which turned out to be the free-flow law's doing, not this term's. */
-  gapDead: 10,
-  /** Defence — the term that actually stops the player getting past. Fires
-      only inside defendAt AND once the player has pulled at least defendLat
-      out of the rival's line, i.e. is genuinely going for a move. Sitting
-      square behind it provokes nothing, which is what protects the
-      bumper-to-bumper phase; see the RIVAL block. */
-  defendAt: 18, defendLat: 1.2, defendGain: 1.3, defendMax: 9,
-  /** How far past it the player has to get before it concedes the place (m),
-      and for how long it then stops defending (s).
-
-      This is not generosity, it is the fix for a genuinely bad state. Without
-      it, a player quick enough to draw level sits at a gap that oscillates
-      around zero: the defence fires, they drop back a metre, it stops firing,
-      they edge ahead, it fires again — and since the rival is SOLID, the two
-      cars grind against each other for as long as it lasts. Conceding lets a
-      pass that was earned actually complete. It still comes back: the gap
-      term below is untouched and reels it in at up to gapRate. */
-  concedeAt: 6, concede: 4,
-  /* ---- staying out of other cars (see the three layers above) ---- */
-  /** Extra clearance, beyond the two half-lengths, that a lateral move demands
-      fore and aft before the rival will slide into that space (m). */
-  clearLon: 2.5,
-  /** ...and beyond the two half-widths, laterally (m). */
-  clearLat: 0.35,
-  /** The backstop's separation, again on top of the half-sums (m). Smaller
-      than the clearances above on purpose: this is the "should never happen"
-      limit, and making it larger than the move gate would have it shoving the
-      rival around in situations the gate already considers fine. */
-  sepLon: 0.6, sepLat: 0.1,
-  /** How many times the backstop may resolve in one frame. Being sandwiched
-      needs more than one pass; four covers everything the sim can produce. */
-  sepPasses: 4,
-  /** How far down the road the rival plans, m.
-
-      THIS IS WHERE ITS SPEED COMES FROM, and it was the binding constraint the
-      first time round. The shared perception pass every NPC uses stops at 70 m
-      — at 55 m/s that is 1.3 seconds of lookahead, which is not a quick driver,
-      it is a driver arriving at a wall with no time to plan. A fast driver's
-      whole advantage is seeing a long way down the road and being in the right
-      lane BEFORE the slow car matters. So the rival runs its own perception
-      over this horizon instead, and picks lanes against it. */
-  seeAhead: 240,
-  /** How far ahead it FOLLOWS, m — deliberately much shorter than it PLANS.
-
-      Splitting these two was not the original design and the A/B in
-      test/rival-sim.mjs is what forced it. Extending perception to 240 m and
-      letting the follow use it made the rival TIMID rather than smarter:
-      leader-in-path went 39% → 80% of frames, the following limit went from
-      setting the acceleration 23% of the time to 64%, and the median gap got
-      WORSE (−63 → −89 m). IDM does not ignore a distant leader — a slow car
-      100 m ahead with 12 m/s of closing speed pulls its acceleration down to
-      0.3 m/s² — so a long-sighted follow just lifts early for cars it was
-      never going to reach in that lane.
-
-      A quick driver does the opposite: they see a long way to CHOOSE A LANE,
-      and they only lift for what is genuinely close. So the horizon feeds
-      laneTime/bestLane, and the follow stays short and reactive. */
-  followSee: 95,
-  /** Seconds of advantage the lane it is already in gets in the lane
-      comparison, to stop it hunting between two near-equal lanes. In TIME, not
-      in metres: the scorer below is a time estimate, and the old
-      distance-plus-speed score could not tell a lane it would be stuck in from
-      one it would fly down — every lane had a car somewhere, the scores
-      bunched, and this bonus then pinned it in place. Measured: it wanted a
-      different lane on 11% of frames and changed lane 19 times in 4 minutes,
-      which is not a car threading traffic. */
-  laneStick: 0.35,
-  /** ...and the much larger bonus the current lane gets DURING a patience
-      spell. A hold-up used to stop the lane search outright, which made the
-      rival blind for 1.2-5 s at a stretch — and since hold-ups only fire while
-      it is AHEAD of the player, that blindness landed precisely when the
-      player was watching it. Being patient should mean it will not dart out
-      for a marginal gain, not that it stops looking: with this it still takes
-      a lane that is a clear second-and-a-half better, and still sits behind
-      the truck for anything less. */
-  laneStickHold: 1.6,
-  /** Under pressure — the player close behind, or already past — it stops
-      being sticky about lanes at all and takes any measurable gain.
-
-      This is the skill half of not being passed, and it is the half worth
-      having. A rival that is boxed in behind a truck while the player pulls
-      out and drives past cannot be saved by a throttle term: it has nowhere to
-      put the power. What it can do is refuse to be in that lane in the first
-      place once it can see an attack coming. Pressured, it re-picks with no
-      stay-put bonus and runs the urgent headway, which is exactly how a real
-      driver behaves when someone is filling their mirror. */
-  pressureAt: 45,
-  /** floor on a leader's speed in that estimate, m/s — a stopped car ahead
-      must score as slow, not as infinitely slow */
-  laneVMin: 3,
-  /* A lane it cannot enter this instant is struck off rather than penalised,
-     and that is a MEASURED choice, not a conservative default. Letting it
-     target such a lane and wait at the line for the gap — which the lateral
-     gate does safely — sounds like what a real weaver does, and it made the
-     rival slower: mean speed 22.0 → 20.9 m/s, and the layer-3 backstop went
-     from 30 firings to 661 as it hovered on lane lines instead of driving.
-     Committing to road you can actually use beats queueing for road you
-     cannot. The exclusion lives in bestLane below. */
-  /** Car-following parameters for the rival, and the reason it can keep any
-      pace at all now that it respects traffic.
-
-      The ordinary fleet runs T = 1.25 s of time headway; the first version of
-      this used 0.9, which sounds aggressive until you multiply: at 55 m/s a
-      0.9 s headway is a FIFTY METRE cushion, and since it only perceives 70 m
-      ahead, practically any car in its lane pinned it to that car's speed. The
-      sim had it sitting 250 m behind the player as a result. 0.35 s and a 3 m
-      standstill gap is what an actually fearless driver runs — a ~22 m cushion
-      at 55 m/s — and it is the difference between threading traffic and
-      queueing in it. It is still a real cushion: this car never tailgates its
-      way through a pack, it goes around. */
-  folT: 0.35, folS0: 3, folAMax: 2.4, folBCom: 2.6,
-  /** Headway it will squeeze down to when it is a long way behind where it
-      wants to be, and the gap deficit that gets it all the way there (s, m).
-
-      This is the ONLY concession made to the fact that respecting traffic
-      costs it pace, and it is deliberately a driving concession rather than a
-      physical one: a driver who is behind runs closer and dives at smaller
-      gaps. It never lets the rival through anybody — the following limit still
-      binds, the lateral gate still binds, the backstop still binds. Without it
-      the rival simply drifts backwards through a congested corridor forever,
-      measured at about 0.8 m/s of permanent deficit, which is a carrot nobody
-      can see. */
-  folTUrgent: 0.18, urgentAt: 100,
-  /** Nearest the player may be for a deliberate patience spell to start (m) —
-      see the hold-up block in updateRival. */
-  holdNotWithin: 40,
-  /** Gap beyond which a hold-up may start braking in earnest, and the span
-      over which it works up to full strength (m) — see riv.holdStr. */
-  holdFrom: 40, holdSpan: 120,
-  /** Hardest the rival may decelerate with the player right behind it, and the
-      time-to-contact over which it ramps back to the normal floor (m/s², s).
-
-      With close range a design GOAL rather than an accident, this is the
-      longitudinal half of the fairness guard and it carries real weight: a
-      hold-up firing while the player sits two metres off its bumper at 70 m/s
-      would otherwise stab the brakes at -6.5 and the hit would be nobody's
-      fault but the game's. brakeNear is still past lampOn, so the lift always
-      lights the lamps — the player gets the warning, just never a stab they
-      could not have read. */
-  brakeNear: -1.5, brakeTtc: 2.0,
-  /** Longitudinal limits. The brake cap is deliberately soft — every
-      deceleration the player can see has to be one they could have read and
-      reacted to. `brakeHard` unlocks only while it is genuinely held up
-      behind real traffic, where the stab is earned and the lamps explain it. */
-  accMax: 3.6, brakeSoft: -4, brakeHard: -6.5,
-  /** Speed error → acceleration, while running free.
-
-      Deliberately NOT the IDM free-flow term the rest of this file uses.
-      IDM's `1 − (v/v0)^4` assumes v0 is a FIXED desired speed. The rival's
-      moves continuously — it tracks the player, with a mood on top — and that
-      exponent is savage either side of v ≈ v0: d(acc)/dv is −4·aMax/v0 there,
-      so at v0 = 50 m/s every 1 m/s of overshoot asks for another −0.29 m/s².
-      Against a target that breathes ±8% by design the car is therefore always
-      a metre-per-second or two off it, always past updateHwy's −0.35 lamp
-      threshold, and its brake lights never go out. Lamps that are always on
-      telegraph nothing, which defeats the entire point of insisting that every
-      deceleration shows. Proportional control is both smoother and honest:
-      small error, small correction, dark lamps. */
-  spdP: 1.2,
   /* ---- getting visibly held up ---- */
   /** a hold-up runs this long, plus a stretch that grows with the gap */
   holdMin: 1.2, holdMax: 2.6, holdFar: 2.5,
   /** seconds between hold-ups, at a near gap → at a far one */
   cdNear: 14, cdFar: 5,
-  /* ---- covering the player ---- */
-  /** furthest ahead the player is still worth covering (m) */
-  blockRange: 90,
-  /** ...and nearer than this, covering them is just brake-testing (m) */
-  blockNear: 12,
-  /** Lateral m/s the cover TARGET eases across at. Deliberately separate from
-      the tracker rate below: the target easing is what makes the move
-      readable, the tracker has to stay quick enough for the pavement. */
-  blockRate: 2.2,
-  /** don't re-cover inside this much lateral error (m) — the dead zone that
-      stops it mirroring the player twitch for twitch */
-  blockDead: 1.0,
-  /** MINIMUM time-to-contact the player must have for a cover to be legal (s).
-      Under it the rival holds its line no matter what the player does. With
-      no win state to chase, an unavoidable hit is the main way this feature
-      could feel unfair, so this guard is load-bearing, not polish. */
-  blockTtc: 1.2,
-  /** rate the free-running lane target eases at (m/s) */
-  laneRate: 3.0,
-  /** how often the free-running lane choice is re-thought (s) */
-  laneThink: 0.25,
+  /** nearest the player may be for a deliberate patience spell to start (m) */
+  holdNotWithin: 40,
+  /** gap past which a hold-up may brake in earnest, and the span to full (m) */
+  holdFrom: 40, holdSpan: 120,
+  /** Hardest it may decelerate with the player right behind, and the
+      time-to-contact over which it ramps back to the normal floor. */
+  brakeNear: -1.5, brakeTtc: 2.0,
+
+  /* ---- put back in front when it is hopelessly behind ---- */
+  /** how far behind, how long it must have stayed there, and where it
+      reappears (m, s, m) — only ever fires out of sight */
+  reseedBehind: 150, reseedAfter: 6, reseedAhead: 110,
+
+  /* ---- staying out of other bodies (the three layers) ---- */
+  /** Clearance a lateral move demands beyond the two half-lengths / half-widths
+      (m). Cut to near the geometric floor when the car was made overpowered:
+      it takes ~10 m holes a person would not touch. The half-lengths are 4.6 m
+      of that and cannot go. */
+  /* MUST NOT BE TIGHTER THAN sepLon/sepLat below, and that is a hard
+     invariant rather than a preference. Layer 2 decides what space is
+     acceptable to move into; layer 3 decides what counts as an overlap needing
+     resolution. With clearLon at 0.35 against sepLon 0.9, layer 2 kept
+     approving gaps layer 3 immediately called overlaps, so the backstop shoved
+     the rival around every frame and never converged — 126 overlapping frames
+     a run in dense traffic that no amount of extra passes could fix. They have
+     to agree on what "clear" means. */
+  clearLon: 1.0, clearLat: 0.3,
+  /** the backstop's own margins, and how many passes it may resolve in (m, m) */
+  sepLon: 0.9, sepLat: 0.25, sepPasses: 4,
+  /** the guaranteed escape: step back this far, this many times, until
+      nothing overlaps (see the end of rivalSeparate) */
+  backOffStep: 0.6, backOffSteps: 40,
+
+  /* ---- how it reads the road ---- */
+  /** how far ahead it PLANS (m) — long, to choose lanes early */
+  seeAhead: 240,
+  /** ...and how far ahead it FOLLOWS (m) — short, so it is not timid. Letting
+      the follow use the planning horizon made it lift for cars 100 m away. */
+  followSee: 95,
+  /** cap on laneFree, seconds — past this a lane is "clear enough" */
+  laneFreeMax: 30,
+  /** How much better another lane must be before it moves, as a RATIO.
+
+      Back up from 1.06, which was too fine a distinction to act on ten times a
+      second — combined with the timer it produced a car that reversed itself
+      mid-move and never finished anything. With the commitment latch below the
+      rival only asks this question when it is free to act on the answer, so
+      the margin can be a real one. */
+  laneGain: 1.3,
+  /** ...and during a patience spell, where it wants a dramatic gain */
+  laneGainHold: 3.0,
+  /** lateral m/s the target eases at */
+  laneRate: 9.0,
+  /** How close counts as having ARRIVED at the chosen line (m), and the
+      longest it will persist with one before admitting it is stuck (s). */
+  laneArrive: 0.35, laneMaxHold: 2.5,
+  /** ...and the shortest time it will hold a decision before taking another,
+      so arriving somewhere does not immediately start it shopping again. */
+  laneMinHold: 0.6,
+
+  /* ---- car-following, deliberately inhuman ---- */
+  /** Time headway and standstill gap. At 30 m/s this sits 4 m off a bumper
+      where a person wants 25. It has perfect information and no reaction
+      time; this is it using them. */
+  folS0: 1.2, folTUrgent: 0.06,
+  folAMax: 5.0, folBCom: 5.0,
+  /** speed error → acceleration while running free, and the limits */
+  spdP: 2.5, accMax: 7.5, brakeSoft: -7, brakeHard: -10,
+
   /* ---- contact ---- */
-  /** Post-impact window in which the controller does not correct AT ALL, so a
-      shunted rival gathers itself instead of instantly fighting back. Also
-      what stops the light-tap case turning into a surge-and-lift oscillation
-      between the impact response and the gap controller. */
   shuntMin: 1.0, shuntMax: 2.0,
-  /** how much of an impact becomes lateral slide / forward shove */
   shuntLat: 0.45, shuntLon: 0.5,
-  /** cap on that shove, m/s */
-  shuntLonMax: 6,
-  /** lateral slide damping, e-folds per second */
-  shuntDamp: 2.2,
+  shuntLonMax: 6, shuntDamp: 2.2,
+
+  /* ---- how much the body turns while it moves sideways ----
+     Heading is the road plus a capped lean into where it is actually going.
+     Uncapped this twisted the car far more than a real one does — and worse,
+     a raw one-frame rate picked up depenetrations that were not motion at all
+     and spiked to 85°. yawTau smooths, yawMax caps. Raised to 9° when the
+     lateral rate went to 9 m/s: the true geometric angle there is 24°, so the
+     car now crabs slightly rather than drifting visibly. Neither touches how
+     fast it actually moves sideways — position comes from offCur. */
+  yawMax: 9 * Math.PI / 180, yawTau: 0.10,
+
   /* ---- brake lamps ---- */
-  /** Deceleration at which the brake lamps come on, and at which they go off
-      again. Much higher than updateHwy's -0.35/-0.12 pair, and for a concrete
-      reason: those thresholds are tuned to IDM's output, where a small
-      negative acc really does mean the driver is on the pedal. The rival runs
-      a proportional law against a target that moves, so it spends half its
-      life a fraction under its own target speed — at updateHwy's thresholds
-      that lit the lamps ~46% of the time in the sim, and a lamp that is on
-      half the time carries no information at all. A real driver lifts and
-      coasts far more often than they brake; below lampOn this car is
-      coasting. */
-  lampOn: -1.2, lampOff: -0.5,
+  /** Much higher than updateHwy's -0.35/-0.12: those are tuned to IDM's
+      output. This car brakes at up to -10, so a fixed small threshold lit the
+      lamps ~47% of the time and they stopped meaning anything. The lamp should
+      mean "braking hard FOR THIS CAR". */
+  lampOn: -2.2, lampOff: -1.0,
+
+  /* ---- traffic yielding to it ----
+
+     The fleet gets out of its way. This is the one thing that lifts it past
+     the "never overlap" ceiling: at 29 cars per lane-km it was leader-limited
+     on ~85% of frames and could only manage 1.25x the flow speed, because you
+     cannot go faster than the gaps that exist. Making gaps exist is the
+     remaining lever, and it is the one the user chose.
+
+     It reuses the shape of the courtesy nudge that already makes NPCs ease
+     aside for the PLAYER, so this is a behaviour the game already exhibits and
+     players already see — not a new kind of magic. The differences are that it
+     is a full lane change rather than a within-lane lean (a lean cannot help:
+     a lane is 3.7 m and two bodies are 3.64 m, so leaning aside inside your own
+     lane does not create a passable gap), and that it triggers on a car coming
+     up fast behind rather than on dwell time.
+
+     Deliberately NARROW so it reads as one driver noticing a mirror rather
+     than as the sea parting:
+     · only the car actually in the rival's path (yieldLat), not a lane's worth
+       either side;
+     · only while the rival is within yieldSee and genuinely faster (yieldDv);
+     · one car at a time, since only one can be directly in front;
+     · it signals, and it uses the ordinary gap acceptance, so it will not move
+       into the player or into another car — laneClearAt already treats the
+       player as a hard no-go;
+     · and if there is nowhere to go it simply stays, and the rival has to
+       queue like anybody else. */
+  /** how far back the rival can be and still be worth moving for (m) */
+  yieldSee: 55,
+  /** ...and inside this it is simply on the bumper, speed irrelevant (m) */
+  yieldClose: 14,
+  /** how much of a closing-speed advantage it needs before anyone bothers */
+  yieldDv: 4,
+  /** lateral window that counts as "in its path" (m) */
+  yieldLat: 2.4,
+
   /* ---- misc ---- */
-  /** Seed distance ahead of the player, m — far enough that it arrives in
-      frame as a distant car rather than materialising on the bumper. */
+  /** seed distance ahead of the player, m */
   seedAhead: 90,
-  /** Lookahead used to measure how fast the lane centre is sliding under the
-      car right now, seconds of travel. See the lateral tracker. */
+  /** lookahead used to measure the lane centre's slide, seconds of travel */
   slideDt: 0.1,
-  /** A colour nothing in NPC_COLORS uses, so the rival is identifiable at a
-      glance through the windshield without a livery or a new model. */
+  /** a colour nothing in NPC_COLORS uses */
   paint: 0xf24a1e,
 };
 
@@ -1578,14 +1379,11 @@ export class Traffic {
         speed is what makes the station-keeping read as a driver watching
         their mirrors instead of as a mirror. */
     pace: 0,
-    /** the gap it is currently trying to hold, m — random-walked */
-    gapWant: 50,
-    /** countdown to the next target-gap roll */
-    gapT: 0,
-    /** true while the current target is a BREAK (a stint spent well ahead) */
-    onBreak: false,
-    /** seconds left conceding a place the player earned — see RIVAL.concede */
-    concede: 0,
+
+
+
+    /** seconds it has been continuously behind the player — see reseedAfter */
+    behindT: 0,
     /** slow drift on its pace, so it is never an exact multiple of yours */
     mood: 1,
     moodTo: 1,
@@ -1596,18 +1394,20 @@ export class Traffic {
     latV: 0,
     /** the lateral it is easing toward, corridor-offset space */
     offT: 0,
-    /** last frame's offCur, for the velocity-derived heading */
+    /** the FINAL offCur last frame — recorded after layer 3, see updateRival */
     offPrev: 0,
+    /** smoothed lateral rate, m/s, for the heading only */
+    latRate: 0,
     /** render heading, from actual world velocity rather than the tangent */
     hTarget: 0,
     /** countdown to the next free-running lane choice */
     laneT: 0,
-    /** the lane that choice landed on. Held between decisions: the target has
-        to keep easing toward it every frame, not only on the frame the timer
-        fires — otherwise the whole lane change is one `ease · dt` step every
-        laneThink seconds, which is about a centimetre, and the rival never
-        actually changes lane at all. */
-    laneWant: 1,
+    /** The lateral OFFSET the current choice landed on — an offset rather than
+        a lane index, because the shoulder is a legitimate destination and has
+        no index. Held between decisions: the target has to keep easing toward
+        it every frame, not only on the frame the timer fires, or the whole
+        move is one `ease · dt` step per decision. */
+    laneWant: 0,
   };
   readonly N: number;
 
@@ -2489,16 +2289,13 @@ export class Traffic {
     riv.shunt = 0;
     riv.latV = 0;
     riv.laneT = 0;
-    riv.laneWant = n.laneK;
+    riv.laneWant = n.offCur;
     riv.pace = Math.abs(player.u);
-    riv.gapWant = rand(RIVAL.gapMid[0], RIVAL.gapMid[1]);
-    riv.gapT = rand(RIVAL.gapEvery[0], RIVAL.gapEvery[1]);
-    riv.onBreak = false;
-    riv.concede = 0;
     riv.mood = riv.moodTo = 1;
     riv.moodT = rand(RIVAL.moodEvery[0], RIVAL.moodEvery[1]);
     riv.offT = n.offCur;
     riv.offPrev = n.offCur;
+    riv.latRate = 0;
     riv.hTarget = cor.pose(z, this.cpose).h;
     this.placeHwy(n, player.z);
     n.hVis = riv.hTarget;
@@ -2537,59 +2334,189 @@ export class Traffic {
     return this._lead;
   }
 
-  /** Seconds to cover RIVAL.seeAhead metres in lane `k`, at best.
+  /** SECONDS OF FREE RUNNING lane `off` offers before the rival would have to
+      lift — how long it can hold `vFree` before it closes to a following
+      distance on whatever is up there. Higher is better.
 
-      A TIME estimate, and that is the whole point. The previous scorer added a
-      lane's clear distance to its leader's speed, which cannot tell a lane it
-      would be stuck in from one it would fly down: on a busy corridor every
-      lane has a car somewhere, so every lane scored about the same and the
-      stay-put bonus decided everything. Time discriminates properly — a truck
-      at 25 m/s a hundred metres up is a genuinely worse lane than a car at 35
-      sixty metres up, and this says so.
+      This replaced a "time to cover the 240 m horizon" score, and the reason
+      is the whole fix for "slow as a turtle, doesn't swim through traffic".
+      Measured in the real corridor: flow 16.4 m/s, 25.6 cars per lane-km, so
+      EVERY lane has a car within about 40 m. Over a long horizon that means
+      every lane delivers about the same average speed — which is true, and
+      useless. Run the numbers at those conditions and a lane with a car 15 m
+      ahead scored 14.85 s against 14.41 s for one with one at 60 m: a 0.44 s
+      spread, against a 0.35 s stay-put bonus. The lanes were indistinguishable,
+      stickiness won every time, and the rival changed lane ZERO times in the
+      instrumented run while sitting behind a car on 100% of frames.
 
-      The model: run free until it catches whatever is ahead, then be stuck
-      behind it for the rest of the horizon. Crude, but it is the right shape
-      and it is what a driver actually looks at. */
-  private laneTime(n: Npc, off: number, vFree: number): number {
+      The long-horizon average is the wrong question in a queue. A car
+      threading traffic is not planning 240 m ahead; it is taking the room
+      available NOW, gaining on it, and then taking the next lot. So this asks
+      how much road it can actually use before the next decision. At the same
+      measured conditions that separates 15 m from 60 m by 9.4x rather than by
+      3%, which is a difference a lane choice can actually be made on.
+
+      It stays honest on open road, which is what the plan-at-240 /
+      follow-at-95 split bought and must not be given back: a lane whose leader
+      is far away, or not slower, returns the cap, so a clear lane and a
+      nearly-clear lane read as equally good and it has no reason to weave for
+      nothing. */
+  private laneFree(n: Npc, off: number, vFree: number): number {
     const cor = this.cor;
-    const H = RIVAL.seeAhead;
-    let d = H, mv = vFree;
+    let d = Infinity, mv = 0;
     for (const m of this.npcs) {
       if (m === n || !m.active || !m.hw || m.rival) continue;
       if (m.route !== -1) continue;
       if (Math.abs(m.offCur - off) > 2.2) continue;
       const ds = cor.deltaZ(n.s, m.s);
-      if (ds > 0 && ds < d) { d = ds; mv = m.wreck ? 0 : m.v; }
+      if (ds > 0 && ds < RIVAL.seeAhead && ds < d) {
+        d = ds;
+        mv = m.wreck ? 0 : m.v;
+      }
     }
-    const free = Math.max(vFree, 1);
-    if (d >= H) return H / free;
-    return d / free + (H - d) / Math.max(mv, RIVAL.laneVMin);
+    if (d > 1e8) return RIVAL.laneFreeMax;
+    const closing = vFree - mv;
+    if (closing <= 0.5) return RIVAL.laneFreeMax; // never catches it
+    /* Time to REACH it, not time until it must lift. Subtracting a following
+       distance first looks more correct and is degenerate exactly where it
+       matters most: at the real corridor's 29 cars per lane-km every lane has
+       a car inside the headway, so every lane scored a flat zero, the ratio
+       test below could never fire, and lane changes went DOWN. Plain d/closing
+       is monotonic in the gap all the way to the bumper, so it still separates
+       a 5 m lane from a 15 m one when everything is packed. */
+    return Math.min(RIVAL.laneFreeMax, d / closing);
   }
 
-  /** The lane that gets it down the road fastest — see laneTime. Lanes it
-      could not move into without driving through somebody are not candidates
-      at all. Re-thought on RIVAL.laneThink rather than per frame; this and
-      rivalLead are the only O(lanes x N) work in here. */
-  private bestLane(
-    n: Npc, vFree: number, patient = false, stick = -1
-  ): number {
+  /** The lane offering the most free running — see laneFree. Lanes it could
+      not move into without driving through somebody are not candidates at all.
+
+      The stay-put advantage is a RATIO rather than a fixed number of seconds,
+      and that matters: laneFree spans two orders of magnitude between a packed
+      lane and a clear one, so any absolute bonus is either irrelevant when the
+      lanes are far apart or decisive when they are close. A factor keeps the
+      same meaning at every density — "only move for a clearly better lane" —
+      which is what preserves the decisiveness that measured as load-bearing
+      (dropping stickiness entirely cost 11 points of time-in-front and doubled
+      the passes against it). */
+  private bestLane(n: Npc, vFree: number, patient = false): number {
     const cor = this.cor;
     const nl = cor.lanes(n.s);
     const cur = this.nearestLane(n.s, n.offCur);
-    let bestK = cur, bestT = Infinity;
+    const gain = patient ? RIVAL.laneGainHold : RIVAL.laneGain;
+    let bestOff = cor.laneOffset(cur, n.s);
+    let bestV = this.laneFree(n, bestOff, vFree) * gain;
     for (let k = 0; k < nl; k++) {
+      if (k === cur) continue;
       const off = cor.laneOffset(k, n.s);
-      const here = Math.abs(off - n.offCur) < 1.0;
-      // a lane it cannot get into is not an option — but never rule out the
-      // one it is already in, or it would have nowhere at all to aim
-      if (!here && !this.rivalLatClear(n, off)) continue;
-      let t = this.laneTime(n, off, vFree);
-      if (here)
-        t -= stick >= 0 ? stick
-          : patient ? RIVAL.laneStickHold : RIVAL.laneStick;
-      if (t < bestT) { bestT = t; bestK = k; }
+      if (!this.rivalLatClear(n, off)) continue;
+      const v = this.laneFree(n, off, vFree);
+      if (v > bestV) { bestV = v; bestOff = off; }
     }
-    return bestK;
+    /* THE SHOULDER. The corridor carries SHOULDER metres of sealed road
+       outboard of the outermost lane centres — about 3.6 m of usable offset
+       once the body and a margin are taken off, which is very nearly a lane's
+       worth on each side that nothing else in this file ever uses. Traffic
+       stays in its lanes, so when the kerb lane is queueing the road beside it
+       is empty. A human would not use it; this car is not one. */
+    const lim = Math.max(0, cor.halfWidth(n.s) - n.W / 2 - 0.3);
+    for (const off of [-lim, lim]) {
+      if (Math.abs(off - n.offCur) < 1.0) continue;
+      if (!this.rivalLatClear(n, off)) continue;
+      const v = this.laneFree(n, off, vFree);
+      if (v > bestV) { bestV = v; bestOff = off; }
+    }
+    return bestOff;
+  }
+
+  /** Traffic getting out of the rival's way — see the yield block in RIVAL.
+
+      Returns true if `n` committed to a lane change for it. Only ever called
+      for ordinary corridor cars, and it does nothing at all unless the rival
+      is active, close, in this car's lane and genuinely quicker — so with the
+      mode off, or the rival elsewhere on the corridor, not one line of this
+      changes how the fleet drives. */
+  private yieldToRival(n: Npc): boolean {
+    const r = this.rival;
+    if (!r || !r.active || r.wreck) return false;
+    if (n.route !== -1 || !n.hw || n.wreck) return false;
+    // already committed to something, or mid-manoeuvre — leave it alone
+    if (n.pendK >= 0 || n.blink !== 0 || n.mergeLean !== 0) return false;
+    const cor = this.cor;
+    // is it coming up behind this car, in this car's path, and faster?
+    const behind = cor.deltaZ(r.s, n.s);
+    if (behind <= 0 || behind > RIVAL.yieldSee) return false;
+    if (Math.abs(r.offCur - n.offCur) > RIVAL.yieldLat) return false;
+    /* Either it is visibly quicker, OR it is already sitting on this car's
+       bumper. The second half matters more than it looks: once the rival is
+       blocked it slows to ITS blocker's speed, so a pure "is it faster" test
+       goes false at exactly the moment the yield is needed, and the whole
+       mechanic only fired 3.5 times a minute. A car filling your mirror at
+       four metres wants past whether or not it is going faster right now. */
+    if (behind > RIVAL.yieldClose && r.v < n.v + RIVAL.yieldDv) return false;
+
+    /* Move AWAY from the side the rival is closing on where there is a choice,
+       otherwise take whichever lane is free. Ordinary gap acceptance decides,
+       so this can no more move into the player or another car than a voluntary
+       lane change can. */
+    const nl = cor.lanes(n.s);
+    /* AWAY FROM IT, and only away. The first version fell back to the other
+       side when that lane was blocked, which is the ordinary lane-change
+       pattern and exactly wrong here: the fallback moved the yielding car
+       TOWARD the thing it was getting out of the way of. In dense traffic that
+       produced hundreds of overlapping frames a run, because a car would
+       commit to the near side while clear and then slide across as the rival
+       arrived. If the away side is not available it simply does not yield, and
+       the rival queues behind it like anybody else. */
+    const away = r.offCur <= n.offCur ? 1 : -1;
+    {
+      const k2 = n.laneK + away;
+      if (k2 < 0 || k2 > nl - 1) return false;
+      const off2 = cor.laneOffset(k2, n.s);
+      /* The URGENT gap envelope, not the comfortable one — the same tighter
+         pair a forced taper merge already uses in this file when the pavement
+         is running out. A yield is that kind of move: the driver has decided
+         to go and takes a gap they would not take casually. It matters more
+         than it sounds. With the roomy envelope the car in front WANTED to
+         yield on 8186 frames of a four-minute run and was boxed in on
+         essentially all of them — 19 yields actually happened. The mechanic
+         was not under-triggering, it had nowhere to go.
+
+         The player is still a hard no-go: laneClearAt keeps its full
+         closing-speed terms for them whatever envelope is passed, so a
+         yielding car can never be shoved into the player. */
+      // brisk: this is a driver reacting to a mirror, not a planned move, and
+      // the projection below needs the rate before it is committed to
+      n.laneRate = cor.lanePitch(n.s) / 1.1;
+      const urgent = 1.2 + 0.25 * n.v;
+      if (!this.laneClearAt(n, n.s, off2, n.route, urgent, 2.5 + 0.35 * n.v))
+        return false;
+      /* ...and explicitly not into the RIVAL. laneClearAt deliberately ignores
+         it (exemption #2 — traffic is unaware of this car), which is right
+         everywhere else and exactly wrong here: this car is moving over FOR
+         the rival, so moving into it is the one outcome the manoeuvre must not
+         produce. Without this the yield drove cars into it and layer 3 was
+         left mopping up 256 overlapping frames a run. */
+      {
+        /* PROJECTED FORWARD, not just checked where it is now. The move takes
+           about a second to complete and the rival is closing the whole time,
+           so a gap that is clear at the moment of committing is not clear when
+           the car is halfway across — which is where the remaining overlapping
+           frames were coming from. Require the space to still be there when
+           the manoeuvre finishes. */
+        const moveT = cor.lanePitch(n.s) / n.laneRate;
+        const closing = Math.max(0, r.v - n.v);
+        const dLat = Math.abs(off2 - r.offCur);
+        const dLon = Math.abs(cor.deltaZ(r.s, n.s)) - closing * moveT;
+        if (dLat < (n.W + r.W) / 2 + RIVAL.clearLat &&
+            dLon < (n.L + r.L) / 2 + RIVAL.clearLon + urgent) return false;
+      }
+      n.pendK = k2;
+      n.blink = off2 < n.offCur ? -1 : 1;
+      // brisk: this is a driver reacting to a mirror, not a planned move
+      n.blinkT = rand(0.15, 0.35);
+      n.turnCd = Math.max(n.turnCd, 2);
+      return true;
+    }
   }
 
   /** LAYER 2: is the lateral position `off2` free of other traffic at the
@@ -2629,9 +2556,29 @@ export class Traffic {
       behind, which would be exactly wrong here: traffic is supposed to be
       unaware of this car, and a traffic car visibly braking or being shunted
       out of its way is the same unnatural read that the clipping was. */
+  /** Total body penetration the rival would be left sitting in at a
+      hypothetical station/offset — the measure rivalSeparate picks its escape
+      route by. Zero means genuinely clear of everything. */
+  private rivalPen(n: Npc, s: number, off: number): number {
+    const cor = this.cor;
+    let total = 0;
+    for (const m of this.npcs) {
+      if (m === n || !m.active || !m.hw || m.rival || m.wreck) continue;
+      if (m.route !== -1) continue;
+      const dLat = (n.W + m.W) / 2 + RIVAL.sepLat - Math.abs(off - m.offCur);
+      if (dLat <= 0) continue;
+      const dLon =
+        (n.L + m.L) / 2 + RIVAL.sepLon - Math.abs(cor.deltaZ(m.s, s));
+      if (dLon <= 0) continue;
+      total += Math.min(dLat, dLon);
+    }
+    return total;
+  }
+
   private rivalSeparate(n: Npc) {
     const cor = this.cor;
     const lim = Math.max(0, cor.halfWidth(n.s) - n.W / 2 - 0.3);
+    let lastWorst = 0;
     for (let pass = 0; pass < RIVAL.sepPasses; pass++) {
       let worst: Npc | null = null, worstPen = 0, wLat = 0, wLon = 0;
       for (const m of this.npcs) {
@@ -2649,33 +2596,62 @@ export class Traffic {
         }
       }
       if (!worst) return;
+      lastWorst = worstPen;
       const latPen = (n.W + worst.W) / 2 + RIVAL.sepLat - Math.abs(wLat);
       const lonPen = (n.L + worst.L) / 2 + RIVAL.sepLon - Math.abs(wLon);
-      /* Shortest way out, except that a lateral escape has to stay on the
-         pavement — pushing a car through a parapet to avoid an overlap is not
-         an improvement. Ties and blocked lateral moves fall to longitudinal,
-         which is also the less visible correction of the two. */
+      /* Pick the way out that actually LEAVES IT CLEAR, not the shortest one.
+
+         Shortest-translation is the textbook answer and it cycles here: in
+         packed traffic the small move out of one car is very often straight
+         into the next, the following pass undoes it, and no number of passes
+         converges — measured at the real corridor's density, 100 overlapping
+         frames that were completely insensitive to raising sepPasses from 4 to
+         32. Dropping the lateral escape instead is much worse (742 frames): it
+         is the escape that does most of the work, because a lateral gap is
+         usually what actually exists. So evaluate both, and take the one that
+         leaves the least penetration behind. A lateral move must also stay on
+         the pavement — going through a parapet to avoid a car is not an
+         improvement. */
       const latOut = n.offCur + (wLat >= 0 ? latPen : -latPen);
-      if (latPen < lonPen && Math.abs(latOut) <= lim) {
+      const lonOut = wLon >= 0
+        ? cor.wrapZ(n.s + lonPen) : cor.wrapZ(n.s - lonPen);
+      const pLat = Math.abs(latOut) <= lim
+        ? this.rivalPen(n, n.s, latOut) : Infinity;
+      const pLon = this.rivalPen(n, lonOut, n.offCur);
+      if (pLat <= pLon) {
         n.offCur = latOut;
-      } else if (wLon >= 0) {
-        n.s = cor.wrapZ(n.s + lonPen);
       } else {
-        n.s = cor.wrapZ(n.s - lonPen);
-        // it ended up behind: take that car's pace rather than keep closing
-        n.v = Math.min(n.v, worst.v);
-        n.brake = true;
+        n.s = lonOut;
+        if (wLon < 0) {
+          // it ended up behind: take that car's pace rather than keep closing
+          n.v = Math.min(n.v, worst.v);
+          n.brake = true;
+        }
       }
+    }
+
+    /* GUARANTEED ESCAPE. The passes above pick the least-bad way out of the
+       worst overlap, which is right when a way out exists — but at the real
+       corridor's density the rival can end up genuinely WEDGED, with every
+       direction leaving it inside somebody. Measured: 126 overlapping frames a
+       run that the passes could see perfectly well and simply could not fix,
+       insensitive to how many passes they were given.
+
+       So there is a fallback that cannot fail: give the road back. Step
+       backwards along the corridor until nothing is overlapping. There is
+       always clear road behind, because the rival just came from there, and
+       backing off is the one correction that always terminates. It costs the
+       rival position, which is exactly the right price — it is the car that
+       was threading too optimistically. */
+    if (this.rivalPen(n, n.s, n.offCur) > 0) {
+      for (let i = 0; i < RIVAL.backOffSteps; i++) {
+        n.s = cor.wrapZ(n.s - RIVAL.backOffStep);
+        if (this.rivalPen(n, n.s, n.offCur) <= 0) break;
+      }
+      n.brake = true;
     }
   }
 
-  /** May the rival move across the player's line right now? Only when the
-      player has time to read the move and react to it — see RIVAL.blockTtc. */
-  private blockLegal(n: Npc, ahead: number, playerSpeed: number): boolean {
-    const closing = playerSpeed - n.v;
-    if (closing <= 0.5) return true; // not closing: all the time in the world
-    return ahead / closing > RIVAL.blockTtc;
-  }
 
   /** The rival's driving. Owns only n.s, n.offCur, n.v, n.brake and n.blink —
       everything downstream (placeHwy, the render pass, lamps, the audio feed)
@@ -2693,13 +2669,27 @@ export class Traffic {
     const pz = cor.zAt(player.x, player.z);
     let ahead = cor.deltaZ(pz, n.s);
 
-    /* Hopelessly behind, and far enough astern that nobody can watch it
-       happen — put it back in front. See RIVAL.reseedBehind. */
-    if (ahead < -RIVAL.reseedBehind) {
+    /* Beaten, and it has stayed beaten long enough and far enough astern that
+       nobody can watch the fix — put it back in front. See RIVAL.reseedAfter
+       for why the dwell matters more than the distance does. */
+    riv.behindT = ahead < 0 ? riv.behindT + dt : 0;
+    if (ahead < -RIVAL.reseedBehind && riv.behindT > RIVAL.reseedAfter) {
+      riv.behindT = 0;
       n.s = cor.wrapZ(pz + RIVAL.reseedAhead);
       n.v = Math.max(n.v, riv.pace);
+      /* Adopt the distance it just reappeared at as the gap it WANTS, and
+         restart the clock on the next roll. Without this it lands 110 m out,
+         reads that as far past a target of maybe 15 m, and immediately dawdles
+         at pace − gapDown to come back — which lets the player straight past
+         and puts it in line for another recycle. That loop had the fallback
+         firing five times in four minutes and doing the work the driving is
+         supposed to do. */
       riv.offT = n.offCur;
       riv.offPrev = n.offCur;
+      // and the smoothed rate, or the jump reads as lateral speed next frame
+      // and the car reappears pointing sideways — the same class of bug the
+      // offPrev ordering below fixes
+      riv.latRate = 0;
       riv.latV = 0;
       riv.shunt = 0;
       riv.holdT = 0;
@@ -2728,17 +2718,7 @@ export class Traffic {
        real BREAK for it instead, which is what stops the station-keeping
        reading as a tow rope. A break ends by simply rolling back into the
        band; it does not get yanked back. */
-    riv.gapT -= dt;
-    if (riv.gapT <= 0) {
-      riv.gapT = rand(RIVAL.gapEvery[0], RIVAL.gapEvery[1]);
-      const r = this.rng();
-      riv.onBreak = r < RIVAL.breakP;
-      riv.gapWant = riv.onBreak
-        ? rand(RIVAL.breakLo, RIVAL.breakHi)
-        : r < RIVAL.breakP + RIVAL.gapNearP
-          ? rand(RIVAL.gapNear[0], RIVAL.gapNear[1])
-          : rand(RIVAL.gapMid[0], RIVAL.gapMid[1]);
-    }
+
 
     /* Hold-ups. Now that the rival genuinely respects traffic, most of these
        arise BY THEMSELVES — it gets boxed in behind a truck with no lane worth
@@ -2758,7 +2738,7 @@ export class Traffic {
        the mode is not allowed to produce. Close in it drives, and gets its
        stuck-behind-a-truck moments from real traffic instead (which is where
        the good ones came from anyway). */
-    if (riv.shunt <= 0 && ahead > RIVAL.holdNotWithin && !riv.onBreak) {
+    if (riv.shunt <= 0 && ahead > RIVAL.holdNotWithin) {
       if (riv.holdT > 0) riv.holdT -= dt;
       else {
         riv.holdCd -= dt;
@@ -2808,10 +2788,6 @@ export class Traffic {
         brakeFloor = RIVAL.brakeHard;
       }
     }
-    /* Being attacked: the player is close behind, alongside, or already past.
-       Sharpens the lane choice and the headway — see RIVAL.pressureAt. */
-    const pressured = ahead < RIVAL.pressureAt;
-
     /* ---- how fast it wants to go ----
 
        IT DRIVES AT ITS OWN AMBITION AND ONLY EASES OFF WHEN IT IS TOO FAR
@@ -2842,36 +2818,12 @@ export class Traffic {
        slow half accumulated into a few hundred metres of drift. Scaling a
        fixed ambition has no such asymmetry. */
     let v0 = Math.min(RIVAL.top * riv.mood, RIVAL.top);
-    const gapErr = ahead - riv.gapWant;
-    if (gapErr > RIVAL.gapDead) {
-      const ease = (gapErr - RIVAL.gapDead) * RIVAL.gapP;
-      v0 = Math.max(riv.pace - RIVAL.gapDown, v0 - ease);
-    }
-    // a pass that got properly done is conceded rather than fought at the
-    // bumper — see RIVAL.concede for the state this avoids
-    if (ahead < -RIVAL.concedeAt) riv.concede = RIVAL.concede;
-    else if (riv.concede > 0) riv.concede -= dt;
-    /* Defend the PASS, not the approach — see the RIVAL block. The player has
-       to be close AND out of the rival's tyre tracks, i.e. actually committed
-       to going round, before it leans on the throttle. Square behind its
-       bumper it does nothing, which is what keeps the close phase alive. */
-    const goingRound =
-      ps.cor && Math.abs(ps.off - n.offCur) > RIVAL.defendLat;
-    if (riv.concede <= 0 && ahead > 0 && ahead < RIVAL.defendAt &&
-      playerSpeed > n.v && goingRound) {
-      v0 += clamp(
-        (playerSpeed - n.v) * RIVAL.defendGain, 0, RIVAL.defendMax);
-    }
-    /* The floor — see the "keeping the lead" block. One ramp, running from no
-       effect at leadKeep ahead, through full strength alongside, to its cap
-       some way behind; applied BEFORE the ceiling clamp so it can never ask
-       for more than the car can actually do, and still subject to the
-       following limit below, so it cannot drive through anybody to deliver. */
-    if (ahead < RIVAL.leadKeep) {
-      const t = clamp(
-        (RIVAL.leadKeep - ahead) / RIVAL.leadKeep, 0, 1 + RIVAL.leadBack);
-      v0 = Math.max(v0, playerSpeed +
-        Math.min(RIVAL.leadMargin * t, RIVAL.leadBoostMax));
+    if (ahead > RIVAL.easeBeyond) {
+      /* Out of sight, so this cannot be perceived — see easeBeyond. Ramps to
+         a pace under the player's so the gap genuinely comes back rather than
+         merely stopping growing. */
+      const t = clamp((ahead - RIVAL.easeBeyond) / RIVAL.easeSpan, 0, 1);
+      v0 = lerp(v0, Math.max(riv.pace - RIVAL.gapDown, 0), t);
     }
     v0 = clamp(v0, 0, RIVAL.top);
 
@@ -2882,12 +2834,11 @@ export class Traffic {
     if (lead) {
       const aMax = RIVAL.folAMax, bCom = RIVAL.folBCom;
       const dv = n.v - lead.v;
-      /* Behind where it wants to be? Run closer. See RIVAL.folTUrgent — this
-         is a driver in a hurry, not a permission to pass through anybody. */
-      const urgency = pressured
-        ? 1
-        : clamp(-gapErr / RIVAL.urgentAt, 0, 1);
-      const T = lerp(RIVAL.folT, RIVAL.folTUrgent, urgency);
+      /* It is always in a hurry now — there is no "behind where it wants to
+         be" any more, because it has no target gap to be behind. See
+         RIVAL.folTUrgent; this is a driver in a hurry, not permission to pass
+         through anybody, and all three layers still bind. */
+      const T = RIVAL.folTUrgent;
       const sStar = RIVAL.folS0 + n.v * T +
         (n.v * dv) / (2 * Math.sqrt(aMax * bCom));
       /* The following limit ALWAYS wins over the station-keeping target — see
@@ -2958,34 +2909,49 @@ export class Traffic {
          than driving through an island in full view of the dashcam. */
       want = cor.laneOffset(this.nearestLane(n.s, riv.offT), n.s);
       ease = track;
-    } else if (
-      ps.cor && ahead > RIVAL.blockNear && ahead < RIVAL.blockRange &&
-      this.blockLegal(n, ahead, playerSpeed)
-    ) {
-      /* Cover the player's line — with a dead zone, an eased target and a
-         rate cap, so it reads as a driver watching their mirrors rather than
-         as a sprite mirroring the stick. Note this only ever runs while the
-         player is on the DECK: from the viaduct there is no shared pavement
-         to cover, and ps.cor is false there. */
-      if (Math.abs(ps.off - riv.offT) > RIVAL.blockDead) want = ps.off;
-      // the cover's own readable rate, plus whatever the pavement is doing
-      ease = RIVAL.blockRate + slide;
     } else {
-      /* Free running: take the lane it can actually carry speed in. The CHOICE
-         is re-thought on a timer (the fleet scan is the only O(lanes × N) work
-         in here) but the target eases toward it every frame — see riv.laneWant.
-         While a patience spell is running it does not go looking at all, which
-         is what makes it sit behind things. */
-      riv.laneT -= dt;
-      if (riv.laneT <= 0) {
-        riv.laneT = RIVAL.laneThink;
-        // under pressure it drops the stay-put bonus entirely — see pressureAt
-        riv.laneWant = pressured
-          ? this.bestLane(n, v0, false, 0)
-          : this.bestLane(n, v0, riv.holdT > 0);
+      /* Free running: take the lane it can actually carry speed in, on
+         traffic alone. It has no idea where the player is — the lateral cover
+         that used to live here is gone, along with the rest of the blocking.
+         The choice is re-thought on a timer (the fleet scan is the only
+         O(lanes × N) work in here) and the target eases toward it every frame;
+         during a patience spell it wants a much bigger gain before it moves,
+         which is what makes it sit behind things. */
+      /* IT COMMITS. Once it has picked a line it goes there and finishes,
+         and it does not re-derive the best lane while it is on its way.
+
+         This is a latch rather than a timer because a timer was the bug. With
+         a 6% margin and ten decisions a second it picked lane A, started
+         moving, and the geometry changed BECAUSE it was now partway across —
+         so lane B scored better, it reversed, and the reversal changed the
+         geometry again. That is the wiggle the user saw, and it is also why it
+         got stuck: a car that keeps reversing never completes a move, so it
+         never gets past anybody. Cheap moves do not make flip-flopping
+         harmless — that was my error in the overpowered pass.
+
+         It re-decides on exactly three things: it has ARRIVED, the line it was
+         taking has been BLOCKED by somebody moving into it, or it has been
+         trying long enough to be plainly stuck (laneMaxHold). Nothing else
+         interrupts it, including its own scorer changing its mind. */
+      riv.laneT += dt;
+      const arrived = Math.abs(n.offCur - riv.laneWant) < RIVAL.laneArrive;
+      const blocked = !arrived && !this.rivalLatClear(n, riv.laneWant);
+      if (blocked) {
+        /* The line it was taking has closed. ABORT CLEANLY — settle into the
+           lane it is actually in and serve the dwell before looking again.
+           Going straight back to the scorer here is what kept the wiggle
+           alive after the latch went in: in dense traffic a target is blocked
+           constantly, so "blocked → pick a new one" is just the old timer
+           wearing a different hat, and 40-48% of moves were still being
+           abandoned. Settling is a decision too, and it finishes. */
+        riv.laneWant = cor.laneOffset(this.nearestLane(n.s, n.offCur), n.s);
+        riv.laneT = 0;
+      } else if ((arrived && riv.laneT > RIVAL.laneMinHold) ||
+        riv.laneT > RIVAL.laneMaxHold) {
+        riv.laneT = 0;
+        riv.laneWant = this.bestLane(n, v0, riv.holdT > 0);
       }
-      want = cor.laneOffset(
-        Math.min(riv.laneWant, cor.lanes(n.s) - 1), n.s);
+      want = riv.laneWant;
     }
     /* Parapets: nothing else will catch it. updateHwy's cars are inside the
        pavement by construction (lane centre + a maxBias-clamped bias); a free
@@ -3031,18 +2997,43 @@ export class Traffic {
        car that slides without pointing where it is going reads as a sprite.
        Convention-free — it composes the tangent and normal components
        directly, so it cannot get the corridor's handedness backwards. */
-    const dOffRate = (n.offCur - riv.offPrev) / Math.max(dt, 1e-4);
-    riv.offPrev = n.offCur;
+    /* Lateral rate for the HEADING only — measured before layer 3 runs, and
+       against the position layer 3 left the car at last frame.
 
-    /* LAYER 3, last thing before the frame's position is final. Deliberately
-       after the lateral tracker: it needs the offset this frame actually
-       ended on, not the one it started with. */
-    this.rivalSeparate(n);
+       That ordering is the whole point and it was a real bug. `offPrev` used
+       to be recorded here, BEFORE rivalSeparate, which then resolved overlaps
+       by shoving the car up to (W₁+W₂)/2 sideways in a single frame. The next
+       frame read that depenetration as though it were velocity: 2.2 m over one
+       16 ms frame is 132 m/s of apparent lateral motion, which through the
+       atan below is EIGHTY DEGREES of yaw — the car pointing very nearly
+       sideways for a frame, and firing exactly when it was threading close to
+       other traffic, which is when the player is looking at it. Recording
+       `offPrev` after the separation instead means a correction is never
+       mistaken for movement. */
+    const rawRate = (n.offCur - riv.offPrev) / Math.max(dt, 1e-4);
+    // ...and smooth it: a one-frame difference carries every bit of per-frame
+    // noise straight into the visible heading
+    riv.latRate += (rawRate - riv.latRate) * (1 - Math.exp(-dt / RIVAL.yawTau));
 
+    /* LAYER 3 does NOT run here — see the rival separation pass at the end of
+       update(). It used to, and that was wrong for a reason only the real
+       corridor showed: the per-NPC loop updates cars in array order, so every
+       car after the rival moves AFTER it has finished separating, and any of
+       them can move into the space it just cleared. At the sparse density my
+       sim used to run that never showed up; calibrated to the real corridor's
+       29 cars per lane-km it produces overlaps in the tens of frames, and the
+       instrumented game showed real ones too. Separation has to be the last
+       thing that happens in the frame, not the last thing in this function. */
+
+    /* Heading = the road, plus a capped lean into wherever it is actually
+       going. Composed through the tangent/normal pair rather than by adding an
+       angle, so it cannot get the corridor's handedness backwards, then the
+       OFFSET from the road is what gets clamped — see RIVAL.yawMax. */
     const p = cor.pose(n.s, this.cpose);
     const sv = Math.max(n.v, 1);
-    riv.hTarget = Math.atan2(
-      p.tx * sv + p.nx * dOffRate, p.tz * sv + p.nz * dOffRate);
+    const composed = Math.atan2(
+      p.tx * sv + p.nx * riv.latRate, p.tz * sv + p.nz * riv.latRate);
+    riv.hTarget = p.h + clamp(angDiff(composed, p.h), -RIVAL.yawMax, RIVAL.yawMax);
   }
 
   /* ---------------- impact from player ---------------- */
@@ -3764,6 +3755,18 @@ export class Traffic {
       }
     }
 
+    /* LAYER 3, for real this time: after every car in the fleet has moved, so
+       the positions it resolves against are final. Only the rival is moved
+       (see rivalSeparate), and its position is rebuilt afterwards because the
+       resolution can change both s and offCur. `offPrev` is recorded here so
+       the heading never reads a depenetration as lateral velocity. */
+    if (this.rival && this.rival.active && !this.rival.wreck) {
+      const rv = this.rival;
+      this.rivalSeparate(rv);
+      this.riv.offPrev = rv.offCur;
+      this.placeHwy(rv, player.z);
+    }
+
     this.renderInstances(player, night);
     this.updateLights(now, night, player);
   }
@@ -4406,6 +4409,16 @@ export class Traffic {
         return;
       }
     }
+
+    /* Something quick is filling this driver's mirror — see the yield block.
+       Checked before the ordinary voluntary change so it takes precedence: it
+       commits pendK, and the `n.pendK < 0` guard below then keeps the
+       voluntary logic out of the way. Deliberately NOT an early return — the
+       pre-signal delay and the offset tracking further down are what actually
+       perform the move, so returning here would leave the car signalling a
+       lane change it never made. It exits immediately when the rival is not a
+       factor, which is every frame of every game with the mode off. */
+    if (this.rival) this.yieldToRival(n);
 
     n.turnCd -= dt;
     /* Lane change when stuck behind slower traffic — how long a driver puts up

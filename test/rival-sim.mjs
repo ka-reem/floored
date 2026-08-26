@@ -63,42 +63,32 @@ function mulberry32(a) {
 /* ---- mirrors traffic.ts ---- */
 const LANE_FOLLOW_RATE = 3.4;
 const RIVAL = {
-  top: 84, paceTau: 1.5, moodLo: 0.93, moodHi: 1.10,
+  top: 95, paceTau: 1.5, moodLo: 0.93, moodHi: 1.10,
   moodEvery: [6, 14], moodRate: 0.02,
-  gapNear: [4, 26], gapMid: [26, 95], breakLo: 140, breakHi: 260,
-  gapEvery: [6, 14], gapNearP: 0.4, breakP: 0.18,
-  gapP: 0.25, gapDown: 5, gapDead: 10,
-  leadKeep: 14, leadMargin: 6, leadBack: 2.5, leadBoostMax: 16, holdNotWithin: 40,
-  defendAt: 18, defendLat: 1.2, defendGain: 1.3, defendMax: 9,
-  concedeAt: 6, concede: 4,
-  clearLon: 2.5, clearLat: 0.35, sepLon: 0.6, sepLat: 0.1, sepPasses: 4,
-  seeAhead: 240, followSee: 95, laneStick: 0.35, laneStickHold: 1.6, laneVMin: 3,
-  pressureAt: 45,
-  folT: 0.35, folS0: 3, folAMax: 2.4, folBCom: 2.6,
-  folTUrgent: 0.18, urgentAt: 100,
+  easeBeyond: 240, easeSpan: 200, gapDown: 5,
+  yieldSee: 55, yieldClose: 14, yieldDv: 4, yieldLat: 2.4,
+  holdNotWithin: 40, reseedBehind: 150, reseedAhead: 110, reseedAfter: 6,
+  clearLon: 1.0, clearLat: 0.3, sepLon: 0.9, sepLat: 0.25, sepPasses: 4,
+  backOffStep: 0.6, backOffSteps: 40,
+  seeAhead: 240, followSee: 95, laneFreeMax: 30, laneGain: 1.3, laneGainHold: 3.0,
+  yawMax: 9 * Math.PI / 180, yawTau: 0.10,
+  folS0: 1.2, folTUrgent: 0.06, folAMax: 5.0, folBCom: 5.0,
   holdFrom: 40, holdSpan: 120, brakeNear: -1.5, brakeTtc: 2.0,
-  accMax: 3.6, brakeSoft: -4, brakeHard: -6.5, spdP: 1.2,
-  lampOn: -1.2, lampOff: -0.5,
+  accMax: 7.5, brakeSoft: -7, brakeHard: -10, spdP: 2.5,
+  lampOn: -2.2, lampOff: -1.0,
   holdMin: 1.2, holdMax: 2.6, holdFar: 2.5, cdNear: 14, cdFar: 5,
-  blockRange: 90, blockNear: 12, blockRate: 2.2, blockDead: 1.0, blockTtc: 1.2,
-  laneRate: 3.0, laneThink: 0.25,
+  laneRate: 9.0, laneArrive: 0.35, laneMaxHold: 2.5, laneMinHold: 0.6,
   shuntMin: 1.0, shuntMax: 2.0, shuntLat: 0.45, shuntLon: 0.5,
   shuntLonMax: 6, shuntDamp: 2.2,
   seedAhead: 90, slideDt: 0.1,
+
 };
-/* The rival as it was when the user drove it and reported "literally so slow",
-   for a like-for-like A/B — same house style as test/traffic-merge-sim.mjs,
-   which runs its old and new rule sets over one scenario. Everything not
-   listed here was identical. */
-const BEFORE = {
-  seeAhead: 70,        // the fleet's shared perception range
-  folT: 0.9, folS0: 5, // a 50 m cushion at 55 m/s
-  gapP: 0.06, gapUp: 7, gapDown: 7, paceAnchored: true,
-  leadKeep: 0, leadMargin: 0, leadBack: 0, leadBoostMax: 0, holdNotWithin: 0, gapDown: 7,
-  top: 80,
-  oldLaneScore: true,  // distance + 6 x leader speed, capped at 200
-  followSee: 70,       // follow and plan were the same short range
-};
+/* NOTE: this file used to carry a BEFORE arm that A/B'd against the rival as
+   it was before the speed fix. It has been removed — the design has changed
+   twice since (the pace model was inverted, then the blocking removed
+   wholesale), so it was comparing against something nobody will ever ship and
+   referenced constants that no longer exist. The yaw A/B below stays, because
+   what it guards is a live invariant rather than a superseded design. */
 
 const W = 1.82; // a sedan's width (TYPE_DIM)
 const L = 4.62;
@@ -276,8 +266,7 @@ function run(playerAvg, seed, laps = 3, charge = false, round = false) {
   let rs = c.Z0 + RIVAL.seedAhead, rv = clamp(playerAvg + 8, 22, RIVAL.top);
   let ps = c.Z0, pv = playerAvg;
   let holdT = 0, holdCd = rng() * 6, holdStr = 0;
-  let pace = playerAvg, gapWant = lerp(RIVAL.gapMid[0], RIVAL.gapMid[1], rng());
-  let gapT = lerp(RIVAL.gapEvery[0], RIVAL.gapEvery[1], rng());
+  let pace = playerAvg;
   let onBreak = false, mood = 1, moodTo = 1, concede = 0, braking = false;
   let moodT = lerp(RIVAL.moodEvery[0], RIVAL.moodEvery[1], rng());
   const hist = [];
@@ -307,17 +296,6 @@ function run(playerAvg, seed, laps = 3, charge = false, round = false) {
       moodTo = lerp(RIVAL.moodLo, RIVAL.moodHi, rng());
     }
     mood += clamp(moodTo - mood, -RIVAL.moodRate * DT, RIVAL.moodRate * DT);
-    gapT -= DT;
-    if (gapT <= 0) {
-      gapT = lerp(RIVAL.gapEvery[0], RIVAL.gapEvery[1], rng());
-      const rr = rng();
-      onBreak = rr < RIVAL.breakP;
-      gapWant = onBreak
-        ? lerp(RIVAL.breakLo, RIVAL.breakHi, rng())
-        : rr < RIVAL.breakP + RIVAL.gapNearP
-          ? lerp(RIVAL.gapNear[0], RIVAL.gapNear[1], rng())
-          : lerp(RIVAL.gapMid[0], RIVAL.gapMid[1], rng());
-    }
     if (onBreak) breakFrames++;
     if (ahead > RIVAL.holdNotWithin && !onBreak) {
       if (holdT > 0) holdT -= DT;
@@ -337,9 +315,10 @@ function run(playerAvg, seed, laps = 3, charge = false, round = false) {
       brakeFloor = lerp(RIVAL.brakeSoft, RIVAL.brakeHard, holdStr);
     }
     let v0 = Math.min(RIVAL.top * mood, RIVAL.top);
-    const gapErr = ahead - gapWant;
-    if (gapErr > RIVAL.gapDead)
-      v0 = Math.max(pace - RIVAL.gapDown, v0 - (gapErr - RIVAL.gapDead) * RIVAL.gapP);
+    if (ahead > RIVAL.easeBeyond) {
+      const t = clamp((ahead - RIVAL.easeBeyond) / RIVAL.easeSpan, 0, 1);
+      v0 = lerp(v0, Math.max(pace - RIVAL.gapDown, 0), t);
+    }
     if (ahead < -RIVAL.concedeAt) concede = RIVAL.concede;
     else if (concede > 0) concede -= DT;
     // `round` models a player who has pulled out of the rival's line to go
@@ -409,23 +388,17 @@ for (const [label, avg] of [
     `${String((r.visible * 100).toFixed(0) + "%").padStart(8)}  ${String(r.passes).padStart(6)}`);
 }
 {
-  // it must actually STAY VISIBLE — that is the whole point of the mode
-  for (const avg of [30, 45, 60, 72]) {
-    const r = run(avg, 5, 3);
-    if (r.visible < 0.8)
-      bad(`only in frame ${(r.visible * 100).toFixed(0)}% of the time at ${avg} m/s`);
-  }
-  ok("in frame >80% of the time across every player pace");
-  /* THE HEADLINE BEHAVIOUR. A player who pins the throttle but stays square
-     behind the rival — not pulling out to go round — must be able to get onto
-     its bumper and STAY there. This is the moment the whole mode is for, so it
-     is worth an assertion rather than an eyeball. */
-  const tail = run(55, 13, 3, true, false);
-  console.log(`   tailgating player (never pulls out): under 10 m for ${(tail.close * 100).toFixed(0)}% of the run, under 5 m for ${(tail.vclose * 100).toFixed(0)}%`);
-  if (tail.close < 0.15)
-    bad(`only ${(tail.close * 100).toFixed(0)}% of the run bumper-to-bumper — the close phase is being cut short`);
-  else ok(`bumper-to-bumper ${(tail.close * 100).toFixed(0)}% of the run when the player stays in line`);
-
+  /* The "must stay in frame" assertion was removed with the design change that
+     made speed beat proximity: it now runs flat out until it is 240 m clear
+     and only eases past that, and the user has explicitly accepted that it
+     will sometimes be a speck or briefly gone. In THIS scenario there is no
+     traffic at all, so nothing limits it and it simply leaves — which says
+     nothing about the real corridor, where traffic is the binding constraint.
+     Section 5 is where visibility is worth measuring. */
+  /* The bumper-to-bumper reach assertion is gone too — the user dropped that
+     as a goal outright ("idc abt the bumper stuff"), and the rival no longer
+     eases anywhere the player can see, so closing on it is not something the
+     design promises. */
   /* ...and the same player, once they pull OUT to go round, must find it very
      hard to actually complete the move. Same pace, same charge, one variable
      changed — that contrast is the design. */
@@ -449,21 +422,17 @@ for (const [label, avg] of [
       bad(`brake lamps lit ${(b * 100).toFixed(0)}% of the time at ${avg} m/s — they stop reading`);
   }
   ok(`brake lamps lit ${(run(55, 5, 3).braking * 100).toFixed(0)}% of the time in a traffic-free sim`);
-  // it must still make breaks, or it is a tow rope. Averaged over seeds: one
-  // seed's roll sequence says nothing about an 18% event.
-  let br = 0;
-  const seeds = [3, 17, 29, 41, 55];
-  for (const sd of seeds) br += run(55, sd, 3).onBreak;
-  br /= seeds.length;
-  if (br < 0.08) bad(`only ${(br * 100).toFixed(0)}% of the time on a break — no variety`);
-  else ok(`spends ${(br * 100).toFixed(0)}% of its time out on a break`);
   // ...and it must never be able to simply vanish
   // a very slow player: it must slow down with them, not disappear
   let worst = 0;
   for (const seed of [11, 23, 47]) worst = Math.max(worst, run(22, seed, 3).maxGap);
-  if (worst > RIVAL.breakHi + 60)
-    bad(`settled gap ran away to ${f(worst)} m against a slow player`);
-  else ok(`worst settled lead ${f(worst)} m vs a 22 m/s player — it waits`);
+  /* It now runs flat out until it is 240 m clear and only eases past that, so
+     against a slow player it settles somewhere past easeBeyond rather than at
+     a target gap. The bound is that ease actually bites. */
+  const bound = RIVAL.easeBeyond + RIVAL.easeSpan + 200;
+  if (worst > bound)
+    bad(`settled gap ran away to ${f(worst)} m against a slow player (bound ${f(bound)})`);
+  else ok(`worst settled lead ${f(worst)} m vs a 22 m/s player — stays in reach`);
 }
 
 /* ============ 5. threading traffic without driving through it ============
@@ -484,10 +453,8 @@ console.log("5. threading traffic — body separation");
    of tuning rounds before it was noticed). The flowing case is the one that
    can actually answer "is the rival fast", and the corridor spends plenty of
    time looking like it. */
-for (const NC of [70, 34]) {
-  for (const MODE of [BEFORE, RIVAL]) {
-  const tag = MODE === BEFORE ? "BEFORE" : "after ";
-  console.log(`   ---- ${NC === 70 ? "dense" : "flowing"} traffic, ${tag} the speed fix ----`);
+for (const NC of [180, 60]) {
+  console.log(`   ---- ${NC === 180 ? "dense" : "flowing"} traffic ----`);
   const DIM = { car: { L: 4.62, W: 1.82 }, truck: { L: 9.4, W: 2.5 } };
   const rng = mulberry32(20260825);
   const R = { L: 4.62, W: 1.82 };
@@ -526,24 +493,6 @@ for (const NC of [70, 34]) {
     }
     return ds < 1e8 ? { ds, v: lv } : null;
   };
-  const laneTime = (rs, off, vFree, fleet, M) => {
-    const H = M.seeAhead;
-    let d = H, mv = vFree;
-    for (const m of fleet) {
-      if (Math.abs(m.off - off) > 2.2) continue;
-      const ds = c.deltaZ(rs, m.s);
-      if (ds > 0 && ds < d) { d = ds; mv = m.v; }
-    }
-    if (M.oldLaneScore) {
-      // the superseded scorer: distance plus credit for the leader's speed.
-      // Returned negated so "lower is better" still holds for the caller.
-      let dd = d, sc = Math.min(dd, 200) + 6 * (dd >= H ? RIVAL.top : mv);
-      return -sc;
-    }
-    const free = Math.max(vFree, 1);
-    if (d >= H) return H / free;
-    return d / free + (H - d) / Math.max(mv, RIVAL.laneVMin);
-  };
   const latClear = (rs, off2, fleet) => {
     for (const m of fleet) {
       if (Math.abs(m.off - off2) >= (R.W + m.W) / 2 + RIVAL.clearLat) continue;
@@ -553,25 +502,61 @@ for (const NC of [70, 34]) {
     }
     return true;
   };
-  let excluded = 0, laneEvals = 0;
-  const bestLane = (rs, roff, fleet, vFree, M = RIVAL, patient = false, stick = -1) => {
+  let backOffs = 0;
+  let excluded = 0, laneEvals = 0, yields = 0, yieldWant = 0, blockedYield = 0;
+  let movesStarted = 0, movesDone = 0, reversals = 0, lastMoveDir = 0, pendingMove = false;
+  const laneFree = (rs, off, vFree, fleet) => {
+    let d = Infinity, mv = 0;
+    for (const m of fleet) {
+      if (Math.abs(m.off - off) > 2.2) continue;
+      const ds = c.deltaZ(rs, m.s);
+      if (ds > 0 && ds < RIVAL.seeAhead && ds < d) { d = ds; mv = m.v; }
+    }
+    if (d > 1e8) return RIVAL.laneFreeMax;
+    const closing = vFree - mv;
+    if (closing <= 0.5) return RIVAL.laneFreeMax;
+    return Math.min(RIVAL.laneFreeMax, d / closing);
+  };
+
+  const bestLane = (rs, roff, fleet, vFree, patient = false) => {
     laneEvals++;
     const nl = c.lanes(rs);
     const cur = nearestLane(rs, roff);
-    let bestK = cur, bestT = Infinity;
+    const gain = patient ? RIVAL.laneGainHold : RIVAL.laneGain;
+    let bestOff = c.laneOffset(cur, rs);
+    let bv = laneFree(rs, bestOff, vFree, fleet) * gain;
     for (let k = 0; k < nl; k++) {
+      if (k === cur) continue;
       const off = c.laneOffset(k, rs);
-      const here = Math.abs(off - roff) < 1.0;
-      if (!here && !latClear(rs, off, fleet)) { excluded++; continue; }
-      let t = laneTime(rs, off, vFree, fleet, M);
-      if (here) t -= M.oldLaneScore ? 25 : (stick >= 0 ? stick : (patient ? RIVAL.laneStickHold : RIVAL.laneStick));
-      if (t < bestT) { bestT = t; bestK = k; }
+      if (!latClear(rs, off, fleet)) { excluded++; continue; }
+      const v = laneFree(rs, off, vFree, fleet);
+      if (v > bv) { bv = v; bestOff = off; }
     }
-    return bestK;
+    // the shoulder — see bestLane in traffic.ts
+    const lim = Math.max(0, c.halfWidth(rs) - R.W / 2 - 0.3);
+    for (const off of [-lim, lim]) {
+      if (Math.abs(off - roff) < 1.0) continue;
+      if (!latClear(rs, off, fleet)) { excluded++; continue; }
+      const v = laneFree(rs, off, vFree, fleet);
+      if (v > bv) { bv = v; bestOff = off; }
+    }
+    return bestOff;
   };
 
   const separate = (r, fleet) => {
     const lim = Math.max(0, c.halfWidth(r.s) - R.W / 2 - 0.3);
+    // total penetration the rival would be left in at a hypothetical spot
+    const pen = (os, ooff) => {
+      let t = 0;
+      for (const m of fleet) {
+        const dl = (R.W + m.W) / 2 + RIVAL.sepLat - Math.abs(ooff - m.off);
+        if (dl <= 0) continue;
+        const dn = (R.L + m.L) / 2 + RIVAL.sepLon - Math.abs(c.deltaZ(m.s, os));
+        if (dn <= 0) continue;
+        t += Math.min(dl, dn);
+      }
+      return t;
+    };
     for (let pass = 0; pass < RIVAL.sepPasses; pass++) {
       let worst = null, worstPen = 0, wLat = 0, wLon = 0;
       for (const m of fleet) {
@@ -584,19 +569,37 @@ for (const NC of [70, 34]) {
         const pen = Math.min(latPen, lonPen);
         if (pen > worstPen) { worstPen = pen; worst = m; wLat = dLat; wLon = dLon; }
       }
-      if (!worst) return;
+      if (!worst) break;
       const latPen = (R.W + worst.W) / 2 + RIVAL.sepLat - Math.abs(wLat);
       const lonPen = (R.L + worst.L) / 2 + RIVAL.sepLon - Math.abs(wLon);
       const latOut = r.off + (wLat >= 0 ? latPen : -latPen);
-      if (latPen < lonPen && Math.abs(latOut) <= lim) r.off = latOut;
-      else if (wLon >= 0) r.s = c.wrapZ(r.s + lonPen);
-      else { r.s = c.wrapZ(r.s - lonPen); r.v = Math.min(r.v, worst.v); }
+      const lonOut = wLon >= 0 ? c.wrapZ(r.s + lonPen) : c.wrapZ(r.s - lonPen);
+      const latOk = Math.abs(latOut) <= lim;
+      const pLat = latOk ? pen(r.s, latOut) : Infinity;
+      const pLon = pen(lonOut, r.off);
+      if (pLat <= pLon) r.off = latOut;
+      else { r.s = lonOut; if (wLon < 0) r.v = Math.min(r.v, worst.v); }
+    }
+    // guaranteed escape — see the end of rivalSeparate
+    if (pen(r.s, r.off) > 0) {
+      for (let i = 0; i < RIVAL.backOffSteps; i++) {
+        r.s = c.wrapZ(r.s - RIVAL.backOffStep);
+        if (pen(r.s, r.off) <= 0) break;
+      }
+      backOffs++;
     }
   };
 
-  let overlapFrames = 0, worstDepth = 0, minSep = 1e9, pinned = 0;
+  let overlapFrames = 0, worstDepth = 0, minSep = 1e9, pinned = 0, ovBlind=0, ovYield=0, ovMoving=0;
   let vSum = 0, pvSum = 0, leadFrames = 0, leadDsSum = 0, capFrames = 0;
-  let aheadFrames = 0, closeFrames = 0, passes = 0, wasAhead = true;
+  // its pace when it is NOT deliberately easing off, which is the honest
+  // answer to "is it faster than me" — the mean folds in the easing
+  let freeV = 0, freePv = 0, freeN = 0, easeN = 0;
+  let aheadFrames = 0, closeFrames = 0, passes = 0, wasAhead = true, reseeds = 0, behindT = 0;
+  // yaw, measured both ways: OLD = raw one-frame rate with offPrev taken
+  // before separation and no cap; NEW = smoothed, taken after, capped
+  let offPrevOld = 0, offPrevNew = 0, latRateNew = 0;
+  const yawOld = [], yawNew = [];
   let wantDiff = 0, v0Sum = 0, v0CapFrames = 0, laneSwitches = 0, abandoned = 0;
   let prevLane = -1, prevWant = -1, mid = false, farLead = 0, farLeadSum = 0;
   let sepFired = 0, latBlocked = 0;
@@ -611,11 +614,12 @@ for (const NC of [70, 34]) {
      pick. */
   const P = { L: 4.5, W: 1.8 };
   let ps = c.Z0, pv = 52, pOff = c.laneOffset(1, c.Z0), pLaneT = 0;
-  let pLaneWant = 1, pOffT = c.laneOffset(1, c.Z0);
-  const r = { s: c.Z0 + 90, off: c.laneOffset(1, c.Z0 + 90), v: 55, laneWant: 1,
-              laneT: 0, offT: 0, pace: 52, gapWant: 50, gapT: 4, holdT: 0,
+  let pLaneWant = c.laneOffset(1, c.Z0), pOffT = c.laneOffset(1, c.Z0);
+  const r = { s: c.Z0 + 90, off: c.laneOffset(1, c.Z0 + 90), v: 55, laneWant: 0,
+              laneT: 0, offT: 0, pace: 52, holdT: 0,
               holdCd: 6, mood: 1 };
   r.offT = r.off;
+  offPrevOld = offPrevNew = r.off;
   let fleet = mkFleet(NC, c.Z0 + 300);
 
   const STEPS = Math.round(240 / DT); // four minutes of driving
@@ -634,7 +638,7 @@ for (const NC of [70, 34]) {
       ps = c.wrapZ(ps + pv * DT);
       pLaneT -= DT;
       if (pLaneT <= 0) { pLaneT = 1.2; pLaneWant = bestLane(ps, pOff, fleet, 78); }
-      const pWant = c.laneOffset(Math.min(pLaneWant, c.lanes(ps) - 1), ps);
+      const pWant = pLaneWant; // bestLane returns an OFFSET now, not an index
       pOffT += clamp(pWant - pOffT, -3.0 * DT, 3.0 * DT);
       /* The player is subject to the SAME lateral gate as the rival. Without
          it they slide bodily through traffic to reach a better lane, which is
@@ -669,7 +673,48 @@ for (const NC of [70, 34]) {
       // lane changes, blind to the rival exactly as the game's are
       m.turnCd -= DT;
       const nl = c.lanes(m.s);
-      if (m.turnCd <= 0) {
+      /* YIELD — the fleet gets out of the rival's way. Mirrors yieldToRival:
+         only the car actually in its path, only while it is close and
+         genuinely faster, and gap-checked against the rest of the fleet so it
+         cannot move into anybody. */
+      let yielded = false;
+      m.yieldCd = Math.max(0, (m.yieldCd || 0) - DT);
+      if (m.yieldCd <= 0) {
+        const behind = c.deltaZ(r.s, m.s);
+        if (behind > 0 && behind < RIVAL.yieldSee &&
+            Math.abs(r.off - m.off) <= RIVAL.yieldLat &&
+            (behind <= RIVAL.yieldClose || r.v >= m.v + RIVAL.yieldDv)) {
+          yieldWant++;
+          // AWAY from it, and only away — see yieldToRival
+          const away = r.off <= m.off ? 1 : -1;
+          {
+            const k2 = m.laneK + away;
+            if (k2 >= 0 && k2 <= nl - 1) {
+            const off2 = c.laneOffset(k2, m.s);
+            let ok2 = true;
+            for (const o of fleet) {
+              if (o === m) continue;
+              if (Math.abs(o.off - off2) > 2.2) continue;
+              const dz = c.deltaZ(m.s, o.s);
+              const back = 1.2 + 0.25 * m.v, fwd = 2.5 + 0.35 * m.v;
+              if (dz > -(back + (o.L + m.L) / 2) && dz < fwd + (o.L + m.L) / 2) { ok2 = false; break; }
+            }
+            // ...and not into the rival itself — see yieldToRival
+            if (ok2) {
+              const dLat = Math.abs(off2 - r.off);
+              const dLon = Math.abs(c.deltaZ(r.s, m.s));
+              // projected forward over the ~1.1 s the move takes
+              const moveT = 1.1, closing = Math.max(0, r.v - m.v);
+              if (dLat < (m.W + R.W) / 2 + RIVAL.clearLat &&
+                  dLon - closing * moveT < (m.L + R.L) / 2 + RIVAL.clearLon + 1.2 + 0.25 * m.v) ok2 = false;
+            }
+            if (ok2) { m.laneK = k2; yielded = true; yields++; m.yieldCd = 2.5; }
+            else blockedYield++;
+            }
+          }
+        }
+      }
+      if (!yielded && m.turnCd <= 0) {
         m.turnCd = 6 + rng() * 12;
         const k2 = m.laneK + (rng() < 0.5 ? -1 : 1);
         /* Gap-checked against OTHER NPCS only — the real fleet has
@@ -704,51 +749,43 @@ for (const NC of [70, 34]) {
     }
 
     // --- the rival ---
-    const ahead = c.deltaZ(ps, r.s);
-    r.pace += (pv - r.pace) * (1 - Math.exp(-DT / RIVAL.paceTau));
-    r.gapT -= DT;
-    if (r.gapT <= 0) {
-      r.gapT = lerp(RIVAL.gapEvery[0], RIVAL.gapEvery[1], rng());
-      const rr = rng();
-      r.gapWant = rr < RIVAL.breakP ? lerp(RIVAL.breakLo, RIVAL.breakHi, rng())
-        : rr < RIVAL.breakP + RIVAL.gapNearP
-          ? lerp(RIVAL.gapNear[0], RIVAL.gapNear[1], rng())
-          : lerp(RIVAL.gapMid[0], RIVAL.gapMid[1], rng());
+    let ahead = c.deltaZ(ps, r.s);
+    behindT = ahead < 0 ? behindT + DT : 0;
+    if (ahead < -RIVAL.reseedBehind && behindT > RIVAL.reseedAfter) {
+      behindT = 0;
+      r.s = c.wrapZ(ps + RIVAL.reseedAhead);
+      r.v = Math.max(r.v, r.pace);
+      ahead = RIVAL.reseedAhead;
+      reseeds++;
     }
-    if (ahead <= MODE.holdNotWithin) r.holdT = 0;
+    r.pace += (pv - r.pace) * (1 - Math.exp(-DT / RIVAL.paceTau));
+    if (ahead <= RIVAL.holdNotWithin) r.holdT = 0;
     else if (r.holdT > 0) r.holdT -= DT;
     else { r.holdCd -= DT; if (r.holdCd <= 0) {
       r.holdT = lerp(RIVAL.holdMin, RIVAL.holdMax, rng());
       r.holdCd = lerp(RIVAL.cdNear, RIVAL.cdFar, 0.5) + rng() * 4; } }
 
-    const pressured = ahead < RIVAL.pressureAt;
-    const gErr = ahead - r.gapWant;
-    let v0;
-    if (MODE.paceAnchored) {
-      const gOut = gErr > 0 ? Math.max(0, gErr - RIVAL.gapDead)
-                            : Math.min(0, gErr + RIVAL.gapDead);
-      v0 = r.pace * r.mood + clamp(-gOut * MODE.gapP, -MODE.gapDown, MODE.gapUp);
-    } else {
-      v0 = Math.min(MODE.top * r.mood, MODE.top);
-      if (gErr > RIVAL.gapDead)
-        v0 = Math.max(r.pace - MODE.gapDown, v0 - (gErr - RIVAL.gapDead) * MODE.gapP);
+    let v0 = Math.min(RIVAL.top * r.mood, RIVAL.top);
+    let easing = false;
+    if (ahead > RIVAL.easeBeyond) {
+      easing = true;
+      const t = clamp((ahead - RIVAL.easeBeyond) / RIVAL.easeSpan, 0, 1);
+      v0 = lerp(v0, Math.max(r.pace - RIVAL.gapDown, 0), t);
     }
-    if (MODE.leadKeep > 0 && ahead < MODE.leadKeep) {
-      const lt = clamp((MODE.leadKeep - ahead) / MODE.leadKeep, 0, 1 + MODE.leadBack);
-      v0 = Math.max(v0, pv + Math.min(MODE.leadMargin * lt, MODE.leadBoostMax));
+    if (RIVAL.leadKeep > 0 && ahead < RIVAL.leadKeep) {
+      const lt = clamp((RIVAL.leadKeep - ahead) / RIVAL.leadKeep, 0, 1 + RIVAL.leadBack);
+      const sh = lt <= 1 ? lt * lt * lt : lt;
+      v0 = Math.max(v0, pv + Math.min(RIVAL.leadMargin * sh, RIVAL.leadBoostMax));
     }
-    v0 = clamp(v0, 0, MODE.top);
+    v0 = clamp(v0, 0, RIVAL.top);
 
-    const lead = MODE.oldLaneScore
-      ? perceive(r.s, r.off, fleet, MODE.followSee, 1.9)
-      : perceive(r.s, r.off, fleet, MODE.followSee, (R.W + 2.5) / 2 + 0.25);
+    const lead = perceive(r.s, r.off, fleet, RIVAL.followSee, (R.W + 2.5) / 2 + 0.25);
     let acc = (v0 - r.v) * RIVAL.spdP;
     if (lead) {
       const aMax = RIVAL.folAMax, bCom = RIVAL.folBCom;
       const dv = r.v - lead.v;
-      const urg = (!MODE.oldLaneScore && pressured) ? 1 : clamp(-gErr / RIVAL.urgentAt, 0, 1);
-      const T = lerp(MODE.folT, RIVAL.folTUrgent, urg);
-      const sS = MODE.folS0 + r.v * T + (r.v * dv) / (2 * Math.sqrt(aMax * bCom));
+      const T = RIVAL.folTUrgent;
+      const sS = RIVAL.folS0 + r.v * T + (r.v * dv) / (2 * Math.sqrt(aMax * bCom));
       acc = Math.min(acc, aMax * (1 - Math.pow(sS / Math.max(lead.ds, 0.55), 2)));
       if (lead.ds < 12 && r.v > lead.v + 2) pinned++;
       leadFrames++; leadDsSum += lead.ds;
@@ -761,6 +798,8 @@ for (const NC of [70, 34]) {
     r.v = Math.max(0, r.v + clamp(acc, bf, RIVAL.accMax) * DT);
     vSum += r.v;
     pvSum += pv;
+    if (easing) easeN++;
+    else { freeV += r.v; freePv += pv; freeN++; }
     v0Sum += v0;
     // was the STATION-KEEPING target the thing capping it, rather than traffic?
     if (!lead || (v0 - r.v) * RIVAL.spdP <= 0.05) { if (r.v >= v0 - 0.5) v0CapFrames++; }
@@ -776,28 +815,52 @@ for (const NC of [70, 34]) {
     }
     {
       const curLane = nearestLane(r.s, r.off);
-      if (r.laneWant !== curLane) wantDiff++;
+      if (nearestLane(r.s, r.laneWant) !== curLane) wantDiff++;
       if (prevLane >= 0 && curLane !== prevLane) laneSwitches++;
       // a lane change is "abandoned" if the target changed while the body was
       // still more than half a lane from the previous target
       if (prevWant >= 0 && r.laneWant !== prevWant && mid) abandoned++;
-      mid = Math.abs(c.laneOffset(Math.min(r.laneWant, c.lanes(r.s) - 1), r.s) - r.off) > 1.8;
+      mid = Math.abs(r.laneWant - r.off) > 1.8;
       prevLane = curLane; prevWant = r.laneWant;
     }
     r.s = c.wrapZ(r.s + r.v * DT);
 
     // lateral: pick a lane, ease toward it, never slide into anybody
-    r.laneT -= DT;
-    if (r.laneT <= 0 && !(MODE.oldLaneScore && r.holdT > 0)) {
-      r.laneT = RIVAL.laneThink;
-      r.laneWant = (!MODE.oldLaneScore && pressured)
-        ? bestLane(r.s, r.off, fleet, v0, MODE, false, 0)
-        : bestLane(r.s, r.off, fleet, v0, MODE, r.holdT > 0);
+    /* the commitment latch — mirrors updateRival */
+    r.laneT += DT;
+    {
+      const arrived = Math.abs(r.off - r.laneWant) < RIVAL.laneArrive;
+      const blocked = !arrived && !latClear(r.s, r.laneWant, fleet);
+      if (blocked) {
+        // abort cleanly and serve the dwell — see updateRival
+        if (pendingMove) { pendingMove = false; }
+        r.laneWant = c.laneOffset(nearestLane(r.s, r.off), r.s);
+        r.laneT = 0;
+      } else if ((arrived && r.laneT > RIVAL.laneMinHold) || r.laneT > RIVAL.laneMaxHold) {
+        r.laneT = 0;
+        const prev = r.laneWant;
+        r.laneWant = bestLane(r.s, r.off, fleet, v0, r.holdT > 0);
+        /* WIGGLE METRICS — a known failure mode now, so they live here
+           permanently. A "move" is a decision that shifts the target by more
+           than a metre; it COMPLETES if the body reaches it before the target
+           moves again, and it is a REVERSAL if the new target is back the way
+           it came from. */
+        // resolve the move that was in flight, if any
+        if (pendingMove) { if (arrived) movesDone++; pendingMove = false; }
+        if (Math.abs(r.laneWant - r.off) > 1.0) {
+          movesStarted++;
+          pendingMove = true;
+          const dirNew = Math.sign(r.laneWant - r.off);
+          if (lastMoveDir !== 0 && dirNew !== 0 && dirNew !== lastMoveDir) reversals++;
+          if (dirNew !== 0) lastMoveDir = dirNew;
+        }
+      }
     }
-    const slide = Math.abs(c.laneOffset(r.laneWant, c.wrapZ(r.s + r.v * RIVAL.slideDt))
-      - c.laneOffset(r.laneWant, r.s)) / RIVAL.slideDt;
+    const kNow = nearestLane(r.s, r.off);
+    const slide = Math.abs(c.laneOffset(kNow, c.wrapZ(r.s + r.v * RIVAL.slideDt))
+      - c.laneOffset(kNow, r.s)) / RIVAL.slideDt;
     const track = Math.max(LANE_FOLLOW_RATE, slide + RIVAL.laneRate);
-    const want = c.laneOffset(Math.min(r.laneWant, c.lanes(r.s) - 1), r.s);
+    const want = r.laneWant;
     const lim = Math.max(0, c.halfWidth(r.s) - R.W / 2 - 0.3);
     r.offT += clamp(want - r.offT, -(RIVAL.laneRate + slide) * DT, (RIVAL.laneRate + slide) * DT);
     r.offT = clamp(r.offT, -lim, lim);
@@ -806,9 +869,26 @@ for (const NC of [70, 34]) {
     if (stepLat === 0 || latClear(r.s, cand, fleet)) r.off = cand;
     else latBlocked++;
 
-    const sBefore = r.s;
+    // OLD: rate sampled before separation, offPrev recorded before it too
+    const rawOld = (r.off - offPrevOld) / DT;
+    offPrevOld = r.off;
+    const rawNew = (r.off - offPrevNew) / DT;
+    latRateNew += (rawNew - latRateNew) * (1 - Math.exp(-DT / RIVAL.yawTau));
+
+    // (the fleet has already moved for this step, above, so this IS the
+    // end-of-frame position — mirrors the rival separation pass at the end of
+    // Traffic.update)
+    const sBefore = r.s, offBefore = r.off;
     separate(r, fleet);
-    if (r.s !== sBefore) sepFired++;
+    if (r.s !== sBefore || r.off !== offBefore) sepFired++;
+    offPrevNew = r.off;
+
+    {
+      const sv = Math.max(r.v, 1);
+      yawOld.push(Math.abs(Math.atan2(rawOld, sv)) * 180 / Math.PI);
+      yawNew.push(Math.abs(clamp(Math.atan2(latRateNew, sv),
+        -RIVAL.yawMax, RIVAL.yawMax)) * 180 / Math.PI);
+    }
 
     // --- measure ---
     let frameOverlap = false;
@@ -824,7 +904,21 @@ for (const NC of [70, 34]) {
         if (dLon < 60) minSep = Math.min(minSep, sep);
       }
     }
-    if (frameOverlap) overlapFrames++;
+    if (frameOverlap) {
+      overlapFrames++;
+      let sepSees=0, partnerYielded=0, partnerMoving=0;
+      for (const m of fleet) {
+        const dLat=Math.abs(r.off-m.off), dLon=Math.abs(c.deltaZ(m.s,r.s));
+        if (dLat<(R.W+m.W)/2 && dLon<(R.L+m.L)/2) {
+          if (dLat<(R.W+m.W)/2+RIVAL.sepLat && dLon<(R.L+m.L)/2+RIVAL.sepLon) sepSees++;
+          if ((m.yieldCd||0)>0) partnerYielded++;
+          if (Math.abs(c.laneOffset(m.laneK,m.s)-m.off)>0.2) partnerMoving++;
+        }
+      }
+      if(sepSees===0) ovBlind++;
+      if(partnerYielded) ovYield++;
+      if(partnerMoving) ovMoving++;
+    }
     gapHist.push(ahead);
     if (ahead > 0) aheadFrames++;
     if (ahead > 0 && ahead < 10) closeFrames++;
@@ -833,25 +927,47 @@ for (const NC of [70, 34]) {
   }
 
   console.log(`   overlap frames: ${overlapFrames}   worst penetration: ${f(worstDepth)} m`);
+  if (overlapFrames) console.log(`      separate() blind on ${ovBlind} | partner had just yielded on ${ovYield} | partner mid-lane-change on ${ovMoving}`);
+  {
+    const q = (a, x) => { const b = a.slice().sort((u, v) => u - v); return b[Math.floor(x * (b.length - 1))]; };
+    const mean = (a) => a.reduce((u, v) => u + v, 0) / Math.max(a.length, 1);
+    const oldMax = Math.max(...yawOld), newMax = Math.max(...yawNew);
+    const newP99 = q(yawNew, 0.99), cap = RIVAL.yawMax * 180 / Math.PI;
+    console.log(`   YAW off the corridor, deg — superseded formula mean ${f(mean(yawOld))} p99 ${f(q(yawOld, 0.99))} max ${f(oldMax)}`);
+    console.log(`                                        shipping mean ${f(mean(yawNew))} p99 ${f(newP99)} max ${f(newMax)}`);
+    /* The superseded formula took its rate before the separation pass and
+       capped nothing, so a depenetration read as ~130 m/s of lateral motion
+       and the body pointed nearly sideways for a frame. Kept as a live
+       comparison rather than a comment because it is the only thing that
+       proves the cap is still doing its job. */
+    if (newMax > cap + 0.01)
+      bad(`yaw reached ${f(newMax)} deg, past the ${f(cap)} deg cap`);
+    else if (newP99 > cap + 0.01)
+      bad(`yaw p99 ${f(newP99)} deg exceeds the cap`);
+    else ok(`yaw capped at ${f(cap)} deg (superseded formula peaked at ${f(oldMax)})`);
+  }
   console.log(`   layer 2 blocked a lateral move on ${latBlocked} frames; layer 3 fired on ${sepFired}`);
   gapHist.sort((a, b) => a - b);
   const q = (x) => gapHist[Math.floor(x * (gapHist.length - 1))];
   console.log(`   gap to player p10/med/p90: ${f(q(0.1))} / ${f(q(0.5))} / ${f(q(0.9))} m`);
-  console.log(`   AHEAD of the player ${(aheadFrames / STEPS * 100).toFixed(1)}% of the run | bumper-to-bumper (<10 m) ${(closeFrames / STEPS * 100).toFixed(1)}% | completed passes by the player: ${passes}`);
-  console.log(`   rival mean speed ${f(vSum / STEPS)} m/s vs player mean ${f(pvSum / STEPS)} m/s`);
+  console.log(`   AHEAD of the player ${(aheadFrames / STEPS * 100).toFixed(1)}% of the run | out-of-sight recycles: ${reseeds}`);
+  console.log(`   rival mean speed ${f(vSum / STEPS)} m/s vs player mean ${f(pvSum / STEPS)} m/s (mean folds in the easing)`);
+  console.log(`   WHEN NOT EASING (${(freeN / STEPS * 100).toFixed(0)}% of frames): rival ${f(freeV / Math.max(freeN, 1))} vs player ${f(freePv / Math.max(freeN, 1))} m/s`);
   console.log(`   had a leader in its path on ${(leadFrames / STEPS * 100).toFixed(0)}% of frames (mean gap ${f(leadDsSum / Math.max(leadFrames, 1))} m)`);
   console.log(`   the FOLLOWING limit set the acceleration on ${(capFrames / STEPS * 100).toFixed(0)}% of frames`);
   console.log(`   mean station-keeping target v0 ${f(v0Sum / STEPS)} m/s (it achieved ${f(vSum / STEPS)})`);
-  console.log(`   lane changes completed: ${laneSwitches}, abandoned mid-move: ${abandoned}`);
+  console.log(`   TRAFFIC YIELDS: ${yields} in ${(STEPS * DT / 60).toFixed(1)} min = ${(yields / (STEPS * DT / 60)).toFixed(1)} per minute`);
+  console.log(`      wanted to yield on ${yieldWant} frames; had NOWHERE TO GO on ${blockedYield} lane-tries (${(blockedYield / Math.max(yieldWant, 1) * 100).toFixed(0)}% of wants were boxed in)`);
+  console.log(`   WIGGLE: ${movesStarted} moves started, ${movesDone} completed = ${(100 - movesDone / Math.max(movesStarted, 1) * 100).toFixed(0)}% ABANDONED | direction reversals ${(reversals / (STEPS * DT / 60)).toFixed(1)}/min`);
+  console.log(`   LANE CHANGES: ${laneSwitches} in ${(STEPS * DT / 60).toFixed(1)} min = ${(laneSwitches / (STEPS * DT / 60)).toFixed(1)} per minute (abandoned mid-move: ${abandoned})`);
   let fv = 0; for (const m of fleet) fv += m.v;
   console.log(`   the FLEET's own mean speed: ${f(fv / fleet.length)} m/s — the flow the rival is embedded in`);
 
-  if (overlapFrames > 0 && MODE !== BEFORE)
+  if (overlapFrames > 0)
     bad(`rival overlapped a traffic body on ${overlapFrames} frames (worst ${f(worstDepth)} m)`);
-  else if (MODE !== BEFORE) ok("never shared a body with a traffic car");
+  else ok("never shared a body with a traffic car");
   if (minSep < 0) bad(`minimum separation went negative (${f(minSep)} m)`);
-  else if (MODE !== BEFORE) ok(`worst-case separation ${f(minSep)} m — bodies always clear`);
-  }
+  else ok(`worst-case separation ${f(minSep)} m — bodies always clear`);
 }
 
 console.log(fail ? `\n${fail} FAILED` : "\nall rival checks passed");
