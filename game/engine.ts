@@ -25,6 +25,7 @@ import { spawnZ } from "./world/ramps";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
 import { buildPlayerCar, type PlayerRig } from "./player";
+import type { CockpitModelHandle, MirrorFraming } from "./cockpitmodel";
 import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, type GaugeFlags } from "./cockpit";
 import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
@@ -219,13 +220,31 @@ const BEAM_FLOOR = 0.13;
     few hundred ms — and short enough to be a deliberate press, not a wait. */
 const HI_HOLD = 2;
 
-/* Camera modes, in cycle order. CAM_POV is the hard-mounted dashcam: it shares
-   the cockpit's rendering (interior shell visible, mirror and gauges live) but
-   none of its head physics — a bracket bolted over the dash does not lean into
-   corners, crane to look back, or breathe under braking. */
-const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3;
-const CAM_COUNT = 4;
-const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM"];
+/* Camera modes. CAM_POV is the hard-mounted dashcam: it shares the cockpit's
+   rendering (interior shell visible, mirror and gauges live) but none of its
+   head physics — a bracket bolted over the dash does not lean into corners,
+   crane to look back, or breathe under braking. CAM_CONSOLE is a second
+   bracket, on the tunnel between the seats, and is rendered the same way.
+
+   These are NOT in cycle order any more; see CAM_CYCLE below. */
+const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3, CAM_CONSOLE = 4;
+const CAM_COUNT = 5;
+const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE"];
+/* CYCLE ORDER IS NOT NUMERIC ORDER, and the split is deliberate.
+
+   AGENTS.md requires the dashcam to be LAST in the cycle — it is the view the
+   game ships in, and C from CHASE should always walk toward it. But camMode is
+   PERSISTED: settings.ts defaults it to 3 and every saved profile holds a
+   number, so renumbering the dashcam to make room for a new view would boot
+   every existing player into whatever took index 3. CAM_CONSOLE therefore takes
+   the free index at the end and the cycle walks this table instead of
+   incrementing, which keeps both promises at once. CAM_NAMES stays indexed by
+   camMode, not by cycle position.
+
+   Anything not in the table (a hand-edited profile) falls to CHASE on the next
+   press rather than sticking. */
+const CAM_CYCLE = [CAM_CHASE, CAM_COCKPIT, CAM_HOOD, CAM_CONSOLE, CAM_POV];
+const nextCam = (m: number) => CAM_CYCLE[(CAM_CYCLE.indexOf(m) + 1) % CAM_CYCLE.length];
 
 /* Dashcam mount, as an offset from the driver's eye (see cockpit.ts EYE): high
    over the dash, a little inboard of the driver, aimed down across the cluster.
@@ -312,19 +331,80 @@ const POV_MOUNT_DY_IMPORTED = -0.15;
 const POV_MOUNT_DELTA = { dx: 0, dy: POV_MOUNT_DY_IMPORTED, dz: 0 };
 /* CAM_COCKPIT's offset with the imported interior up — see cockpitEye().
 
-   dz 0.55 lands the eye at z ~0.25, just ahead of the backrest and behind the
-   wheel rim (z 0.485..0.718), which is where a driver's head actually is.
+   dz 0.30 lands the eye at z ~0.0: 0.3 m ahead of the seat backs (z -0.29),
+   0.5 m short of the wheel rim (z 0.485..0.718) and 0.56 m behind the wheel
+   hub, which is a real driver's head rather than a chin on the airbag.
+
+   IT WAS 0.55, and the OEM mirror is what moved it. This view now shows the
+   donor's own mirror housing (cockpitmodel.ts, framing "cabin"), which hangs
+   on the centreline at (x 0.008, y 1.308, z 0.437) while the driver's eye is
+   out at x 0.36 — so the eye's DEPTH is the whole of what decides whether the
+   mirror is on screen. At dz 0.55 the eye sat at z 0.25, a 0.19 m gap against
+   a 0.35 m lateral offset: 62 degrees off axis, against a 49.6-degree half
+   frame at the default 67-degree FOV on 16:9. The mirror was not merely badly
+   framed, it was outside the frustum, and no amount of FOV brought it back
+   (100 degrees, the slider's maximum, only reaches 64.7). At dz 0.30 the gap
+   is 0.44 m, the angle is 38.9 degrees, and the glass sits around 79% of the
+   way across the frame — near the edge, which is exactly where a real mirror
+   sits in a wide-angle in-car shot, but wholly in shot.
 
    dy -0.10 because this camera had NO imported-interior height offset at all:
    it sat at the procedural COCKPIT_EYE.y while the dashcam beside it had
    already been dropped twice for being too high. Same complaint, same cabin,
    so it inherits the correction rather than being left as the one interior
    view nobody could lower. */
-const COCKPIT_EYE_IMPORTED = { dy: -0.14, dz: 0.55 };
+const COCKPIT_EYE_IMPORTED = { dy: -0.14, dz: 0.30 };
+/* CHASE camera "sensation" effects, as one multiplier: head-spring bob, the
+   G-lean roll, and the speed FOV kick. Reported as unwanted wobble in third
+   person, so it ships at 0. Live: `window.__chaseShake = 1` restores it. */
+const CHASE_SHAKE = 0;
+
+/* EXPERIMENTAL centre-console camera (CAM_CONSOLE): a wide lens on the tunnel
+   between the seats, looking forward. Hard-mounted like the dashcam — it is a
+   bracket on the console, not a head — so it takes no lean, no lookahead and no
+   look-back.
+
+   Read straight out of the donor manifest rather than guessed, in the same
+   cockpit-local metres everything else here uses (public/models/cockpits/
+   volvo-s90-full.json, and note y is stated absolutely, like COCKPIT_EYE.y —
+   the P.belt term is added at the mount site so it tracks a taller or lower
+   car):
+
+   - x 0. The console (`shell_0`) runs x -0.136..0.131 and the two front seats
+     start at x 0.115 and -0.121, so the centreline is the only clear channel
+     between them.
+   - z -0.05. "Back where the centre console is": the console spans z
+     -0.244..0.815 and the seat backs are at z -0.29, so this sits over the
+     armrest end of it, level with the driver's shoulder — 0.36 m behind the
+     dashcam lens and 0.05 m behind the cockpit eye.
+   - y 1.22, and this is the number that decides whether the view is usable.
+     The dash pad's ridge is at (y 1.072, z 1.118) and the lens is 1.17 m
+     behind it, so the sightline that grazes that ridge is nearly flat and
+     everything nearer than where it lands is hidden dash. That distance moves
+     brutally fast with height: 46 m at y 1.10, 17 m at 1.15, 9.6 m at 1.22,
+     8.2 m at 1.25. Below ~1.15 the near road is simply not in the shot. 1.22
+     is a hair over the driver's own eye at 1.21 and leaves the mirror body
+     (y 1.270..1.346) above the lens rather than across it; going much past
+     1.25 walks into it, and the headliner is at 1.375.
+   - fov 78 vertical, which is ~110 degrees horizontal at 16:9 — against ~99
+     for the 67-degree default and ~105 for the dashcam, so it is the widest
+     lens in the car, which is the point. Its own number on purpose: povFov() is
+     bound to the FOV slider and to per-interior clamps, and this camera exists
+     to be experimented with, not to inherit the shipping view's constraints.
+   - tilt 0.02 rad of nose-down, nominal. The dashcam needs 0.227 because it has
+     to rake the cluster into frame from above it; this one sits behind and
+     level with the dash and does not.
+
+   Live knob, same pattern as __povMount / __cockpitEye — `window.__consoleCam.z
+   = -0.1` re-frames on the next frame — because this is the view whose whole
+   point is being moved around. Settled values come back here. */
+const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
 declare global {
   interface Window {
     __povMount?: { dx: number; dy: number; dz: number };
     __cockpitEye?: { dy: number; dz: number };
+    __chaseShake?: number;
+    __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number };
   }
 }
 /* 13 degrees of nose-down, on top of whatever the body is doing. This is what
@@ -449,6 +529,25 @@ export class Game {
       so zero means "exactly where it was" and a reading taken from the console
       can be pasted straight into POV_MOUNT_DELTA below. dy stays absolute
       because POV_MOUNT_DY_IMPORTED already is. */
+  /** Multiplier on the CHASE camera's "sensation" effects — the head-spring
+      bob that rides the camera height, the G-lean roll on the shell, and the
+      speed FOV kick. 0 disables all three at once; 1 restores the old feel.
+
+      One multiplier rather than three flags because the user could not name
+      which of them was the problem ("remove the shake stuff in 3rd person too
+      idk waht that is") — they read as one wobble from outside the car, and
+      splitting them into separate settings would ask a question nobody can
+      answer by looking. If only one turns out to be wanted back, this is the
+      place to split it.
+
+      NOT applied to the interior cameras: the cockpit view's road buzz is a
+      different system (position-keyed value noise, see roadTexture) and was
+      not what was reported. */
+  private chaseShake(): number {
+    if (window.__chaseShake === undefined) window.__chaseShake = CHASE_SHAKE;
+    return window.__chaseShake;
+  }
+
   private povMount(): { dx: number; dy: number; dz: number } {
     if (!(this.rig.cockpitModel && this.dashImported))
       return { dx: 0, dy: POV_MOUNT.dy, dz: 0 };
@@ -475,6 +574,37 @@ export class Game {
     if (!(this.rig.cockpitModel && this.dashImported)) return { dy: 0, dz: 0 };
     if (!window.__cockpitEye) window.__cockpitEye = { ...COCKPIT_EYE_IMPORTED };
     return window.__cockpitEye;
+  }
+
+  /** Mount, lens and cant for the experimental centre-console camera — see
+      CONSOLE_CAM for where every number comes from.
+
+      NOT split by interior, unlike povMount() and cockpitEye(). Those two exist
+      to hold a framing that two different dashes disagree about; this camera is
+      aimed at the road over the console, and neither dash is in the shot the
+      way a binnacle is. It reads the same knob either way, which also keeps the
+      J toggle from moving it underneath someone who is tuning it. */
+  private consoleCam(): { x: number; y: number; z: number; fov: number; tilt: number } {
+    if (!window.__consoleCam) window.__consoleCam = { ...CONSOLE_CAM };
+    return window.__consoleCam;
+  }
+
+  /** Is the camera inside the cabin? Interior shell on, exterior body off, HUD
+      minimap suppressed (every in-car view carries the head unit's own map),
+      nav panel clickable, cabin trim audible, rear view rendered.
+
+      One predicate rather than the `camMode === CAM_COCKPIT || camMode ===
+      CAM_POV` pair that used to be written out at each of those sites: adding
+      CAM_CONSOLE meant editing five copies of the same test, and the failure
+      mode for missing one is silent and ugly — an invisible cabin, or the
+      car's own bodywork drawn across the lens. Sites that are about ONE camera
+      rather than about being indoors (the dashcam degrade, the impact glitch,
+      the POV beam-carpet widening, the cockpit head springs) deliberately do
+      not use this. */
+  private inCar(): boolean {
+    return (
+      this.camMode === CAM_COCKPIT || this.camMode === CAM_POV || this.camMode === CAM_CONSOLE
+    );
   }
 
   /** The dashcam lens, in three's vertical degrees, for a given viewport
@@ -641,6 +771,11 @@ export class Game {
   /** camMode as of the last interior-EQ update — cheaper than calling
       setInterior every frame and keeps the audio side edge-triggered */
   private lastInteriorMode = -1;
+  /** The handle and the state the mirror framing was last pushed to — see
+      mirrorFramingUpdate(). The handle is half of the key because it arrives
+      asynchronously and starts on wire()'s default. */
+  private mirrorFramedFor: CockpitModelHandle | null = null;
+  private mirrorFramedAs: MirrorFraming | "" = "";
   debug = {
     override: null as Partial<DriverInput> | null,
     errors: [] as string[],
@@ -1197,7 +1332,7 @@ export class Game {
     }
     if (!this.running) return;
     if (k === "c") {
-      this.camMode = (this.camMode + 1) % CAM_COUNT;
+      this.camMode = nextCam(this.camMode);
       this.ui.toast(CAM_NAMES[this.camMode]);
     }
     if (k === "l") {
@@ -1346,7 +1481,7 @@ export class Game {
     /* The raycast ignores `visible`, so without this the buttons would still
        be clickable — straight through the bodywork — from CHASE and HOOD,
        where updateCamera() has hidden the whole cockpit group. */
-    if (this.camMode !== CAM_COCKPIT && this.camMode !== CAM_POV) return;
+    if (!this.inCar()) return;
     const panel = this.rig?.cockpit?.navPanel();
     if (!panel) return;
     // Off the canvas rect, not the window: the two agree today (canvas.game is
@@ -1433,7 +1568,7 @@ export class Game {
     const camBtn = document.getElementById("tcC");
     if (camBtn)
       camBtn.addEventListener("pointerdown", () => {
-        this.camMode = (this.camMode + 1) % CAM_COUNT;
+        this.camMode = nextCam(this.camMode);
         this.ui.toast(CAM_NAMES[this.camMode]);
       });
   }
@@ -1467,10 +1602,12 @@ export class Game {
   }
 
   /** Whether the HUD overlay minimap should be on screen at all: the setting,
-      and neither in-car view — both of those have the head unit's own map
-      (carscreen.ts), which is the one the player reads there. */
+      and no in-car view — all of those have the head unit's own map
+      (carscreen.ts), which is the one the player reads there. The console
+      camera looks straight down the tunnel at that screen, so it is the last
+      one that wants a second map pasted over it. */
   private mmapVisible() {
-    return this.mmap && this.camMode !== CAM_COCKPIT && this.camMode !== CAM_POV;
+    return this.mmap && !this.inCar();
   }
   /** last mmapVisible(), so the reveal can repaint before it is shown */
   private mmapWasOn = false;
@@ -1481,7 +1618,7 @@ export class Game {
      the same controls, not a second set of semantics. */
   private padEdge: PadEdge = {
     cam: () => {
-      this.camMode = (this.camMode + 1) % CAM_COUNT;
+      this.camMode = nextCam(this.camMode);
       this.ui.toast(CAM_NAMES[this.camMode]);
     },
     lights: () => {
@@ -1902,11 +2039,38 @@ export class Game {
       parameters over a quarter second — re-issuing that every frame would
       keep restarting the ramp and it would never arrive. */
   private interiorUpdate() {
+    /* Ahead of the early return, because the mirror has a SECOND edge the
+       audio does not: the donor interior loads async, so the handle can arrive
+       long after the last camera change and would otherwise sit on whatever
+       framing wire() defaulted to until the player next pressed C. */
+    this.mirrorFramingUpdate();
     if (this.camMode === this.lastInteriorMode) return;
     this.lastInteriorMode = this.camMode;
+    /* The console camera is a plain cabin mic: it is inside the shell like the
+       cockpit, and unlike the dashcam it is not pressed against the glass. */
     this.audio.setInterior(
-      this.camMode === CAM_COCKPIT ? "cabin" : this.camMode === CAM_POV ? "pov" : "out"
+      this.camMode === CAM_POV ? "pov" : this.inCar() ? "cabin" : "out"
     );
+  }
+
+  /** Point the donor's rear-view mirror at whichever camera is looking at it.
+
+      DASHCAM gets the tuned framing it has always had — housing hidden, glass
+      walked into the top of the frame. Every other camera gets the OEM housing
+      on show with the glass seated in it, which is what the cockpit and console
+      views are close enough to read as a mirror rather than a lump. CHASE and
+      HOOD are lumped in with them and neither cares: updateCarVisual hides the
+      whole cockpit group in both.
+
+      Edge-triggered on the pair (handle, framing) rather than on camMode, so it
+      also fires the first frame after the donor lands. */
+  private mirrorFramingUpdate() {
+    const m = this.rig?.cockpitModel ?? null;
+    const want: MirrorFraming = this.camMode === CAM_POV ? "dashcam" : "cabin";
+    if (m === this.mirrorFramedFor && want === this.mirrorFramedAs) return;
+    this.mirrorFramedFor = m;
+    this.mirrorFramedAs = want;
+    m?.setMirrorFraming(want);
   }
 
   /** Hand the audio side the traffic it should be able to hear, and turn
@@ -2570,8 +2734,9 @@ export class Game {
        cluster, dash pad, mirror and A-pillars are all in its frame. It must NOT
        have the exterior body either, whose front faces all point away from a
        camera sitting inside it, leaving the roof and flanks invisible and the
-       far bodywork showing through. */
-    const inside = this.camMode === CAM_COCKPIT || this.camMode === CAM_POV;
+       far bodywork showing through. The console camera is inside it too, and
+       further back than either, so it needs both halves of this even more. */
+    const inside = this.inCar();
     rig.cockpit.group.visible = inside;
     rig.exteriorG.visible = !inside;
     this.lampWash(inside);
@@ -2895,6 +3060,34 @@ export class Game {
       // pitch is look-up-positive), plus the fixed downward cant of the bracket
       this.camera.rotation.x = -this.rig.bodyG.rotation.x - POV_TILT;
       this.camera.rotation.z = -this.rig.bodyG.rotation.z;
+    } else if (this.camMode === CAM_CONSOLE) {
+      /* Experimental wide lens on the centre console — see CONSOLE_CAM. Built
+         on the dashcam's branch rather than the cockpit's on purpose: it is a
+         bracket between the seats, so it gets the body's motion and nothing
+         else, and the same head-parking on entry so that stepping from here
+         into COCKPIT starts from a centred spring instead of a stale one. */
+      if (this.lastCamMode !== CAM_CONSOLE) {
+        this.head.x = this.head.y = this.head.z = this.head.roll = 0;
+        this.head.vx = this.head.vy = this.head.vz = this.head.vroll = 0;
+        this.lookaheadYaw = 0;
+        this.lbLean = 0;
+      }
+      const P = this.spec.shell;
+      const k = this.consoleCam();
+      this.camera.position.copy(
+        this.rig.bodyG.localToWorld(
+          this.tmpV.set(
+            // x scaled with the shell like both other in-car mounts, so a
+            // narrower car keeps the lens in the channel between its seats
+            k.x * (P.W / COCKPIT_REF.W),
+            P.belt - COCKPIT_REF.belt + k.y,
+            k.z
+          )
+        )
+      );
+      this.camera.rotation.y = car.h + Math.PI;
+      this.camera.rotation.x = -this.rig.bodyG.rotation.x - k.tilt;
+      this.camera.rotation.z = -this.rig.bodyG.rotation.z;
     } else {
       const back = this.lookBack ? Math.PI : 0;
       this.head.vx += (-car.ayS * 0.006 - this.head.x * 46) * dt;
@@ -2953,7 +3146,7 @@ export class Game {
               + cockEye.dy,
             COCKPIT_EYE.z + this.head.z + cockEye.dz
           )
-          : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5, P.L / 2 - 0.6);
+          : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5 * this.chaseShake(), P.L / 2 - 0.6);
       /* road micro-vibration (cockpit only): multi-octave value noise keyed
          off car.z, not time. Same stretch of road always buzzes the same
          way — no randomness and nothing that drifts, so it can't build into
@@ -2984,18 +3177,30 @@ export class Game {
       // roll matches the shell for the same reason the pitch does, plus the
       // G-lean roll from above
       this.camera.rotation.z =
-        -this.rig.bodyG.rotation.z + clamp(car.u * car.r * 0.0035, -0.06, 0.06) + this.head.roll;
+        -this.rig.bodyG.rotation.z +
+        (clamp(car.u * car.r * 0.0035, -0.06, 0.06) + this.head.roll) * this.chaseShake();
     }
-    const kickM = this.camMode === CAM_CHASE ? 0.18 : this.camMode === CAM_HOOD ? 0.6 : 1;
+    const kickM =
+      (this.camMode === CAM_CHASE ? 0.18 : this.camMode === CAM_HOOD ? 0.6 : 1) *
+      (this.camMode === CAM_CHASE ? this.chaseShake() : 1);
     /* The dashcam still runs a FIXED lens in the sense that matters: no speed
        FOV kick, because a bracket-mounted camera has no zoom and the kick is a
        driver-sensation cue rather than an optical one. What it no longer
        ignores is the user's own setting — povFov() turns the slider into the
-       lens, once per frame, per aspect. */
+       lens, once per frame, per aspect.
+
+       The console camera takes its lens from its own knob instead, and not
+       from povFov(): that one is the slider crossed with the per-interior caps
+       the build tool's frustum contract is written against, and an
+       experimental view wants to be dialled wide without dragging the shipping
+       view's constraints along. No speed kick there either, same reason — it
+       is a bracket, not a driver. */
     const fovT =
       this.camMode === CAM_POV
         ? this.povFov(this.camera.aspect)
-        : this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
+        : this.camMode === CAM_CONSOLE
+          ? this.consoleCam().fov
+          : this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
     if (Math.abs(this.camera.fov - fovT) > 0.25) {
       this.camera.fov = fovT;
       this.camera.updateProjectionMatrix();
@@ -3213,9 +3418,9 @@ export class Game {
         // rainIntensity slot — realigned (rainIntensity has no source yet).
         this.car.gear, this.car.onLimiter, undefined, this.car.slipDemand,
         // lane U (interior trim creaks): smoothed body accels + grade, and
-        // whether the camera is an in-cabin view (cockpit/POV).
+        // whether the camera is an in-cabin view (cockpit/console/POV).
         this.car.axS, this.car.ayS, this.car.slope,
-        this.camMode === CAM_COCKPIT || this.camMode === CAM_POV
+        this.inCar()
       );
       this.npcAudioFeed();
       this.hud(now, dt);
@@ -3243,12 +3448,10 @@ export class Game {
     }
     this.frameN++;
     // POV sits behind the mirror housing too, and the glass hangs in the top
-    // ~15% of its frame, so it needs the rear view rendered as well
-    if (
-      this.mirror && this.frameN % 2 === 0 &&
-      (this.camMode === CAM_COCKPIT || this.camMode === CAM_POV)
-    )
-      this.renderMirror();
+    // ~15% of its frame, so it needs the rear view rendered as well — and the
+    // console camera stares straight up the centreline at it, which is the one
+    // place in the car where the mirror is dead ahead rather than off to a side
+    if (this.mirror && this.frameN % 2 === 0 && this.inCar()) this.renderMirror();
     // reflectionsOn folds in the tier: on mobile tiers this is the ONLY call
     // site that writes reflectRT, so gating it here means the RT genuinely
     // never sees a per-frame render (setWet zeroes uRefStr at the same time,

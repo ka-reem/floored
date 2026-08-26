@@ -1550,15 +1550,23 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      texture stay shared across all three meshes.
 
      The rearCam looks *backward* (down -forward), so its local right (u=1
-     edge of the render) is the world side that is the DRIVER'S LEFT — the
-     same reason a car in a plain "look over your shoulder" backward shot
-     reads mirrored versus an actual mirror. `scale.x = -1` on every glass
-     corrects that once (so straight-behind traffic lands dead centre and
-     un-swapped); layered on top of that flip, the LEFT door glass wants the
-     part of the frame that is biased toward the world-left flank (u toward
+     edge of the render) is the world side that is the DRIVER'S LEFT, which is
+     cockpit-local +x (see the wing-mirror block below for why +x is left).
+     Each glass then takes the slice for its own flank: the LEFT door glass
+     wants the part of the frame biased toward the world-left flank (u toward
      1) and the RIGHT door glass the world-right flank (u toward 0), so each
-     one reads like it is looking down its own side of the car rather than
-     just a smaller copy of the rear-view mirror. */
+     reads like it is looking down its own side of the car rather than being a
+     smaller copy of the rear-view mirror.
+
+     WHICH WAY ROUND u RUNS ACROSS A GLASS is the part that is easy to get
+     backwards, and the rear-view mesh below still has it backwards — see the
+     note on its `scale.x`. A rearward camera frame shown on a SCREEN does
+     read mirrored against a real mirror and needs flipping, which is the
+     intuition that put the flip there. But these planes are not screens: the
+     eye sits BEHIND them (their +z normals point forward, away from the
+     driver), and viewing a textured quad from behind already reverses it
+     once. That reversal IS the screen flip, so a second one un-mirrors the
+     reflection. The wing mirrors below therefore carry no `scale.x = -1`. */
   function cropUV(g: THREE.PlaneGeometry, u0: number, u1: number) {
     const uv = g.getAttribute("uv");
     for (let i = 0; i < uv.count; i++) uv.setX(i, u0 + uv.getX(i) * (u1 - u0));
@@ -1596,6 +1604,19 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      pane instead of a surround the pane sits in. */
   mirrorMesh.position.set(MIR.x, MIR.y, MIR.z + 0.002);
   mirrorMesh.rotation.x = -0.07;
+  /* LEFT AND RIGHT ARE SWAPPED IN HERE, and this line is why — left as it is
+     on purpose rather than flipped blind. Reflect the eye through this plane
+     and follow the sightline: with the flip, the u=1 edge of the glass looks
+     out to x ~ -7 m at 20 m behind, i.e. the car's RIGHT, while u=1 of the
+     render holds the car's LEFT. Without it the two agree. The flip is the
+     screen correction described above, applied to a plane that is already
+     seen from behind and so has had it applied once by geometry.
+     Straight-behind traffic lands dead centre either way, which is most of
+     why this survived; what it costs is being able to tell WHICH side a car
+     is passing on. Fixing it is a one-character change here plus the matching
+     sign in cockpitmodel.ts's setActive (which restores this scale), and it
+     wants eyes on the frame before it goes in — the whole mirror is tuned
+     around what this currently shows. */
   mirrorMesh.scale.x = -1;
   interiorG.add(mirrorMesh);
   /* housing: rounded shell + a stalk up to the header, not a floating slab.
@@ -1670,23 +1691,84 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   put(rbox(0.06, 0.03, 0.05, 0.012), piano, [MIR.x, MIR.y + 0.185, MIR.z - 0.095], [-0.3, 0, 0]);
   endRegion();
 
-  const sideMirLGeo = new THREE.PlaneGeometry(0.19, 0.115);
-  cropUV(sideMirLGeo, 0.58, 1.0);
-  const sideMirL = new THREE.Mesh(sideMirLGeo, mirrorMat);
-  sideMirL.position.set(-0.88, 1.12, 0.52);
-  sideMirL.rotation.y = 0.72;
-  sideMirL.scale.x = -1;
-  interiorG.add(sideMirL);
-  const sideMirRGeo = new THREE.PlaneGeometry(0.19, 0.115);
-  cropUV(sideMirRGeo, 0.0, 0.42);
-  const sideMirR = new THREE.Mesh(sideMirRGeo, mirrorMat);
-  sideMirR.position.set(0.88, 1.12, 0.52);
-  sideMirR.rotation.y = -0.72;
-  sideMirR.scale.x = -1;
-  interiorG.add(sideMirR);
-  for (const s of [-1, 1])
-    put(rbox(0.05, 0.16, 0.17, 0.03), piano, [s * 0.955, 1.12, 0.55], [0, -s * 0.72, 0]);
-  const mirrorParts = [mirrorMesh, sideMirL, sideMirR];
+  /* -------------------------------------------------------- wing mirrors */
+
+  /* WHICH SIDE IS WHICH, because the block that used to be here had it
+     backwards and every symptom followed from that one fact.
+
+     Cockpit-local +x is the car's LEFT — the driver's side. EYE.x is +0.36,
+     the donor's steering hub is at +0.3855, and with forward at +z and up at
+     +y a right-handed basis puts left at +x. Through the POV lens (which
+     yaws to car heading + PI) that same axis lands on SCREEN-left, which is
+     the sense two comments elsewhere are reaching for when they call this
+     cockpit "RHD" — it is not; it is left-hand drive seen from behind.
+
+     The old glasses were placed, angled and UV-cropped as if +x were the
+     RIGHT. Each door's mirror therefore sat on the far side of the car from
+     the flank it was showing, at a yaw that is very nearly the mirror image
+     of the correct one (+0.72 rad where the donor's own bezel is at +0.216),
+     which is the "angled very weirdly" of the report. Everything below is
+     indexed by `s` — +1 car LEFT / driver, -1 car RIGHT — so the two cannot
+     drift apart again.
+
+     PLACEMENT IS MEASURED, NOT GUESSED. The Volvo's chrome mirror bezel is a
+     flat ring, 171 x 109 mm and 1.6 mm thick, and those nodes now ship as the
+     `sideMirror` role (tools/build-cockpit.mjs), so the housing this glass
+     sits in is the car's own instead of a floating slab. Read off the shipped
+     GLB: bezel centre (±0.9000, 1.0815, 0.5697), driver-facing normal
+     (∓0.2145, 0, -0.9767). The old glass was at (±0.88, 1.12, 0.52) — 4 cm
+     high and 5 cm behind the housing it was meant to be set into, which is
+     the "they float" half of the report; the old procedural shells at ±0.955
+     were fitted to the retired procedural cabin and missed it too.
+
+     THAT NORMAL IS A REAL AIM, worth keeping. Reflect COCKPIT EYE through the
+     bezel plane and the sightline runs 1.8 m outboard at the glass's inboard
+     edge and 5.2 m at its outboard edge, 20 m back: a blind-spot-aimed door
+     mirror that looks down the adjacent lane rather than at the car's own
+     flank. Do not "straighten" it toward the eye. */
+  const SIDE_MIR = {
+    /* Bezel centre, with the glass stood 3 mm proud of it toward the driver
+       so it never z-fights the ring it sits in. */
+    x: 0.8994, y: 1.0815, z: 0.5668,
+    /* rotation.y for the +x glass. The plane's normal (sin, 0, cos) is the
+       bezel normal negated — the same plane, and the sign that puts u=1 on
+       the edge where the far lane appears. */
+    yaw: 0.2161,
+  };
+  const sideMirrors: THREE.Mesh[] = [];
+  for (const s of [1, -1]) {
+    /* u runs OUTBOARD-to-INBOARD on the left glass and inboard-to-outboard on
+       the right, which is what this yaw and the absence of a `scale.x` flip
+       between them produce: local +x lands on (cos yaw, 0, -sin yaw), so on
+       the left mirror u=1 is the outboard edge (where the far lane is) and on
+       the right mirror u=1 is the inboard edge (where the near lane is).
+       Both agree with the render, whose u climbs toward the car's left. */
+    const g = new THREE.PlaneGeometry(0.158, 0.096);
+    cropUV(g, s > 0 ? 0.58 : 0, s > 0 ? 1 : 0.42);
+    const m = new THREE.Mesh(g, mirrorMat);
+    m.position.set(s * SIDE_MIR.x, SIDE_MIR.y, SIDE_MIR.z);
+    m.rotation.y = s * SIDE_MIR.yaw;
+    interiorG.add(m);
+    sideMirrors.push(m);
+  }
+  /* The procedural shells go in the "cabin" region, unlike the rear-view
+     frame, and the difference is which donor part replaces them. The rear-view
+     frame stays out of its region because the donor's rear-view housing is
+     HIDDEN on arrival (it is a measuring stick, not a shell) and the glass
+     would be left bare. These have the opposite problem: the donor now brings
+     real wing mirrors and renders them, so a procedural shell left visible
+     would sit inside the car's own. "cabin" is the region the donor's body
+     panels take over, and a door mirror is body. */
+  beginRegion("cabin");
+  for (const s of [-1, 1]) {
+    // sized and squared to the donor's own cap (x 0.80-1.01, y 0.97-1.15,
+    // z 0.53-0.69) so the A/B toggle does not move the glass under itself
+    put(rbox(0.196, 0.17, 0.11, 0.035), piano, [s * 0.9112, 1.07, 0.6205], [0, s * SIDE_MIR.yaw, 0]);
+    // stub arm back to the door card, so it is mounted rather than hovering
+    put(rbox(0.06, 0.06, 0.055, 0.02), piano, [s * 0.845, 1.045, 0.615], [0, s * SIDE_MIR.yaw, 0]);
+  }
+  endRegion();
+  const mirrorParts = [mirrorMesh, ...sideMirrors];
 
   /* ------------------------------------------------------------- wipers */
 

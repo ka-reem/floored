@@ -317,10 +317,27 @@ const ROLES = [
    shelf, the seat belts and the entire bodywork all fail that test with room
    to spare — they sit behind the lens, so no field of view reaches them.
 
-   NOT here on purpose: the donor's windscreen ("Windsheild Null") and its
-   wing mirrors. cockpit.ts keeps its own window glass in every state (see the
-   KEPT list in cockpitmodel.ts) and a second pane in the same place would
-   double the reflections. */
+   NOT here on purpose: the donor's windscreen ("Windsheild Null"). cockpit.ts
+   keeps its own window glass in every state (see the KEPT list in
+   cockpitmodel.ts) and a second pane in the same place would double the
+   reflections.
+
+   `sideMirror` is the one role here that is NOT interior trim, and it earns
+   its place on a different argument from the rest. A door mirror is the only
+   thing outside the cabin the driver is supposed to look AT rather than
+   through, and cockpit.ts hangs its own RT-fed glass in it — which was
+   floating, because the procedural housings it was fitted to were placed
+   against different geometry and the donor's own mirrors were never taken.
+   Taking them gives that glass a real shell at the car's real mounting point.
+
+   It is also the one role the frustum test does not clear outright. Measured
+   from the shipped lens (0.28, 1.20, 0.31), the LEFT mirror sits 62.3 degrees
+   off axis — inside the 64.8-degree half-angle POV_FOV_MAX gives, so it
+   enters frame at a wide setting and not at the default 67 — while the RIGHT
+   one is 74.5 degrees off and no legal frustum reaches it. It comes anyway,
+   for free: the donor models both mirrors as ONE symmetric mesh per material,
+   so there is no version of this role that keeps the left and drops the right
+   short of slicing geometry, which --no-clip exists to avoid. */
 const FULL_ROLES = [
   ["seats", /^(Driver|Passenger) Seat/i],
   // the FRONT carpets only — "Rear Carpet" is under the rear bench, which no
@@ -328,6 +345,16 @@ const FULL_ROLES = [
   ["floor", /^Floor_|^Driver Carpet|^PassengerCarpet|^PlasticTrim/i],
   ["pedals", /Pedal/i],
   ["headliner", /^CeilingConsole/i],
+  /* Anchored, and NOT a bare /mirror/i, for two reasons that both bite.
+     The donor spells the wing mirror with a capital I — "MIrror_Car Paint_0",
+     "MIrrorTurnSignal Glass_Glass_0" — so a pattern that assumes "Mirror"
+     silently matches nothing; and the rear-view mirror is "RearviewMirror",
+     which a loose pattern WOULD match. The `mirror` role above claims that
+     one first, but relying on table order to keep them apart is a trap: the
+     `mirror` role is frozen to a legacy frustum precisely because its
+     bounding box positions the game's rear-view glass, and anything that
+     reaches it moves the mirror. The ^ is what makes that impossible. */
+  ["sideMirror", /^MIrror(_| |Turn)/i],
 ];
 if (FULL_CABIN) ROLES.push(...FULL_ROLES);
 
@@ -380,7 +407,7 @@ const TEX_ROLE = {
   shell: 2048, wheel: 2048, column: 2048,   // arm's reach, and always in frame
   cabin: 1536,                              // A-pillars, header, door cards: mostly silhouette
   headliner: 1024, floor: 1024, pedals: 1024,
-  seats: 512, mirror: 512,
+  seats: 512, mirror: 512, sideMirror: 512,
   cluster: 0, clusterGlass: 0, screen: 0,   // already small; the live canvas covers them anyway
 };
 
@@ -392,6 +419,16 @@ const SIMPLIFY = {
   floor:     { ratio: 0.15, error: 0.020 },
   pedals:    { ratio: 0.30, error: 0.015 },
   seats:     { ratio: 0.10, error: 0.030 },
+  /* The tightest error in the table, on the role with the loosest ratio, and
+     the two are not in tension: a door mirror is a smooth painted blob at the
+     edge of frame, so 70% of its triangles buy nothing — but `error` here is
+     a fraction of MESH radius, and this mesh spans both mirrors, so its radius
+     is ~1.0 m rather than the 0.2 m object you are looking at. 0.003 is 3 mm
+     absolute; the 0.008 that `cabin` uses would be 8 mm on a 171 mm bezel,
+     which is a visibly nibbled ring. Tight also because cockpit.ts sits its
+     glass on that bezel from measured constants — see SIDE_MIR there — so
+     millimetres of drift here are millimetres the glass floats by. */
+  sideMirror: { ratio: 0.30, error: 0.003 },
 };
 const roleOf = (name) => ROLES.find(([, re]) => re.test(name))?.[0] ?? null;
 

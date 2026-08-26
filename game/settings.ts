@@ -256,7 +256,10 @@ export const defaultSettings = (): GameSettings => ({
   shadows: true,
   fxaa: true,
   tc: true,
-  mblur: true,
+  /* OFF by default: this is the chase-cam motion blur, and it was reported
+     as unwanted smear at speed rather than read as a camera effect. Still a
+     setting, so it can be turned back on; only the default moved. */
+  mblur: false,
   fog: "medium",
   dashcam: false,
   drawDist: 700,

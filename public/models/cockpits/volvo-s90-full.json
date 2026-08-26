@@ -1,6 +1,127 @@
 {
   "source": "volvo_s90_recharge_free.glb",
   "parts": {
+    "sideMirror": [
+      {
+        "name": "sideMirror_0",
+        "donorName": "MIrror_Car Paint_0",
+        "tris": 4703,
+        "bbox": [
+          [
+            -1.0055,
+            1.0165,
+            0.5343
+          ],
+          [
+            1.0055,
+            1.1479,
+            0.6916
+          ]
+        ]
+      },
+      {
+        "name": "sideMirror_1",
+        "donorName": "MIrror_Black Glossy_0",
+        "tris": 3973,
+        "bbox": [
+          [
+            -0.9969,
+            0.9658,
+            0.5421
+          ],
+          [
+            0.9969,
+            1.1379,
+            0.6863
+          ]
+        ]
+      },
+      {
+        "name": "sideMirror_2",
+        "donorName": "MIrror_Glass_0",
+        "tris": 210,
+        "bbox": [
+          [
+            -0.9275,
+            1.0155,
+            0.6183
+          ],
+          [
+            0.9275,
+            1.0185,
+            0.6303
+          ]
+        ]
+      },
+      {
+        "name": "sideMirror_3",
+        "donorName": "MIrror_Plastic_0",
+        "tris": 172,
+        "bbox": [
+          [
+            -0.9279,
+            1.0165,
+            0.6175
+          ],
+          [
+            0.9279,
+            1.0195,
+            0.6308
+          ]
+        ]
+      },
+      {
+        "name": "sideMirror_4",
+        "donorName": "MIrror_Chrome_0",
+        "tris": 440,
+        "bbox": [
+          [
+            -0.9839,
+            1.0271,
+            0.5506
+          ],
+          [
+            0.9839,
+            1.1359,
+            0.5888
+          ]
+        ]
+      },
+      {
+        "name": "sideMirror_5",
+        "donorName": "MIrrorTurnSignal Glass_Glass_0",
+        "tris": 1780,
+        "bbox": [
+          [
+            -1.0053,
+            1.0396,
+            0.5435
+          ],
+          [
+            1.0053,
+            1.05,
+            0.6577
+          ]
+        ]
+      },
+      {
+        "name": "sideMirror_6",
+        "donorName": "MirrorTurnsignal Reflector_Metal Turnsignal_0",
+        "tris": 267,
+        "bbox": [
+          [
+            -1.0007,
+            1.0413,
+            0.5453
+          ],
+          [
+            1.0007,
+            1.0493,
+            0.6531
+          ]
+        ]
+      }
+    ],
     "floor": [
       {
         "name": "floor_0",

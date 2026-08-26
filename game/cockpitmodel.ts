@@ -55,12 +55,26 @@ interface Manifest {
   steering?: { hub: number[]; axis: number[] };
 }
 
+/** Which camera the rear-view mirror is being framed for.
+
+    The two in-car cameras want opposite things out of the donor's mirror
+    assembly, so this is a per-camera switch rather than a global preference —
+    see the mirror block in wire() for what each state actually does. */
+export type MirrorFraming = "dashcam" | "cabin";
+
 export interface CockpitModelHandle {
   /** The donor's root, already parented into the cockpit. */
   group: THREE.Group;
   /** Put the procedural dash back. Cheap — nothing is disposed either way, so
       this is an A/B toggle, not a teardown. */
   setActive(on: boolean): void;
+  /** Frame the mirror for the DASHCAM (donor housing hidden, glass walked into
+      the POV frame by MIRROR_NUDGE) or for the in-car views (donor housing on
+      show, glass seated in its aperture where the OEM mirror actually hangs).
+      Idempotent and cheap — a few vector copies — so engine.ts can call it on
+      any edge it likes. Fail-soft on a donor with no `mirror` role: the glass
+      simply stays where the procedural cockpit put it, in both states. */
+  setMirrorFraming(mode: MirrorFraming): void;
 }
 
 const BASE = "/models/cockpits/";
@@ -269,8 +283,31 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
     quaternion: frame.quaternion.clone(),
     scale: frame.scale.clone(),
   };
+  /* TWO placements, one per in-car camera, because the mirror the DASHCAM
+     needs and the mirror the COCKPIT needs are not the same object.
+
+     - "dashcam": the donor housing is HIDDEN and the glass is walked forward
+       and down by MIRROR_NUDGE. Byte-for-byte what this file has always done;
+       the reasoning is in the MIRROR_NUDGE block above and in the housing note
+       below, and none of it is negotiable — it is the shipping view.
+     - "cabin": the donor housing is SHOWN, unmoved, and the glass is seated in
+       its aperture. From an eye 0.5 m back the housing reads as what it is —
+       the car's own mirror — instead of the unlit lump it becomes 12 cm from a
+       105-degree lens, and there is no framing problem to nudge away from: the
+       glass is nowhere near the edge of that frame.
+
+     Only the position and the housing's visibility differ. The SCALE is shared
+     (the aperture is the aperture), and so is the glass itself — one
+     render-target-fed plane, registered once with post.ts, moved between two
+     mounting points. */
   let glassAt: THREE.Vector3 | null = null;
+  let glassCabin: THREE.Vector3 | null = null;
   let glassScale = 1;
+  /* Where the donor hung its mirror before MIRROR_NUDGE touched it. The nudge
+     used to be baked into `p.position` once, at wire time; it is applied and
+     removed per framing now, so the untouched positions have to be kept. */
+  const mirrorHome = mirrorParts.map((p) => p.position.clone());
+  let framing: MirrorFraming = "dashcam";
 
   if (mirrorParts.length) {
     const box = new THREE.Box3();
@@ -287,15 +324,21 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
     glassAt = new THREE.Vector3(mid.x, mid.y, box.min.z - 0.004)
       .add(MIRROR_NUDGE)
       .multiply(scene.scale);
-    // the housing follows the glass, or the two come apart
-    for (const p of mirrorParts) p.position.add(MIRROR_NUDGE);
+    /* Cabin framing: the same face, 8 mm proud instead of 4, and no nudge —
+       the housing is on show here, so the glass has to sit where the housing
+       says rather than where the POV frame wants it. The extra 4 mm is
+       clearance, not taste: mirrorFrame's shell is 7 mm deep and sits BEHIND
+       the glass plane (cockpit.ts), which at 4 mm buries its back millimetre
+       inside the housing's front face and invites a z-fight along the rim. */
+    glassCabin = new THREE.Vector3(mid.x, mid.y, box.min.z - 0.008).multiply(scene.scale);
     /* Fit the glass to the housing's aperture rather than assuming a size:
        ours is 0.30 m wide and the Volvo's body is 0.21, so at native size it
        would hang out either side of its own frame. Inset slightly so a bezel
        still reads around it. */
     glassScale = Math.min(1, (size.x * 0.88) / 0.30) * sx;
 
-    /* The donor's mirror BODY is hidden, and only its glass survives.
+    /* The donor's mirror BODY is hidden IN THE DASHCAM, and only its glass
+       survives there.
 
        Two reasons. The read one: the Volvo's housing is a moulded shell that
        was authored to be seen from outside the car in a showroom render, and
@@ -306,11 +349,15 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
        rescaled to fit the aperture, so the shell and the glass it frames no
        longer agree.
 
-       The parts stay in the scene graph rather than being removed, because
-       the bbox above is what positions the glass — deleting them would take
-       the anchor with them. Hiding is also what keeps the imported/procedural
-       A/B toggle honest: setActive() below walks these same parts. */
-    for (const p of mirrorParts) p.visible = false;
+       NEITHER reason survives the move to the cockpit view, which is why that
+       one shows it: at half a metre the shell is scenery rather than a wall,
+       and mirrorFrame — our own thin bezel, which travels with the glass — is
+       what covers the size disagreement, sitting inside the housing's outline
+       on every edge (0.19 x 0.062 against 0.215 x 0.076 at the shipped fit).
+
+       The parts stay in the scene graph rather than being removed in either
+       state, because the bbox above is what positions the glass — deleting
+       them would take the anchor with them. */
   }
 
   /* --- steering ----------------------------------------------------------- */
@@ -433,11 +480,29 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
     }
     cockpit.clusterGroup.position.copy(on ? clusterAt : clusterHome);
 
-    if (glassAt && on) {
+    placeMirror(on);
+  };
+
+  /* Both halves of the mirror swap in one place, because both have to agree:
+     the housing's position, the housing's visibility and the glass's mounting
+     point are one decision made three times. Called from setActive (the donor
+     going away takes the mirror home with it) and from setMirrorFraming. */
+  function placeMirror(on: boolean) {
+    if (glassAt && glassCabin && on) {
+      const cabin = framing === "cabin";
+      const at = cabin ? glassCabin : glassAt;
+      /* The housing follows the glass, or the two come apart — and it only
+         follows in the dashcam framing, where the glass was moved. */
+      for (let i = 0; i < mirrorParts.length; i++) {
+        const p = mirrorParts[i];
+        p.position.copy(mirrorHome[i]);
+        if (!cabin) p.position.add(MIRROR_NUDGE);
+        p.visible = cabin;
+      }
       /* scale.x stays negative: cockpit.ts flips the glass so the rear camera's
          backward view reads as a mirror rather than a shoulder-check. Losing
          that sign would silently un-mirror the reflection. */
-      glass.position.copy(glassAt);
+      glass.position.copy(at);
       glass.scale.set(-glassScale, glassScale, glassScale);
       /* Same place and the same scale, but NOT the negative x: the flip exists
          to un-mirror the rear camera's image and the frame has no image to
@@ -447,7 +512,7 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
          lip, not in front of it — so the frame origin is 2 mm BEHIND the
          glass, and the sign matters: +0.004 here used to push the rim further
          back still and leave the pane standing proud of it. */
-      frame.position.set(glassAt.x, glassAt.y, glassAt.z - 0.002 * glassScale);
+      frame.position.set(at.x, at.y, at.z - 0.002 * glassScale);
       frame.quaternion.copy(glass.quaternion);
       frame.scale.setScalar(glassScale);
     } else {
@@ -458,8 +523,17 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
       frame.quaternion.copy(frameHome.quaternion);
       frame.scale.copy(frameHome.scale);
     }
+  }
+
+  const setMirrorFraming = (mode: MirrorFraming) => {
+    if (mode === framing) return;
+    framing = mode;
+    /* scene.visible IS the imported/procedural state (setActive sets nothing
+       else on the root), so this stays a no-op while the procedural dash is
+       up and the framing is picked up whenever the donor comes back. */
+    placeMirror(scene.visible);
   };
   setActive(true);
 
-  return { group: scene, setActive };
+  return { group: scene, setActive, setMirrorFraming };
 }

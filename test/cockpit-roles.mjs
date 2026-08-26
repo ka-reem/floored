@@ -49,7 +49,7 @@ for (const c of scene.children) c.updateMatrix();
 let fail = 0;
 const REQUIRED = ["cluster", "screen"];              // wire() throws without these
 const WANTED = ["clusterGlass", "mirror", "wheel", "shell", "cabin"];
-const EXTRA = ["column", "seats", "floor", "pedals", "headliner"];  // trim; absence is legal
+const EXTRA = ["column", "seats", "floor", "pedals", "headliner", "sideMirror"];  // trim; absence is legal
 console.log(`scene: ${scene.children.length} children\n`);
 
 for (const role of [...REQUIRED, ...WANTED, ...EXTRA]) {
