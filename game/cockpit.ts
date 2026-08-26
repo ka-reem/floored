@@ -1743,7 +1743,18 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
        the left mirror u=1 is the outboard edge (where the far lane is) and on
        the right mirror u=1 is the inboard edge (where the near lane is).
        Both agree with the render, whose u climbs toward the car's left. */
-    const g = new THREE.PlaneGeometry(0.158, 0.096);
+    /* 146 x 86 inside a 171 x 109 bezel, i.e. ~15% inset per axis rather than
+       the ~7% a straight "fit the aperture" sum gives. The extra is for the
+       CORNERS: the bezel is a rounded rectangle and the glass is a square-cut
+       plane, so at 158 x 96 the plane's corners reached past the curve and a
+       sliver of pane showed outside the ring (reported: "you can kinda see it
+       peeking out"). Inscribing a rectangle in a rounded aperture costs more
+       than the radius, so this is deliberately generous.
+
+       Costs a little glass area, not field of view — cropUV below picks the
+       slice of the render, and that is unchanged, so the mirror still shows
+       the same stretch of road, just in a slightly smaller pane. */
+    const g = new THREE.PlaneGeometry(0.146, 0.086);
     cropUV(g, s > 0 ? 0.58 : 0, s > 0 ? 1 : 0.42);
     const m = new THREE.Mesh(g, mirrorMat);
     m.position.set(s * SIDE_MIR.x, SIDE_MIR.y, SIDE_MIR.z);
