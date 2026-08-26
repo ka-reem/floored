@@ -1,0 +1,42 @@
+# Files NOT uploaded to Vercel. Syntax is .gitignore's.
+#
+# READ THIS BEFORE TRIMMING IT. A `vercel` CLI deploy uploads the working
+# directory, not a git tree — so .gitignore is NOT what protects a CLI deploy,
+# this file is. Anything heavy or private that is gitignored but still sitting
+# on disk has to be repeated here or it goes up. That is why the list below
+# overlaps .gitignore instead of deferring to it.
+
+# ---- the reason this file exists at all -------------------------------------
+# 689 MB of donor and source material, and it lives INSIDE public/, so anything
+# that uploads it also SERVES it. volvo_s90_recharge_free.glb alone is 368 MB
+# and is CC-BY licensed material we cut the shipped assets from — the built
+# 5.4 MB interior is what ships, never the donor. Gitignored, so a git-triggered
+# deploy never sees it; this line is what stops a CLI deploy from publishing it.
+public/assets-staging/
+
+# ---- the development render archive -----------------------------------------
+# docs/gallery/ is a 2.9 MB archive of the A/B comparisons, clay passes and hole
+# hunts the interior and sky work was judged on, plus one self-contained
+# index.html that reads them. Meant to be browsed on GitHub or opened from a
+# clone over file://; it has nothing to do with the running game.
+#
+# It is already unreachable at runtime three times over — outside public/, so
+# Next never serves it; not imported by app/, components/ or game/, so it cannot
+# enter the client bundle; and test/size-budget.mjs walks only public/assets and
+# public/models, so it cannot push the asset budget over. This is the belt to
+# those braces: it also keeps the archive out of the upload, so the images are
+# not billed as bandwidth and cannot be fetched from the deployed domain.
+#
+# If a gallery image ever needs to be visible to the running game, it belongs in
+# public/ and under the size budget — not here with an exception carved out.
+docs/gallery/
+
+# ---- build output and test junk ---------------------------------------------
+# node_modules and .next are excluded by Vercel's own defaults; listed anyway so
+# this file reads as the whole picture rather than half of it.
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+test/artifacts/
+.DS_Store

@@ -6,6 +6,16 @@ rain, neon, fog, and a garage of four cars.
 
 Built with **Next.js + Three.js**, deployable to Vercel as-is.
 
+## Development gallery
+
+[`docs/gallery/index.html`](docs/gallery/index.html) — 87 renders from the work
+itself, in eleven chapters: the A/B that retired the frustum-clipped dashboard,
+the hole hunts across every screen shape, the clay passes that found the camera
+sitting inside the driver's seat, the decimation ladder, the procedural sky, and
+the asset budget that governed all of it. Clone and open it in a browser; it is
+a single self-contained page with no build step. It is excluded from the Vercel
+deployment via `.vercelignore` and is not part of the shipped game.
+
 ## Run locally
 
 ```bash
