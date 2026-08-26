@@ -9,9 +9,15 @@ import { BRAKE_F, STEER_AY, type PhysicsSpec } from "./carspecs";
    Test mode multiplies grip by 2.8 (carspecs.ts, testDriveSpec) but the
    constants in THIS file were sized for a 1.0-grip road car and do not scale
    with it, so the car ends up with F1 tyres and a saloon's idea of how much
-   of them it is allowed to use. These are those constants. Every one is read
-   ONLY behind `opts.arcade`, and each non-arcade path still uses its original
-   literal inline, so nothing in here can move normal driving.
+   of them it is allowed to use. These are those constants.
+
+   Nothing in here can move normal driving. Two of them (`rate`, `yawDamp`)
+   sit behind a literal `opts.arcade ?` with the original constant on the
+   other arm; the other two ride `arcadeAuth`, which is hard 0 outside test
+   mode, so their lerp collapses onto the stock value exactly. That is a
+   property worth checking rather than asserting, and
+   test/steer-response-sim.mjs checks it: it drives this whole object to
+   absurd values and requires 80 stock-car rows to come out bit-identical.
 
    The important structural point is `brakeFade`. e2e0fe0 established, with a
    trace, that anything which hands the car MORE steering authority while it

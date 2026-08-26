@@ -19,6 +19,21 @@ canvas.game {
   position: fixed;
   inset: 0;
 }
+/* Idle-hidden pointer. Set on <html> rather than on the canvas so it also
+   covers the HUD overlays sitting on top of it — hiding the cursor over the
+   canvas alone leaves it reappearing as it crosses the speedo or the minimap,
+   which reads as a flicker rather than as a hide.
+
+   `cursor: none` only, never pointer-lock: the in-dash nav screen is
+   clickable, and capture would mean a click to engage and Esc to escape for
+   a problem that is just "the arrow is sitting in my shot". Any mouse
+   movement clears the class instantly, so nothing is ever unreachable.
+
+   Touch devices never show a pointer, so this is inert there. */
+html.cursor-idle,
+html.cursor-idle * {
+  cursor: none !important;
+}
 
 /* ---------- HUD ---------- */
 #hud {

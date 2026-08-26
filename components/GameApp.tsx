@@ -14,6 +14,25 @@ import {
 type Screen = "main" | "garage" | "settings" | "controls" | "loading" | "playing" | "paused";
 
 export default function GameApp() {
+  /* Idle-hidden mouse pointer, desktop only.
+
+     The arrow parks in the middle of the frame while driving — nothing moves
+     it, because steering is the keyboard — and it sits in every screen
+     recording. Hidden after IDLE_MS of no movement and brought back by the
+     first movement after that.
+
+     Only while `playing`: in the menus the pointer is the input device, and a
+     menu that eats your cursor after two seconds is hostile. The effect
+     re-runs on `playing` and its cleanup drops the class, so leaving the game
+     always restores it even if it was hidden at that moment.
+
+     A class on <html> rather than pointer-lock. Lock would need a click to
+     engage and Esc to release, and would break the clickable in-dash nav
+     screen, which is a lot of machinery for "the arrow is in my shot".
+
+     pointermove with `pointerType === "mouse"` rather than mousemove, so a
+     touch or a stylus tap cannot trip a cursor state that device does not
+     have. */
   const hostRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Game | null>(null);
   const profileRef = useRef<Profile | null>(null);
@@ -27,6 +46,7 @@ export default function GameApp() {
   const rerender = () => force((n) => n + 1);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const screenRef = useRef<Screen>("main");
+
   screenRef.current = screen;
 
   const showToast = useCallback((msg: string) => {
@@ -141,6 +161,28 @@ export default function GameApp() {
 
   const g = gameRef.current;
   const playing = screen === "playing";
+  useEffect(() => {
+    if (!playing) return;
+    const IDLE_MS = 2000;
+    const root = document.documentElement;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const arm = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => root.classList.add("cursor-idle"), IDLE_MS);
+    };
+    const wake = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse") return;
+      root.classList.remove("cursor-idle");
+      arm();
+    };
+    window.addEventListener("pointermove", wake);
+    arm();
+    return () => {
+      window.removeEventListener("pointermove", wake);
+      if (t) clearTimeout(t);
+      root.classList.remove("cursor-idle");
+    };
+  }, [playing]);
   const tcHide = playing ? undefined : { display: "none" as const };
 
   return (
