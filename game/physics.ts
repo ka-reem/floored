@@ -6,7 +6,7 @@ import { BRAKE_F, STEER_AY, type PhysicsSpec } from "./carspecs";
    parameterised per car; AWD splits drive torque across both axles. */
 
 /* ---- Arcade (test mode) steering feel ---------------------------------
-   Test mode multiplies grip by 2.8 (carspecs.ts, testDriveSpec) but three
+   Test mode multiplies grip by 2.8 (carspecs.ts, testDriveSpec) but the
    constants in THIS file were sized for a 1.0-grip road car and do not scale
    with it, so the car ends up with F1 tyres and a saloon's idea of how much
    of them it is allowed to use. These are those constants. Every one is read
@@ -43,9 +43,13 @@ export const ARCADE_STEER = {
    *  actually delivers, so ESC spends a steady 250 km/h corner fighting a car
    *  that has not run out of grip. Faded to 10.5 by the brake, see above.
    *  Only the yaw-rate half of ESC moves; the sideslip term (slipPad) is
-   *  untouched, and that is the half that catches a slide. Above ~26 the
-   *  kinematic term of the min() binds instead and it stops doing anything. */
-  escAy: 26,
+   *  untouched, and that is the half that catches a slide. 14 is a
+   *  compromise, not a fix: it halves how hard ESC fights a steady corner
+   *  (yaw demand at 180 km/h 0.63 -> 0.43) without going to the ~18 that
+   *  silences ESC there entirely and costs 4 deg more sideslip when the
+   *  brake then arrives. Above ~26 the kinematic term of the min() binds
+   *  instead and this stops doing anything at all. */
+  escAy: 14,
   /** Multiplier on spec.steerHi, the high-speed FLOOR under the steer
    *  schedule — so this is the one lever that adds steering ANGLE, and it
    *  adds it only where the schedule has bottomed out, i.e. only at speed.
@@ -54,8 +58,14 @@ export const ARCADE_STEER = {
    *  e2e0fe0 measured at 0.50 -> 1.76 rad/s; a floor can only ever make the
    *  schedule FLATTER, never steeper, so braking into a corner hands the
    *  front less extra lock than it does today, not more. Faded out by the
-   *  brake as well, belt and braces. */
-  hiBoost: 2.4,
+   *  brake as well, belt and braces.
+   *
+   *  1.8 is where the measured curve stops paying: it is the largest value
+   *  that keeps the top of the stick as linear as stock (the last quarter of
+   *  travel is still worth +0.30 g at 180 km/h, exactly what stock gives),
+   *  and past ~2.4 the front tyre is being driven so far past its slip peak
+   *  that adding lock stops adding cornering — numb, not sharp. */
+  hiBoost: 1.8,
   /** Yaw damping, N·m per rad/s, opposing rotation — a first-order lag on
    *  how fast the car answers the wheel, so lowering it looks like an
    *  obvious snap lever. It is not: measured, it buys under 1% more yaw and

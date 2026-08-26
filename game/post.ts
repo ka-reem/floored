@@ -1131,9 +1131,17 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.mbMat.uniforms.uPanStr.value[i] = str;
       this.povMat.uniforms.uPanStr.value[i] = str;
     }
-    // POV forces the frame blend on even with motion blur switched off in
-    // settings — the smear is part of the camera, not a quality option
-    const doMbSetting = opts.mblur > 0.001 || pov;
+    /* The dashcam's frame blend USED to be forced on here ("|| pov"), on the
+       reasoning that the smear is part of the camera rather than a quality
+       option. That reasoning is defensible but it made the Motion blur
+       checkbox a lie in the one view the game is actually played in: turning
+       it off changed the chase camera and nothing else, so a player who did
+       not want smear had no way to say so. Reported twice.
+
+       Now the setting governs both. The 40 ms exposure (POV_MB_TAU) is still
+       the default and still what the night look was authored around — this
+       only means it can be switched off. */
+    const doMbSetting = opts.mblur > 0.001;
     const dash = !!opts.grade;
     // Peripheral (fovea) blur is the same trick the dashcam corners already
     // sell via the soft/chroma-bleed mix, so skip it there to avoid stacking
