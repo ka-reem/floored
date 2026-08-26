@@ -32,7 +32,7 @@ for (const f of ["corridor.js", "ramps.js", "routegraph.js"]) {
 const { getCorridor } = await import(path.join(dir, "corridor.js"));
 const { buildRamps, rampAt, parapetGap } = await import(path.join(dir, "ramps.js"));
 const { getRouteGraph } = await import(path.join(dir, "routegraph.js"));
-const { CONNECT_Z, RAMP_W } = await import(path.join(dir, "const.js"));
+const { CONNECT_Z, RAMP_W, SURFACE_TOL } = await import(path.join(dir, "const.js"));
 
 const cor = getCorridor();
 const routes = getRouteGraph();
@@ -44,14 +44,19 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 /* ---- terrain.heightAt, replicated (ground = 0 in the band) ---- */
 function heightAt(x, z, refY) {
   let best = 0;
-  if (refY > cor.centerY(z) - 3.4) {
+  let bestD = Math.abs(best - refY);
+  const take = (y) => {
+    const d = Math.abs(y - refY);
+    if (d < bestD || (d === bestD && y > best)) { best = y; bestD = d; }
+  };
+  if (refY > cor.centerY(z) - SURFACE_TOL) {
     const dy = cor.heightAt(x, z, 1.0);
-    if (dy !== null) best = Math.max(best, dy);
+    if (dy !== null) take(dy);
   }
   const r = rampAt(ramps, x, z, 1.0);
-  if (r && Math.abs(r.y - refY) < 3.4) best = Math.max(best, r.y);
+  if (r && Math.abs(r.y - refY) < SURFACE_TOL) take(r.y);
   const g = routes.surfaceAt(x, z, 1.0);
-  if (g && Math.abs(g.y - refY) < 3.4) best = Math.max(best, g.y);
+  if (g && Math.abs(g.y - refY) < SURFACE_TOL) take(g.y);
   return best;
 }
 const onRamp = (x, z) => {
@@ -119,7 +124,7 @@ const newGaps = routes.newParapetGaps();
 function collide(car) {
   let moved = 0;
   // deck parapet clamp
-  if (Math.abs(car.y - cor.centerY(car.z)) < 2.6 && car.z > cor.ZB0 && car.z < cor.ZB1) {
+  if (Math.abs(car.y - cor.centerY(car.z)) < SURFACE_TOL && car.z > cor.ZB0 && car.z < cor.ZB1) {
     const zc = cor.zAt(car.x, car.z);
     const lat = cor.latAt(car.x, car.z);
     const lim = cor.halfWidth(zc) + 0.06 - halfW;
@@ -128,13 +133,13 @@ function collide(car) {
     if (side < 0) {
       for (const g of gaps) if (car.z > g.z0 && car.z < g.z1) guarded = false;
       const ry = onRamp(car.x, car.z);
-      if (ry !== null && Math.abs(ry - car.y) < 2.6) guarded = false;
+      if (ry !== null && Math.abs(ry - car.y) < SURFACE_TOL) guarded = false;
     }
     for (const gp of newGaps)
       if (car.z > gp.z0 && car.z < gp.z1 && side === gp.side) guarded = false;
     if (guarded) {
       const sf = routes.surfaceAt(car.x, car.z, 1.0);
-      if (sf !== null && Math.abs(sf.y - car.y) < 2.6) guarded = false;
+      if (sf !== null && Math.abs(sf.y - car.y) < SURFACE_TOL) guarded = false;
     }
     if (guarded && Math.abs(lat) > lim) {
       const pen = Math.min(Math.abs(lat) - lim, 0.35); // CLAMP_STEP

@@ -1,5 +1,6 @@
 import type { CarState } from "./physics";
 import type { WorldData } from "./world/data";
+import { SURFACE_TOL } from "./world/const";
 import { parapetGap, type Ramp } from "./world/ramps";
 import { BYPASS, type RouteGraph, type RoutePose } from "./world/routegraph";
 
@@ -52,6 +53,15 @@ const _byPose: RoutePose = {
    the car, so the positional correction is capped per call; the velocity
    reflection still kills the outward speed immediately. */
 const CLAMP_STEP = 0.35;
+
+/* How far past a wall line a car may be and still be pushed back by THAT wall.
+   The clamps run every frame, so a car that drove into one is at most v_lat·dt
+   beyond it (~0.25 m at 120 Hz), and a closing gore taper sliding the line
+   under a car moves it less again — the clamp catches the line as it passes
+   and never lets `over` grow. Anything further out is not a car against this
+   wall, it is a car on some other piece of road that happens to fall inside
+   the search radius. */
+const WALL_REACH = 1.2;
 
 function collideAABB(car: CarState, px: number, pz: number, rr: number, bb: any): boolean {
   if (bb.y0 !== undefined && (car.y + 1.4 < bb.y0 || car.y > bb.y1)) return false;
@@ -190,7 +200,7 @@ export function collidePlayer(
      ramp can leave, and the ramp's own wall OBBs take over — so a car anywhere
      on ramp pavement is exempt for as long as it is still up at deck height. */
   const cor = world.terrain.corridor;
-  if (Math.abs(car.y - cor.centerY(car.z)) < 2.6 && car.z > cor.ZB0 && car.z < cor.ZB1) {
+  if (Math.abs(car.y - cor.centerY(car.z)) < SURFACE_TOL && car.z > cor.ZB0 && car.z < cor.ZB1) {
     const zc = cor.zAt(car.x, car.z);
     const lat = cor.latAt(car.x, car.z);
     const lim = cor.halfWidth(zc) + 0.06 - halfW;
@@ -202,7 +212,7 @@ export function collidePlayer(
         if (car.z > g.z0 && car.z < g.z1) guarded = false;
       // …and stays absent for as long as the car is on ramp pavement
       const ry = world.terrain.onRamp(car.x, car.z);
-      if (ry !== null && Math.abs(ry - car.y) < 2.6) guarded = false;
+      if (ry !== null && Math.abs(ry - car.y) < SURFACE_TOL) guarded = false;
     }
     /* the bypass gores cut the parapet too — west at the diverge, and the
        east wall's first-ever gap at the merge — and a car on bypass pavement
@@ -212,7 +222,7 @@ export function collidePlayer(
         if (car.z > gp.z0 && car.z < gp.z1 && side === gp.side) guarded = false;
       if (guarded) {
         const sf = world.routes.surfaceAt(car.x, car.z, 1.0);
-        if (sf !== null && Math.abs(sf.y - car.y) < 2.6) guarded = false;
+        if (sf !== null && Math.abs(sf.y - car.y) < SURFACE_TOL) guarded = false;
       }
     }
     if (guarded && Math.abs(lat) > lim) {
@@ -231,34 +241,50 @@ export function collidePlayer(
   }
 
   /* Bypass parapets: the same analytic clamp, in the bypass's own station
-     frame. Skipped on a side whose half-width is gore-clipped (the wedge is
-     shared pavement — the deck's own edge continues there), and only while
-     the car is actually at the bypass surface, so nothing under the viaduct
-     ever feels it. */
+     frame, and only while the car is at the bypass surface so nothing under
+     the viaduct ever feels it. Two more gates, both of which cost blood:
+
+     - the edge must be FREE, not shared with the deck through a gore wedge
+       (routegraph's shL/shR). The old test for that was
+       `hwSide > BYPASS.half - 0.05` — "this side is not clipped" — which also
+       switched the wall off across both gore NOSES, where the pavement tapers
+       open from nothing over a 10 m drop and is the only thing between the
+       car and the ground.
+     - the car must actually be up against the wall. project() searches out to
+       BYPASS.half + 6, which is ~10 m of reach for a 4.7 m half-width road:
+       beside either gore that is far enough to grab a car driving the MAIN
+       DECK's kerb lane (or its fast lane at the merge) and drag it sideways
+       onto the viaduct at CLAMP_STEP a frame — and where the deck's own
+       parapet had re-armed, the two clamps then fought frame to frame.
+
+     No such reach limit belongs on the deck clamp above: the corridor frame is
+     valid across the whole roadway, so a car at deck height in the band really
+     is on the deck however far out it has got. The bypass is a narrow ribbon
+     whose frame means nothing a lane away from it. */
   if (world.routes) {
     const by = world.routes.bypass;
     const bHit = by.project(car.x, car.z, BYPASS.half + 6);
     if (bHit) {
       const p = by.poseAt(bHit.s, _byPose);
       const surfY = p.y + bHit.lat * p.bank;
-      if (Math.abs(car.y - surfY) < 2.6) {
+      if (Math.abs(car.y - surfY) < SURFACE_TOL) {
         const { hwL, hwR } = by.halfWidths(bHit.s);
-        const hwSide = bHit.lat >= 0 ? hwL : hwR;
-        if (hwSide > BYPASS.half - 0.05) {
-          const lim = hwSide + 0.06 - halfW;
-          if (Math.abs(bHit.lat) > lim) {
-            const pen = Math.min(Math.abs(bHit.lat) - lim, CLAMP_STEP);
-            const sgn = bHit.lat >= 0 ? 1 : -1;
-            const nx = sgn * p.nx, nz = sgn * p.nz; // outward wall normal
-            car.x -= nx * pen;
-            car.z -= nz * pen;
-            const vn = car.wvx * nx + car.wvz * nz;
-            if (vn > 0) {
-              car.wvx -= nx * vn * 1.07;
-              car.wvz -= nz * vn * 1.07;
-            }
-            hit = true;
+        const { shL, shR } = by.sharedSides(bHit.s);
+        const sgn = bHit.lat >= 0 ? 1 : -1;
+        const hwSide = sgn > 0 ? hwL : hwR;
+        const lim = hwSide + 0.06 - halfW;
+        const over = Math.abs(bHit.lat) - lim;
+        if (!(sgn > 0 ? shL : shR) && over > 0 && over < WALL_REACH) {
+          const pen = Math.min(over, CLAMP_STEP);
+          const nx = sgn * p.nx, nz = sgn * p.nz; // outward wall normal
+          car.x -= nx * pen;
+          car.z -= nz * pen;
+          const vn = car.wvx * nx + car.wvz * nz;
+          if (vn > 0) {
+            car.wvx -= nx * vn * 1.07;
+            car.wvz -= nz * vn * 1.07;
           }
+          hit = true;
         }
       }
     }
@@ -279,6 +305,7 @@ export function collidePlayer(
   // NPC vehicles
   for (const n of npcs) {
     if (!n.active) continue;
+    // NOT SURFACE_TOL: this is car-vs-car vertical overlap, not "same road"
     if (Math.abs(car.y - n.y) > 2.6) continue;
     const ddx = car.x - n.x, ddz = car.z - n.z;
     const reach = n.L / 2 + halfL + 1.6;

@@ -110,6 +110,17 @@ export interface RouteStation {
       so the pavement meets the deck edge instead of overlapping it. */
   hwL: number;
   hwR: number;
+  /** Is that edge SHARED with the neighbouring carriageway — i.e. clipped
+      because the deck's own pavement carries on past it — rather than a free
+      edge over a drop? Only the gore wedges are shared. A free edge needs a
+      parapet and a wall clamp however narrow it is; a shared one must have
+      neither, or the barrier would stand in the middle of the junction.
+
+      Width alone cannot tell the two apart, and reading it that way is what
+      left both bypass gore noses unguarded: there the pavement tapers open
+      from nothing over a 10 m drop, so it is narrow AND free. */
+  shL: boolean;
+  shR: boolean;
   /** lateral surface slope dy/dlat */
   bank: number;
   /** grade dy/ds */
@@ -499,6 +510,17 @@ export class PolyRouteEdge extends RouteEdge {
       hwR: a.hwR + (b.hwR - a.hwR) * t,
     };
   }
+  /** Which edges here are shared with the neighbouring carriageway (see
+      RouteStation.shL). A boolean cannot be interpolated, so it steps at the
+      midpoint of the segment — the same place the sweep that reads it would
+      have to put the join anyway. Parapet meshes and the wall clamp both ask
+      this instead of guessing from the width. */
+  sharedSides(s: number): { shL: boolean; shR: boolean } {
+    const st = this.stations;
+    const i = this.locate(s);
+    const p = this.segT < 0.5 ? st[i] : st[i + 1] ?? st[i];
+    return { shL: p.shL, shR: p.shR };
+  }
   project(x: number, z: number, maxLat = 30) {
     if (
       x < this.x0 - maxLat || x > this.x1 + maxLat ||
@@ -745,19 +767,31 @@ export class RouteGraph {
     const e = this.bypass;
     /* the gap spans while the bypass pavement touches the deck edge */
     let divEnd = DIVERGE_Z + 30, mrgStart = MERGE_Z - 30;
+    /* …and it starts where that pavement starts. The window used to open a
+       fixed 8 m ahead of the diverge nose, which cut the deck's west parapet
+       over 8 m of edge that the bypass does not reach yet — an open 10 m drop
+       beside the kerb lane, with nothing on either side of it. Take the ends
+       from the geometry instead: the first and last station that touch the
+       deck edge, no lead. */
+    let divStart = DIVERGE_Z, mrgEnd = MERGE_Z;
     for (const p of e.stations) {
       const zc = c.zAt(p.x, p.z);
       const latC = c.latAt(p.x, p.z);
       const gap = Math.abs(latC) - c.halfWidth(zc);
       const dy = Math.abs(p.y - c.centerY(zc));
       if (dy < 2 && gap < BYPASS.half + 0.4) {
-        if (latC < 0) divEnd = Math.max(divEnd, zc + 4);
-        else mrgStart = Math.min(mrgStart, zc - 4);
+        if (latC < 0) {
+          divStart = Math.min(divStart, zc);
+          divEnd = Math.max(divEnd, zc + 4);
+        } else {
+          mrgStart = Math.min(mrgStart, zc - 4);
+          mrgEnd = Math.max(mrgEnd, zc);
+        }
       }
     }
     return [
-      { z0: DIVERGE_Z - 8, z1: divEnd, side: -1 },
-      { z0: mrgStart, z1: MERGE_Z + 8, side: 1 },
+      { z0: divStart, z1: divEnd, side: -1 },
+      { z0: mrgStart, z1: mrgEnd, side: 1 },
     ];
   }
 
@@ -925,7 +959,7 @@ function buildBypass(cor: Corridor): RouteStation[] {
     st.push({
       x: raw[i].x, y: raw[i].y, z: raw[i].z, tx, tz, nx: tz, nz: -tx,
       s: acc, nf: BYPASS.lanes, hwL: BYPASS.half, hwR: BYPASS.half,
-      bank: 0, grade: 0,
+      shL: false, shR: false, bank: 0, grade: 0,
     });
   }
   const len = acc;
@@ -946,8 +980,20 @@ function buildBypass(cor: Corridor): RouteStation[] {
     const dy = Math.abs(p.y - cor.centerY(zc));
     if (dy < 4) {
       const gap = Math.abs(latC) - cor.halfWidth(zc);
-      if (latC < 0) p.hwL = Math.min(p.hwL, Math.max(0, gap)); // deck to the east
-      else p.hwR = Math.min(p.hwR, Math.max(0, gap)); // deck to the west
+      /* An edge is SHARED only where this clip actually bites: then the two
+         pavements meet at the deck edge and the deck carries on past it. The
+         nose tapers below narrow the OTHER side just as much, but that side is
+         a free edge over a 10 m drop — hence the flag rather than a width
+         test, which cannot tell the two apart. */
+      if (gap < BYPASS.half) {
+        if (latC < 0) { // deck to the east
+          p.hwL = Math.max(0, gap);
+          p.shL = true;
+        } else { // deck to the west
+          p.hwR = Math.max(0, gap);
+          p.shR = true;
+        }
+      }
     }
     // gore-nose tapers: outer side widens out of / narrows into the deck edge
     p.hwR = Math.min(p.hwR, BYPASS.half * sst(p.s / BYPASS.nose));
@@ -1004,6 +1050,9 @@ function rampStations(r: Ramp, reverse: boolean): RouteStation[] {
          order for both kinds (ramps.ts sgn = mir * dir), so hIn is the +lat
          side and hOut the −lat side unconditionally */
       nf: 1, hwL: p.hIn, hwR: p.hOut,
+      /* hIn is clipped through the gore wedge because the deck's pavement
+         continues there; hOut is a free edge the whole way down */
+      shL: true, shR: false,
       bank: 0, grade: 0,
     });
   }
@@ -1026,7 +1075,8 @@ function frontageStations(zFrom: number, zTo: number): RouteStation[] {
     const z = zFrom + ((zTo - zFrom) * i) / n;
     st.push({
       x: FRONT_X, y: 0, z, tx: 0, tz: dir, nx: dir, nz: 0,
-      s: Math.abs(z - zFrom), nf: 2, hwL: 5.5, hwR: 5.5, bank: 0, grade: 0,
+      s: Math.abs(z - zFrom), nf: 2, hwL: 5.5, hwR: 5.5,
+      shL: false, shR: false, bank: 0, grade: 0,
     });
   }
   return st;

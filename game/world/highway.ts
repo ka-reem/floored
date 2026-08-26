@@ -3101,8 +3101,18 @@ function buildBypassViaduct(
       for (const sgn of [-1, 1] as const) {
         const hwA = sgn > 0 ? a.hwL : a.hwR;
         const hwE = sgn > 0 ? e.hwL : e.hwR;
-        // gore wedges: the deck's own edge continues there — no wall
-        if (hwA < FULL || hwE < FULL) continue;
+        /* Gore wedges: the deck's own edge continues there — no wall. Ask the
+           stations, not the width. The old `hwA < FULL` test also swallowed
+           the two gore NOSES, where the pavement tapers open from nothing over
+           a 10 m drop: narrow, but a free edge, and the deck's parapet is cut
+           away beside it. That was the visible hole in the barrier, and
+           collide.ts's clamp was switched off over exactly the same stretch.
+
+           Either end shared drops the whole segment, so a wall never pokes
+           into a wedge; the clamp reads the midpoint instead and so goes live
+           up to a segment earlier. That way round on purpose — a metre of
+           invisible wall beats a metre of missing one. */
+        if (sgn > 0 ? a.shL || e.shL : a.shR || e.shR) continue;
         if (inCross(a.z)) {
           /* the crossing span carries a steel three-band railing instead of
              the concrete parapet — the visual cue, from the main deck below

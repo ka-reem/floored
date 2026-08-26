@@ -95,8 +95,12 @@ Optionally expose `onBypass = (x, z) => routes.surfaceAt(x, z)?.y ?? null`.
 - **Piers**: instance the existing pier mesh at `routes.piers(terrain.h).piers`
   (box from ground `terrain.h(x,z)` up to `topY`). No pier inside `spans`.
 - **Parapet cut-outs**: extend the existing `parapetGap` skip with
-  `routes.newParapetGaps()` — west wall gap [492, 580], east wall gap
-  [1516, 1588]. (Note: the EAST parapet gains its first-ever gap.)
+  `routes.newParapetGaps()` — west wall gap [500, 580], east wall gap
+  [1512, 1588]. (Note: the EAST parapet gains its first-ever gap.) The windows
+  are derived from the stations, so read them, never the numbers: the west one
+  used to open 8 m ahead of the diverge nose, which cut the parapet over deck
+  edge the bypass does not reach yet and left an open 10 m drop beside the
+  kerb lane. Each gap now starts and ends where the bypass pavement does.
 - **Furniture skips** (same predicates that already guard CONNECT_Z):
   - gantries: also skip `|z − DIVERGE_Z| < 220 || |z − MERGE_Z| < 220`
     (today a gantry lands exactly at z = 500 — it must go);

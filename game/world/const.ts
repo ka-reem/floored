@@ -21,6 +21,16 @@ export const MAX_LANES = 6;
 /** widest the pavement ever gets (toll plaza) */
 export const RW = MAX_LANES * LANE_W + 2 * SHOULDER;
 
+/** Vertical tolerance for "the car is standing on THIS pavement".
+
+    Deliberately one number. terrain.heightAt uses it to pick which surface
+    supports the car; collide.ts uses it to decide whether a parapet applies to
+    the car at all. The two used to be 3.4 and 2.6, which left an 0.8 m band
+    where the physics had a car up on ramp or bypass pavement while the deck's
+    parapet was still clamping it — an invisible wall in exactly the place a
+    car changes roads. Anything that asks "which road am I on" reads this. */
+export const SURFACE_TOL = 3.4;
+
 export const RAMP_W = 10.5;
 /** How far a ramp runs along the corridor while it curves away from it. The
     deck is 10 m up, so this is really a grade budget: at 112 m the descent

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { sstep, type Rng, rrand } from "../util";
+import { SURFACE_TOL } from "./const";
 import { getCorridor, type Corridor } from "./corridor";
 import { getRouteGraph } from "./routegraph";
 import { buildRamps, rampAt, type Ramp } from "./ramps";
@@ -51,23 +52,44 @@ export function makeTerrain(rng: Rng): Terrain {
     return r ? r.y : null;
   };
 
+  /* Which surface is under the car: of the candidates that pass their refY
+     gate, the one NEAREST the car's current height — not the highest.
+
+     By construction they never overlap (ramp and bypass pavement is clipped to
+     *meet* the deck edge rather than cross it), so on today's geometry this
+     agrees with the old Math.max everywhere a car can reach. It is written
+     this way because "highest wins" has no defence if that ever stops being
+     true: a gore whose pavement crept a metre over the deck edge would start
+     snapping cars UP off the deck onto it, mid-lane, at speed. Nearest cannot
+     do that — and refY is the car's own height from last frame, so the pick is
+     already sticky: a surface has to come closer than the one the car is
+     riding before it can take over. */
   function heightAt(x: number, z: number, refY: number) {
     let best = h(x, z);
+    let bestD = Math.abs(best - refY);
+    /** ties go to the higher surface — a car straddling two sits on top */
+    const take = (y: number) => {
+      const d = Math.abs(y - refY);
+      if (d < bestD || (d === bestD && y > best)) {
+        best = y;
+        bestD = d;
+      }
+    };
     // the deck, but only when the query is already up near it — otherwise a car
     // on the frontage road underneath would be yanked onto the expressway
-    if (refY > corridor.centerY(z) - 3.4) {
+    if (refY > corridor.centerY(z) - SURFACE_TOL) {
       const dy = corridor.heightAt(x, z, 1.0);
-      if (dy !== null) best = Math.max(best, dy);
+      if (dy !== null) take(dy);
     }
     // curved ramps
     const r = rampAt(ramps, x, z, 1.0);
-    if (r && Math.abs(r.y - refY) < 3.4) best = Math.max(best, r.y);
+    if (r && Math.abs(r.y - refY) < SURFACE_TOL) take(r.y);
     /* the bypass viaduct (routegraph.ts), with the same refY gating as the
        ramps: a car on the street or frontage under it is never yanked up —
        the graph's own tests guarantee it runs ≥ 6 m above any live street
        mid-route and never answers near deck height over the main pavement */
     const g = getRouteGraph().surfaceAt(x, z, 1.0);
-    if (g && Math.abs(g.y - refY) < 3.4) best = Math.max(best, g.y);
+    if (g && Math.abs(g.y - refY) < SURFACE_TOL) take(g.y);
     return best;
   }
 
