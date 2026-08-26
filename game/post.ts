@@ -1025,7 +1025,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
   /** sceneRT must already contain the rendered frame. */
   process(opts: {
     exposure: number; grade: boolean; bloom: boolean; fxaa: boolean;
-    mblur: number; time: number;
+    mblur: number; mbOn?: boolean; time: number;
     /** wall-clock seconds since the previous frame. Only the dashcam POV's
         frame blend reads it (see POV_MB_TAU) — the settings-driven motion
         blur keeps its own curve, which engine.ts already shapes by speed. */
@@ -1193,8 +1193,10 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // As a TIME CONSTANT, not a per-frame fraction — see POV_MB_TAU. At
       // 60 fps this is 0.6600, i.e. the value that was hardcoded here; below
       // 60 it stops over-smearing instead of dragging twice as long, which is
-      // the whole point (the mobile tiers run this path even with mblur off,
-      // because POV forces doMbSetting on).
+      // the whole point. Gated on opts.mbOn — the player's setting — and NOT
+      // on opts.mblur, which the mobile tiers pin to 0 via tierCaps: that cap
+      // is for the chase-camera streak, and a phone can afford one full-screen
+      // blend for the exposure the night look was built around.
       const povDt = Math.min(POV_MB_DT_MAX, Math.max(POV_MB_DT_MIN, opts.dt));
       /* POV honours the setting by AMOUNT, not by skipping the pass. With
          motion blur off the retention is 0, which makes the blend a straight
@@ -1203,7 +1205,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
          dashcam with no exposure drag; see the doMbSetting note above for what
          happens if you try to do it by skipping. */
       const mb = pov
-        ? (opts.mblur > 0.001 ? Math.exp(-povDt / POV_MB_TAU) : 0)
+        ? (opts.mbOn ? Math.exp(-povDt / POV_MB_TAU) : 0)
         : doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
       this.mbMat.uniforms.tCur.value = cur.texture;
       this.mbMat.uniforms.tPrev.value = this.prevRT.texture;

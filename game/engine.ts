@@ -3489,11 +3489,21 @@ export class Game {
         this.settings.mblur && this.tierCaps.mblur && this.running
           ? clamp((Math.abs(this.car.u) * 3.6 - 70) / 170, 0, 0.42)
           : 0,
+      /* The USER's motion-blur choice, unfiltered by the perf cap — and that
+         separation is the point. `mblur` above is the chase-camera streak, a
+         quality option, so it is rightly gated by tierCaps.mblur (false on
+         both mobile tiers). The dashcam's 40 ms exposure is a different
+         effect that happens to share the word: it is the look the night pass
+         was authored around, it costs one blend of a full-screen quad, and a
+         phone can afford it.
+
+         Sharing one flag meant mobile could never have the dashcam exposure
+         no matter what the player picked, while desktop could never turn it
+         off. Two effects, two gates. */
+      mbOn: this.settings.mblur,
       time: now,
       // the dashcam POV's frame blend is an exposure TIME, so it needs the
       // frame delta to stay 40 ms at any frame rate (post.ts POV_MB_TAU).
-      // Note this path runs on mobile even though tierCaps.mblur is false
-      // there — POV forces the blend on regardless of the setting.
       dt,
     });
     this.perfCheck(performance.now() - t0, dt);
