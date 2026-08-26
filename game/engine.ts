@@ -3528,6 +3528,9 @@ export class Game {
          no matter what the player picked, while desktop could never turn it
          off. Two effects, two gates. */
       mbOn: this.settings.mblur,
+      /* Suppresses the peripheral blur: inside the car the frame edge is
+         cabin, which is bolted to the camera and must not smear. */
+      inCar: this.inCar(),
       time: now,
       // the dashcam POV's frame blend is an exposure TIME, so it needs the
       // frame delta to stay 40 ms at any frame rate (post.ts POV_MB_TAU).

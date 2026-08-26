@@ -1025,7 +1025,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
   /** sceneRT must already contain the rendered frame. */
   process(opts: {
     exposure: number; grade: boolean; bloom: boolean; fxaa: boolean;
-    mblur: number; mbOn?: boolean; time: number;
+    mblur: number; mbOn?: boolean; inCar?: boolean; time: number;
     /** wall-clock seconds since the previous frame. Only the dashcam POV's
         frame blend reads it (see POV_MB_TAU) — the settings-driven motion
         blur keeps its own curve, which engine.ts already shapes by speed. */
@@ -1148,7 +1148,21 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     // sell via the soft/chroma-bleed mix, so skip it there to avoid stacking
     // two corner-blur effects; also skip in perf mode (4 extra taps/px), and
     // in POV, where the degrade owns the entire edge treatment.
-    const doPeriph = !this.perf && !dash && !pov && speedT > 0.02;
+    /* Peripheral (fovea) blur streaks the frame radially outward from r=0.15,
+       scaled by speed. That is a road effect: it belongs on scenery rushing
+       past at the edge of vision.
+
+       Inside the car the edge of the frame is not scenery, it is the CABIN —
+       the A-pillar, the door card, the wheel rim — and those are rigidly
+       attached to the camera and not moving relative to it at all. Blurring
+       them says the car is smearing, which is wrong and reads as a bug.
+       Reported as "the inside of the car cabin gets very blurry... in any of
+       the inside driving car views".
+
+       POV was already excluded (its degrade owns the whole edge treatment);
+       this extends the same exclusion to the cockpit and console cameras,
+       which are just as much inside the car. */
+    const doPeriph = !this.perf && !dash && !pov && !opts.inCar && speedT > 0.02;
     const doFinal = doMbSetting || doPeriph;
     /* Each stage renders to screen only when nothing follows it. */
     const after = (stage: 0 | 1 | 2) =>
