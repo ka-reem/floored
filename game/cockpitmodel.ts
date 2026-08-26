@@ -249,7 +249,7 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
      screen-LEFT here (car-local +x maps to screen-left through the POV
      camera's heading), so this walks the whole assembly back toward the middle
      of the frame. Those two are cosmetic; move them freely. */
-  const MIRROR_NUDGE = new THREE.Vector3(0.08, -0.16, 0.10);
+  const MIRROR_NUDGE = new THREE.Vector3(0.08, -0.04, 0.10);
 
   const mirrorParts = byRole("mirror");
   const glass = cockpit.mirrorGlass;

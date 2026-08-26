@@ -275,10 +275,14 @@ const POV_MOUNT = { dx: 0.28, dy: -0.03, dz: 0.61 };
      lands 60% of the way up the cluster face at 1.20 and 68% at 1.175 — the
      rim is a thin ring and you read the gauges through it, but keep dropping
      and it walks over them. The lit cluster is the point of this view.
-   - HIGHER is what keeps getting reported. -0.15 was called too high, -0.175
-     was still called "way too high", -0.24 was still not low enough, and this
-     is now -0.27 (y 1.08). Each report has asked for lower; none has yet asked
-     for higher, so treat the floor as unfound rather than reached.
+   - LOWERING THIS WAS A MISTAKE, twice over. It was walked -0.15 -> -0.175 ->
+     -0.24 -> -0.27 on reports of the view being too high, but those reports
+     were about CAM_COCKPIT, which at the time had no height offset of its own
+     and so could not be lowered separately. The dashcam was dragged down for a
+     complaint that was never about it. Reverted to -0.15; CAM_COCKPIT carries
+     its own dy now (COCKPIT_EYE_IMPORTED), which is where that correction
+     belonged all along. Do not lower this one on a report that does not name
+     the DASHCAM specifically.
 
    THE BOUNDS ABOVE ARE FROM THE RETIRED ASSET AND ARE NOT GOSPEL. They were
    measured against the frustum-CUT dash, whose pad was the only cabin geometry
@@ -294,7 +298,7 @@ const POV_MOUNT = { dx: 0.28, dy: -0.03, dz: 0.61 };
    If a value is settled on there, bring it back HERE — and move
    cockpitmodel.ts's MIRROR_NUDGE.y by the same amount, or the mirror leaves
    the top of frame. */
-const POV_MOUNT_DY_IMPORTED = -0.27;
+const POV_MOUNT_DY_IMPORTED = -0.15;
 /* Where the lens sits for the imported interior, relative to POV_MOUNT.
 
    dx/dz are DELTAS on POV_MOUNT.dx/dz — zero is "unchanged" — while dy is the
