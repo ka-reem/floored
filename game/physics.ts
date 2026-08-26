@@ -41,15 +41,16 @@ export const ARCADE_STEER = {
    *  it ceilings the yaw rate ESC will allow at all. Stock 10.5 is ~1.07 g —
    *  right for a road car, and less than half what a 2.8-grip arcade tyre
    *  actually delivers, so ESC spends a steady 250 km/h corner fighting a car
-   *  that has not run out of grip. Faded to 10.5 by the brake, see above.
-   *  Only the yaw-rate half of ESC moves; the sideslip term (slipPad) is
-   *  untouched, and that is the half that catches a slide. 14 is a
-   *  compromise, not a fix: it halves how hard ESC fights a steady corner
-   *  (yaw demand at 180 km/h 0.63 -> 0.43) without going to the ~18 that
-   *  silences ESC there entirely and costs 4 deg more sideslip when the
-   *  brake then arrives. Above ~26 the kinematic term of the min() binds
-   *  instead and this stops doing anything at all. */
-  escAy: 14,
+   *  that has not run out of grip. It looks like the obvious fix, and it is
+   *  MEASURED AND REJECTED: raising it is a far more expensive way to buy
+   *  cornering than hiBoost below. 14 bought kaze +5% lateral and cost tanuki
+   *  8 deg of sideslip on a 150 km/h trail brake, taking a row that held over
+   *  the spin line; hiBoost bought +32% for 4 deg and took nothing over.
+   *  Left at the stock 10.5, i.e. inert — a knob to feel out, not a change.
+   *  If you do raise it: it only moves the yaw-rate half of ESC, the sideslip
+   *  term (slipPad) that catches an actual slide is untouched, and above ~26
+   *  the kinematic term of the min() binds and it stops doing anything. */
+  escAy: 10.5,
   /** Multiplier on spec.steerHi, the high-speed FLOOR under the steer
    *  schedule — so this is the one lever that adds steering ANGLE, and it
    *  adds it only where the schedule has bottomed out, i.e. only at speed.

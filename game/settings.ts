@@ -355,6 +355,25 @@ export function loadProfile(): Profile {
        or indices instead of falling back. */
     if (!p || typeof p !== "object" || Array.isArray(p)) return base;
     const settings = { ...base.settings, ...(p.settings || {}) };
+    /* ONE-TIME: clear a stored mblur:true.
+
+       Motion blur defaulted ON for the whole life of the v3 profile, and the
+       dashcam forced its frame blend on regardless of the setting anyway
+       ("|| pov" in post.ts) — so unticking the box changed the chase camera
+       and nothing else, and the smear stayed in the only view the game is
+       actually played in. That force is gone now, but a profile written before
+       it still carries mblur:true and would keep smearing with no indication
+       why, including over the cabin itself at speed.
+
+       Runs exactly once, under its own key, and then never touches the value
+       again: after this the setting belongs to the user, and someone who turns
+       motion blur back on must have it stay on. A plain `settings.mblur =
+       false` here would be a setting that cannot be changed. */
+    const MB_CLEARED = KEY + ".mbcleared";
+    if (!localStorage.getItem(MB_CLEARED)) {
+      settings.mblur = false;
+      localStorage.setItem(MB_CLEARED, "1");
+    }
     // v3 profiles stored fog as a 0.3..2.6 multiplier; snap those to the
     // nearest named level
     if (typeof (settings.fog as unknown) === "number") {
