@@ -1664,7 +1664,34 @@ export class Game {
     let sTarget = sL - sR;
     const analog = this.isTouch && this.settings.steerMode !== "buttons";
     if (analog) sTarget = this.settings.steerMode === "wheel" ? -this.wheelVal : -this.tiltVal;
-    let sRate = analog ? 7 : lerp(3.4, 1.7, clamp(Math.abs(this.car.u) / 40, 0, 1));
+    /* The keyboard rate droops hard with speed — 3.4 at rest down to 1.7 past
+       144 km/h — and in TEST MODE that droop is the single biggest thing
+       standing between the player and the car.
+
+       It bites worst on a REVERSAL, which is the manoeuvre threading traffic
+       is made of. Full left to full right is a stick distance of 2, and the
+       BOOST below is `1 + 2.2*(1 - |st|)`, i.e. exactly 1x at full lock — so a
+       flick from one stop to the other STARTS at the slowest rate the filter
+       has. At 1.7/s that is 1.18 s for the input alone, before the steer angle
+       or the tyres are involved at all. Reported as "when i turn from left to
+       right qucikly its so slow to react", and the report is about this line
+       rather than about the physics.
+
+       Test mode flattens the droop to 4.6 -> 4.0 instead. A reversal at speed
+       becomes 0.5 s, and because the curve is nearly flat the car answers the
+       same way at 200 km/h as it does at 60 — which is the arcade promise.
+       Measured through test/steer-response-sim.mjs --keyfix: time to 25% of
+       target falls 47% at 180 km/h and 46% at 250, versus 37%/35% from the
+       physics-side work alone.
+
+       STOCK IS UNTOUCHED — the original lerp is still the other arm, so a car
+       driven with test mode off filters exactly as it always did. */
+    const sDroop = clamp(Math.abs(this.car.u) / 40, 0, 1);
+    let sRate = analog
+      ? 7
+      : this.testMode
+        ? lerp(4.6, 4.0, sDroop)
+        : lerp(3.4, 1.7, sDroop);
     /* Test mode only: a PROGRESSIVE ramp instead of a flat one.
 
        The flat ramp is the single biggest source of the "it takes a bit to
