@@ -1,0 +1,79 @@
+# Headless renders, on GitHub's machines instead of the laptop.
+#
+# WHY THIS EXISTS: test/pov-shot.mjs drives puppeteer with
+# --use-gl=angle --use-angle=swiftshader, i.e. software rasterisation on the
+# CPU. That is genuinely expensive and it is why running render sweeps locally
+# was making the machine unusable. A private repo gets free Actions minutes and
+# ubuntu-latest already has the libraries Chrome needs, so the sweep runs there
+# and the PNGs come back as a downloadable artifact.
+#
+# Run it from the Actions tab ("Run workflow"), or:
+#   gh workflow run renders.yml -f script=test/pov-shot.mjs -f args="--tag dash"
+#
+# Deliberately manual-only. On push it would burn minutes on every commit for
+# shots nobody asked for.
+name: renders
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Render script to run (path under test/)"
+        required: true
+        default: test/pov-shot.mjs
+      args:
+        description: "Extra args passed through to the script"
+        required: false
+        default: ""
+      port:
+        description: "Port to serve the built game on"
+        required: false
+        default: "3141"
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Chrome comes from puppeteer's own install rather than the runner's,
+      # so the version always matches the puppeteer in package.json.
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # `next start` backgrounded, then polled — a fixed sleep either wastes
+      # time or races the build on a slow runner.
+      - name: Serve
+        run: |
+          npx next start -p "${{ inputs.port }}" &
+          for i in $(seq 1 60); do
+            curl -sf "http://localhost:${{ inputs.port }}" >/dev/null && echo "up after ${i}s" && exit 0
+            sleep 1
+          done
+          echo "server never came up"; exit 1
+
+      - name: Render
+        run: |
+          node "${{ inputs.script }}" \
+            --url "http://localhost:${{ inputs.port }}" \
+            --out test/artifacts \
+            ${{ inputs.args }}
+
+      # test/artifacts is gitignored, which is correct — these are disposable.
+      # The artifact is how they get off the runner.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renders
+          path: test/artifacts/**
+          if-no-files-found: error
+          retention-days: 14
