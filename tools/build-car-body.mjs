@@ -48,6 +48,19 @@ const TEX = Number(flag("--tex", 256));
 const ERROR = Number(flag("--error", 0.01));
 const REST = argv.includes("--rest");
 const EXTERIOR = argv.includes("--exterior");
+/* The mirror image of --exterior: keep ONLY the cabin. Composes with --rest,
+   and `--interior --rest` is the useful pair — everything a person sitting in
+   that seat can see, minus the dash the cockpit GLB already ships at full
+   resolution. */
+const INTERIOR = argv.includes("--interior");
+/* You do not model the seat the camera is sitting in. Both driver cameras land
+   INSIDE the donor's driver seat — its box is x 0.11..0.69, y 0.27..1.32,
+   z -0.29..0.60, and CAM_POV sits at (0.28, 1.20, 0.31) with CAM_COCKPIT at
+   (0.36, 1.35, -0.30) — so shipping it puts a headrest across the lens and the
+   dash somewhere beyond it. The clipped dash never contained seats, which is
+   why this only appeared once the full cabin did. The PASSENGER seat and the
+   rear bench stay: nothing is ever inside those. */
+const DRIVER_SEAT = /^Driver Seat/i;
 const COMPRESS = flag("--compress", "quantize");   // none | quantize | meshopt | draco
 const JOIN = !argv.includes("--no-join");
 const TANGENTS = argv.includes("--tangents");
@@ -55,7 +68,7 @@ const DRY = argv.includes("--dry");
 const OUT_DIR = path.resolve(flag("--outdir", path.resolve(import.meta.dirname, "../public/assets-staging")));
 
 if (!SRC || !fs.existsSync(SRC)) {
-  console.error("usage: node tools/build-car-body.mjs <donor.glb> [--out NAME] [--tris N] [--tex N] [--error E] [--rest] [--exterior] [--compress none|quantize|meshopt|draco] [--no-join] [--tangents] [--outdir DIR] [--debug] [--dry]");
+  console.error("usage: node tools/build-car-body.mjs <donor.glb> [--out NAME] [--tris N] [--tex N] [--error E] [--rest] [--exterior] [--interior] [--compress none|quantize|meshopt|draco] [--no-join] [--tangents] [--outdir DIR] [--debug] [--dry]");
   process.exit(1);
 }
 
@@ -131,7 +144,9 @@ function mulMat(a, b) {
 const walk = (node, parentMat) => {
   const m = mulMat(parentMat, node.getMatrix());
   const drop = node.getMesh() && ((REST && COCKPIT_OWNED.test(node.getName())) ||
-                                 (EXTERIOR && CABIN_ONLY.test(node.getName())));
+                                 (EXTERIOR && CABIN_ONLY.test(node.getName())) ||
+                                 (INTERIOR && !CABIN_ONLY.test(node.getName())) ||
+                                 (INTERIOR && DRIVER_SEAT.test(node.getName())));
   if (node.getMesh() && !drop) keep.push({ node, matrix: m });
   for (const c of node.listChildren()) walk(c, m);
 };
@@ -186,7 +201,24 @@ const WEIGHTS = [
      high-res cockpit is drawn over the front half of it anyway */
   [/Seat|Carpet|Floor|^Shell_|DoorPanel|Dashboard|Console|RearShelf|SeatBelt|Pedal|PlasticTrim|SunRoof|^Plane\./i, 0.5, false],
 ];
-const ruleFor = (name) => WEIGHTS.find(([re]) => re.test(name)) ?? [null, 1.0, true];
+/* An interior asset inverts the exterior's priorities completely. The WEIGHTS
+   above put the cabin at 0.5 because from outside it is a blur behind tinted
+   glass; from INSIDE, the dash is 30 cm from the lens and is the whole shot,
+   while the rear bench is a metre and a half behind your head. Using the
+   exterior table for an interior build spends the budget on the parcel shelf
+   and decimates the binnacle. */
+const INTERIOR_WEIGHTS = [
+  // the surfaces a driver's eye lands on, at arm's length
+  [/Dashboard|^Vents|Knobs|Glovebox|Speedo|InfoTainment|SteeringWheel|^Stalks|SteeringColumn|CenterConsole|Shifterknob|^Plane\.049/i, 3.0, true],
+  // either side of the dash, and the pillars that frame the windscreen
+  [/DoorPanel|^Plane\.057|^Shell_|Rearview|CeilingConsole/i, 2.0, true],
+  [/Driver Seat|Passenger Seat|SeatBelts Front|Pedal/i, 1.0, true],
+  // behind the driver's head, or under their feet
+  [/Rear Seats|SeatBelts Rear|RearShelf|Carpet|^Floor_|PlasticTrim|SunRoof/i, 0.4, false],
+];
+const ruleFor = (name) =>
+  (INTERIOR ? INTERIOR_WEIGHTS.find(([re]) => re.test(name)) : null) ??
+  WEIGHTS.find(([re]) => re.test(name)) ?? [null, 1.0, true];
 
 /* Weight per distinct mesh, taken from a node that references it, plus how
    many nodes do — an instanced wheel corner costs its triangles four times
@@ -366,7 +398,7 @@ else if (COMPRESS === "draco") await doc.transform(quantize(), draco());
 const after = drawn();
 const pc = (a, b) => `${((100 * a) / b).toFixed(1)}%`;
 
-console.log(`\n${path.basename(SRC)} -> ${OUT_NAME}.glb   ${EXTERIOR ? "(exterior only: cabin dropped)" : REST ? "(rest-of-car: cockpit parts dropped)" : "(whole car)"}`);
+console.log(`\n${path.basename(SRC)} -> ${OUT_NAME}.glb   ${INTERIOR ? (REST ? "(cabin only, minus the cockpit dash)" : "(cabin only)") : EXTERIOR ? "(exterior only: cabin dropped)" : REST ? "(rest-of-car: cockpit parts dropped)" : "(whole car)"}`);
 console.log(`  selected  : ${donor.tris.toLocaleString()} -> ${selected.tris.toLocaleString()} drawn tris  (${pc(selected.tris, donor.tris)} of donor)`);
 console.log(`  decimated : ${selected.tris.toLocaleString()} -> ${simplified.tris.toLocaleString()} drawn tris  (target ${TRIS.toLocaleString()}, passes ${passes.map((p) => p.toLocaleString()).join(" -> ")})`);
 console.log(`  triangles : ${after.tris.toLocaleString()} drawn, ${Math.round(unique()).toLocaleString()} distinct`);

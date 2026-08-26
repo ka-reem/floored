@@ -250,16 +250,79 @@ const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM"];
    The steering wheel rim cannot be had as well: including it forces the cluster
    up to ~40% down, which puts the interior over more than half the frame. */
 const POV_MOUNT = { dx: 0.28, dy: -0.03, dz: 0.61 };
-/* Mount height when an IMPORTED dash is in, 12 cm below the procedural one.
-   The two dashes want different lens heights and neither value works for both:
+/* Mount height when the IMPORTED interior is in, 14.5 cm below the procedural
+   one. The two want different lens heights and neither value works for both:
    the procedural pad is shallow, and dy -0.03 is what clears it (all the
    framing notes above were fitted at that height). A donor dash has real
    depth, so from the same mount the lens looks down onto it from too far above
-   and reads as a camera on a pole rather than one stuck to the glass. -0.15
-   puts it ~13 cm over the Volvo pad top (y 1.07), about where a real
-   windscreen unit sits. Tied to which dash is actually visible rather than
-   picked globally, so the J toggle stays an honest A/B. */
-const POV_MOUNT_DY_IMPORTED = -0.15;
+   and reads as a camera on a pole rather than one stuck to the glass. Tied to
+   which interior is actually visible rather than picked globally, so the J
+   toggle stays an honest A/B — and the split has to stay for that reason even
+   though there is only one donor left.
+
+   THIS IS THE SEATING POSITION, and it is squeezed from both sides. In
+   cockpit-local metres the lens sits at y = EYE.y + this = 1.175, with the
+   road at y 0 and the donor's roof at 1.42 — so it is a real driver's eye
+   height in a real S90, not a camera on a mast. What bounds it:
+
+   - LOWER hides the road. The dash pad's forward top corner is at (y 1.07,
+     z 1.12) and the lens is at z 0.31, so the pad occludes everything below a
+     shallow line over it. At 1.20 the road showed in a 12.3% band of frame
+     height under the horizon; at 1.175 that band is 10.0%; by 1.10 it is 3%
+     and the view is dash and sky.
+   - LOWER also hides the cluster behind the wheel. The rim top is at (y 1.053,
+     z 0.60), between the lens and the dials. The sightline that grazes it
+     lands 60% of the way up the cluster face at 1.20 and 68% at 1.175 — the
+     rim is a thin ring and you read the gauges through it, but keep dropping
+     and it walks over them. The lit cluster is the point of this view.
+   - HIGHER is what keeps getting reported. -0.15 was called too high, -0.175
+     was still called "way too high", -0.24 was still not low enough, and this
+     is now -0.27 (y 1.08). Each report has asked for lower; none has yet asked
+     for higher, so treat the floor as unfound rather than reached.
+
+   THE BOUNDS ABOVE ARE FROM THE RETIRED ASSET AND ARE NOT GOSPEL. They were
+   measured against the frustum-CUT dash, whose pad was the only cabin geometry
+   that existed; the shipped interior is unclipped and brings a seat, floor,
+   headliner and rear bench, so what fills the frame at a given eye height is
+   not what filled it then. "By 1.10 the view is dash and sky" is a reading
+   taken on a different object. Trust the reported frame over the numbers here
+   until someone re-measures them on the current asset.
+
+   Live knob because the numbers above bound it but do not pick it, and picking
+   it needs eyes on the frame: `window.__povMount.dy = -0.28` re-frames on the
+   next frame with no reload, the same pattern as window.__povTune in post.ts.
+   If a value is settled on there, bring it back HERE — and move
+   cockpitmodel.ts's MIRROR_NUDGE.y by the same amount, or the mirror leaves
+   the top of frame. */
+const POV_MOUNT_DY_IMPORTED = -0.27;
+/* Where the lens sits for the imported interior, relative to POV_MOUNT.
+
+   dx/dz are DELTAS on POV_MOUNT.dx/dz — zero is "unchanged" — while dy is the
+   absolute replacement above, because that is what POV_MOUNT_DY_IMPORTED
+   already was and rewriting it would silently move a tuned number.
+
+   dz exists because the shipped interior is NOT frustum-clipped and therefore
+   has a real driver's seat (roles `seats`, z -0.286..0.598, headrest y 1.327)
+   where the retired cut dash had empty space. The lens at z ~0.31 / y ~1.175
+   lands inside that volume. See povMount() for the full account. */
+const POV_MOUNT_DELTA = { dx: 0, dy: POV_MOUNT_DY_IMPORTED, dz: 0 };
+/* CAM_COCKPIT's offset with the imported interior up — see cockpitEye().
+
+   dz 0.55 lands the eye at z ~0.25, just ahead of the backrest and behind the
+   wheel rim (z 0.485..0.718), which is where a driver's head actually is.
+
+   dy -0.10 because this camera had NO imported-interior height offset at all:
+   it sat at the procedural COCKPIT_EYE.y while the dashcam beside it had
+   already been dropped twice for being too high. Same complaint, same cabin,
+   so it inherits the correction rather than being left as the one interior
+   view nobody could lower. */
+const COCKPIT_EYE_IMPORTED = { dy: -0.14, dz: 0.55 };
+declare global {
+  interface Window {
+    __povMount?: { dx: number; dy: number; dz: number };
+    __cockpitEye?: { dy: number; dz: number };
+  }
+}
 /* 13 degrees of nose-down, on top of whatever the body is doing. This is what
    rakes the dial faces into the bottom of the frame instead of showing their
    top edge side-on, and it settles the horizon at ~34% down. Raising it further
@@ -296,12 +359,33 @@ const POV_TILT = 0.227;
    still lands on exactly the old 100 deg, so portrait never gets WIDER than it
    is today — it just gets narrower when the slider is lowered, which is the
    point. POV_H_CEIL is new: the floor blows the horizontal out on very wide
-   screens (129.8 deg at 32:9 today, past what the dash is even clipped for),
+   screens (129.8 deg at 32:9 today, wider than any interior is built to fill),
    and this bounds it. */
 const POV_REF_ASPECT = 16 / 9;
 const POV_V_CAP = 1.25;
 const POV_V_FLOOR = 62;
 const POV_H_CEIL = 118;
+/* How wide the lens may go. ONE number now, for both interiors the J key
+   cycles, and that is a property of the asset rather than a preference:
+
+     PROCEDURAL           built geometry — nothing was ever cut off it
+     VOLVO FULL INTERIOR  whole donor nodes, decimated, never frustum-clipped
+
+   Neither has a cut edge to walk past, so neither has anything to fear from a
+   wide frame. There used to be a second, lower cap here (POV_FOV_MAX_CUT, 88)
+   for volvo-s90.glb — a per-vertex frustum CUT of the same car, which printed
+   torn door-card shards at both frame borders the moment the slider went past
+   what it had been sliced for. That asset is out of the game (see
+   COCKPIT_MODEL in player.ts) and the cap went with it.
+
+   A clamp rather than a comment, because the slider's `max` attribute does not
+   bind: settings.ts range-checks `time` on load but only TYPE-checks
+   `fovBase`, so a value saved while the maximum was briefly higher survives in
+   the profile forever and povFov() would honour it. This is the last gate
+   before the projection matrix. The durable companion fix is a range clamp in
+   settings.ts's NUM_KEYS pass, which would also catch a hand-edited profile —
+   that file belongs to another agent right now. */
+const POV_FOV_MAX = 100;
 
 export class Game {
   // public state the UI reads
@@ -314,8 +398,13 @@ export class Game {
   running = false; // simulation advancing (menus closed)
   rain = false;
   grade = false; // set from settings.dashcam in the constructor
-  dashImported = true; // J toggles; only meaningful once a donor dash has loaded
-  bodyImported = false; // U toggles; the imported exterior body starts off
+  /** The imported Volvo, INTERIOR and exterior body, against the procedural
+      car. ONE flag for both halves rather than one each: they are two cuts of
+      the same donor and a car wearing one of them is a car nobody asked for. J
+      toggles it; either half may be missing, and the flag still means "show
+      whichever of them loaded". Also selects the lens position — see
+      povMount(), which is why this is read every frame and not just on J. */
+  dashImported = true;
   /** Drive the car on testDriveSpec() instead of its own spec — grip, brakes
       and power up, for getting somewhere in the world quickly. Toggled by K
       in game and by a row in the settings panel.
@@ -330,40 +419,88 @@ export class Game {
   get testMode() { return this.settings.testMode; }
   set testMode(v: boolean) { this.settings.testMode = v; }
 
-  /** Lens height for the dash currently on screen. Reads live rather than
-      being cached, so the J toggle moves the camera in the same frame it
-      swaps the dash — otherwise the A/B compares two dashes at one height and
-      whichever one it does not suit loses unfairly. */
-  private povMountDy(): number {
-    return this.rig.cockpitModel && this.dashImported ? POV_MOUNT_DY_IMPORTED : POV_MOUNT.dy;
+  /** Lens OFFSET for the interior currently on screen, all three axes. Reads
+      live rather than being cached, so the J toggle moves the camera in the
+      same frame it swaps the interior — otherwise the A/B compares two
+      interiors at one eye point and whichever one it does not suit loses
+      unfairly.
+
+      Z IS HERE FOR A REASON, and it is not symmetry. The retired dash was
+      frustum-CLIPPED: build-cockpit.mjs deleted every vertex outside the
+      dashcam cone, so the driver's seat did not exist in that asset and the
+      lens could sit anywhere fore-and-aft without ever being behind anything.
+      The shipped interior is built --no-clip and carries the real seat — 34k
+      triangles spanning z -0.286..0.598 with its headrest up at y 1.327,
+      while the lens sits at z ~0.31, y ~1.175. That is INSIDE the seat
+      volume, which is what "the camera is behind the seat" actually is. No
+      value of dy fixes it; height is not the axis that is wrong.
+
+      So all three are live knobs, not just the height:
+
+        window.__povMount.dz = 0.16    // slide the lens FORWARD, past the seat
+        window.__povMount.dy = -0.19   // and down
+        window.__povMount.dx = 0.02    // and inboard/outboard
+
+      dx and dz are DELTAS on top of POV_MOUNT.dx/dz rather than replacements,
+      so zero means "exactly where it was" and a reading taken from the console
+      can be pasted straight into POV_MOUNT_DELTA below. dy stays absolute
+      because POV_MOUNT_DY_IMPORTED already is. */
+  private povMount(): { dx: number; dy: number; dz: number } {
+    if (!(this.rig.cockpitModel && this.dashImported))
+      return { dx: 0, dy: POV_MOUNT.dy, dz: 0 };
+    if (!window.__povMount) window.__povMount = { ...POV_MOUNT_DELTA };
+    return window.__povMount;
+  }
+
+  /** Forward nudge for the COCKPIT eye (CAM_COCKPIT), same cause as povMount()
+      but a much bigger number, because this camera sits a full POV_MOUNT.dz
+      (0.61 m) further back than the dashcam. Seat z -0.286..0.598 against an
+      eye at COCKPIT_EYE.z ~ -0.30 puts it behind the backrest outright, not
+      merely inside the seat — which is why the imported interior reads as
+      "behind the seat" here first.
+
+      Applied ONLY with the imported interior up. The procedural cockpit has no
+      seat geometry in front of the eye and is framed against COCKPIT_EYE as
+      authored; shifting it would break the binnacle/wheel/mirror framing that
+      cockpit.ts pins to that exact point.
+
+      Live: `window.__cockpitEye.dy = -0.14`, `.dz = 0.6`. AGENTS.md rates this
+      camera as debug-only, so it gets knobs and defaults rather than a tuning
+      pass — bring settled values back into COCKPIT_EYE_IMPORTED. */
+  private cockpitEye(): { dy: number; dz: number } {
+    if (!(this.rig.cockpitModel && this.dashImported)) return { dy: 0, dz: 0 };
+    if (!window.__cockpitEye) window.__cockpitEye = { ...COCKPIT_EYE_IMPORTED };
+    return window.__cockpitEye;
   }
 
   /** The dashcam lens, in three's vertical degrees, for a given viewport
       aspect. See the POV_V_CAP block above for why the slider is read as
       vertical-at-16:9 and then held horizontally constant.
 
-      The widest this can return, swept over the whole slider range (58..95,
-      GameApp.tsx) crossed with every aspect from 9:21 to 32:9, is 118.8 deg
-      vertical (portrait, slider at 95) and 125.5 deg horizontal (16:9, slider
-      at 95 — above 88 the slider itself overtakes POV_H_CEIL, which from there
-      on only bounds the ultrawide floor). tools/build-cockpit.mjs clips the
-      imported dash to exactly those two numbers plus margin.
+      The slider runs 58..100 (GameApp.tsx). Swept over that range crossed with
+      every aspect from 9:21 to 32:9, the widest frame either interior has to
+      survive is 125.0 deg vertical by 129.5 deg horizontal.
 
-      RAISING THE SLIDER MAXIMUM IS NOT A UI CHANGE. Every degree added here
-      widens the frustum the dash has to survive, and the dash is clipped
-      geometry — go past the clip and the player sees the edge it was sliced
-      on. The slider maximum, these constants, and CLIP_HFOV/CLIP_VFOV in
-      build-cockpit.mjs are one contract; move one and the GLB has to be
-      rebuilt. It is also not free: 80 -> 95 cost the shipped GLB 1.29 MB
-      (7.66 -> 8.95), which is most of what test/size-budget.mjs had spare. */
+      That pair is a contract with tools/build-cockpit.mjs, but a much looser
+      one than it used to be. The shipped interior is not frustum-clipped: the
+      build tool decides which whole NODES to keep by testing them against
+      exactly these angles, so widening the lens can only ever expose empty
+      cabin behind a part that was dropped — never a sliced edge through a part
+      that was kept. (When the clipped dash was the shipped asset, the same two
+      numbers had to be paid for in geometry: re-clipping it from 88 to 100 was
+      measured at 0.87 MB, 8.28 -> 9.15.)
+
+      A saved profile can still hold more than POV_FOV_MAX; the clamp below is
+      the last gate before the projection matrix. */
   private povFov(aspect: number): number {
     const halfTan = (deg: number) => Math.tan((deg * Math.PI) / 360);
     const fullAng = (t: number) => (2 * Math.atan(t) * 180) / Math.PI;
+    const base = clamp(this.settings.fovBase, 58, POV_FOV_MAX);
     // the slider is the vertical fov at 16:9; that fixes the horizontal
-    const h = fullAng(halfTan(this.settings.fovBase) * POV_REF_ASPECT);
+    const h = fullAng(halfTan(base) * POV_REF_ASPECT);
     let v = fullAng(halfTan(h) / aspect);
     // a tall frame must not become a fisheye...
-    v = Math.min(v, this.settings.fovBase * POV_V_CAP);
+    v = Math.min(v, base * POV_V_CAP);
     // ...and a wide one must not become a letterbox slit, up to the point
     // where propping the vertical up would push the horizontal past the clip
     return Math.max(v, Math.min(POV_V_FLOOR, fullAng(halfTan(POV_H_CEIL) / aspect)));
@@ -1005,12 +1142,18 @@ export class Game {
   }
 
   setCar(carId: string, paintIx: number) {
-    this.carId = carId;
+    /* Canonicalised on the way in, not stored raw. getCar() resolves a locked
+       or unknown id to the default car, and buildRig() below already goes
+       through it — so storing the raw string gave the caller's car's ENGINE
+       AUDIO on the default car's physics and shell. One resolve at the door
+       means every reader downstream (the rig, the audio, `this.carId` itself)
+       is talking about the same car. */
+    this.carId = getCar(carId).id;
     this.paintIx = paintIx;
     // the garage is reachable from the main menu, where there is no rig to
     // rebuild yet — the load stage picks these up and builds the chosen car
     if (this.loaded) this.buildRig();
-    this.audio.setCar(carId);
+    this.audio.setCar(this.carId);
   }
 
   get spec(): CarSpec {
@@ -1083,17 +1226,37 @@ export class Game {
       this.rig.cockpit.setMirrorVis(this.mirror);
       this.ui.toast("MIRROR " + (this.mirror ? "ON" : "OFF"));
     }
-    /* A/B the imported dash against the procedural one. Both are built and
-       resident, so this is a visibility flip — the point is to be able to
-       judge the import against what it replaces in the same frame and the
-       same light, which is the only comparison that means anything. */
+    /* A/B the imported car against the procedural one — the donor INTERIOR and
+       the donor exterior body together, off the one flag, so the two can never
+       disagree about which car you are sitting in. Both are built and resident,
+       so this is a visibility flip: the point is to judge the import against
+       what it replaces in the same frame and the same light, which is the only
+       comparison that means anything.
+
+       Two states, not three. There used to be a middle one for volvo-s90.glb,
+       the frustum-CUT dash, so the two donor interiors could be compared — the
+       cut is retired (see COCKPIT_MODEL in player.ts) and the whole-cabin
+       import is the only one left. It is also a real donor in its own right
+       now rather than a skin over the cut one: cockpitmodel.ts wires it
+       directly, which is where the live cluster, the nav screen, the mirror
+       glass and the steering rim come from.
+
+       Each half is applied only if it loaded. That is the fail-soft rule both
+       importers already follow (cockpitmodel.ts, bodymodel.ts): a missing GLB
+       leaves THAT half procedural rather than taking the toggle down with it.
+       The body half is invisible from the dashcam POV, which hides the whole
+       exterior group — the interior is what this key is judged by from in
+       there, and the toast is the only other feedback. */
     if (k === "j") {
       const m = this.rig.cockpitModel;
-      if (!m) this.ui.toast("NO IMPORTED DASH");
+      if (!m && !this.rig.bodyModel) this.ui.toast("NO IMPORTED CAR");
       else {
         this.dashImported = !this.dashImported;
-        m.setActive(this.dashImported);
-        this.ui.toast("DASH " + (this.dashImported ? "IMPORTED" : "PROCEDURAL"));
+        m?.setActive(this.dashImported);
+        /* Not `bodyModel?.setActive` — this one goes through the rig so the
+           state sticks even if the body GLB is still in flight. */
+        this.rig.setBodyImported(this.dashImported);
+        this.ui.toast(this.dashImported ? "VOLVO INTERIOR" : "PROCEDURAL");
       }
     }
     if (k === "n") {
@@ -1107,20 +1270,6 @@ export class Game {
     if (k === "k") {
       this.testMode = !this.testMode;
       this.ui.toast("TEST MODE " + (this.testMode ? "ON" : "OFF"));
-    }
-    /* A/B the imported exterior body against the procedural one, the same way
-       J does for the dash. Only visible in the chase cameras — the dashcam POV
-       hides the whole exterior group, this body included — so the toast is the
-       only feedback there is from inside the car. U because it is free and it
-       sits with J and K on the same hand. */
-    if (k === "u") {
-      const b = this.rig.bodyModel;
-      if (!b) this.ui.toast("NO IMPORTED BODY");
-      else {
-        this.bodyImported = !this.bodyImported;
-        b.setActive(this.bodyImported);
-        this.ui.toast("BODY " + (this.bodyImported ? "IMPORTED" : "PROCEDURAL"));
-      }
     }
     if (k === "h") this.ui.helpRequest();
     if (k === "x") {
@@ -2725,14 +2874,15 @@ export class Game {
         this.lbLean = 0;
       }
       const P = this.spec.shell;
+      const mount = this.povMount();
       this.camera.position.copy(
         this.rig.bodyG.localToWorld(
           this.tmpV.set(
             // scaled with the shell like the cockpit eye is, so the lens keeps
             // its position relative to the binnacle on a narrower or wider car
-            POV_MOUNT.dx * (P.W / COCKPIT_REF.W),
-            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + this.povMountDy(),
-            COCKPIT_EYE.z + POV_MOUNT.dz
+            (POV_MOUNT.dx + mount.dx) * (P.W / COCKPIT_REF.W),
+            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + mount.dy,
+            COCKPIT_EYE.z + POV_MOUNT.dz + mount.dz
           )
         )
       );
@@ -2788,14 +2938,16 @@ export class Game {
         1 - Math.exp(-9 * dt)
       );
       const eyeX = COCKPIT_EYE.x * (P.W / COCKPIT_REF.W);
+      const cockEye = this.cockpitEye();
       const local =
         this.camMode === 1
           // seating position lives in cockpit.ts: the binnacle, wheel and mirror
           // are all pinned to COCKPIT_EYE, so the eye must come from there too
           ? this.tmpV.set(
             eyeX * (1 - 0.8 * this.lbLean) + this.head.x,
-            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + 0.06 * this.lbLean + this.head.y,
-            COCKPIT_EYE.z + this.head.z
+            P.belt - COCKPIT_REF.belt + COCKPIT_EYE.y + 0.06 * this.lbLean + this.head.y
+              + cockEye.dy,
+            COCKPIT_EYE.z + this.head.z + cockEye.dz
           )
           : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5, P.L / 2 - 0.6);
       /* road micro-vibration (cockpit only): multi-octave value noise keyed

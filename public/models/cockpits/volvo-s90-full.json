@@ -1,20 +1,90 @@
 {
   "source": "volvo_s90_recharge_free.glb",
   "parts": {
+    "floor": [
+      {
+        "name": "floor_0",
+        "donorName": "Floor_Shell_0",
+        "tris": 3141,
+        "bbox": [
+          [
+            -0.7289,
+            0.2233,
+            -0.6113
+          ],
+          [
+            0.7291,
+            0.6319,
+            1.1023
+          ]
+        ]
+      },
+      {
+        "name": "floor_1",
+        "donorName": "Driver Carpet_Shell_0",
+        "tris": 1336,
+        "bbox": [
+          [
+            0.152,
+            0.2216,
+            0.5334
+          ],
+          [
+            0.6675,
+            0.3373,
+            1.0143
+          ]
+        ]
+      },
+      {
+        "name": "floor_2",
+        "donorName": "PlasticTrim_Shell_0",
+        "tris": 1530,
+        "bbox": [
+          [
+            -0.1263,
+            0.3327,
+            -0.3104
+          ],
+          [
+            0.1241,
+            0.6295,
+            1.0723
+          ]
+        ]
+      },
+      {
+        "name": "floor_3",
+        "donorName": "PassengerCarpet_Shell_0",
+        "tris": 1149,
+        "bbox": [
+          [
+            -0.6592,
+            0.2227,
+            0.5348
+          ],
+          [
+            -0.1698,
+            0.4853,
+            1.0721
+          ]
+        ]
+      }
+    ],
     "cabin": [
       {
         "name": "cabin_0",
         "donorName": "Plane.057_DoorPanelFront_0",
-        "tris": 47613,
+        "tris": 29486,
         "bbox": [
           [
             -0.8718,
-            0.3458,
-            0.4161
+            0.3455,
+            -0.123
           ],
           [
             0.8718,
-            1.0216,
+            1.0404,
             0.8927
           ]
         ]
@@ -22,33 +92,33 @@
       {
         "name": "cabin_1",
         "donorName": "Plane.057_DoorPanelFront_0",
-        "tris": 10045,
+        "tris": 7678,
         "bbox": [
           [
             -0.8556,
-            0.3458,
-            0.433
+            0.3454,
+            -0.0674
           ],
           [
-            0.7944,
+            0.7981,
             1.0202,
-            0.8927
+            0.8926
           ]
         ]
       },
       {
         "name": "cabin_2",
         "donorName": "Shell_Shell_0",
-        "tris": 11910,
+        "tris": 28912,
         "bbox": [
           [
-            -0.7727,
-            0.281,
-            0.4229
+            -0.8383,
+            0.2805,
+            -1.9457
           ],
           [
-            0.7727,
-            1.3587,
+            0.8383,
+            1.4209,
             1.0717
           ]
         ]
@@ -56,17 +126,87 @@
       {
         "name": "cabin_3",
         "donorName": "Shell_Shell_0",
-        "tris": 6270,
+        "tris": 10882,
         "bbox": [
           [
-            -0.7096,
-            0.3329,
-            0.4491
+            -0.7719,
+            0.2913,
+            -1.3589
           ],
           [
-            0.7416,
-            1.2317,
+            0.7735,
+            1.4065,
             0.9164
+          ]
+        ]
+      }
+    ],
+    "seats": [
+      {
+        "name": "seats_0",
+        "donorName": "Driver Seat_Front Seat_0",
+        "tris": 10083,
+        "bbox": [
+          [
+            0.1147,
+            0.2716,
+            -0.2861
+          ],
+          [
+            0.6849,
+            1.3234,
+            0.5975
+          ]
+        ]
+      },
+      {
+        "name": "seats_1",
+        "donorName": "Driver Seat_Front Seat_0",
+        "tris": 6826,
+        "bbox": [
+          [
+            0.1179,
+            0.2758,
+            -0.2861
+          ],
+          [
+            0.679,
+            1.3268,
+            0.5974
+          ]
+        ]
+      },
+      {
+        "name": "seats_2",
+        "donorName": "Passenger Seat_Front Seat_0",
+        "tris": 10083,
+        "bbox": [
+          [
+            -0.691,
+            0.2716,
+            -0.3045
+          ],
+          [
+            -0.1206,
+            1.3238,
+            0.6047
+          ]
+        ]
+      },
+      {
+        "name": "seats_3",
+        "donorName": "Passenger Seat_Front Seat_0",
+        "tris": 6946,
+        "bbox": [
+          [
+            -0.6887,
+            0.2758,
+            -0.3045
+          ],
+          [
+            -0.1235,
+            1.3273,
+            0.6047
           ]
         ]
       }
@@ -75,15 +215,15 @@
       {
         "name": "shell_0",
         "donorName": "CenterConsole_CenterConsole_0",
-        "tris": 20691,
+        "tris": 42602,
         "bbox": [
           [
             -0.1355,
-            0.5492,
-            0.397
+            0.5118,
+            -0.2436
           ],
           [
-            0.1312,
+            0.1313,
             0.6475,
             0.8154
           ]
@@ -92,7 +232,7 @@
       {
         "name": "shell_1",
         "donorName": "Dashboard_Dashboard_0",
-        "tris": 107973,
+        "tris": 48587,
         "bbox": [
           [
             -0.7509,
@@ -101,7 +241,7 @@
           ],
           [
             0.7465,
-            1.0722,
+            1.0721,
             1.1177
           ]
         ]
@@ -109,7 +249,7 @@
       {
         "name": "shell_2",
         "donorName": "Dashboard_Dashboard_0",
-        "tris": 31267,
+        "tris": 14070,
         "bbox": [
           [
             -0.734,
@@ -119,14 +259,14 @@
           [
             0.7296,
             1.0719,
-            1.0999
+            1.0998
           ]
         ]
       },
       {
         "name": "shell_3",
         "donorName": "Shifterknob_CenterConsole_0",
-        "tris": 6896,
+        "tris": 3102,
         "bbox": [
           [
             0.0324,
@@ -143,7 +283,7 @@
       {
         "name": "shell_4",
         "donorName": "Shifterknob Crystal_crystal_0",
-        "tris": 4976,
+        "tris": 2238,
         "bbox": [
           [
             0.0317,
@@ -160,12 +300,12 @@
       {
         "name": "shell_5",
         "donorName": "Plane.049_CenterConsole_0",
-        "tris": 336,
+        "tris": 173,
         "bbox": [
           [
             -0.1087,
             0.6258,
-            0.4476
+            0.3471
           ],
           [
             -0.0089,
@@ -177,7 +317,7 @@
       {
         "name": "shell_6",
         "donorName": "Vents_Dashboard_0",
-        "tris": 79552,
+        "tris": 35797,
         "bbox": [
           [
             -0.7292,
@@ -194,16 +334,16 @@
       {
         "name": "shell_7",
         "donorName": "Knobs_Dashboard_0",
-        "tris": 9362,
+        "tris": 4927,
         "bbox": [
           [
-            -0.6941,
-            0.6253,
+            -0.694,
+            0.6254,
             0.5761
           ],
           [
             0.6994,
-            1.0131,
+            1.013,
             0.8051
           ]
         ]
@@ -211,7 +351,7 @@
       {
         "name": "shell_8",
         "donorName": "Glovebox Handle_Dashboard_0",
-        "tris": 3296,
+        "tris": 1482,
         "bbox": [
           [
             -0.3647,
@@ -298,11 +438,30 @@
         ]
       }
     ],
+    "headliner": [
+      {
+        "name": "headliner_0",
+        "donorName": "CeilingConsole _Shell_0",
+        "tris": 8557,
+        "bbox": [
+          [
+            -0.0893,
+            1.319,
+            0.2295
+          ],
+          [
+            0.0893,
+            1.3752,
+            0.4362
+          ]
+        ]
+      }
+    ],
     "column": [
       {
         "name": "column_0",
         "donorName": "SteeringColumn _Steeringwheel_0",
-        "tris": 8048,
+        "tris": 2816,
         "bbox": [
           [
             0.2843,
@@ -310,7 +469,7 @@
             0.6308
           ],
           [
-            0.4872,
+            0.4871,
             0.8801,
             0.8359
           ]
@@ -319,10 +478,10 @@
       {
         "name": "column_1",
         "donorName": "Stalks _Steeringwheel_0",
-        "tris": 41840,
+        "tris": 14643,
         "bbox": [
           [
-            0.1914,
+            0.1915,
             0.7846,
             0.6027
           ],
@@ -368,6 +527,25 @@
             0.5725,
             0.9927,
             0.8834
+          ]
+        ]
+      }
+    ],
+    "pedals": [
+      {
+        "name": "pedals_0",
+        "donorName": "Gas/Brake Pedal_Plastic_0",
+        "tris": 6027,
+        "bbox": [
+          [
+            0.2128,
+            0.2222,
+            0.8148
+          ],
+          [
+            0.5074,
+            0.6049,
+            1.1706
           ]
         ]
       }

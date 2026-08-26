@@ -78,9 +78,9 @@ function fit(
   /* A real S90 is 4.96 x 2.02 x 1.44 and kaze's shell is 4.42 x 1.84 x 1.24,
      so the donor is fitted to the spec box on each axis independently. Not
      pretty — a non-uniform squash is exactly the thing a real car body does
-     not survive gracefully — but it is what keeps the silhouette inside the
-     collision half-extents the physics already uses, and at chase distance
-     the 12% height squash reads as a lower roofline rather than as an error.
+     not survive gracefully — but it is what keeps the silhouette roughly on
+     the collision half-extents the physics already uses, and at chase distance
+     the 15% height squash reads as a lower roofline rather than as an error.
 
      Width goes to W + 0.18, not W: the donor's bbox includes its door mirrors
      (a real S90 is 1.88 across the body and 2.02 across the mirrors), and
@@ -97,7 +97,18 @@ function fit(
      however much its lowest surviving surface sits above the tarmac. */
   const sy = P.roof / box.max.y;
   scene.scale.set(sx, sy, sz);
-  scene.position.set(-mid.x * sx, 0, -mid.z * sz);
+  /* Lined up on the AXLES, not on the bbox centre. The game's own wheels stay
+     on show under this body (the donor's were stripped), so where the arches
+     land is the one alignment anyone will notice — and the S90's 2.94 m
+     wheelbase inside a 4.96 m car is not centred the way kaze's 2.70 m inside
+     4.42 m is. Centring the boxes leaves the rear wheel 13 cm behind its arch;
+     matching the axle midpoints instead splits that to ~5 cm at each end.
+     DONOR_AXLE_MID is the midpoint of the donor's front and rear axles in its
+     own space, measured from the wheel geometry before it was stripped. The
+     trade is 8 cm of tail sitting proud of the collision half-length, which is
+     the forgiving direction and only applies while this body is switched on. */
+  const DONOR_AXLE_MID = 0.14;
+  scene.position.set(-mid.x * sx, 0, (P.wzF - P.wzR) / 2 - DONOR_AXLE_MID * sz);
 
   for (const o of scene.children) {
     o.traverse((c) => {
@@ -112,10 +123,10 @@ function fit(
     scene.visible = on;
     for (const c of procedural) c.visible = !on;
   };
-  /* Lands OFF. The procedural body is the one the game ships, and a 0.5 MB
-     fetch completing mid-drive is not a reason to change the car under the
-     player — the key toggle is. */
-  setActive(false);
+  /* Lands ON, and the caller immediately re-applies whatever state the J
+     toggle is actually in — see player.ts. Both calls happen in the same
+     callback, so no frame is ever drawn on a guess. */
+  setActive(true);
 
   return { group: scene, setActive };
 }

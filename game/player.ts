@@ -12,28 +12,34 @@ import type { RenderTier } from "./settings";
 import { carEnvMap, isSharedEnv, trackEnvMaterial, untrackEnvMaterial } from "./carenv";
 import { paintByHex, type CarSpec, type Paint } from "./carspecs";
 
-/* Which donor dash each render tier loads, or "" for none — a build stem under
-   public/models/cockpits/, see tools/build-cockpit.mjs.
+/* Which donor INTERIOR each render tier loads, or "" for none — a build stem
+   under public/models/cockpits/, see tools/build-cockpit.mjs.
 
-   Desktop and mobile-high both run the 1K cut, which is not a compromise for
-   desktop's sake — 4K has nowhere to land in this view. The dash covers about
-   800x430 px of a 1080p frame (~344k pixels) and a 4096 atlas carries 16.8M
-   texels, so 4K is oversampled by more than an order of magnitude before
-   anything else touches it. Then the dashcam pass softens and grains it
+   One donor, not a choice of two. This used to name `volvo-s90`, a per-vertex
+   frustum CUT of the same car: sharper over the third of the cabin it kept,
+   but sliced geometry, so it printed torn shards at the frame borders as soon
+   as the Field-of-view slider went past what it was cut for, and engine.ts had
+   to hold the lens down to 88 whenever it was on screen. `volvo-s90-full` is
+   whole nodes only — decimated rather than sliced — so it survives the slider
+   at 100 and the cap is gone with it. The cut asset is out of the game and out
+   of public/; the build command that would bring it back is in .gitignore.
+
+   Desktop and mobile-high run the same file. The dash covers about 800x430 px
+   of a 1080p frame (~344k pixels), then the dashcam pass softens and grains it
    (post.ts: "centre nearly in focus, corners mush") and the night grade
-   crushes most of the dash toward black. 4K costs 68 MB and 0.82 GB of
-   decoded texture to deliver detail three separate stages then throw away;
-   1K costs 23 MB and 0.06 GB. Build a -2k or -4k variant and point a tier at
-   it if a brighter interior ever makes the difference visible.
+   crushes most of it toward black — so the resolution that survives to the
+   player is nowhere near what a second, larger variant would carry. Build a
+   -4k variant and point desktop at it if a brighter interior ever makes the
+   difference visible.
 
    mobile-base gets nothing. It is the tier unknown hardware falls back to (see
-   resolveRenderTier), so it has to assume the weakest plausible device, and
-   437k triangles of dash on top of traffic and world geometry is not a bet
-   worth taking there. The procedural dash is not a placeholder for those
-   players — it is the shipped one. */
+   resolveRenderTier), so it has to assume the weakest plausible device, and a
+   third of a million triangles of cabin on top of traffic and world geometry
+   is not a bet worth taking there. The procedural dash is not a placeholder
+   for those players — it is the shipped one. */
 const COCKPIT_MODEL: Record<RenderTier, string> = {
-  desktop: "volvo-s90",
-  "mobile-high": "volvo-s90",
+  desktop: "volvo-s90-full",
+  "mobile-high": "volvo-s90-full",
   "mobile-base": "",
 };
 /* Which cars have an imported EXTERIOR body, by spec id. Only kaze: the donor
@@ -305,6 +311,10 @@ export interface PlayerRig {
   /** The imported exterior body once it has loaded, else null — null is the
       normal steady state for every car but kaze, and for a failed fetch. */
   readonly bodyModel: BodyModelHandle | null;
+  /** Show the imported body, or the procedural one. Safe to call before the
+      donor has loaded (and before it is known whether it ever will): the state
+      is remembered and applied when it arrives. */
+  setBodyImported(on: boolean): void;
   pivFL: THREE.Group;
   pivFR: THREE.Group;
   wheels: THREE.Group[];
@@ -749,21 +759,29 @@ export function buildPlayerCar(
   else dashDone();
 
   /* Imported exterior body, if this car has one. Same fire-and-forget shape as
-     the dash above and the same fallback rule, but it lands INACTIVE: the
-     procedural body is what the game ships and the import is A/B'd in by key,
-     not swapped in under the player. Nothing waits on it — it is invisible in
-     the POV the game is played in. */
-  const bodyRef = { model: null as BodyModelHandle | null };
+     the dash above, the same fallback rule, and the same default: the donor
+     dash and the donor body are two cuts of one car and are shown together,
+     off engine.ts's single J flag. Nothing waits on this one — it is invisible
+     in the POV the game is played in, so there is no pop worth paying for.
+
+     `want` is what closes the load race. The body can land AFTER the player
+     has already toggled back to the procedural car, and a handle that switched
+     itself on at that point would put a Volvo body under a procedural dash —
+     exactly the mismatch the single flag exists to prevent. So the desired
+     state is recorded whether or not the handle exists yet, and applied on
+     arrival. */
+  const bodyRef = { model: null as BodyModelHandle | null, want: true };
   const bodyDonor = BODY_MODEL[spec.id];
   if (bodyDonor)
     attachBodyModel(exteriorG, P, bodyDonor, [pivFL, pivFR, wRL, wRR, ...glowSprites],
-      (h) => { bodyRef.model = h; });
+      (h) => { bodyRef.model = h; h?.setActive(bodyRef.want); });
 
   return {
     spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,
     get cockpitModel() { return rigRef.model; },
     cockpitReady,
     get bodyModel() { return bodyRef.model; },
+    setBodyImported(on: boolean) { bodyRef.want = on; bodyRef.model?.setActive(on); },
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
     beamCarpet, beamCarpetMat, beamCarpetG: carpetG,

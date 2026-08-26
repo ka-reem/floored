@@ -9,10 +9,21 @@ test/artifacts/
 public/assets-staging/
 .claude/worktrees/
 
-# Built cockpit dashes ARE committed, unlike most build output: Vercel deploys
-# from git, so a gitignored dash means every visitor silently falls back to the
-# procedural one. That is affordable now only because the cut settled — frustum
-# clipping and 512 px textures took it from 68 MB to 17 MB. Rebuild with:
-#   node tools/build-cockpit.mjs <donor.glb> --out volvo-s90 --tex 512
-# Keep an eye on history weight if the cut is re-tuned often: binaries do not
+# Built cockpit interiors ARE committed, unlike most build output: Vercel
+# deploys from git, so a gitignored interior means every visitor silently falls
+# back to the procedural one. Rebuild the shipped one with:
+#
+#   node tools/build-cockpit.mjs public/assets-staging/volvo_s90_recharge_free.glb \
+#     --out volvo-s90-full --no-clip --full-cabin --simplify --meshopt \
+#     --tex 2048 --jpeg-q 82
+#
+# 3.27M tris / 45 images -> 357k tris / 21 images, 7.4 MB. Every flag is
+# load-bearing; --tex and --jpeg-q are the two size levers, the rest change
+# what the asset IS. See the header of tools/build-cockpit.mjs.
+#
+# The retired frustum-CUT dash lives at public/assets-staging/interiors/
+# (gitignored, not shipped) and was built by the same tool with no flags but
+# `--out volvo-s90`. It is out of the game — see COCKPIT_MODEL in player.ts.
+#
+# Keep an eye on history weight if the build is re-tuned often: binaries do not
 # delta, so each rebuild adds another full copy permanently.

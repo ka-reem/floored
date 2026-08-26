@@ -200,11 +200,11 @@ only what that camera can physically see and discards the rest: the bodywork,
 wheels, seats, rear cabin and every material that went with them, then the
 remaining geometry is clipped triangle-by-triangle to the POV frustum and the
 surviving textures are resized to 512 px and packed down (Uint16 indices, no
-tangents, byte normals, mozjpeg maps). What ships is 372,690 triangles and 18
-textures — 11.4% of the source geometry and under 1% of its texture memory.
+tangents, byte normals, mozjpeg maps). What ships is 406,874 triangles and 18
+textures — 12.4% of the source geometry and under 1% of its texture memory.
 
 The clip frustum is sized to the WIDEST view the Field of view slider can ask
-for (118 deg horizontal, 100 deg vertical, plus margin), not to one fixed lens,
+for (119.6 deg horizontal, 110 deg vertical, plus margin), not to one fixed lens,
 because the dashcam now honours that slider. The `mirror` role is deliberately
 exempt and stays cut to the old 105 deg frame: it is never rendered, only used
 as the bounding box that anchors the live mirror glass.
@@ -239,10 +239,13 @@ would not. That is 119k of its 207k triangles gone for nothing lost. Re-encoded
 from Draco to plain meshopt so no decoder file has to be served: 87,962
 triangles, 0.48 MB on disk.
 
-Not the default body. `game/bodymodel.ts` loads it inactive and the U key A/Bs
-it against the procedural one; only kaze (`BODY_MODEL` in `game/player.ts`) has
-one, and it is invisible in the shipping DASHCAM view, which hides the exterior
-group entirely. Fitted to kaze's shell box by a non-uniform scale at runtime.
+Loaded by `game/bodymodel.ts` and shown together with the donor dash: they are
+two cuts of the same car, so the J key A/Bs both against the procedural car off
+one flag (`Game.dashImported`) rather than one key each. Only kaze (`BODY_MODEL`
+in `game/player.ts`) has a body donor, and it is invisible in the shipping
+DASHCAM view, which hides the exterior group entirely. Fitted to kaze's shell
+box by a non-uniform scale at runtime, lined up on the axles so the game's own
+wheels sit in its arches.
 
 Rebuild the pre-strip source with:
 

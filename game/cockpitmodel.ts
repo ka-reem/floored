@@ -1,17 +1,29 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import type { Cockpit } from "./cockpit";
 
-/* Swaps an imported dash in over the procedural one.
+/* Swaps an imported interior in over the procedural one.
 
    The procedural cockpit (cockpit.ts) is always built and is always the
-   fallback. This loads a cut-down donor dash produced by
-   tools/build-cockpit.mjs, and if it arrives intact it hides the procedural
-   dash region and re-anchors the live parts onto the donor's geometry. If the
-   fetch fails, the model is missing a role, or the user is on a tier that does
-   not want it, nothing happens and the procedural dash stays on screen. That
-   fail-soft is the whole reason this is a separate module: a 68 MB asset that
-   can 404 must never be able to leave the player without a dashboard.
+   fallback. This loads a donor cabin produced by tools/build-cockpit.mjs, and
+   if it arrives intact it hides the procedural regions it replaces and
+   re-anchors the live parts onto the donor's geometry. If the fetch fails, the
+   model is missing a role, or the user is on a tier that does not want it,
+   nothing happens and the procedural dash stays on screen. That fail-soft is
+   the whole reason this is a separate module: a 7 MB asset that can 404 must
+   never be able to leave the player without a dashboard.
+
+   DONOR-AGNOSTIC BY CONSTRUCTION, and that is what let the shipped asset be
+   swapped underneath it. Nothing here knows the file it is reading: roles come
+   out of the manifest, placement comes out of the manifest's bounding boxes,
+   and the steering rake comes out of its measured column axis. The interior
+   that ships today (volvo-s90-full: whole donor nodes, decimated, never
+   frustum-clipped) replaced a per-vertex frustum CUT of the same car without
+   one line of this file changing shape — the cut is retired because it printed
+   sliced edges at wide field of view, and the build tool freezes the `mirror`
+   role to the cut's frustum precisely so the anchors below did not move when
+   it went.
 
    Loading is async and deliberately not awaited anywhere. The game starts on
    the procedural dash and the donor pops in a beat later — the same pattern
@@ -76,7 +88,12 @@ export function attachCockpitModel(
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`manifest HTTP ${r.status}`))))
     .then((m: Manifest) => {
       manifest = m;
-      new GLTFLoader().load(
+      /* EXT_meshopt_compression is REQUIRED by the shipped interior, so a
+         loader without this decoder does not degrade — it rejects the file and
+         the player gets the procedural dash. Meshopt rather than Draco because
+         the decoder is a plain ES module that bundles with the app, where
+         Draco needs wasm files served out of public/. */
+      new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(
         `${BASE}${name}.glb`,
         (gltf) => { try { onDone?.(wire(cockpit, gltf.scene, manifest!)); } catch (e) { fail("wiring failed", e); } },
         undefined,
@@ -214,14 +231,25 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
      would really be stuck to, instead of floating 14 cm behind it. The small
      drop then settles it just inside the top edge.
 
-     The x term is a framing choice rather than a physical one. The Volvo hangs
-     its mirror on the car's centreline (x ~0.01) while the POV lens sits
+     THE Y TERM TRACKS THE LENS, and is the one number here that is not free.
+     The mirror hangs ABOVE the lens, so its height in frame is set by the gap
+     between the two and by nothing else: at the tuned placement the glass
+     centre projects to 86% of the way up the frame at the default field of
+     view, which is just inside the top edge, and it takes only ~2.5 cm of
+     extra gap to push it off the top entirely. engine.ts dropped
+     POV_MOUNT_DY_IMPORTED by 25 mm (-0.15 -> -0.175) for the seating position,
+     so this dropped by exactly 25 mm too (-0.04 -> -0.065) and the gap — and
+     therefore the framing — is unchanged. If that constant moves again, move
+     this by the same amount in the same direction.
+
+     The x and z terms are framing choices rather than physical ones. The Volvo
+     hangs its mirror on the car's centreline (x ~0.01) while the POV lens sits
      inboard of the driver at x 0.28, so a centred mirror lands right of frame
      centre — true to where a real mirror is, but it crowds that side. +x is
      screen-LEFT here (car-local +x maps to screen-left through the POV
      camera's heading), so this walks the whole assembly back toward the middle
-     of the frame. Purely cosmetic; move it freely. */
-  const MIRROR_NUDGE = new THREE.Vector3(0.08, -0.04, 0.10);
+     of the frame. Those two are cosmetic; move them freely. */
+  const MIRROR_NUDGE = new THREE.Vector3(0.08, -0.16, 0.10);
 
   const mirrorParts = byRole("mirror");
   const glass = cockpit.mirrorGlass;
