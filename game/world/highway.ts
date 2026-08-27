@@ -215,7 +215,20 @@ export function buildHighway(
      when the lane count changes every few hundred metres. Swap in bare asphalt
      and lay the markings down as geometry instead; the material itself (and so
      its wet-road reflection hookup) is untouched. */
-  const deckTex = makeTex(256, 256, (ctx, w, h) => asphalt(ctx, w, h, "#14161c"), true);
+  /* 256 → 1024, and the reason is a measurement rather than a preference.
+     The deck's uv runs one unit per TILE (7 m), so a 256 px canvas laid 36.6
+     texels on a metre of road — a 2.7 cm texel. The dashcam renders about 465
+     screen pixels per metre at 2 m and 186 at 5 m, so the base asphalt was
+     being MAGNIFIED four to twelve times over the whole stretch of road the
+     driver is actually looking at, and no amount of anisotropy fixes a texture
+     that simply has fewer texels than the screen has pixels. 1024 puts it at
+     146 texels/m, and it also finally puts asphalt()'s own grain at life size:
+     its speckle is drawn 1-2.6 px across, which at 256 was a 2.7-7 cm chipping
+     and at 1024 is 0.7-1.8 cm — actual aggregate.
+
+     Procedural, so this costs 0 MB of download; it costs ~5 MB of VRAM with
+     mips, on a tier that already holds several 1K scans. */
+  const deckTex = makeTex(1024, 1024, (ctx, w, h) => asphalt(ctx, w, h, "#14161c"), true);
   hwy.map = deckTex;
   hwy.needsUpdate = true;
   const TILE = 7; // metres per texture tile

@@ -2,7 +2,7 @@ import * as THREE from "three";
 import {
   roadTex, hwyTexF, rampTexF, windowsTexF, storefrontTexF, vendingTexF, glowTexF,
   streakTexF, smokeTexF, envFaceCanvas, chevTexF, goreTexF, xingTexF, studTexF,
-  fenceTexF, grimeTexF, loadPbrSet, type PbrSet,
+  fenceTexF, grimeTexF, loadPbrSet, makeTex, type PbrSet,
 } from "../textures";
 
 /* Shared materials + textures. Planar-reflection sampling is injected into the
@@ -34,6 +34,239 @@ import {
    The roughness map does double duty: it drives the wet-road reflection, so
    the smooth patches of a scan mirror the world back harder than the coarse
    aggregate around them. That is what reads as standing water. */
+
+/* ======================================================================
+   CONCRETE GRIT — the missing decimetre
+   ======================================================================
+
+   Every source of variation a parapet had was periodic in METRES. Measured,
+   from the code that produces them:
+
+     photo scan tile ...... 2.22 m, features 0.2-1.0 m, albedo sigma 2.7 %
+     macro mottle ......... 11.3 m, second draw at 2.9 m
+     rain-wash streaks .... 2.9 m along, and 23 m up (the 8:1 v stretch,
+                            applied to a wall that is 1.05 m tall — so on a
+                            parapet the "vertical streaks" are not streaks at
+                            all, they are a slow longitudinal tone drift)
+     contraction joints ... 4.6 m
+     per-casting tone ..... 4.6 m
+
+   There is nothing between about 1 cm and 20 cm. That band is exactly what
+   the eye is looking at: from the dashcam the parapet is roughly 2 m away and
+   about 1 m tall, so a 5 cm feature is ~23 screen pixels and a 2 cm feature is
+   ~9. The wall was not short of texels — at 460 per metre it has more than the
+   screen can resolve — it was short of anything to put in them. That is why it
+   reads as "no detail", and why it is also why every stretch looks the same:
+   the only things that differ between two stretches change over 3-11 m, so at
+   speed they read as one slow brightness drift rather than as different wall.
+
+   So this fills that band, procedurally, for 0 MB of assets. Everything in it
+   is sized against the 3.32 mm texel this tiles at (512 px over 1.7 m of
+   wall = 301 texels/m, which is inside the 1:1-to-2:1 window against the
+   dashcam over the 2-6 m where the wall is actually legible):
+
+     - cure and patch mottle at 15-35 cm, the single biggest contributor;
+     - slipform chatter courses every ~15 cm, with a darker seam at each;
+     - blowhole CLUSTERS. The individual holes are 3-8 mm and mip away by 4 m,
+       which is the point: they are drawn in 4-10 cm clusters so what survives
+       is the cluster, the way a real cast face is pocked in patches;
+     - pits and small spalls, 1.5-5 cm, half darker (dirt-filled) and half
+       lighter (fresh fracture exposing aggregate);
+     - hairline cracks, 30-90 cm;
+     - fine tooth at 0.8-2 cm, which does mip away, and should — it is there so
+       the near field is not visibly smoother than the mid field.
+
+   Three channels, one fetch:
+     R  albedo modulation about 0.5
+     G  relief height about 0.5, full swing = +/- GRIT_H metres
+     B  a slower stain field at 0.5-1.2 m, filling the gap between this tile's
+        35 cm ceiling and the macro field's 2.9 m floor
+
+   Sampled by weatherSurface() off the same world-space wUV the rest of the
+   weathering uses, so it costs no new varying and lands on the same axes. */
+
+/** grit tile resolution, and the metres of wall one repeat covers */
+const GRIT_N = 512, GRIT_M = 1.7;
+/** full-swing relief encoded in the G channel, metres */
+const GRIT_H = 0.008;
+
+function gHash(x: number, y: number, seed: number) {
+  let n = Math.imul(x | 0, 374761393) ^ Math.imul(y | 0, 668265263) ^ Math.imul(seed, 2246822519);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+/** value noise on a WRAPPED lattice, so every octave tiles (see textures.ts) */
+function gNoise(u: number, v: number, cells: number, seed: number) {
+  const x = u * cells, y = v * cells;
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const fx = x - x0, fy = y - y0;
+  const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const m = (n: number) => ((n % cells) + cells) % cells;
+  const xa = m(x0), xb = m(x0 + 1), ya = m(y0), yb = m(y0 + 1);
+  const a = gHash(xa, ya, seed), b = gHash(xb, ya, seed);
+  const c = gHash(xa, yb, seed), d = gHash(xb, yb, seed);
+  const t = a + (b - a) * sx;
+  return t + (c + (d - c) * sx - t) * sy;
+}
+function gFbm(u: number, v: number, cells: number, oct: number, seed: number) {
+  let sum = 0, amp = 1, norm = 0, c = cells;
+  for (let i = 0; i < oct; i++) {
+    sum += amp * gNoise(u, v, c, seed + i * 977);
+    norm += amp;
+    amp *= 0.5;
+    c *= 2;
+  }
+  return sum / norm;
+}
+
+/** Build the grit atlas. Deterministic — same wall every session. */
+function concreteGritTexF() {
+  return makeTex(GRIT_N, GRIT_N, (ctx, w, h) => {
+    const alb = new Float32Array(w * h);
+    const hgt = new Float32Array(w * h); // metres
+    const stain = new Float32Array(w * h);
+    /** wrapped index, so every discrete feature below tiles for free */
+    const at = (x: number, y: number) =>
+      (((y % h) + h) % h) * w + (((x % w) + w) % w);
+
+    // ---- fields: mottle, chatter courses, fine tooth, stain ----
+    /* 1.7 m / 5 cells = 34 cm, and the second octave pair lands at 17 and
+       8.5 cm — the whole point of this texture, so it carries the largest
+       amplitude of anything here. */
+    const COURSES = 11; // 1.7 m / 11 = 15.5 cm, an ordinary slipform course
+    for (let y = 0; y < h; y++) {
+      const v = y / h;
+      for (let x = 0; x < w; x++) {
+        const u = x / w, i = y * w + x;
+        /* Three octave groups at 57, 19 and 4 cm. The middle one is the one
+           that matters most and is deliberately the widest band: it is the
+           scale a parapet is patchy at and the scale that was missing. */
+        alb[i] = (gFbm(u, v, 3, 3, 17) - 0.5) * 0.30
+          + (gFbm(u, v, 9, 2, 913) - 0.5) * 0.16
+          + (gNoise(u, v, 48, 2211) - 0.5) * 0.07;
+        stain[i] = gFbm(u, v, 2, 2, 5501);
+        /* Dirt in PATCHES, not as a gradient. A real wall is not uniformly
+           grubby and it is not smoothly shaded either — it is clean, then
+           abruptly filthy for half a metre, then clean. The threshold is what
+           buys that edge; a raw fbm would just tint everything slightly. */
+        const g = gFbm(u, v, 4, 2, 771);
+        const dirt = Math.max(0, (g - 0.52) / 0.34);
+        alb[i] -= Math.min(1, dirt) * 0.22;
+        /* Chatter. A slipform leaves a faint horizontal course line every
+           board depth, and consecutive courses cure to slightly different
+           tones. `wob` is large on purpose: a dead-straight ruled line across
+           the whole wall is the one thing that would give the procedure away,
+           and it was the first thing visible when this was tuned lower. */
+        const wob = (gNoise(u, v, 3, 4409) - 0.5) * 0.9;
+        const cph = v * COURSES + wob;
+        const cf = cph - Math.floor(cph);
+        const sharp = Math.pow(Math.abs(cf - 0.5) * 2, 14); // 1 at the seam
+        alb[i] -= sharp * 0.055;
+        hgt[i] -= sharp * 0.0016;
+        /* mod COURSES, and it is not cosmetic: cph runs 0..COURSES across the
+           tile, so without it the top course draws hash(11) against the bottom
+           course's hash(0) and every vertical repeat prints a horizontal seam
+           — the one place in this generator where the wrapped-lattice noise
+           does not save you, because this term is indexed rather than sampled. */
+        alb[i] += (gHash(((Math.floor(cph) % COURSES) + COURSES) % COURSES, 3, 71) - 0.5) * 0.10;
+      }
+    }
+
+    // ---- blowhole clusters ----
+    /* The holes themselves are 3-8 mm and gone by 4 m. They are drawn in
+       clusters precisely so what mips down is a 4-10 cm patch of pocking
+       rather than nothing at all. */
+    for (let c = 0; c < 110; c++) {
+      const cx = gHash(c, 1, 31) * w, cy = gHash(c, 2, 31) * h;
+      const spread = 12 + gHash(c, 3, 31) * 18; // 4-10 cm
+      const n = 8 + Math.floor(gHash(c, 4, 31) * 18);
+      for (let k = 0; k < n; k++) {
+        const a = gHash(c * 97 + k, 5, 31) * Math.PI * 2;
+        const r = Math.sqrt(gHash(c * 97 + k, 6, 31)) * spread;
+        const bx = Math.round(cx + Math.cos(a) * r), by = Math.round(cy + Math.sin(a) * r);
+        const br = 1.0 + gHash(c * 97 + k, 7, 31) * 2.0;
+        const R2 = Math.ceil(br);
+        for (let dy = -R2; dy <= R2; dy++)
+          for (let dx = -R2; dx <= R2; dx++) {
+            const d = Math.hypot(dx, dy);
+            if (d > br) continue;
+            const f = 1 - d / br;
+            const i = at(bx + dx, by + dy);
+            alb[i] -= f * 0.22;
+            hgt[i] -= f * 0.0020;
+          }
+      }
+    }
+
+    // ---- pits and small spalls ----
+    for (let p = 0; p < 220; p++) {
+      const px = gHash(p, 11, 77) * w, py = gHash(p, 12, 77) * h;
+      const rad = 5 + gHash(p, 13, 77) * 15; // 1.7-6.6 cm
+      // half dirt-filled (darker), half fresh fracture (lighter aggregate)
+      const fresh = gHash(p, 14, 77) > 0.5;
+      const R2 = Math.ceil(rad) + 1;
+      for (let dy = -R2; dy <= R2; dy++)
+        for (let dx = -R2; dx <= R2; dx++) {
+          const ang = Math.atan2(dy, dx);
+          // ragged edge: a real spall is not a disc
+          const wob = 1 + (gHash(p * 31 + Math.round(ang * 6), 15, 77) - 0.5) * 0.55;
+          const d = Math.hypot(dx, dy) / (rad * wob);
+          if (d > 1) continue;
+          const f = 1 - d * d;
+          const i = at(px + dx, py + dy);
+          alb[i] += fresh ? f * 0.22 : -f * 0.26;
+          hgt[i] -= f * 0.0030;
+        }
+    }
+
+    /* ---- hairline cracks ----
+       Three, thin, and faint. The first pass at this had nine of them at four
+       times the contrast and one pixel of core plus two of shoulder, which at
+       3.32 mm a texel is a one-centimetre black line — a structural crack, not
+       a hairline — and nine of those repeating every 1.7 m was by far the most
+       obvious thing on the wall and the single clearest tell that the surface
+       was tiled. They are worth keeping only at the level where you notice
+       them on the wall beside you and never on the wall ahead. */
+    for (let k = 0; k < 3; k++) {
+      let x = gHash(k, 21, 5) * w, y = gHash(k, 22, 5) * h;
+      let a = gHash(k, 23, 5) * Math.PI * 2;
+      const len = 100 + gHash(k, 24, 5) * 180; // 33-93 cm
+      for (let s = 0; s < len; s++) {
+        a += (gHash(k * 601 + s, 25, 5) - 0.5) * 0.28;
+        x += Math.cos(a);
+        y += Math.sin(a);
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const f = dx === 0 && dy === 0 ? 1 : 0.12;
+            const i = at(Math.round(x) + dx, Math.round(y) + dy);
+            alb[i] -= f * 0.15;
+            hgt[i] -= f * 0.0008;
+          }
+      }
+    }
+
+    /* Re-centre the albedo channel on exactly 0.5 before encoding. Everything
+       above is subtractive on balance (dirt, pits, holes, seams all darken),
+       so the raw mean lands a few percent low — and this file budgets wall
+       albedo to three decimal places against the POV grade, so a grit layer
+       that quietly dimmed every concrete surface by 3 % would be a real
+       regression hiding inside a detail pass. Now it is a pure modulation. */
+    let mean = 0;
+    for (let i = 0; i < w * h; i++) mean += alb[i];
+    mean /= w * h;
+
+    const img = ctx.createImageData(w, h);
+    const d = img.data;
+    const q = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
+    for (let i = 0; i < w * h; i++) {
+      d[i * 4] = q(0.5 + alb[i] - mean);
+      d[i * 4 + 1] = q(0.5 + hgt[i] / (2 * GRIT_H));
+      d[i * 4 + 2] = q(stain[i]);
+      d[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }, true);
+}
 
 /** Where a scan is applied and at what density. */
 interface PbrOpts {
@@ -207,6 +440,12 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      holds, so perf mode flips one value instead of recompiling a dozen
      programs mid-drive. */
   const grimeTex = grimeTexF();
+  /* The grit atlas — see the CONCRETE GRIT block at the top of this file. One
+     512x512 shared by every concrete surface in the world, generated once at
+     build time (~200 ms, inside the staged loader, never mid-drive) and worth
+     0 MB of download. Its own repeat stays (1,1): the tiling is done by the
+     world-space scale in the shader, not by a uv transform. */
+  const gritTex = concreteGritTexF();
   const uWeatherK = { value: 1 };
   /* 1 / the concrete scan's mean linear luminance, so multiplying by it turns
      the scan into a UNIT-MEAN detail layer and the material tint becomes the
@@ -215,6 +454,21 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      mid-grey photo is a near-black wall. 1 until the scan lands and measures
      itself, which is also the right value for the procedural fallback. */
   const uConcAlb = { value: 1 };
+
+  /* ---- wall-relief master gains, live-tunable from the console ----
+     Both are pure multipliers on effects that are shaped entirely in the
+     shader, so `window.__wall.rake = 0` (or `.relief = 0`) restores the
+     previous look exactly and any value in between is a straight blend — no
+     recompile, no reload, tune it while driving. See the RAKE note in addBeam
+     and the RELIEF note in weatherSurface for what each one does and why the
+     defaults are where they are. Shared objects, one per world: every wall
+     material holds the same reference, so one assignment moves all of them. */
+  const uBeamRake = { value: 1 };
+  const uReliefK = { value: 1 };
+  const uGritK = { value: 1 };
+  const uCopingK = { value: 1 };
+  /** 1 at midnight, 0 at noon; set by setBeam, read by the coping catch */
+  const uNight = { value: 1 };
 
   const ud = (m: THREE.MeshStandardMaterial) => m.userData as unknown as RoadUD;
 
@@ -400,7 +654,17 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
    */
   function addBeam(
     mat: THREE.Material,
-    opts?: { near?: number; far?: number; spread?: number; wash?: number }
+    opts?: {
+      near?: number; far?: number; spread?: number; wash?: number;
+      /** incidence shaping on the wash; 0 keeps the old flat-lit card */
+      rake?: number;
+      /** the cos(incidence) a FLAT face of this surface actually sees, i.e.
+          the value `rake` pivots around. Set it per surface: a parapet 3 m
+          from the beam and a tunnel wall 5 m from it are not the same
+          geometry, and using one number for both would rescale the second
+          surface's brightness as a side effect of shaping it. */
+      rakeRef?: number;
+    }
   ) {
     const near = opts?.near ?? 22;
     const far = opts?.far ?? 70;
@@ -419,7 +683,10 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     const cos0 = Math.min(Math.max(opts?.spread ?? 0.55, -0.99), 0.99);
     const cos1 = Math.min(cos0 + 0.16, 0.999);
     const wash = opts?.wash ?? 0;
+    const rake = opts?.rake ?? 0;
+    const rakeRef = Math.max(opts?.rakeRef ?? 0.11, 0.02);
     mat.onBeforeCompile = (sh) => {
+      if (rake > 0) sh.uniforms.uBeamRake = uBeamRake;
       sh.uniforms.uBeamPos = uBeamPos;
       sh.uniforms.uBeamDir = uBeamDir;
       sh.uniforms.uBeamAmb = uBeamAmb;
@@ -442,7 +709,8 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
             "uniform vec3 uBeamPos; uniform vec3 uBeamDir;\n" +
             "uniform float uBeamAmb; uniform float uBeamK; uniform float uBeamRange;\n" +
             "uniform float uBeamNear; uniform float uBeamFar;\n" +
-            "uniform float uBeamCos; uniform float uBeamCos1;"
+            "uniform float uBeamCos; uniform float uBeamCos1;" +
+            (rake > 0 ? "\nuniform float uBeamRake;" : "")
         );
       const gate = `
   vec3 bd = vRetroW - uBeamPos;
@@ -453,6 +721,70 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   float cone = smoothstep(uBeamCos, uBeamCos1, align);
   float fall = 1.0 - smoothstep(uBeamNear * uBeamRange, uBeamFar * uBeamRange, bdist);
   float lit = cone * fall;`;
+      /* ------------------------------------------------------------------
+         RAKE — why the walls read as flat, and the one line that fixes it
+         ------------------------------------------------------------------
+
+         Everything that lights a parapet at night is normal-independent.
+         Count them: the real headlight SpotLights are edge-pinned and miss a
+         vertical face entirely (that is the whole reason this wash exists);
+         the streetlights are not lights at all, they are unlit decal pools
+         painted on the deck; AmbientLight is normal-free by definition and
+         sits at 0.07 after dark; HemisphereLight is 0.05 and, on a vertical
+         face, lands on the exact midpoint of its sky/ground blend and stays
+         there. Which leaves this wash — an ADDITIVE emissive term that, as
+         originally written, had no N in it at all.
+
+         So the parapet was a flat-lit card, and every bit of relief work
+         upstream was landing on a surface that could not answer it. The scan's
+         normal map, its normalScale, the weathering's roughness swing, the
+         geometry's own facets: all of it modulates nothing, because nothing
+         that reaches the wall cares which way it points. That is the actual
+         defect behind "the walls look flat", and no texture spend fixes it.
+
+         The fix is to give the wash an incidence term, referenced so the tuned
+         gain above still means what its budget note says:
+
+             shape = 1 + (dot(N, L) - REF) * (rake / REF)
+
+         N is the SHADING normal, so the scan's normals, the procedural relief
+         from weatherSurface and the coping facets in highway.ts all feed it
+         together. REF is the grazing incidence a flat parapet face actually
+         sees over the stretch of wall the wash covers: the near barrier sits
+         2-4 m to the side and the read is dominated by 12-40 m ahead, i.e.
+         cos ≈ 0.05-0.17, so 0.11 is the middle of it. A flat face at REF comes
+         out at exactly 1.0 — the shipped brightness, unchanged — and relief
+         swings either side of it.
+
+         Why that swing is so large from such a weak normal map, which is the
+         non-obvious part: at grazing incidence dot(N,L) IS the tilt angle, so
+         a few degrees of relief is a few hundredths on a value whose baseline
+         is only 0.11. The concrete scan's normals measure sigma 6.8/255 on xy,
+         about 4 degrees — worthless on a face lit head-on, ±40 % here. Raking
+         light is exactly the geometry that makes shallow texture read, which
+         is why this is the lever and not the maps.
+
+         Budget, worked the same way as the gain note above: peak is albedo
+         0.146 x weathering ceiling 1.18 x gain 0.5 x HI 1.45 = 0.125 linear,
+         about 0.30 display luma after ACES and the dashcam crush. The previous
+         worst case was 0.086 linear / ~0.25 display, the target in the gain
+         note is 0.33, and the blown-highlight clip is 0.72. Both clamps are
+         there so no future amplitude change can walk out of that budget: LO
+         also stops the top coping — which your headlights genuinely cannot
+         reach, being 35 cm below it — from going to literal zero and cutting a
+         black line out of the skyline.
+
+         uBeamRake is a live master gain, so this whole effect dials 0 → 1 from
+         the console against the shipped look. */
+      const rakeSrc = rake > 0
+        ? `
+  vec3 bl = -bd / max(bdist, 1e-4);
+  // the shading normal is view-space; the beam is world-space
+  float ndl = dot(inverseTransformDirection(normal, viewMatrix), bl);
+  lit *= clamp(
+    1.0 + (ndl - ${rakeRef.toFixed(3)}) * ${(rake / rakeRef).toFixed(3)} * uBeamRake,
+    0.32, 1.45);`
+        : "";
       sh.fragmentShader = wash > 0
         ? sh.fragmentShader.replace(
             "#include <emissivemap_fragment>",
@@ -460,9 +792,14 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
                tint is the dipped-beam 0xffeeda in linear, so the wall answers
                in the beam's own colour and stays a different light from the
                sodium lamps. Albedo-proportional, so the concrete scan's
-               texture modulates it for free. */
+               texture modulates it for free.
+
+               Placed at <emissivemap_fragment> for a second reason now: three
+               runs it after <normal_fragment_maps>, so `normal` here is the
+               fully perturbed shading normal and the rake above gets the map,
+               the procedural relief and the geometry in one vector. */
             `#include <emissivemap_fragment>
-{${gate}
+{${gate}${rakeSrc}
   totalEmissiveRadiance +=
     diffuseColor.rgb * vec3(1.0, 0.858, 0.708) * (lit * uBeamK * ${wash.toFixed(3)});
 }`
@@ -475,7 +812,87 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
 }`
           );
     };
-    mat.customProgramCacheKey = () => `beam|${near}|${far}|${cos0}|${cos1}|${wash}`;
+    mat.customProgramCacheKey = () =>
+      `beam|${near}|${far}|${cos0}|${cos1}|${wash}|${rake}|${rakeRef}`;
+  }
+
+  /**
+   * Light an up-facing concrete surface from the CITY rather than from the car.
+   *
+   * WHY. Look at what a real night-driving frame is actually built out of: the
+   * barrier beside the lane carries almost no surface detail, and it is still
+   * unmistakably a concrete barrier, because its TOP EDGE is a continuous
+   * bright line running away to the horizon while its vertical face sits in
+   * near-black. That one tonal step is what draws the edge of the road. It is
+   * the most legible thing about a parapet at night and this engine had no
+   * mechanism that could produce it:
+   *
+   *   - the headlight wash cannot. Your lamps are ~0.7 m up and the coping is
+   *     1.05 m up, so they are BELOW it and physically cannot light its top
+   *     face — which is exactly what addBeam's rake now says, correctly, by
+   *     driving the coping down to its floor;
+   *   - HemisphereLight is the right shape (it is a sky term, it keys on
+   *     normal.y) but it is at 0.05 intensity after dark, which is three
+   *     orders of magnitude short of a read;
+   *   - AmbientLight has no normal in it, so it lifts the face and the coping
+   *     by the same amount and flattens the very step we want;
+   *   - `topClean` in the weathering is an ALBEDO trick — the coping is
+   *     rain-washed so it is a paler grey — which is true but is not light,
+   *     and multiplying a paler albedo by near-zero illumination is still
+   *     near-zero.
+   *
+   * So: an additive term proportional to how much sky and lamp a surface can
+   * see. `pow(max(N.y,0), k)` is a cheap sky-visibility approximation and, more
+   * to the point, it is smooth from the coping right round to the vertical face
+   * — there is no angle at which it switches off, which is the rule this
+   * codebase keeps having to relearn about light that stops instead of fading.
+   *
+   * Level, against the grade rather than by eye. Parapet albedo is 0.146
+   * linear; the reference frame's coping sits somewhere around 0.30 display
+   * luma, i.e. roughly 0.075 linear after ACES and the dashcam crush. The face
+   * beside it must stay ABOVE the crush — post.ts does `max(col - .06, 0)`, an
+   * absolute cliff — or the "step" becomes a clipped edge rather than a
+   * gradient, and a clipped edge is the artifact, not the effect. So the gain
+   * is set to put a fully up-facing texel near 0.075 linear and the term
+   * decays from there; nothing here approaches the ~0.8 luma where the grade
+   * bleaches hue out, so the coping stays sodium-warm instead of going white.
+   *
+   * Warm, and deliberately further toward yellow than the target: the same
+   * correction the lamp cone needed at highway.ts:984 — red survives ACES
+   * better than green, so a source picked at the colour you want comes through
+   * salmon. Albedo-proportional like every other fake in this file, so the
+   * weathering and the grit modulate it for free and a filthy stretch of
+   * coping catches less light than a clean one.
+   */
+  function addCopingCatch(mat: THREE.MeshStandardMaterial, gain: number, sharp = 1.6) {
+    const prevHook = mat.onBeforeCompile;
+    const prevKey = Object.prototype.hasOwnProperty.call(mat, "customProgramCacheKey")
+      ? mat.customProgramCacheKey()
+      : "";
+    mat.onBeforeCompile = (sh, renderer) => {
+      prevHook?.call(mat, sh, renderer);
+      sh.uniforms.uNight = uNight;
+      sh.uniforms.uCopingK = uCopingK;
+      sh.fragmentShader = sh.fragmentShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nuniform float uNight; uniform float uCopingK;"
+        )
+        .replace(
+          "#include <emissivemap_fragment>",
+          `#include <emissivemap_fragment>
+{
+  /* The SHADING normal, so the coping's own relief breaks the line up rather
+     than it running as a drawn stroke — and so a chamfer or a fallen kerb
+     angle reads differently from a flat top, which is the whole point. */
+  float ny = max(inverseTransformDirection(normal, viewMatrix).y, 0.0);
+  totalEmissiveRadiance +=
+    diffuseColor.rgb * vec3(1.0, 0.795, 0.545)
+    * (pow(ny, ${sharp.toFixed(2)}) * uNight * uCopingK * ${gain.toFixed(3)});
+}`
+        );
+    };
+    mat.customProgramCacheKey = () => `coping|${gain}|${sharp}|${prevKey}`;
   }
 
   /* ---------------- world-projected UVs ---------------- */
@@ -571,6 +988,25 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     macroScale?: number;
     /** world metres per repeat of the streak field, before the v stretch */
     streakScale?: number;
+    /** depth of the contraction-joint groove, in metres of real relief; 0
+        leaves the normal alone. See the RELIEF note in weatherSurface. */
+    relief?: number;
+    /** concrete grit: albedo modulation depth, 0 disables the layer entirely
+        (one texture fetch and a handful of ALU). 1 uses the atlas at the
+        contrast it was authored at. See the CONCRETE GRIT block above. */
+    grit?: number;
+    /** metres of wall per repeat of the grit tile; the atlas is authored for
+        GRIT_M and this scales it. Keep it incommensurate with the 2.22 m photo
+        scan and with the joint pitch. */
+    gritScale?: number;
+    /** how much of the grit's encoded relief to apply, 0..1 of GRIT_H */
+    gritRelief?: number;
+    /** irregular heavy-soiling bands, as a fraction of albedo at their worst.
+        This is the "no two stretches alike" term — see the BANDS note. */
+    band?: number;
+    /** contrast expansion applied to the unit-mean photo scan; only meaningful
+        with `normalise`. 1 leaves the scan alone. */
+    scanBoost?: number;
   }
 
   /**
@@ -622,9 +1058,20 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
     const rough = o.rough ?? 0.2;
     const rust = o.rust ?? 0;
     const norm = o.normalise === true;
+    const relief = joint > 0 ? o.relief ?? 0 : 0;
+    const grit = o.grit ?? 0;
+    const gritK = 1 / (o.gritScale ?? GRIT_M);
+    const gritRel = grit > 0 ? o.gritRelief ?? 0 : 0;
+    const band = o.band ?? 0;
+    const boost = norm ? o.scanBoost ?? 1 : 1;
     const macK = 1 / (o.macroScale ?? 11.3);
     const strK = 1 / (o.streakScale ?? 2.9);
     const f = (n: number) => n.toFixed(4);
+    /* The normal is perturbed if EITHER source asks for it. Kept as one flag
+       so the block below is emitted once and both height terms sum into the
+       same gradient — two separate perturbations would each renormalise and
+       the second would partly undo the first. */
+    const anyRelief = relief > 0 || gritRel > 0;
 
     /* Same eager chain-and-compose as projectedUv, for the same reason: the
        beam hook is already installed by the time this runs, and reading the
@@ -638,6 +1085,11 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       sh.uniforms.tGrime = { value: grimeTex };
       sh.uniforms.uWeatherK = uWeatherK;
       if (norm) sh.uniforms.uConcAlb = uConcAlb;
+      if (anyRelief) sh.uniforms.uReliefK = uReliefK;
+      if (grit > 0) {
+        sh.uniforms.tGrit = { value: gritTex };
+        sh.uniforms.uGritK = uGritK;
+      }
 
       sh.vertexShader = sh.vertexShader
         .replace(
@@ -666,7 +1118,9 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
           "#include <common>",
           "#include <common>\nvarying vec3 vWeaW; varying vec3 vWeaN;\n" +
             "uniform sampler2D tGrime; uniform float uWeatherK;" +
-            (norm ? "\nuniform float uConcAlb;" : "")
+            (norm ? "\nuniform float uConcAlb;" : "") +
+            (anyRelief ? "\nuniform float uReliefK;" : "") +
+            (grit > 0 ? "\nuniform sampler2D tGrit; uniform float uGritK;" : "")
         )
         .replace(
           "#include <map_fragment>",
@@ -676,12 +1130,48 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
 /* Scan → unit mean, so the tint above is the real albedo. OUTSIDE the perf
    branch on purpose: this is not detail, it is the surface's brightness, and
    dropping to the low preset must not repaint the world four shades darker. */
-diffuseColor.rgb *= uConcAlb;`
+diffuseColor.rgb *= uConcAlb;${
+                boost !== 1
+                  ? `
+/* Contrast expansion about the scan's own mean, which uConcAlb has just put at
+   1.0. Measured, and the measurement is the reason this exists: Concrete033's
+   albedo has a standard deviation of 6.9/255 — 2.7 % of range. Multiplied by
+   the 0.146 linear tint and pushed through the night grade that is about
+   +/- 0.006 display luma, i.e. below anything a screen can show and well below
+   the crush in post.ts. The scan's FEATURES are at a useful scale (0.2-1.0 m
+   blotches); it is only their amplitude that is hopeless, and amplitude is the
+   one thing a shader can fix for free.
+
+   Expanded about "diffuse" — three's uniform for material.color, i.e. the tint
+   itself — and not about 1.0 or about the texel: after uConcAlb the scan has
+   unit mean, so diffuseColor averages exactly that tint and pivoting there is
+   what leaves the albedo budget in the CONC_TINT note untouched. With no map
+   yet loaded diffuseColor IS diffuse and this collapses to a no-op, which is
+   the right behaviour for the procedural fallback.
+
+   LUMINANCE ONLY, and this is not a detail. Concrete033's channel means are
+   R 80 / G 76 / B 66, i.e. the scan carries a distinct brown cast — capture
+   light and dirt, not the material. Expanding per channel about the tint
+   amplifies that cast by the boost factor too, and 2.4x of it turns the wall
+   frankly gold. It also quietly undoes the deliberate choice in the CONC_TINT
+   note above, which went to some trouble to stop the wall carrying a colour
+   that belongs to the lighting. So the scan contributes its LUMINANCE
+   variation and the tint keeps the hue, which is what a neutral dielectric
+   should look like anyway. */
+{
+  vec3 sTint = max(diffuse, vec3(1e-4));
+  float sLum = dot(diffuseColor.rgb / sTint, vec3(0.2126, 0.7152, 0.0722));
+  diffuseColor.rgb = sTint * max(0.0, 1.0 + (sLum - 1.0) * ${f(boost)});
+}`
+                  : ""
+              }`
               : ""
           }
 /* declared at main scope, not inside the branch: <roughnessmap_fragment>
    further down reads them, and a zeroed set there costs one madd */
-float wMac = 0.0, wDirt = 0.0, wJnt = 0.0, wTop = 0.0;
+float wMac = 0.0, wDirt = 0.0, wJnt = 0.0, wTop = 0.0;${
+            grit > 0 ? "\nvec3 wGrit = vec3(0.5, 0.5, 0.5);" : ""
+          }${band > 0 ? "\nfloat wBand = 0.0;" : ""}
 /* Branching on a UNIFORM, not on anything per-fragment: every fragment in a
    quad takes the same path, so the GPU skips the body outright when perf mode
    zeroes it AND the fwidth() below stays well defined — derivatives taken in
@@ -705,7 +1195,34 @@ if (uWeatherK > 0.001) {
   wMac = (g1.r - 0.5) + (g2.r - 0.5) * 0.6 + (g1.b - 0.5) * 0.35;
   // rain wash runs down upright faces only
   wDirt = (1.0 - g2.g) * wSide;
+${
+    grit > 0
+      ? `  /* CONCRETE GRIT — see the block at the top of this file. One fetch, at a
+     scale deliberately between the joint pitch and the fine grain: this is the
+     0.02-0.35 m band, which nothing else in this shader occupies and which is
+     the band the eye is actually in from the dashcam. */
+  wGrit = texture2D(tGrit, wUV * ${f(gritK)}).rgb;
+`
+      : ""
+  }${
+    band > 0
+      ? `  /* BANDS — the "no two stretches alike" term.
+     The macro field is a smooth +/-13 % drift, and a smooth drift at 11 m is
+     not something you can see from a moving car; it reads as one flat wall.
+     Real parapets are not shaded, they are SOILED: clean, then abruptly filthy
+     for ten or twenty metres under a drain or behind a sign, then clean again.
+     The threshold is what buys that edge — below it nothing happens at all, so
+     most of the wall is untouched and the stretches that are dirty are
+     properly dirty rather than everything being slightly grey.
 
+     Keyed on the macro field's own G channel, which nothing else reads, so the
+     bands are uncorrelated with the mottling already riding on R and B and the
+     two cannot line up into a single stronger period. Upright faces only — a
+     coping is rained on, not splashed. */
+  wBand = smoothstep(0.54, 0.80, g1.g) * wSide;
+`
+      : ""
+  }
   ${
     section > 0
       ? `/* Per-casting tone. "along" is the run direction: the projection above
@@ -737,10 +1254,18 @@ if (uWeatherK > 0.001) {
     + (sTone - 0.5) * ${f(section)} * wSide
     - wDirt * ${f(streak)}
     - wJnt * ${f(joint)}
-    + wTop * ${f(topClean)};
-  // clamped, not because the sum can run away, but so a future amplitude bump
-  // can never push albedo past what addBeam's wash gain was budgeted against
-  diffuseColor.rgb *= mix(1.0, clamp(tone, 0.62, 1.18), uWeatherK);${
+    + wTop * ${f(topClean)}${
+      grit > 0 ? `\n    + (wGrit.r - 0.5) * 2.0 * ${f(grit)} * uGritK` : ""
+    }${
+      grit > 0 ? `\n    + (wGrit.b - 0.5) * ${f(grit * 0.55)} * uGritK` : ""
+    }${band > 0 ? `\n    - wBand * ${f(band)}` : ""};
+  /* Clamped, not because the sum can run away, but so a future amplitude bump
+     can never push albedo past what addBeam's wash gain was budgeted against.
+     The floor drops 0.62 → 0.40 with the soiling bands: the ceiling is the
+     half that guards the wash budget and it has not moved, and a band that
+     cannot take the wall below 62 % is not a soiled stretch of concrete, it is
+     a slightly grey one — which was the problem. */
+  diffuseColor.rgb *= mix(1.0, clamp(tone, ${band > 0 ? "0.40" : "0.62"}, 1.18), uWeatherK);${
     rust > 0
       ? `
   /* Oxide bleed. Only the heaviest streaks carry it — on galvanised sheet the
@@ -760,13 +1285,85 @@ if (uWeatherK > 0.001) {
    beside it. Without this the wall takes light uniformly and reads as plastic
    however good its albedo is. The clamp also caps the scan path, where
    roughness = target/roughMean can put a bright texel over 1.0. */
-roughnessFactor *= 1.0 + (wDirt * 1.6 - wMac + wJnt * 1.2 - wTop * 0.3)
+roughnessFactor *= 1.0 + (wDirt * 1.6 - wMac + wJnt * 1.2 - wTop * 0.3${
+            grit > 0 ? ` - (wGrit.r - 0.5) * 1.4 * uGritK` : ""
+          }${band > 0 ? ` + wBand * 1.5` : ""})
                        * ${f(rough)} * uWeatherK;
 roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
         );
+
+      /* ---- RELIEF: the joints and the grit, and nothing else ----
+         The macro and streak fields are deliberately left out and it is worth
+         writing down why, because "add relief to the weathering" reads like it
+         should apply to everything: a normal perturbation is a SLOPE, and
+         slope is amplitude over feature size. Those two fields have features
+         metres across, so a physically honest few millimetres of undulation
+         across them comes out at a slope of ~0.002 — nothing, invisible, and
+         the only way to make it show would be to give a concrete wall nine
+         centimetres of relief per metre, which is a rock face. Their job is
+         tone, and tone is what they do.
+
+         The joint is the opposite shape: a 2 cm groove with near-vertical
+         walls, i.e. a slope of order 1 packed into 11 mm, which is precisely
+         the thing a normal can express and a tint cannot. The grit atlas sits
+         between the two — 2-3 mm of pitting in a 2-7 cm dish, slopes around
+         0.1 — shallow enough that it would be invisible under head-on light
+         and only reads because the rake is looking at it edge-on.
+
+         Which matters here more than it would elsewhere, because addBeam's
+         rake now reads this normal, and a groove is where relief and grazing
+         light do their most recognisable work together: as you come level with
+         a joint its near wall flares and its far wall drops out, and that
+         flick — 4.6 m apart, so ~9 Hz at speed — is a large part of what says
+         "poured concrete, cast in sections" rather than "printed wallpaper".
+
+         Surface-gradient form (Mikkelsen), NOT three's perturbNormalArb: that
+         chunk normalises the screen-space tangents, which makes the bump
+         strength a function of how many pixels the wall happens to occupy, so
+         a groove would quietly get stronger as it receded. Leaving them
+         unnormalised makes `grad` a true dH/dmetre and the groove keeps the
+         same depth at every distance. It fades on its own anyway — jw below is
+         widened by fwidth, so past ~50 m the groove is a sub-pixel feature
+         spread over a pixel and its slope falls off with it, which is the
+         correct anti-aliasing behaviour and needs no distance term. */
+      if (anyRelief)
+        sh.fragmentShader = sh.fragmentShader.replace(
+          "#include <normal_fragment_maps>",
+          `#include <normal_fragment_maps>
+if (uWeatherK > 0.001 && uReliefK > 0.0) {
+  /* One height field, summed before a single gradient is taken. Two separate
+     perturbations would each renormalise and the second would partly undo the
+     first; summing keeps the joint's 36-degree groove wall and the grit's
+     millimetre pocking additive, which is what they are on a real wall. */
+  float wHt = (${[
+    relief > 0 ? `-wJnt * ${f(relief)}` : "",
+    /* GRIT_H is the full-swing encoding of the G channel; gritRel scales it,
+       and 1.0 means "use the depths the atlas was authored at". The pits are
+       2-3 mm in a 1.7-6.6 cm dish, i.e. slopes around 0.1 — shallow, which is
+       correct, and which only reads at all because addBeam's rake is looking
+       at this normal from a grazing angle. */
+    gritRel > 0
+      ? `(wGrit.g - 0.5) * ${f(2 * GRIT_H * gritRel)} * uGritK`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" + ")}) * uWeatherK * uReliefK;
+  vec3 wSp = -vViewPosition;
+  vec3 wSx = dFdx(wSp), wSy = dFdy(wSp);
+  vec3 wR1 = cross(wSy, normal), wR2 = cross(normal, wSx);
+  float wDet = dot(wSx, wR1);
+  vec3 wGrad = sign(wDet) * (dFdx(wHt) * wR1 + dFdy(wHt) * wR2);
+  // the epsilon is not decoration: a triangle seen exactly edge-on has a zero
+  // determinant AND a zero gradient, and normalize(vec3(0)) is a NaN that
+  // propagates into the lighting for the whole quad
+  normal = normalize(max(abs(wDet), 1e-8) * normal - wGrad);
+}`
+        );
     };
     mat.customProgramCacheKey = () =>
-      `weather|${f(macro)}|${f(streak)}|${f(joint)}|${f(rust)}|${norm ? 1 : 0}|${prevKey}`;
+      `weather|${f(macro)}|${f(streak)}|${f(joint)}|${f(rust)}` +
+      `|${norm ? 1 : 0}|${f(relief)}|${f(boost)}` +
+      `|${f(grit)}|${f(gritK)}|${f(gritRel)}|${f(band)}|${prevKey}`;
   }
 
   const road = new THREE.MeshStandardMaterial({
@@ -1018,8 +1615,44 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
      absolute worst case at 0.086 linear ≈ 0.25. Reach, spread and both
      smoothstep fades are untouched, so nothing about the SHAPE of the fade
      moves — only how much light the wall was ever able to return. */
-  addBeam(barrier, { near: 22, far: 78, spread: 0.55, wash: 0.5 });
-  addBeam(barrierDouble, { near: 22, far: 78, spread: 0.55, wash: 0.5 });
+  /* `rake` is new; everything above it is untouched. Ref 0.11 is the cosine a
+     flat parapet face presents over the stretch this wash covers — the near
+     barrier sits 2-4 m to the side and the read is dominated by 12-40 m ahead
+     — so a flat face still returns exactly the numbers budgeted above and only
+     relief moves it. See the RAKE note in addBeam for the whole argument. */
+  addBeam(barrier, { near: 22, far: 78, spread: 0.55, wash: 0.5, rake: 0.42, rakeRef: 0.11 });
+  addBeam(barrierDouble, {
+    near: 22, far: 78, spread: 0.55, wash: 0.5, rake: 0.42, rakeRef: 0.11,
+  });
+  /* The tunnel lining has the identical defect and needs the identical fix:
+     its battens are MeshBasicMaterial (unlit by construction — it is night in
+     here, they are meant to read as light sources, not act as them), so the
+     only thing lighting the tube is the flat emissive floor plus the ambient
+     bump engine.ts adds on entry. Every one of those is normal-free, which is
+     why a tiled wall with a good scan on it still reads as a painted cylinder.
+
+     Gain is 0.14, not the parapets' 0.5, and that is not a taste call: the
+     tile albedo is roughly 3.5x the parapet's (0x9aa3b2 over a scan whose mean
+     is 0.815, ≈ 0.52 linear, against concrete's 0.146), so matching the
+     parapet's peak in LINEAR terms is what keeps one wall from blowing out
+     while the other is correct. 0.52 x 0.14 x 1.45 = 0.106 linear, just under
+     the parapets' 0.125. Ref 0.24: the bore wall stands 1.55 m outboard of the
+     pavement edge, so it is a good deal less grazing than a parapet and using
+     the parapet's 0.11 would have brightened the whole tube by a third as a
+     side effect. Reach is shorter too — a tunnel is not a 78 m view. */
+  addBeam(tunnelWall, { near: 14, far: 52, spread: 0.44, wash: 0.14, rake: 0.34, rakeRef: 0.24 });
+  /* The bright top edge. Gain 0.40 against the 0.146 parapet albedo adds 0.058
+     linear at a fully up-facing texel, which puts the coping near 0.095 linear
+     against the face's ~0.073 under the beam wash — a step you read as an edge
+     rather than as two different materials, and both ends of it comfortably
+     clear of post.ts's 0.06 black cliff so the fade stays a fade. Exponent 1.6
+     keeps the term alive on the coping's arris and on a leaning screen wall's
+     capping instead of collapsing the instant a face is off-horizontal.
+     Applied AFTER addBeam and BEFORE weatherSurface so the hooks compose in
+     the one direction the cache keys assume. No tunnel: there is no sky in
+     there, and the battens are below the crown anyway. */
+  addCopingCatch(barrier, 0.4);
+  addCopingCatch(barrierDouble, 0.4);
 
   /* Weathering, installed AFTER addBeam so its albedo edit lands upstream of
      the wash that reads that albedo, and BEFORE the async projectedUv so the
@@ -1037,13 +1670,43 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
      is left out on purpose — it is already near-black, so proportional
      weathering does nothing you can see, and it is drawn as an InstancedMesh
      whose scan UVs projectedUv cannot vary per instance anyway. */
+  /* `relief` is metres of real groove depth, and the number is arrived at
+     rather than dialled: the groove's wall spans jw → 3·jw in the shader, i.e.
+     about 22 mm of face at close range, so 16 mm of depth is a slope of ~0.73
+     across it, ~36 degrees. A real slipformed contraction joint is 15-25 mm
+     deep with near-vertical sides, so this sits just inside honest. */
+  /* grit 0.30 with the atlas's sigma of 20/255 gives the parapet an albedo
+     spread of about +/- 4.7 % at the 2-35 cm scale, against the photo scan's
+     2.7 % at 0.2-1.0 m and nothing at all in between before this. gritScale
+     1.7 m is the atlas's authoring scale, and is deliberately incommensurate
+     with both the scan's 2.22 m projection and the 4.6 m joint pitch.
+
+     0.30 and not the 0.55 this was first tuned to, and scanBoost 1.6 and not
+     2.4, because the reference the user is aiming at settles the question: the
+     barrier in it carries almost NO surface detail. A real concrete parapet at
+     night is a plain grey object. What makes it read is the light on it — the
+     bright coping, the face falling into black, the beam raking past — not
+     what is printed on it, and a wall covered in visible mottling would be a
+     different and equally wrong kind of fake. The grit's job here is only to
+     stop the surface being a mathematically flat card, which takes far less
+     than it looks like it should on a texture viewer. `__wall.grit` brackets
+     the whole question live: 0 removes it, 1 is roughly the old 0.55. */
   const PARAPET_WEATHER: WeatherOpts = {
     macro: 0.13, streak: 0.17, joint: 0.34, jointPitch: 4.6,
-    section: 0.075, topClean: 0.1, rough: 0.22, normalise: true,
+    section: 0.075, topClean: 0.1, rough: 0.22, normalise: true, relief: 0.016,
+    grit: 0.3, gritScale: 1.7, gritRelief: 1, band: 0.22, scanBoost: 1.6,
   };
+  /* Shallower on the fascia: a box-girder segment joint is a sealed
+     construction joint, not a slipformed groove, and there is no rake down
+     there to read it anyway (the fascia carries no beam wash — it faces away
+     from the road), so this only ever answers ambient and the env cube. */
   const FASCIA_WEATHER: WeatherOpts = {
     macro: 0.15, streak: 0.24, joint: 0.28, jointPitch: 11.5,
-    section: 0.06, topClean: 0.04, rough: 0.2,
+    section: 0.06, topClean: 0.04, rough: 0.2, relief: 0.009,
+    // a girder face is seen from further away and mostly in the mirrors, so
+    // the grit tiles coarser (its fine end would be below a pixel anyway) and
+    // carries no relief — nothing rakes it
+    grit: 0.3, gritScale: 2.6, band: 0.26,
   };
   // one shared opts object per family, so the single- and double-sided halves
   // can never drift apart the way a pair of literals eventually would
@@ -1051,6 +1714,26 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
   weatherSurface(barrierDouble, PARAPET_WEATHER);
   weatherSurface(conc, FASCIA_WEATHER);
   weatherSurface(concDouble, FASCIA_WEATHER);
+  /* The tube had no weathering at all, which is most of why it read as a
+     painted cylinder: a road tunnel's tiling is the filthiest surface on the
+     whole alignment — diesel soot above the dado, a black band at splash
+     height, and a drip run under every joint in the lining. No joints (the
+     course lines are in the tile scan) and NO GRIT: that atlas is cast
+     concrete, and aggregate pocking on glazed ceramic would be plainly wrong.
+     Bands do the heavy lifting instead, and they suit a tunnel even better
+     than a parapet — real tubes are filthy in long stretches and freshly
+     washed in others. */
+  weatherSurface(tunnelWall, {
+    macro: 0.16, streak: 0.26, joint: 0, section: 0, topClean: 0.05,
+    rough: 0.3, band: 0.3, macroScale: 14.0, streakScale: 2.2,
+  });
+  /* The ceiling is concrete, up-facing, and already near-black; streaks and
+     bands are for walls, so this is mottle and grit only — enough to stop the
+     crown reading as one grey plane sliding past the battens. */
+  weatherSurface(tunnelCeil, {
+    macro: 0.15, streak: 0.05, joint: 0, section: 0, topClean: 0,
+    rough: 0.18, grit: 0.45, gritScale: 2.2, macroScale: 9.0,
+  });
   /* Galvanised sheet, not concrete: no joints (the panel seams are drawn into
      the cutout art), a longer macro field because a rolled sheet's patina
      drifts over metres not decimetres, and the oxide bleed switched on so the
@@ -1108,6 +1791,12 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
       const floor = Math.min(Math.max(unlitFloor, 0), 1);
       uBeamAmb.value = 1 - (1 - floor) * night;
       uBeamK.value = on ? night : 0;
+      /* Night, on its own, for anything that is lit by the CITY rather than by
+         the car. uBeamK is no use for that — it is zero with the headlights
+         switched off, and a streetlight does not care. Set here only because
+         setBeam is already the one call the engine makes every frame with the
+         daylight factor in hand; nothing about the beam reads it. */
+      uNight.value = night;
     },
     soundwall: new THREE.MeshStandardMaterial({
       color: 0x2c4438, roughness: 0.75, transparent: true, opacity: 0.85,
@@ -1255,6 +1944,43 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
     return c;
   }
 
+  /* LIVE PREVIEW, same idea as window.__aurora. A grazing-light effect only
+     exists while you are moving past it, so it cannot be judged from a still
+     and it certainly cannot be judged across a rebuild. All three of these are
+     uniforms (normalScale included — three sends it per frame, it does not
+     recompile), so an assignment lands on the next frame:
+
+       __wall.coping = 0        the barrier's bright top edge, off
+       __wall.rake = 0          the walls go back to flat-lit exactly
+       __wall.grit = 0          drops the procedural detail layer
+       __wall.relief = 0        drops the joint grooves' and grit's relief
+       __wall.normalScale = 0.85   the previous scan normal strength
+
+     Setting all five restores the pre-change look bit for bit, which is the
+     point: A/B it at speed rather than from memory. Reach for `coping` first —
+     it is the one that decides whether the barrier reads as an edge of the
+     road at all, and it is the term the reference frame is really built on.
+     `grit` second, and note it is deliberately low: 0 / 0.5 / 1 / 2 brackets
+     it, and 1 is roughly where an earlier pass had it before the reference
+     made the case for a plainer wall. */
+  if (typeof window !== "undefined") {
+    const concFamily = [
+      conc, concDouble, concDark, concDarkDouble, barrier, barrierDouble, tunnelCeil,
+    ];
+    (window as unknown as { __wall?: unknown }).__wall = {
+      get rake() { return uBeamRake.value; },
+      set rake(v: number) { uBeamRake.value = v; },
+      get relief() { return uReliefK.value; },
+      set relief(v: number) { uReliefK.value = v; },
+      get grit() { return uGritK.value; },
+      set grit(v: number) { uGritK.value = v; },
+      get coping() { return uCopingK.value; },
+      set coping(v: number) { uCopingK.value = v; },
+      get normalScale() { return barrier.normalScale.x; },
+      set normalScale(v: number) { for (const m of concFamily) m.normalScale.set(v, v); },
+    };
+  }
+
   if (usePbr) void ensurePbr();
 
   /** Fetch and apply the photo scans. Idempotent — safe to call repeatedly. */
@@ -1328,15 +2054,27 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
         barrier, barrierDouble, tunnelCeil,
       ]) {
         projectedUv(m, 0.45);
-        /* normalScale 0.65 → 0.85. Relief is the other half of the "takes
-           light uniformly" problem the weathering pass is fixing: the scan's
-           normals are the only thing that makes the headlight rake across the
-           face's form-work texture at a grazing angle instead of gliding over
-           it. 0.65 was set when the material also carried a metalness sheen to
-           lean on; with metalness at 0 the normals have to do that work alone.
-           Left below 1.0 so the aggregate does not start reading as gravel. */
+        /* normalScale 0.65 → 0.85 → 1.4. Relief is the other half of the
+           "takes light uniformly" problem the weathering pass is fixing: the
+           scan's normals are the only thing that makes the headlight rake
+           across the face's form-work texture at a grazing angle instead of
+           gliding over it. 0.65 was set when the material also carried a
+           metalness sheen to lean on; with metalness at 0 the normals have to
+           do that work alone.
+
+           The earlier ceilings ("left below 1.0 so the aggregate does not
+           start reading as gravel") were set against an assumed map, not a
+           measured one. Measured: Concrete033's normal is nearly flat — xy
+           sigma is 6.8/255, about 4 degrees of tilt at the old 0.85, and the
+           map is not even unit length (mean vector length 0.676, so three's
+           normalize() is already scaling it up by ~1.5x before we get a say).
+           For scale, the tile set on the tunnel walls carries 2.5x the xy
+           spread. There is no gravel anywhere near this map; the risk it was
+           being protected from does not exist. 1.4 puts the typical tilt at
+           ~6.8 degrees, which is ordinary board-marked concrete, and the rake
+           term in addBeam is what turns that into something you can see. */
         upgradeSurface(m, concreteSet, {
-          repeat: [1, 1], normalScale: 0.85, roughness: m.roughness,
+          repeat: [1, 1], normalScale: 1.4, roughness: m.roughness,
         });
       }
     }
