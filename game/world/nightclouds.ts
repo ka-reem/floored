@@ -51,7 +51,16 @@ export interface NightClouds {
   /** live 0..1.5 — how much cloud shows. 0 = clear night, 1 = shipped,
       ~1.4 = the most the deck's own alpha ceiling allows. */
   amount: number;
-  /** re-tint from the aurora's palette so the two are one sky */
+  /** live 0..3 — how hard the moon lights the deck, 1 = as shipped. This is
+      most of what a no-aurora night has going on, so it is the knob to reach
+      for when a clear night reads as flat. */
+  moonAmt: number;
+  /** live direction of the moon, unit length. Must match the moon sprite that
+      sky.ts parks in the backdrop — see the uMoon comment. */
+  moon: THREE.Vector3;
+  /** re-tint from whatever is lighting the deck tonight — the aurora's palette
+      on an aurora night, moonlight on the ~70% that have none. aurora.ts picks
+      which, and calls this through sky.ts's onPalette hook. */
   tint(lo: THREE.Vector3, hi: THREE.Vector3): void;
   reroll(seed?: number): NightCloudsRoll;
   update(now: number, dayF: number, fogMul: number): void;
@@ -66,6 +75,22 @@ export function buildNightClouds(seed: number): NightClouds {
   const uDrift = { value: 1 };
   const uLit = { value: new THREE.Vector3(0.95, 0.36, 0.62) };
   const uDark = { value: new THREE.Vector3(0.030, 0.020, 0.062) };
+  /* City underglow, as its OWN colour rather than a fraction of uLit.
+     Sodium and LED street lighting throwing up into the base of the deck is
+     warm no matter what is happening 90 km above it, and it used to inherit
+     the aurora's crown hue — so a violet night gave the town violet lamps.
+     Now that most nights have no aurora at all and uLit goes cool moonlight,
+     leaving it coupled would have turned the horizon glow silver, which is
+     the one thing a lit town never looks like. */
+  const uCity = { value: new THREE.Vector3(0.088, 0.052, 0.022) };
+  /* Direction of the moon, and how hard it lights the deck.
+     WHAT THIS IS COUPLED TO: sky.ts parks the moon sprite at
+     (-900, 1250, -1700) in the backdrop group, i.e. direction
+     (-0.392, 0.545, -0.741) — 33° up. If that sprite ever moves, this vector
+     has to move with it or the bright side of the clouds detaches from the
+     moon, so it is a uniform and `__clouds.moon` re-aims it live. */
+  const uMoon = { value: new THREE.Vector3(-0.392, 0.545, -0.741) };
+  const uMoonAmt = { value: 1 };
 
   function applyRoll(s: number): NightCloudsRoll {
     const rng: Rng = mulberry32(s ^ 0x9e3779b9);
@@ -93,14 +118,14 @@ export function buildNightClouds(seed: number): NightClouds {
       uTime: { value: 0 },
       uAmt: { value: 1 },
       uDay: { value: 0 },
-      uCov, uScale, uDrift, uLit, uDark,
+      uCov, uScale, uDrift, uLit, uDark, uCity, uMoon, uMoonAmt,
     },
     vertexShader: `varying vec3 vDir;
 void main(){ vDir=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader: `precision highp float;
 varying vec3 vDir;
-uniform float uTime,uAmt,uDay,uCov,uScale,uDrift;
-uniform vec3 uLit,uDark;
+uniform float uTime,uAmt,uDay,uCov,uScale,uDrift,uMoonAmt;
+uniform vec3 uLit,uDark,uCity,uMoon;
 
 float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
 float vn(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.-2.*f);
@@ -162,8 +187,21 @@ void main(){
  // edges lit, cores in shadow: one noise fetch, two thresholds
  vec3 col=mix(uLit,uDark,core);
  // a touch of extra warmth in the lowest, most distant cloud — the light a
- // city throws up into its own overcast
- col+=uLit*(1.-core)*(1.-smoothstep(.03,.26,ey))*.18;
+ // city throws up into its own overcast. Its own colour, not the aurora's:
+ // street lighting does not change hue with the weather 90 km overhead.
+ col+=uCity*(1.-core)*(1.-smoothstep(.03,.26,ey));
+ /* MOONLIGHT. On the ~70% of nights with no aurora this is what actually
+    lights the deck, and it is the difference between "cloud" and "grey
+    shapes": a real moonlit sky has a bright side and a dark side, because
+    the moon is a point source 33° up and not an ambient wash.
+    Two terms, both smooth to zero — a broad forward-scattering lobe over the
+    whole moonward half of the sky (cos^3, which is the direction thin water
+    cloud actually throws light), plus a tight halo where the deck is thin
+    enough in front of the disc to glow through it. Nothing here has an edge:
+    a power of a clamped dot product cannot print one. */
+ float md=max(0.,dot(d,uMoon));
+ float md3=md*md*md;
+ col+=vec3(.62,.68,.86)*uMoonAmt*((1.-core)*md3*.18+md3*md3*md3*.26);
  // daylight: hand the deck back to plausible grey-blue so the day sky is not
  // wearing the night's palette
  col=mix(col,mix(vec3(.80,.83,.90),vec3(.30,.34,.44),core),uDay);
@@ -191,6 +229,8 @@ void main(){
     mat,
     roll: applyRoll(seed),
     amount: 1,
+    moonAmt: 1,
+    moon: uMoon.value,
     tint(lo: THREE.Vector3, hi: THREE.Vector3) {
       // lit rim takes the aurora's crown hue, held well under the grade's
       // white-clip so a rim stays coloured instead of bleaching
@@ -219,6 +259,11 @@ void main(){
          It is the knob to reach for before touching any of the constants. */
       mat.uniforms.uAmt.value =
         clamp(api.amount, 0, 1.5) * clamp(0.88 + 0.10 * fogMul, 0, 1);
+      /* The moon is a night light: fade its contribution out with the same
+         day factor the palette blend uses, or the daytime deck carries a
+         second, wrongly placed sun in it. */
+      mat.uniforms.uMoonAmt.value =
+        clamp(api.moonAmt, 0, 3) * (1 - clamp(dayF * 1.25, 0, 1));
     },
   };
   return api;
