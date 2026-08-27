@@ -260,7 +260,18 @@ export const defaultSettings = (): GameSettings => ({
      as unwanted smear at speed rather than read as a camera effect. Still a
      setting, so it can be turned back on; only the default moved. */
   mblur: false,
-  fog: "medium",
+  /* OFF by default. FogExp2 grows with distance squared, so at the densities
+     that keep the road visible it does nothing to anything NEARBY — which is
+     what people mean by "foggy". It only ever veiled the far skyline, and to
+     do that it had to be a lifted colour, which then painted every unlit
+     surface it touched (dark buildings became the fog rather than being
+     veiled by it). Judged not worth the trade: "it just makes everything
+     yellow and doesnt even work like i thought fog would".
+
+     Everything behind it is intact — the colour fields, the density curve,
+     __fog, and the four levels. Settings -> Fog -> light/medium/heavy brings
+     it straight back. */
+  fog: "off",
   dashcam: false,
   drawDist: 700,
   units: "mph",
@@ -373,6 +384,17 @@ export function loadProfile(): Profile {
     if (!localStorage.getItem(MB_CLEARED)) {
       settings.mblur = false;
       localStorage.setItem(MB_CLEARED, "1");
+    }
+    /* ONE-TIME, same shape and the same reason: fog defaulted to "medium" for
+       the life of the v3 profile, so flipping the default alone would leave
+       every existing player fogged with no way to know why the setting note
+       says otherwise. Runs once under its own key and then never touches the
+       value again — after this the setting is the user's, and someone who
+       turns fog back on must have it stay on. */
+    const FOG_CLEARED = KEY + ".fogcleared";
+    if (!localStorage.getItem(FOG_CLEARED)) {
+      settings.fog = "off";
+      localStorage.setItem(FOG_CLEARED, "1");
     }
     // v3 profiles stored fog as a 0.3..2.6 multiplier; snap those to the
     // nearest named level
