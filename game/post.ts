@@ -161,6 +161,10 @@ const DIRT_URL = "/assets/lens/dirt_02.png";
  * Lower this to shorten the smear; it is a real exposure time, so 0.030 reads
  * as a faster sensor rather than as "motion blur turned down". */
 const POV_MB_TAU = 0.0401;
+/* Speed-scaled radial edge blur for CHASE and HOOD. Off: reported as one of
+   the "camera effects" that make third person feel unsettled. Set true to
+   restore — nothing else has to change. */
+const PERIPH_BLUR = false;
 /** dt clamp for the blend above. The floor keeps a hitched or zero-length
  *  frame from resolving to a retention of ~1 (a frozen image); the ceiling
  *  matches engine.ts's own dt clamp, so a long stall cuts rather than drags. */
@@ -1162,7 +1166,22 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
        POV was already excluded (its degrade owns the whole edge treatment);
        this extends the same exclusion to the cockpit and console cameras,
        which are just as much inside the car. */
-    const doPeriph = !this.perf && !dash && !pov && !opts.inCar && speedT > 0.02;
+    /* Peripheral (fovea) blur is OFF everywhere now.
+
+       It only ever ran in CHASE and HOOD — the dashcam's own degrade owns the
+       edge treatment, and it was excluded from the interior cameras once the
+       cabin turned out to be what was smearing (the frame edge in there is the
+       A-pillar, which is bolted to the camera and cannot move relative to it).
+       That left it running in exactly the two views the user then asked to
+       have stripped: "remove the shakiness and camera effects totally. they're
+       so bad. the shakiness, blurriness, motion — they're just crap."
+
+       Kept as a named constant rather than deleted so it is one edit to bring
+       back, and so `doFinal` below still has something to read. The shader
+       path is untouched: uPeriph simply never leaves 0, and at 0 every tap
+       collapses onto vUv, which the shader's own note at the mask line already
+       documents as a no-op read. */
+    const doPeriph = PERIPH_BLUR && !this.perf && !dash && !pov && !opts.inCar && speedT > 0.02;
     const doFinal = doMbSetting || doPeriph;
     /* Each stage renders to screen only when nothing follows it. */
     const after = (stage: 0 | 1 | 2) =>
