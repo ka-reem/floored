@@ -101,6 +101,30 @@ export interface TierCaps {
       do not. Desktop 1024, mobile-high 512, mobile-base 256. Read at
       world-build time, so it needs a reload to change. */
   deckTexPx?: number;
+
+  /** Keep the donor cabin's NORMAL and METALLIC-ROUGHNESS maps. Its base
+      colour and emissive are never touched by this — the cabin is always the
+      real cabin, this only decides how much of its surface detail is paid for.
+      The sibling of pbrDetail above, for the interior instead of the road, and
+      it buys back the same resource for the same reason.
+
+      MEASURED, on the shipped volvo-s90-full.glb (21 images, per-role budget:
+      three 2048 sets at arm's reach, two 1536, one 1024, one 512):
+
+        all maps            280 MB decoded RGBA8 + mips
+        base colour only     96 MB
+
+      So the two PBR map families are 184 MB of the 280 — two thirds of the
+      cabin's texture memory for detail that mobile-base already declines
+      everywhere else it appears (pbrDetail false, wallDetail 0, deckTexPx
+      256), on the one tier whose devices are most likely to answer a texture
+      upload with a lost context rather than a slow frame. The night grade and
+      the dashcam softening pass take most of what is being given up before it
+      reaches the player anyway.
+
+      Read once, when the donor lands (player.ts). Nothing re-reads it, so a
+      tier bumped mid-session applies on the next rig build. */
+  cabinPbrMaps?: boolean;
 }
 
 export const TIER_CAPS: Record<RenderTier, TierCaps> = {
@@ -113,7 +137,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     dualBloom: false, filmLook: false,
     lampCones: false, lampConeEvery: 2, jetFans: false, catwalks: false,
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
-    lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256,
+    lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -122,7 +146,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     dualBloom: false, filmLook: false,
     lampCones: true, lampConeEvery: 2, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
-    lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512,
+    lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -131,7 +155,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     dualBloom: true, filmLook: true,
     lampCones: true, lampConeEvery: 1, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
-    lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024,
+    lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
   },
 };
 
@@ -192,6 +216,124 @@ export function detectRenderTier(
   if (/apple/.test(s)) return dpr >= 3 ? "mobile-high" : "mobile-base";
   return "mobile-base";
 }
+
+/* ---------------- the imported cabin ----------------
+ *
+ * WHICH cabin a car has is the car's business (player.ts COCKPIT_MODEL);
+ * WHETHER this device can carry it is the device's, and that half lives here.
+ *
+ * It used to be answered by the render tier alone — mobile-base got no donor
+ * dash, full stop. That was right while the donor cabin was something a player
+ * was GIVEN: nobody had asked for it, so quietly not paying for it cost them
+ * nothing they knew about. It stopped being right when the Volvo became a
+ * garage CHOICE. Picking the car off the shelf and being handed a procedural
+ * interior is being given a different car than the one on the card, and the
+ * tier that produces it is the one every UNKNOWN device falls back to — an
+ * iPhone whose GPU string Safari masks lands there on nothing worse than a
+ * 2x screen (see detectRenderTier's Apple note).
+ *
+ * So the default flips: a chosen donor cabin loads on every tier EXCEPT a
+ * device that fails the floor below, and the player can override either way.
+ */
+export type CabinMode = "auto" | "donor" | "procedural";
+
+const isCabinMode = (v: unknown): v is CabinMode =>
+  v === "auto" || v === "donor" || v === "procedural";
+
+/** Hardware floor for carrying a donor cabin on the fallback tier.
+ *
+ *  WHAT THIS IS GUARDING, measured rather than assumed. The triangle count is
+ *  the wrong number to be afraid of and this used to lean on it: 366,069
+ *  static triangles in 39 draws is unremarkable for any phone of the last few
+ *  years, and it is already an 89% decimation of the 3.27M donor. Triangles do
+ *  not kill mobile — memory, overdraw and draw calls do.
+ *
+ *  The number that matters is TEXTURE MEMORY. The cabin's 21 images decode to
+ *  210 MB of RGBA8, 280 MB once three generates mipmaps, on top of the world's
+ *  own atlases. cabinPbrMaps above takes 184 MB of that back on this very
+ *  tier, which leaves 96 MB steady-state — defensible, and the reason the
+ *  cabin is no longer withheld outright.
+ *
+ *  What this floor still guards is the part the trim cannot reach: every one
+ *  of those 21 images is DECODED at full size while the GLB is parsed, before
+ *  any material has been touched, so the load spikes through ~210 MB of
+ *  decoded image whatever the tier does with it afterwards. On a device with
+ *  little memory to spare that spike is answered with a lost GL context or a
+ *  killed tab — a black screen, which is a worse failure than a slow one.
+ *
+ *  Deliberately NOT another GPU-string sniff. The string is the thing that is
+ *  already lying (iOS Safari masks it), and dpr is the poor proxy that lie
+ *  forced us onto. These signals are about the DEVICE's memory rather than its
+ *  renderer, which is the resource in question, and they fail in the safe
+ *  direction:
+ *
+ *  - `deviceMemory` is the sharpest one, and it is almost perfectly targeted:
+ *    Chrome on Android reports it, Safari does not. So the budget Android with
+ *    an unrecognised GPU — the case the conservative tier actually exists to
+ *    protect — is excluded on its RAM, and the masked iPhone, which reports
+ *    nothing, falls through and gets its cabin. The value is rounded down to a
+ *    power of two by spec, so `< 4` means "3 GB or less" — a device that would
+ *    be spending a fifteenth of its total RAM on one transient image decode.
+ *  - `hardwareConcurrency < 4` is a backstop for the same class of device on
+ *    a browser that withholds the memory hint.
+ *  - `devicePixelRatio < 2` is the bucket detectRenderTier already calls "old
+ *    or budget hardware" outright, kept in agreement with it.
+ *  - Data Saver is honoured because 5.7 MB on a metered connection is the
+ *    user's money, not a frame-rate question.
+ *
+ *  Anything else passes. That is the deliberate inversion of the tier's own
+ *  "every unknown lands on base" — for ONE opt-in asset on a car the player
+ *  went and picked, with a setting to turn it off, an unknown device is given
+ *  the benefit of the doubt. */
+let cabinFloor: boolean | null = null;
+export function donorCabinAffordable(): boolean {
+  if (cabinFloor !== null) return cabinFloor;
+  let ok = true;
+  try {
+    const nav = navigator as Navigator & {
+      deviceMemory?: number;
+      connection?: { saveData?: boolean };
+    };
+    if (typeof nav.deviceMemory === "number" && nav.deviceMemory < 4) ok = false;
+    if (typeof nav.hardwareConcurrency === "number" && nav.hardwareConcurrency < 4) ok = false;
+    if (typeof devicePixelRatio === "number" && devicePixelRatio < 2) ok = false;
+    if (nav.connection?.saveData === true) ok = false;
+  } catch {
+    /* no navigator (SSR) — nothing renders there anyway */
+  }
+  cabinFloor = ok;
+  return ok;
+}
+
+/* The live cabin preference, same shape and for the same reason as the rival
+   flags at the bottom of this file: player.ts resolves the donor cabin inside
+   buildPlayerCar, which the engine calls with a tier and no settings object,
+   and threading one through would mean editing a call site in engine.ts for a
+   value that changes about once a session. Seeded from the default so a rig
+   built before the UI has synced still gets "auto". */
+const cabinLive: { mode: CabinMode } = { mode: "auto" };
+
+/** Push a settings object into the live cabin preference. Called wherever
+ *  syncRivalMode is — engine creation, and every settings write. */
+export function syncCabinMode(s: GameSettings) {
+  cabinLive.mode = isCabinMode(s.cabin) ? s.cabin : "auto";
+}
+
+/** May a car that configures a donor cabin actually load it here?
+ *
+ *  "donor"/"procedural" are the player's word and are final — including
+ *  "donor" on a device that fails the floor, which is the informed override:
+ *  they asked for the heavy cabin and the setting sits one row under the
+ *  device tier that explains what that means. */
+export function donorCabinAllowed(tier: RenderTier): boolean {
+  if (cabinLive.mode === "procedural") return false;
+  if (cabinLive.mode === "donor") return true;
+  return tier !== "mobile-base" || donorCabinAffordable();
+}
+
+/** What "auto" resolves to right now, for the settings row to show. */
+export const cabinAutoLabel = (tier: RenderTier) =>
+  tier !== "mobile-base" || donorCabinAffordable() ? "real" : "procedural";
 
 /** Effective tier: `?tier=` URL param (testing) > persisted manual override >
  *  detection. The URL param is read-only and never persisted, so a test link
@@ -256,6 +398,9 @@ export interface GameSettings {
   mmap: boolean;
   /** manual render-tier override; "auto" defers to device detection */
   tierOverride: TierOverride;
+  /** the imported (donor) interior for cars that have one — "auto" defers to
+      the hardware floor in donorCabinAffordable(). See the cabin block above. */
+  cabin: CabinMode;
   /** Test mode: drive on testDriveSpec() — extra grip, brakes and power (the
       K key in game, and a row in the settings panel). A testing aid rather
       than a difficulty setting, but persisted like any other toggle so it
@@ -314,6 +459,9 @@ export const defaultSettings = (): GameSettings => ({
   rain: false,
   mmap: true,
   tierOverride: "auto",
+  /* Auto, which now means "load it unless this device visibly cannot" rather
+     than the old "only on hardware we recognised". */
+  cabin: "auto",
   /* A mode, not a difficulty: off until it is switched on, from either the
      start menu or the settings panel. Off costs one boolean test per frame —
      no pool slot is reserved and no controller runs (game/traffic.ts). */
@@ -457,6 +605,7 @@ export function loadProfile(): Profile {
       if (typeof settings[k] !== "boolean") settings[k] = base.settings[k];
     if (settings.tierOverride !== "auto" && !isRenderTier(settings.tierOverride))
       settings.tierOverride = "auto";
+    if (!isCabinMode(settings.cabin)) settings.cabin = "auto";
     for (const k of NUM_KEYS)
       if (typeof settings[k] !== "number" || !Number.isFinite(settings[k]))
         settings[k] = base.settings[k];

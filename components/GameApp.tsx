@@ -7,7 +7,7 @@ import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
-  syncRivalMode,
+  syncRivalMode, syncCabinMode, cabinAutoLabel,
   type Profile, type GameSettings,
 } from "@/game/settings";
 
@@ -70,6 +70,10 @@ export default function GameApp() {
        the engine (see the rival-mode block in settings.ts), so it has to be
        primed from the restored profile before the first frame. */
     syncRivalMode(profile.settings);
+    /* Same reason, one file later: player.ts asks settings.ts whether this
+       device may load a donor cabin, and the first rig is built before any
+       settings panel has been opened. */
+    syncCabinMode(profile.settings);
     const game = new Game(hostRef.current, profile, {
       toast: showToast,
       exitHint: (t) => setExitHint(t),
@@ -504,7 +508,14 @@ function CarPreview({ carId, paintHex }: { carId: string; paintHex: number }) {
   useEffect(() => {
     let cancelled = false;
     const raf = requestAnimationFrame(() => {
-      if (!cancelled) setUrl(carPreviewURL(carId, paintHex));
+      if (cancelled) return;
+      /* Two shots for a car with an imported exterior: the procedural one
+         returns now and the real-bodywork one replaces it a beat later (see
+         carpreview.ts). The card is never empty and never jumps — same frame,
+         same lights, only the shell changes — so this is a plain src swap. */
+      setUrl(carPreviewURL(carId, paintHex, (real) => {
+        if (!cancelled) setUrl(real);
+      }));
     });
     return () => {
       cancelled = true;
@@ -573,6 +584,15 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
             );
           })}
         </div>
+        {/* PAINT. Honest limitation, worth knowing before it reads as a bug:
+            a card showing an IMPORTED exterior does not respond to these. The
+            donor GLB carries its own baked paint and the game does not retint
+            it either, so the swatch is telling the truth — the Volvo is that
+            colour in the chase cameras too. It still selects the paint for
+            every card that is drawn from its ShellParams, and it still
+            persists. Retinting the donor's Car_Paint material would make the
+            swatch mean something for both cars, but that is a change to how
+            the CAR looks, not to how the card does, and belongs with the car. */}
         <div className="paintRow">
           {PAINTS.map((p, i) => (
             <div
@@ -628,6 +648,7 @@ function SettingsPanel({
     // one call covers every row, so a new rival toggle can never be wired up
     // and then forgotten here
     syncRivalMode(game.settings);
+    syncCabinMode(game.settings);
     force((n) => n + 1);
   };
   const s = game.settings;
@@ -658,6 +679,34 @@ function SettingsPanel({
             <option value="mobile-base">Mobile base</option>
             <option value="mobile-high">Mobile high</option>
             <option value="desktop">Desktop</option>
+          </select>
+        </Row>
+        {/* The imported interior, for cars that ship one (the Volvo). Directly
+            under the device tier because that is the row that explains it:
+            "Auto" means the real cabin everywhere except a device that fails
+            the hardware floor in settings.ts, and the label says which of
+            those this device is. Forcing it on a phone that auto-declined is
+            allowed and is the point — it is heavy, not forbidden.
+
+            Rebuilds the rig so the choice takes effect now: the donor is
+            fetched at build time, so without this the row would look like a
+            setting that does nothing until the next reload. setCar is the
+            engine's own rebuild path and is a no-op before the world is
+            loaded, which is where this panel usually is. */}
+        <Row label={`Imported cabin — auto is "${cabinAutoLabel(game.renderTier)}"`}>
+          <select
+            value={s.cabin}
+            onChange={(e) =>
+              upd((x) => {
+                x.cabin = e.target.value as any;
+                syncCabinMode(x);
+                game.setCar(game.carId, game.paintIx);
+              })
+            }
+          >
+            <option value="auto">Auto</option>
+            <option value="donor">Real cabin (heavy)</option>
+            <option value="procedural">Procedural</option>
           </select>
         </Row>
         <Check label="Road reflections" checked={s.reflections} onChange={(v) => upd((x) => (x.reflections = v))} />
@@ -790,6 +839,7 @@ function SettingsPanel({
                  state it was in while the panel claimed it was back to
                  default. */
               syncRivalMode(game.settings);
+              syncCabinMode(game.settings);
               force((n) => n + 1);
             }}
           >

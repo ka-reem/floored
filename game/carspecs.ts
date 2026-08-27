@@ -242,9 +242,14 @@ export const CARS: CarSpec[] = [
      2.94 m wheelbase, which is what puts the game's own wheels in the donor's
      arches (see bodymodel.ts fit(): the axle midpoints are what it lines up).
 
-     The shell still matters on its own account: it is what the garage card
-     renders (carpreview.ts draws every card procedurally, imported or not),
-     and it is what mobile-base drives, where no donor cabin is fetched. */
+     The shell still matters on its own account, and in three places rather
+     than the two this used to list. It is the collision box and the physics
+     box whatever is drawn on top. It is what the garage card renders FIRST —
+     carpreview.ts now takes a second shot with the real bodywork once the GLB
+     lands, but the procedural one is what goes up immediately and what stands
+     if the fetch fails. And it is still the whole car wherever a donor is
+     refused: a device that fails the cabin floor in settings.ts, or a player
+     who set Imported cabin to Procedural. */
   {
     id: "volvo",
     name: "VOLVO S90",

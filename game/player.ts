@@ -7,7 +7,7 @@ import { paintTexF, carbonTexF } from "./textures";
 import { buildCockpit, COCKPIT_REF, type Cockpit } from "./cockpit";
 import { attachCockpitModel, type CockpitModelHandle } from "./cockpitmodel";
 import { attachBodyModel, type BodyModelHandle } from "./bodymodel";
-import type { RenderTier } from "./settings";
+import { donorCabinAllowed, TIER_CAPS, type RenderTier } from "./settings";
 
 import { carEnvMap, isSharedEnv, trackEnvMaterial, untrackEnvMaterial } from "./carenv";
 import { paintByHex, type CarSpec, type Paint } from "./carspecs";
@@ -20,8 +20,8 @@ import { paintByHex, type CarSpec, type Paint } from "./carspecs";
    into one is what made the old J toggle necessary. WHICH cabin you sit in is
    a property of the car picked in the garage: the Volvo has a donor, kaze is
    procedural inside and out, and from the dashcam that is the whole difference
-   between them. WHETHER the donor is affordable is a property of the device,
-   and no car choice may override it.
+   between them. WHETHER the donor is affordable is a property of the device —
+   and that half is no longer decided here at all, see cockpitDonor() below.
 
    One donor asset, not a choice of two. This used to name `volvo-s90`, a per-vertex
    frustum CUT of the same car: sharper over the third of the cabin it kept,
@@ -40,23 +40,31 @@ import { paintByHex, type CarSpec, type Paint } from "./carspecs";
    -4k variant and point desktop at it if a brighter interior ever makes the
    difference visible.
 
-   mobile-base gets nothing, EVEN WHEN THE PLAYER PICKED THE VOLVO. It is the
-   tier unknown hardware falls back to (see resolveRenderTier), so it has to
-   assume the weakest plausible device, and a third of a million triangles of
-   cabin on top of traffic and world geometry is not a bet worth taking there.
-   The procedural dash is not a placeholder for those players — it is the
-   shipped one.
+   ALL THREE TIERS NAME THE ASSET NOW, mobile-base included. It used to hold
+   "", on the grounds that the tier unknown hardware falls back to could not be
+   trusted with "a third of a million triangles of cabin". Two things were
+   wrong with that. It was defensible only while the donor cabin was something
+   a player was GIVEN — once the Volvo became a garage CHOICE, the card shows
+   that interior and handing back a different one silently is handing back a
+   different car. And the number it was afraid of was the wrong number:
+   366,069 static triangles in 39 draws is unremarkable on a modern phone, and
+   what actually costs is the 280 MB the cabin's 21 images decode to. See
+   settings.ts donorCabinAffordable() for the measurement, and TierCaps
+   .cabinPbrMaps / trimCabinMaps below for what mobile-base does about it —
+   which is pay for less of the cabin, not refuse the cabin.
 
-   That degrade is silent and PARTIAL by design: the Volvo is still selectable
-   there and still gets its own exterior (BODY_MODEL is not tiered), it just
-   has a procedural cabin — exactly what already happens when a donor GLB fails
-   to fetch, which leaves that one half procedural rather than taking the car
-   down with it. Nothing hides the car and nothing forces the cabin. */
+   The rows stay per-tier even though all three now agree, because that is the
+   hook for the -4k desktop variant described above.
+
+   The failure mode is unchanged and PARTIAL by design: a cabin that is refused
+   or that 404s leaves the Volvo selectable, driveable and wearing its own
+   exterior (BODY_MODEL is not tiered) with a procedural dash. Nothing hides
+   the car and nothing forces the cabin. */
 const COCKPIT_MODEL: Record<string, Record<RenderTier, string>> = {
   volvo: {
     desktop: "volvo-s90-full",
     "mobile-high": "volvo-s90-full",
-    "mobile-base": "",
+    "mobile-base": "volvo-s90-full",
   },
 };
 /* Which cars have an imported EXTERIOR body, by spec id. Only the Volvo: the
@@ -73,13 +81,27 @@ const COCKPIT_MODEL: Record<string, Record<RenderTier, string>> = {
    kaze reverted to its generated shell — 4.42 m, wing, hood bulge, straight
    off its own ShellParams. Less photoreal, deliberately. */
 const BODY_MODEL: Record<string, string> = { volvo: "volvo-s90-body-lite" };
+/** True for a car whose exterior is an imported model rather than its own
+ *  generated shell. The garage card asks, so it knows whether a second,
+ *  real-bodywork shot of this car is worth waiting for — one reader of the
+ *  table above rather than a second copy of the list in carpreview.ts. */
+export const hasDonorBody = (carId: string): boolean => !!BODY_MODEL[carId];
 /** The donor cabin this car wants on this device, or "" for the procedural
     one. The only place the car/tier matrix above is read: everything else asks
     the RIG whether a donor cabin is up (`rig.cockpitModel`), so there is no
     second copy of the rule to keep in step — and no way for the camera offsets
-    to believe in a cabin that was never fetched. */
-const cockpitDonor = (carId: string, tier: RenderTier): string =>
-  COCKPIT_MODEL[carId]?.[tier] || "";
+    to believe in a cabin that was never fetched.
+
+    Two gates, in the order they are asked. The matrix is the CAR's answer and
+    is static data; donorCabinAllowed() is the DEVICE's, and it is the player's
+    setting first (Settings -> Imported cabin) and a hardware floor second — so
+    the Volvo cabin is refused only where the device visibly cannot carry it,
+    and even then the player can insist. Asked second, so a car with no donor
+    never pays for the device question at all. */
+const cockpitDonor = (carId: string, tier: RenderTier): string => {
+  const want = COCKPIT_MODEL[carId]?.[tier] || "";
+  return want && donorCabinAllowed(tier) ? want : "";
+};
 /* The headlight carpet's alpha field: a WEDGE spreading forward from the
    bumper, not a radial pool.
 
@@ -406,6 +428,84 @@ function lightDonorBody(
   });
 }
 
+/* --------------------------------------------- the cabin's texture budget --
+ *
+ * Drop the donor cabin's normal and metallic-roughness maps, keeping its base
+ * colour and emissive. The consumer of TierCaps.cabinPbrMaps; see that field
+ * for the measurement it is spending (280 MB of decoded cabin texture down to
+ * 96, on the one tier where a texture upload is as likely to be answered with
+ * a lost context as with a slow frame).
+ *
+ * WHY THIS RATHER THAN A SECOND, SMALLER GLB. That was the obvious answer and
+ * it does not fit: the cabin's geometry alone is 2.70 MB packed, against 2.71
+ * MB left in the 15 MB critical-path budget, so a second cabin build is over
+ * budget before a single texel is added to it. A halved-resolution variant
+ * measures 3.54 MB. This buys most of the same memory back for nothing, today
+ * — and tools/build-cockpit.mjs's per-role TEX_ROLE table stays the place to
+ * go if the budget is ever raised, because it is tuned around what the dashcam
+ * actually sees and a flat resize is not.
+ *
+ * BEFORE THE FIRST FRAME, which is what makes it worth doing at all. This runs
+ * inside attachCockpitModel's callback, and the engine's staged load is still
+ * awaiting cockpitReady at that point — three uploads a texture when it is
+ * first DRAWN, so a map nulled here never reaches the GPU rather than being
+ * uploaded and then freed.
+ *
+ * Two-pass, and the first pass is not paranoia: glTF hands the SAME texture
+ * object to roughnessMap and metalnessMap, and nothing in the format stops an
+ * image being shared across slots. So collect what the kept slots still need
+ * before disposing anything, or a base colour can be freed out from under the
+ * material still pointing at it.
+ *
+ * ImageBitmap.close() is the part that reaches the decode spike: the bitmap
+ * holds memory outside the JS heap, and closing it hands that back now instead
+ * of at whatever point the collector gets to the texture. */
+const CABIN_DROP = ["normalMap", "roughnessMap", "metalnessMap"] as const;
+const CABIN_KEEP = ["map", "emissiveMap", "alphaMap", "aoMap"] as const;
+
+function trimCabinMaps(root: THREE.Object3D) {
+  const mats = new Set<THREE.Material>();
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) mats.add(m);
+  });
+
+  const keep = new Set<THREE.Texture>();
+  for (const m of mats)
+    for (const slot of CABIN_KEEP) {
+      const t = (m as unknown as Record<string, THREE.Texture | null>)[slot];
+      if (t) keep.add(t);
+    }
+
+  const dropped = new Set<THREE.Texture>();
+  for (const m of mats) {
+    let touched = false;
+    for (const slot of CABIN_DROP) {
+      const rec = m as unknown as Record<string, THREE.Texture | null>;
+      const t = rec[slot];
+      if (!t) continue;
+      rec[slot] = null;
+      touched = true;
+      if (!keep.has(t)) dropped.add(t);
+    }
+    // nulling a map slot changes the program's defines, so the material has to
+    // be recompiled — it has not been drawn yet, but say it anyway
+    if (touched) m.needsUpdate = true;
+  }
+
+  for (const t of dropped) {
+    const img = t.image as { close?: () => void } | null;
+    t.dispose();
+    t.image = null;
+    try {
+      if (typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) img.close();
+    } catch {
+      /* already closed, or a browser that hands back an HTMLImageElement */
+    }
+  }
+}
+
 /* ------------------------------------------------------------- the hood ----
 
    "You render all the inside stuff of the car. But I don't see a hood."
@@ -649,6 +749,10 @@ export interface PlayerRig {
       It shows itself when it lands and is never switched off again; the car it
       belongs to cannot change without this whole rig being rebuilt. */
   readonly bodyModel: BodyModelHandle | null;
+  /** Settles once the donor body has landed or been given up on; already
+      settled on a car that has none. Never rejects. The game waits on nothing
+      here — see the build — but the garage card does. */
+  readonly bodyReady: Promise<void>;
   /** The donor's HOOD, lifted out of the exterior body and re-hung inside the
       cabin so the interior cameras can see it — null until the body donor has
       landed, and on any car that has no body donor. A group in donor space;
@@ -688,6 +792,22 @@ export interface PlayerRig {
   dispose(scene: THREE.Scene): void;
 }
 
+/** Per-BUILD opt-outs from the two donor fetches, for callers that are not the
+ *  game. Both default to whatever the car and the device say, so the engine
+ *  passes nothing and behaves exactly as before.
+ *
+ *  This exists because the garage preview used to opt out of the donor cabin
+ *  by asking for tier "mobile-base" and relying on that row being empty — an
+ *  aside in one table, three files away, that quietly stopped being true the
+ *  moment mobile-base was given the cabin. A card that wants a procedural
+ *  interior should say so. */
+export interface BuildOpts {
+  /** false: never fetch the donor INTERIOR, whatever the car/tier/setting say */
+  cabin?: boolean;
+  /** false: never fetch the donor EXTERIOR body */
+  body?: boolean;
+}
+
 export function buildPlayerCar(
   scene: THREE.Scene,
   spec: CarSpec,
@@ -697,7 +817,8 @@ export function buildPlayerCar(
   mirrorTexture: THREE.Texture,
   /* Passed in rather than resolved here: resolveRenderTier needs the live GL
      context to read the renderer string, and the engine already holds both. */
-  tier: RenderTier = "desktop"
+  tier: RenderTier = "desktop",
+  opts: BuildOpts = {}
 ): PlayerRig {
   const P = spec.shell;
   const L2 = P.L / 2;
@@ -1085,7 +1206,7 @@ export function buildPlayerCar(
      a real dash is not a stretchable object — narrow it to the procedural
      region once a donor is more than a prototype. */
   const rigRef = { model: null as CockpitModelHandle | null };
-  const donor = cockpitDonor(spec.id, tier);
+  const donor = opts.cabin === false ? "" : cockpitDonor(spec.id, tier);
   /* Settled when the donor question is answered — landed, failed, or never
      asked. The staged load in engine.ts waits on this (with a budget) so the
      dash is already fitted on the first frame the player sees: the dashcam POV
@@ -1095,7 +1216,21 @@ export function buildPlayerCar(
      runs either way, and a missing donor is a normal steady state. */
   let dashDone!: () => void;
   const cockpitReady = new Promise<void>((res) => { dashDone = res; });
-  if (donor) attachCockpitModel(cockpit, donor, (h) => { rigRef.model = h; dashDone(); });
+  if (donor)
+    attachCockpitModel(cockpit, donor, (h) => {
+      rigRef.model = h;
+      /* Before dashDone(), so the load is still holding the first frame back
+         when the maps go — see trimCabinMaps for why that timing is the whole
+         point. Its own try/catch: a cabin with one unexpected material is
+         still a cabin, and losing it over a texture slot would be absurd. */
+      if (h && TIER_CAPS[tier].cabinPbrMaps === false)
+        try {
+          trimCabinMaps(h.group);
+        } catch (e) {
+          console.warn("[player] cabin texture trim skipped", e);
+        }
+      dashDone();
+    });
   else dashDone();
 
   /* Imported exterior body, if this car has one. Same fire-and-forget shape as
@@ -1115,8 +1250,15 @@ export function buildPlayerCar(
     model: null as BodyModelHandle | null,
     hood: null as THREE.Group | null,
   };
-  const bodyDonor = BODY_MODEL[spec.id];
-  if (bodyDonor)
+  /* Settled when the body question is answered — landed, failed, or never
+     asked. The GAME still waits on nothing (see above); this is for the garage
+     card, which has to know when the shot it is about to read back is the one
+     worth keeping. Never rejects, same contract as cockpitReady. */
+  let bodyDone!: () => void;
+  const bodyReady = new Promise<void>((res) => { bodyDone = res; });
+  const bodyDonor = opts.body === false ? undefined : BODY_MODEL[spec.id];
+  if (!bodyDonor) bodyDone();
+  else
     attachBodyModel(exteriorG, P, bodyDonor, [pivFL, pivFR, wRL, wRR, ...glowSprites],
       (h) => {
         bodyRef.model = h;
@@ -1133,6 +1275,9 @@ export function buildPlayerCar(
           } catch (e) {
             console.warn("[player] interior hood skipped", e);
           }
+        /* Last, so a card that renders on this signal renders a rig whose
+           donor is already lit and fitted rather than one mid-wiring. */
+        bodyDone();
       });
 
   return {
@@ -1141,6 +1286,7 @@ export function buildPlayerCar(
     get cockpitModel() { return rigRef.model; },
     cockpitReady,
     get bodyModel() { return bodyRef.model; },
+    bodyReady,
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
     beamCarpet, beamCarpetMat, beamCarpetG: carpetG,
