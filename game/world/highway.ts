@@ -227,8 +227,28 @@ export function buildHighway(
      and at 1024 is 0.7-1.8 cm — actual aggregate.
 
      Procedural, so this costs 0 MB of download; it costs ~5 MB of VRAM with
-     mips, on a tier that already holds several 1K scans. */
-  const deckTex = makeTex(1024, 1024, (ctx, w, h) => asphalt(ctx, w, h, "#14161c"), true);
+     mips, on a tier that already holds several 1K scans.
+
+     TIER-GATED (TierCaps.deckTexPx), and the reason is bandwidth rather than
+     the VRAM the paragraph above budgets. makeTex sets anisotropy 16 on
+     everything it produces, and a road seen from a dashcam is the single most
+     grazing surface in the frame — which is exactly the geometry that makes
+     the sampler take all sixteen taps. At 256² this map plus its mips was
+     ~350 KB and sixteen taps landed inside the texture cache for free; at
+     1024² the working set is ~5.5 MB and the same sixteen taps go to memory,
+     on the surface that covers more of the dashcam frame than anything else.
+     That is a per-FRAME cost, not the one-off paint the note above accounts
+     for, and it scales with fill — so it lands hardest on exactly the tiers
+     that can least afford it.
+
+     Desktop keeps the full 1024 and the measurement above stands unchanged.
+     mobile-high takes 512 (73 texels/m — still double what shipped before this
+     commit, and still inside magnification range at 5 m), mobile-base 256,
+     which is what it had. The paint cost drops with it too: asphalt() is
+     O(pixels), and 1024² is sixteen times the work of 256² inside the staged
+     loader. */
+  const deckPx = caps.deckTexPx ?? 1024;
+  const deckTex = makeTex(deckPx, deckPx, (ctx, w, h) => asphalt(ctx, w, h, "#14161c"), true);
   hwy.map = deckTex;
   hwy.needsUpdate = true;
   const TILE = 7; // metres per texture tile

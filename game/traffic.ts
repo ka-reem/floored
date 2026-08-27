@@ -509,20 +509,57 @@ const ARCH: Arch[] = [
    draws, police and heavies included), a random car ahead yields to a single
    flash 8% of the time, to a three-flash burst 21%, and 33% however long you
    keep at it — so two cars in three will never move for you at all. That is
-   the point: yielding is a thing that happens to you, not a button. */
+   the point: yielding is a thing that happens to you, not a button.
+
+   YOU HAVE TO BE CLOSE, and "close" is a headway rather than a number of
+   metres — see `reachT`. A car three seconds up the road cannot hear you at
+   any volume; the same car at the same distance while you are doing 70 m/s is
+   0.8 s away and can. The gesture reaches nothing outside that window at all:
+   no target, no roll, no pressure banked.
+
+   AND WHAT THEY DO ABOUT IT is a second coin. Moving over is the preferred
+   answer and it takes the URGENT gap envelope (yieldLane) so it is actually
+   available in traffic rather than only in theory — but a driver who could
+   move over still just picks their pace up 1 − moveP of the time, and one
+   with nowhere to go always does. So the same car, in the same gap, does not
+   always answer the same way.
+
+   test/hail-sim.mjs measures all of the above against the real corridor. */
 const HAIL = {
   /* --- who can hear you --- */
   /** nearest a car may be and still be worth flashing at (m) — closer than
       this it is already half alongside and the gesture reads as aimed past it */
   near: 5,
-  /** furthest a car can be and still know the flash was meant for it (m).
-      Past ~55 m through the dashcam windshield you cannot tell which car you
-      picked, so neither should the game. */
+  /** Absolute ceiling on the reach (m). Past ~55 m through the dashcam
+      windshield you cannot tell which car you picked, so neither should the
+      game — nothing beyond this is ever hailable at any speed. */
   far: 55,
-  /** lateral half-window (m): your own lane plus the one either side. Wide
-      enough for the car you are about to pull out around, narrow enough that
-      you can never hail something across the deck. */
-  side: 5.5,
+  /** …but inside that ceiling the reach is a HEADWAY, not a distance:
+      `reachT` seconds of the player's own travel. "Close" is not a number of
+      metres — 55 m at 82 m/s is 0.67 s and you are on top of them; 55 m at
+      18 m/s in traffic is three seconds back and honking from a distance,
+      which is exactly the thing that must not work. A fixed metre gate
+      cannot tell those apart, and this is the term that does.
+
+      Deliberately headway (gap / own speed) rather than time-to-collision
+      (gap / closing speed): TTC is infinite whenever you are matched to the
+      car in front, so a TTC gate would refuse the single most common way a
+      player asks for the lane — sitting a second off a bumper at the same
+      speed, wanting to go faster. Headway is also what a driver actually
+      perceives as close. Closing speed still shows up, since a player who is
+      catching a car fast is by definition carrying the speed that opens the
+      window. */
+  reachT: 0.9,
+  /** …and a floor under it (m), or the window collapses to nothing in a
+      crawl: at 6 m/s the headway term is 5 m, and the car stopped directly
+      on your bumper in a jam is the most legitimate hail there is. */
+  nearAlways: 18,
+  /** lateral half-window (m). Your own lane, plus enough slack for a car
+      leaning on its line or for the player straddling one mid-overtake — but
+      NOT a car sitting centred in the next lane, which is 3.7 m out. The ask
+      is "the one car in front of me, and that's it"; a neighbour absorbing
+      the gesture reads as the wrong car reacting. */
+  side: 3.0,
 
   /* --- rate-limiting the dice --- */
   /** minimum seconds between two rolls on the SAME car, whatever the player
@@ -573,6 +610,16 @@ const HAIL = {
   ceilCap: 0.88,
 
   /* --- the two reactions --- */
+  /** Chance a car that CAN move over actually does, rather than just picking
+      its pace up and staying where it is. Moving over is the preferred
+      answer, but it must not be the automatic one: "sometimes it just speeds
+      up and doesn't move, it'll be random". A driver who acknowledges you and
+      simply gets on with it is a real and common answer on a real road, and
+      making the response a coin the player cannot read is most of what keeps
+      the mechanic from feeling mechanical. A car with nowhere to go still
+      speeds up unconditionally — this only splits the case where both are
+      genuinely open. */
+  moveP: 0.68,
   /** speed-up: cruise-speed multiplier and how long it lasts (s) */
   boost: 1.22,
   boostT: 4.5,
@@ -3974,6 +4021,10 @@ export class Traffic {
   private hailGesture(player: CarState, now: number, pfx: number, pfz: number) {
     let best: Npc | null = null;
     let bestScore = Infinity;
+    /* How far the gesture carries THIS frame — see HAIL.reachT. It is the
+       player's own speed that decides what counts as close, so honking from
+       a long way back is inert at every speed the player can honk from. */
+    const reach = clamp(Math.abs(player.u) * HAIL.reachT, HAIL.nearAlways, HAIL.far);
     for (const n of this.npcs) {
       /* hailDone is deliberately NOT filtered here — a driver who has already
          had their say still absorbs the gesture aimed at them. Skipping them
@@ -3994,7 +4045,7 @@ export class Traffic {
          looking backwards (lookBack) or off to a chase pod, and neither
          changes which car your headlights are actually pointed at. */
       const ahead = dx * pfx + dz * pfz;
-      if (ahead < HAIL.near || ahead > HAIL.far) continue;
+      if (ahead < HAIL.near || ahead > reach) continue;
       const side = Math.abs(dx * pfz - dz * pfx);
       if (side > HAIL.side) continue;
       const score = ahead + side * 8;
@@ -4017,7 +4068,20 @@ export class Traffic {
     if (n.pendK >= 0 || n.blink !== 0 || n.laneK <= 0) return -1;
     const k2 = n.laneK - 1;
     const off2 = this.laneOffOf(n, k2);
-    if (!this.laneClearAt(n, n.s, off2)) return -1;
+    /* The URGENT gap envelope, exactly as yieldToRival takes it and for
+       exactly the same reason: a driver who has decided to get out of your
+       way takes a gap they would not take casually. With the comfortable
+       envelope this is not a preference for moving over, it is a preference
+       that almost never survives contact with traffic — measured over 212
+       hailed cars, 55 of 56 speed-ups were "boxed in" rather than chosen, and
+       only 6 cars in the whole run actually moved. That reads as the car
+       ignoring the lane it plainly has.
+
+       The player stays a hard no-go regardless: laneClearAt keeps its full
+       closing-speed terms for them whatever envelope it is passed, so nothing
+       here can shove a yielding car into the person doing the honking. */
+    if (!this.laneClearAt(n, n.s, off2, n.route, 1.2 + 0.25 * n.v, 2.5 + 0.35 * n.v))
+      return -1;
     /* …and never merge onto the player. laneClearAt() only knows about other
        NPCs, and the one vehicle guaranteed to be near this car is the one
        doing the flashing — 2.2 m is the same lane-danger half-width it uses. */
@@ -4064,7 +4128,12 @@ export class Traffic {
 
     if (this.rng() < q * w) {
       n.hailDone = true; // they gave you what they had; that's the end of it
-      if (over >= 0) {
+      /* Which of the two they do. A car with nowhere to go has no choice, and
+         neither has one that cannot pick its pace up; only when BOTH are open
+         is there a coin to flip, and then it lands on moving over moveP of the
+         time — so the same car in the same gap does not always answer the
+         same way. */
+      if (over >= 0 && (!canSpeed || this.rng() < HAIL.moveP)) {
         /* Move over — through the ordinary signalled lane-change path, so the
            blinker runs for a beat first and the car eases across at its own
            rate. A courtesy move that snapped sideways would read as a glitch,
