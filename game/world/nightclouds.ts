@@ -38,6 +38,13 @@ import { worldTierCaps } from "../settings";
 /** Master kill-switch. */
 export const FX_NIGHT_CLOUDS = true;
 
+/** The cool night grey tint() sits the shadow colour on top of — see there.
+ *  Hoisted to a module constant because the deck is re-tinted CONTINUOUSLY
+ *  now: the aurora crossfades in and out over minutes, so tint() runs a
+ *  couple of times a second while an arc is moving instead of once a night,
+ *  and a fresh Vector3 per call would be pure garbage on a hot path. */
+const SHADOW_FLOOR = new THREE.Vector3(0.042, 0.046, 0.078);
+
 export interface NightCloudsRoll {
   coverage: number;
   scale: number;
@@ -52,15 +59,17 @@ export interface NightClouds {
       ~1.4 = the most the deck's own alpha ceiling allows. */
   amount: number;
   /** live 0..3 — how hard the moon lights the deck, 1 = as shipped. This is
-      most of what a no-aurora night has going on, so it is the knob to reach
-      for when a clear night reads as flat. */
+      most of what a curtainless stretch has going on, so it is the knob to
+      reach for when a clear night reads as flat. */
   moonAmt: number;
   /** live direction of the moon, unit length. Must match the moon sprite that
       sky.ts parks in the backdrop — see the uMoon comment. */
   moon: THREE.Vector3;
-  /** re-tint from whatever is lighting the deck tonight — the aurora's palette
-      on an aurora night, moonlight on the ~70% that have none. aurora.ts picks
-      which, and calls this through sky.ts's onPalette hook. */
+  /** re-tint from whatever is lighting the deck right now — the aurora's
+      palette under curtains, moonlight in the gaps between them, and a blend
+      of the two while an arc fades. aurora.ts picks the mix and calls this
+      through sky.ts's onPalette hook, a couple of times a second while an arc
+      is moving and not at all in between. */
   tint(lo: THREE.Vector3, hi: THREE.Vector3): void;
   reroll(seed?: number): NightCloudsRoll;
   update(now: number, dayF: number, fogMul: number): void;
@@ -79,9 +88,10 @@ export function buildNightClouds(seed: number): NightClouds {
      Sodium and LED street lighting throwing up into the base of the deck is
      warm no matter what is happening 90 km above it, and it used to inherit
      the aurora's crown hue — so a violet night gave the town violet lamps.
-     Now that most nights have no aurora at all and uLit goes cool moonlight,
-     leaving it coupled would have turned the horizon glow silver, which is
-     the one thing a lit town never looks like. */
+     Now that the aurora comes and goes and uLit crossfades to cool moonlight
+     behind it, leaving it coupled would have had the horizon glow drifting to
+     silver every time the curtains left — which is the one thing a lit town
+     never does. */
   const uCity = { value: new THREE.Vector3(0.088, 0.052, 0.022) };
   /* Direction of the moon, and how hard it lights the deck.
      WHAT THIS IS COUPLED TO: sky.ts parks the moon sprite at
@@ -190,7 +200,7 @@ void main(){
  // city throws up into its own overcast. Its own colour, not the aurora's:
  // street lighting does not change hue with the weather 90 km overhead.
  col+=uCity*(1.-core)*(1.-smoothstep(.03,.26,ey));
- /* MOONLIGHT. On the ~70% of nights with no aurora this is what actually
+ /* MOONLIGHT. In the stretches with no curtains up this is what actually
     lights the deck, and it is the difference between "cloud" and "grey
     shapes": a real moonlit sky has a bright side and a dark side, because
     the moon is a point source 33° up and not an ambient wash.
@@ -241,7 +251,7 @@ void main(){
          sky behind it and read as a black blob punched out of a lit frame.
          Sitting just ABOVE the sky's own level makes the same shape read as
          cloud catching a little light, which is what it is. */
-      uDark.value.copy(lo).multiplyScalar(0.055).add(new THREE.Vector3(0.042, 0.046, 0.078));
+      uDark.value.copy(lo).multiplyScalar(0.055).add(SHADOW_FLOOR);
     },
     reroll(s?: number) {
       api.roll = applyRoll(s ?? ((Math.random() * 0xffffffff) >>> 0));

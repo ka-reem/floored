@@ -38,32 +38,58 @@ import { loadProfile, worldTierCaps } from "../settings";
  * saturated, the POV sky pulldown (which gates on low saturation) leaves them
  * alone while it goes on crushing the grey haze around them.
  *
- * IT IS ALSO RARE. A curtain every single night is the one thing that makes
- * an aurora stop reading as an event, so a night only gets one about 30% of
- * the time (AURORA_CHANCE). The draw is deterministic — world seed × night
- * index, no Math.random() — so a seed always replays the same run of skies
- * and "seed 47 opened beautifully" is a thing that can be handed to someone
- * else. See the NIGHT BOUNDARY block in update() for what counts as a night.
+ * IT COMES AND GOES, IT NEVER SWITCHES. Presence is not a yes/no decided once
+ * for the night — it is an ENVELOPE over time. A curtain builds over about a
+ * minute, hangs for one or two, and takes another minute or so to die; the
+ * gaps between arcs run minutes as well. Nothing anywhere in here appears or
+ * vanishes on a frame: every episode is shaped by a smoothstep, so both ends
+ * reach zero with zero slope, and a full fade-in / hold / fade-out arc spans
+ * 2.2–4.5 minutes — long enough to read as weather arriving rather than as an
+ * effect pulsing on a timer. See the EPISODE SCHEDULE block below.
  *
- * AND THE OTHER 70% STILL HAVE A SKY. Airglow and the galaxy are drawn by
- * this same shader on every clear night whether or not there are curtains —
- * they are not weather, they are always up there, and without them a
- * no-aurora night is a black dome with 1100 dots on it. They are faint by
- * design (a few percent of a curtain's peak): __aurora.skyGain is the knob.
+ * The schedule is deterministic — world seed × slot index, no Math.random()
+ * — so a seed replays the same run of skies and "seed 47 opened beautifully"
+ * is a thing that can be handed to someone else. It is clocked in DARK
+ * seconds (tDark in update()), not wall seconds, so an arc cannot be spent
+ * on a daylight sky nobody can see it against.
+ *
+ * WHAT A NIGHT STILL DECIDES is the LOOK — palette, band layout, airglow hue,
+ * where the galactic plane sits — re-rolled at full daylight. See the NIGHT
+ * BOUNDARY block in update() for what counts as a night.
+ *
+ * AND THE GAPS STILL HAVE A SKY. Airglow and the galaxy are drawn by this
+ * same shader every clear night whether or not there are curtains — they are
+ * not weather, they are always up there, and without them a curtainless
+ * stretch is a black dome with 1100 dots on it. They breathe too, on a slow
+ * two-sine wander of their own (0.70…1.25×, periods of 3.7 and 6.5 dark
+ * minutes), so an empty sky is never a frozen one. They stay faint by design
+ * (a few percent of a curtain's peak): __aurora.skyGain is the knob.
  *
  * LIVE PREVIEW. window.__aurora exposes
- * { roll, gain, skyGain, chance, present, nightIndex, reroll, next, auto,
- *   lock } — see the block comment on the returned object.
+ * { roll, gain, skyGain, chance, present, envelope, skyEnvelope, nightIndex,
+ *   reroll, next, auto, lock } — see the block comment on the returned
+ * object. `envelope` is the curtain envelope as it stands this frame, 0…1, so
+ * an arc can be watched coming up instead of waited out blind.
  */
 
 /** Master kill-switch. */
 export const FX_AURORA = true;
 
-/** Odds that any given night gets curtains at all.
+/** Odds that any given scheduling slot gets a curtain episode.
  *
- *  Live-tunable at runtime as `__aurora.chance`; this is only the default.
- *  Rarity is the whole point of the setting — see the header. */
-export const AURORA_CHANCE = 0.3;
+ *  A slot is EP_SLOT (4 min) of dark time, which at the default 150× time
+ *  rate is a little under one per in-game night — so this reads, near enough,
+ *  as "odds that a night gets an aurora". With arcs averaging ~3.3 min, this
+ *  value puts curtains in the sky about half the time you are driving in the
+ *  dark: most sessions get one, and it still spends real stretches away.
+ *
+ *  It was 0.3 for one pass and the verdict was "i never see it anymore" —
+ *  which is the failure mode to weigh this against, not wallpaper: an arc
+ *  that fades away on its own does not become wallpaper the way a curtain
+ *  nailed up all night does.
+ *
+ *  Live-tunable at runtime as `__aurora.chance`; this is only the default. */
+export const AURORA_CHANCE = 0.62;
 
 /** dayFactor at or above which we call it "full daylight", which is where the
  *  nightly re-roll happens. Two things have to be true at that mark and both
@@ -153,8 +179,10 @@ const PALETTES: { name: string; w: number; hem?: number[]; lo: number[]; hi: num
   { name: "violet", w: 1, lo: [0.72, 0.44, 0.98], hi: [0.94, 0.30, 0.80] },
 ];
 
-/** What the cloud deck is lit by on a night with NO curtains — which is now
- *  most nights, so this matters more than any single aurora palette does.
+/** What the cloud deck is lit by while there are NO curtains up — which is
+ *  about half of all driving time, so this matters more than any single
+ *  aurora palette does. The deck CROSSFADES between this and the curtains'
+ *  own palette as the envelope moves; see setCloudK().
  *
  *  nightclouds.tint() takes the crown hue for the lit rim and the body hue
  *  for the shadow, so this is "moonlight above, deep blue below": a cool
@@ -169,12 +197,13 @@ export interface AuroraRoll {
   seed: number;
   palette: string;
   bands: number;
-  /** does this night have curtains at all, or only airglow and the galaxy */
+  /** curtains are up right now, or an episode is scheduled inside the next
+      few slots — i.e. "there is an aurora coming", not "there is one now" */
   present: boolean;
   /** which in-game night this is, counting from world build */
   night: number;
-  /** the night's draw, 0..1 — an aurora happens when this is under `chance`,
-      so it doubles as "how close tonight was to having one" */
+  /** the current slot's draw, 0..1 — an episode happens when this is under
+      `chance`, so it doubles as "how close this stretch was to having one" */
   odds: number;
   /** per band, for eyeballing from the console */
   detail: { azDeg: number; widthDeg: number; baseDeg: number; amp: number }[];
@@ -186,10 +215,11 @@ export interface Aurora {
   /** the sky currently on screen */
   roll: AuroraRoll;
   /** What is lighting the sky tonight, as a body/crown pair. On an aurora
-      night that is the curtains' own palette; on the ~70% with none it is
-      moonlight. The cloud deck tints itself from these, so the two layers read
-      as one sky rather than two effects — and so a clear night's clouds are
-      lit by the moon rather than by an aurora that is not there.
+      night that is the curtains' own palette; in the gaps between arcs it is
+      moonlight, and while an arc is fading it is somewhere between the two.
+      The cloud deck tints itself from these, so the two layers read as one sky
+      rather than two effects — and so a clear stretch's clouds are lit by the
+      moon rather than by an aurora that is not there.
       MUTATED IN PLACE, never reassigned: sky.ts holds these references. */
   palLo: THREE.Vector3;
   palHi: THREE.Vector3;
@@ -201,15 +231,26 @@ export interface Aurora {
       own layer now; use `skyGain = 0` for those. */
   gain: number;
   /** live multiplier on the always-on airglow + galaxy layer, 1 = as shipped.
-      This is what 70% of nights are made of, so it is the knob to reach for
-      when a no-aurora night reads as too empty or too milky. */
+      This is what the gaps between curtains are made of, so it is the knob to
+      reach for when a curtainless sky reads as too empty or too milky.
+      Multiplied by `skyEnvelope`, which is doing the slow wander. */
   skyGain: number;
-  /** 0..1 odds that a night has curtains. Re-tested against the night's stored
-      draw every frame, so `__aurora.chance = 1` turns tonight on immediately
-      (over a ~1.4 s fade, not a cut) and `= 0` turns it off. */
+  /** 0..1 odds that any one EP_SLOT gets a curtain episode. Every slot the
+      envelope touches is re-tested against this every frame, so
+      `__aurora.chance = 1` lights the slot you are standing in immediately
+      (over a ~1.4 s fade, not a cut) and `= 0` fades it out. */
   chance: number;
-  /** whether curtains are up tonight */
+  /** whether curtains are up RIGHT NOW (envelope above ~2%), which is now a
+      thing that changes during a drive rather than once a night */
   present: boolean;
+  /** READ ONLY, updated every frame: the curtain envelope as it stands, 0…1.
+      0 in a gap, 1 at the top of a strong arc, everything between while one
+      is fading in or out. Watch it from the console to see what the sky is
+      about to do. */
+  envelope: number;
+  /** READ ONLY, updated every frame: the slow wander multiplying the airglow
+      and galaxy layer, ~0.70…1.25. */
+  skyEnvelope: number;
   /** in-game nights since the world was built */
   nightIndex: number;
   /** swap in a different sky immediately AND force it visible; omit the seed
@@ -244,7 +285,7 @@ function jitterHue(rng: Rng, c: THREE.Vector3): THREE.Vector3 {
 /** `?aurora=<n>` — pin one exact sky, forced visible, for the whole session.
  *  Returns null when the parameter is absent or junk. This is what lock()
  *  prints, so it has to reproduce the roll AND override the rarity draw: a
- *  pinned link that lands on an empty sky 70% of the time is not a pin. */
+ *  pinned link that lands on an empty sky half the time is not a pin. */
 function pinnedSeed(): number | null {
   try {
     if (typeof location !== "undefined") {
@@ -261,8 +302,9 @@ function pinnedSeed(): number | null {
  *
  *  The first cut of this file deliberately did NOT ride the world seed — a
  *  fresh aurora every run was the point, so it used Math.random(). That trade
- *  stops making sense the moment the aurora is rare: with 70% of nights empty,
- *  a sky you liked is a sky you can never get back, and "seed 47 opened
+ *  stops making sense the moment the aurora comes and goes: if a sky is only
+ *  up for part of a drive, a sky you liked is one you can never get back, and
+ *  "seed 47 opened
  *  beautifully" has to be a sentence someone can act on. Variety comes from
  *  the night index instead (a new sky every in-game night, ~9.6 real minutes
  *  at the default time rate), which gives MORE different skies per session
@@ -276,21 +318,68 @@ function worldSeed(): number {
   }
 }
 
-/** Stateless integer avalanche: (seed, night, salt) → uint32.
+/** Stateless integer avalanche: (seed, index, salt) → uint32.
  *
- *  Two independent salts are drawn per night — one for "is there an aurora",
- *  one for "what does it look like". Reusing a single hash for both would
- *  confine every aurora that ever appears to the bottom `chance` slice of the
- *  hash space, and the palette pick is a deterministic function of that seed,
- *  so the table's weights would quietly stop meaning what they say. */
+ *  ONE SALT PER FIELD, never one hash reused for several. The occurrence draw
+ *  and the look have to be independent or every aurora that ever appears is
+ *  confined to the bottom `chance` slice of the hash space — and since the
+ *  palette pick is a deterministic function of that seed, the table's weights
+ *  would quietly stop meaning what they say. The same argument applies field
+ *  by field inside an episode: share a hash between "how long is the fade-in"
+ *  and "how bright does it get" and every dim aurora also arrives slowly. */
 function hash32(seed: number, night: number, salt: number): number {
   let h = (seed ^ Math.imul(night + 1, salt)) >>> 0;
   h = Math.imul(h ^ (h >>> 16), 0x21f0aaad) >>> 0;
   h = Math.imul(h ^ (h >>> 15), 0x735a2d97) >>> 0;
   return (h ^ (h >>> 15)) >>> 0;
 }
-const SALT_ODDS = 0x9e3779b1;
 const SALT_SKY = 0x85ebca6b;
+
+/* ================= THE EPISODE SCHEDULE =================
+   Dark time is cut into fixed slots, and each slot independently rolls
+   whether it holds a curtain episode, when inside itself it starts, and the
+   three durations of its arc. An episode may overrun its own slot — the
+   envelope is the MAX over the neighbouring slots, so back-to-back episodes
+   merge into one longer presence instead of fighting, and a slot's roll can
+   never chop the previous slot's fade-out off mid-air.
+
+   WHY A SLOT SCHEDULE AND NOT NOISE. A threshold on a noise field is the
+   cheaper way to get "sometimes on, sometimes off", and it is the wrong one:
+   noise crossing a threshold produces brief blips as readily as long arcs,
+   and a curtain that flickers up for eight seconds is exactly the pop this
+   whole design exists to avoid. Here the SHORTEST arc that can be rolled is
+   130 s and every one of them is a smoothstep from zero to zero.
+
+   SIZED AGAINST THE LAP, not against the frame. The loop is ~4 km, i.e. about
+   100 s at cruising pace, so an arc of 130–270 s is two to three laps of
+   sky doing one thing — weather. Sized against a lap the other way (a curtain
+   that came and went every half lap) it would read as a strobe. */
+
+/** One scheduling slot, in DARK seconds — see tDark in update(). At the
+ *  default 150× time rate a night is ~4.8 real minutes of darkness, so this
+ *  is a little over one draw per night. */
+const EP_SLOT = 240;
+/** Arc bounds, seconds. Fade-in and fade-out are deliberately the long parts:
+ *  the arrival and the departure are the whole request, the hold is just how
+ *  long the sky sits at the top before it starts going. */
+const EP_FADE_IN = [45, 80];
+const EP_HOLD = [30, 90];
+const EP_FADE_OUT = [55, 100];
+/** Peak of an arc. Not every display is a strong one — but the floor stays
+ *  high, because the complaint that started this was "i never see it". */
+const EP_PEAK = [0.75, 1.0];
+const SALT_EP_ODDS = 0x27d4eb2f;
+const SALT_EP_T0 = 0x165667b1;
+const SALT_EP_FI = 0x9e3779b9;
+const SALT_EP_HOLD = 0xc2b2ae35;
+const SALT_EP_FO = 0x1b873593;
+const SALT_EP_AMP = 0xcc9e2d51;
+const SALT_SKY_PH = 0x7feb352d;
+/** The airglow/galaxy wander: two sines, coprime-ish periods in dark seconds,
+ *  so the sum never repeats on anything a player would notice. Kept as a
+ *  multiply on a uniform that is already there — no extra pass, no extra
+ *  fetch, no extra uniform. */
+const SKY_PERIOD_A = 223, SKY_PERIOD_B = 389;
 
 export function buildAurora(seedIn?: number): Aurora {
   const caps = worldTierCaps();
@@ -339,6 +428,10 @@ export function buildAurora(seedIn?: number): Aurora {
   /* The palette the CURTAINS are wearing, kept so the cloud deck can be
      re-tinted without re-rolling when only presence changes. */
   let palBody = PALETTES[0].lo, palCrown = PALETTES[0].hi;
+  /** how far the deck's lighting has been crossfaded toward that palette,
+      0 = pure moonlight, 1 = pure aurora. -1 means "never set", so the first
+      setCloudK() always fires. */
+  let cloudK = -1;
 
   /** Fill the uniform arrays from a seed. Mutates in place so the material
    *  never has to be rebuilt. */
@@ -443,11 +536,23 @@ export function buildAurora(seedIn?: number): Aurora {
     return { seed, palette: pal.name, bands: NB, present: true, night: 0, odds: 0, detail };
   }
 
-  /** Hand the cloud deck the light it is actually under: the aurora's own
-   *  palette when there are curtains, moonlight when there are not. */
-  function cloudPalette(present: boolean) {
-    cloudLo.fromArray(present ? palBody : MOONLIT_LO);
-    cloudHi.fromArray(present ? palCrown : MOONLIT_HI);
+  /** Hand the cloud deck the light it is actually under, CROSSFADED: pure
+   *  moonlight at k = 0, the curtains' own palette at k = 1.
+   *
+   *  A blend and not a switch, because presence is a blend now. Flipping the
+   *  deck's lighting the instant the envelope crossed some threshold would
+   *  put back the one hard cut in a sky whose entire point is that it has
+   *  none — and the deck is the biggest coloured mass in the frame, so it is
+   *  the worst possible place to hide a step. Called from update() only when
+   *  k has actually moved ~1%, i.e. a couple of times a second while an arc
+   *  is running and not at all in between. */
+  function setCloudK(k: number) {
+    cloudK = k;
+    for (let i = 0; i < 3; i++) {
+      cloudLo.setComponent(i, MOONLIT_LO[i] + (palBody[i] - MOONLIT_LO[i]) * k);
+      cloudHi.setComponent(i, MOONLIT_HI[i] + (palCrown[i] - MOONLIT_HI[i]) * k);
+    }
+    api.onPalette?.(cloudLo, cloudHi);
   }
 
   /* Geometry: the slice of sphere the curtains can occupy, so the fragment
@@ -464,7 +569,7 @@ export function buildAurora(seedIn?: number): Aurora {
       uTime: { value: 0 },
       /** night × fog: gates the WHOLE mesh, curtains and always-on layer both */
       uAmt: { value: 1 },
-      /** curtains only — presence (0 on a no-aurora night) × gain */
+      /** curtains only — the presence envelope (0 in a gap) × gain */
       uCur: { value: 1 },
       /** airglow + galaxy only — skyGain */
       uSky: { value: 1 },
@@ -514,9 +619,11 @@ void main(){
     skyline ring tops out at 7.8° so it occludes most of that zone anyway. */
  float lowF=smoothstep(.008,.042,ey);
  /* ================= AURORA CURTAINS =================
-    Skipped whole on the ~70% of nights with no aurora, which makes those
-    nights CHEAPER than an aurora night rather than merely emptier: one
-    coherent branch drops NB×6 noise evaluations per fragment. */
+    Skipped whole whenever the envelope is at zero, which makes the gaps
+    between arcs CHEAPER than an aurora rather than merely emptier: one
+    coherent branch drops NB×6 noise evaluations per fragment. And because the
+    envelope is a scalar on uCur, an arc fading in and out costs exactly one
+    multiply — no extra pass, no extra fetch, nothing per fragment. */
  if(uCur>.002){
  float az=atan(d.z,d.x);
  for(int i=0;i<NB;i++){
@@ -677,15 +784,128 @@ void main(){
   mesh.renderOrder = -9.6; // straight after the sky dome, before all geometry
   mesh.frustumCulled = false;
 
+  /* PINNED vs SCHEDULED. `pinned` freezes the nightly look-roll AND pins the
+     envelope open at 1: it is what `?aurora=<n>`, reroll() and next() all do,
+     because every one of them means "show me THIS sky, now" — a tuning tool
+     that hands back a sky that is between arcs is not a tool. auto() clears
+     it and drops back into the schedule. */
+  const pin = seedIn ?? pinnedSeed();
+  let pinned = pin !== null;
+  const wSeed = worldSeed();
+  /** in-game nights since the world was built */
+  let nightIx = 0;
+  /** the current slot's occurrence draw, 0..1, refreshed when it is reported */
+  let odds = 0;
+  /** eased presence, 0…1 — what actually drives the curtains. Follows the
+      envelope with a 0.45 s time constant, which is far shorter than the
+      envelope's own minute-long ramps (so it tracks an arc essentially
+      exactly) and long enough that a live `chance` or pin edit arrives as a
+      ~1.4 s fade instead of a cut. */
+  let presT = 0;
+  let lastNow = 0;
+  /** null until the first update() tells us whether we opened in daylight */
+  let wasDay: boolean | null = null;
+
+  /* ---------------- the envelope's own clock ----------------
+     DARK seconds since the world was built, not wall seconds. An episode
+     scheduled against wall time would spend half of its arcs on a daylight
+     sky where uAmt is zero and nobody can see them, which is most of the way
+     back to the bug this is fixing. Pausing time (T) or scrubbing it from the
+     settings simply changes how fast this fills; nothing here needs the
+     day/night clock to be monotonic, only to say how dark it is. */
+  let tDark = 0;
+
+  /** One field of one slot's roll, 0..1. The +16 keeps slot -1 (which the
+   *  envelope always looks at, so that an arc already running at t=0 is
+   *  picked up mid-way rather than snapping in) off hash32's degenerate
+   *  index, where `night + 1` is 0 and every salt collapses to the seed. */
+  const epRand = (slot: number, salt: number) =>
+    hash32(wSeed, slot + 16, salt) / 4294967296;
+
+  /** Scratch for one slot's episode. Mutated in place and consumed before the
+   *  next call: the envelope evaluates three slots a frame and this runs every
+   *  frame for the life of the process, so it must not allocate. */
+  const ep = { t0: 0, fi: 0, hold: 0, fo: 0, peak: 0, span: 0 };
+
+  /** Roll slot `slot` into `ep`. False when the slot drew no episode — which
+   *  is re-tested against `api.chance` on every call rather than latched, so
+   *  `__aurora.chance = 1` from the console lights the slot you are standing
+   *  in instead of one four minutes from now. */
+  function episode(slot: number): boolean {
+    if (epRand(slot, SALT_EP_ODDS) >= api.chance) return false;
+    ep.t0 = slot * EP_SLOT + epRand(slot, SALT_EP_T0) * EP_SLOT * 0.5;
+    ep.fi = EP_FADE_IN[0] + epRand(slot, SALT_EP_FI) * (EP_FADE_IN[1] - EP_FADE_IN[0]);
+    ep.hold = EP_HOLD[0] + epRand(slot, SALT_EP_HOLD) * (EP_HOLD[1] - EP_HOLD[0]);
+    ep.fo = EP_FADE_OUT[0] + epRand(slot, SALT_EP_FO) * (EP_FADE_OUT[1] - EP_FADE_OUT[0]);
+    ep.peak = EP_PEAK[0] + epRand(slot, SALT_EP_AMP) * (EP_PEAK[1] - EP_PEAK[0]);
+    ep.span = ep.fi + ep.hold + ep.fo;
+    return true;
+  }
+
+  /** One slot's contribution at dark-time `t`. */
+  function epAt(slot: number, t: number): number {
+    if (!episode(slot)) return 0;
+    const u = t - ep.t0;
+    if (u <= 0 || u >= ep.span) return 0;
+    /* Ramp up, sit, ramp down — then smoothstep the WHOLE thing, so the two
+       ends and the two corners at the top of the hold all come out with zero
+       slope. That is the "always fade in/out" requirement in one line: there
+       is no value of u where this function has a jump or even a kink. */
+    const k = u < ep.fi ? u / ep.fi
+      : u < ep.fi + ep.hold ? 1
+      : 1 - (u - ep.fi - ep.hold) / ep.fo;
+    return ep.peak * k * k * (3 - 2 * k);
+  }
+
+  /** The curtain envelope at dark-time `t`, 0…1.
+   *
+   *  MAX, not sum: two overlapping episodes are one aurora that stayed, not
+   *  one twice as bright. Max of continuous functions is continuous, so the
+   *  merge cannot print a step either. Three slots is enough — the longest
+   *  arc (270 s) started at the latest offset (120 s) ends 150 s into the
+   *  next slot, well short of the one after. */
+  function envelopeAt(t: number): number {
+    const s0 = Math.floor(t / EP_SLOT);
+    return Math.max(epAt(s0 - 1, t), epAt(s0, t), epAt(s0 + 1, t));
+  }
+
+  /** Dark-seconds until the next episode starts (0 if one is already running)
+   *  and how long its whole arc lasts — for the console line, so "no aurora"
+   *  can be reported as "not yet" with a number on it. null when nothing is
+   *  scheduled inside the next few slots. */
+  function nextEpisode(t: number): { inS: number; arcS: number } | null {
+    const s0 = Math.floor(t / EP_SLOT);
+    for (let slot = s0 - 1; slot <= s0 + 3; slot++) {
+      if (!episode(slot)) continue;
+      if (ep.t0 + ep.span <= t) continue;   // already been and gone
+      return { inS: Math.max(0, ep.t0 - t), arcS: ep.span };
+    }
+    return null;
+  }
+
+  /* Phases for the airglow/galaxy wander, off the world seed so a seed
+     replays the same breathing and not just the same curtains. */
+  const skyPhA = epRand(-9, SALT_SKY_PH) * TAU;
+  const skyPhB = epRand(-7, SALT_SKY_PH) * TAU;
+  /** the wander's current value, ~0.70…1.25 */
+  let skyEnv = 1;
+
   const announce = (r: AuroraRoll) => {
     try {
+      const m = (sec: number) => (sec / 60).toFixed(1);
+      const up = pinned ? null : nextEpisode(tDark);
+      const when = !up
+        ? `nothing scheduled for a while (slot rolled ${r.odds.toFixed(2)} vs ` +
+          `chance ${api.chance})  —  __aurora.next() to force one`
+        : up.inS < 1
+          ? `curtains up now, ${m(up.arcS)} min arc  —  __aurora.envelope to watch it`
+          : `curtains fade in ~${m(up.inS)} min of night from now, ${m(up.arcS)} min arc`;
       console.log(
-        r.present
-          ? `night ${r.night}: aurora #${r.seed} · ${r.palette} · ${r.bands} bands` +
-            `  —  __aurora.next() for another, __aurora.lock() to keep this one`
-          : `night ${r.night}: no aurora (rolled ${r.odds.toFixed(2)} vs chance ` +
-            `${api.chance})  —  __aurora.next() to force one, __aurora.chance = 1 ` +
-            `for every night`
+        pinned
+          ? `aurora #${r.seed} · ${r.palette} · ${r.bands} bands (pinned on)` +
+            `  —  __aurora.next() for another, __aurora.auto() to rejoin the sky`
+          : `night ${r.night}: aurora #${r.seed} · ${r.palette} · ${r.bands} bands` +
+            `  —  ${when}  ·  __aurora.lock() to keep this one`
       );
     } catch {
       /* no console — the sky still renders */
@@ -693,44 +913,24 @@ void main(){
     return r;
   };
 
-  /* PINNED vs NIGHTLY. `pinned` freezes the nightly cycle and forces the
-     curtains on: it is what `?aurora=<n>`, reroll() and next() all do, because
-     every one of them means "show me THIS sky" — a tuning tool that hands back
-     an empty sky 70% of the time is not a tool. auto() clears it. */
-  const pin = seedIn ?? pinnedSeed();
-  let pinned = pin !== null;
-  const wSeed = worldSeed();
-  /** in-game nights since the world was built */
-  let nightIx = 0;
-  /** the night's presence draw, 0..1, re-tested against `chance` every frame */
-  let odds = 0;
-  /** eased presence, 0…1. Only ever moves off 0 or 1 when the knobs are used
-      mid-night; the nightly boundary lands in full daylight where the whole
-      mesh is already black, so it snaps there. */
-  let presT = 0;
-  /** the presence the knobs currently ask for, so a live `chance` edit can be
-      spotted and the cloud deck re-lit to match */
-  let wantPrev = 0;
-  let lastNow = 0;
-  /** null until the first update() tells us whether we opened in daylight */
-  let wasDay: boolean | null = null;
-
-  /** Roll night `n` from the world seed and hand the result to the cloud deck.
-   *  Two independent hashes: one decides whether there is an aurora, the other
-   *  what it looks like. */
+  /** Roll night `n`'s LOOK from the world seed and report where the schedule
+   *  currently stands. Presence is no longer decided here — it is the
+   *  envelope's business, and it runs straight through this boundary. */
   function setNight(n: number): AuroraRoll {
     nightIx = n;
-    odds = hash32(wSeed, n, SALT_ODDS) / 4294967296;
     const r = applyRoll(hash32(wSeed, n, SALT_SKY));
     r.night = n;
+    odds = epRand(Math.floor(tDark / EP_SLOT), SALT_EP_ODDS);
     r.odds = odds;
-    r.present = odds < api.chance;
+    r.present = presT > 0.02 || nextEpisode(tDark) !== null;
     api.roll = r;
-    api.present = r.present;
+    api.present = presT > 0.02;
     api.nightIndex = n;
-    presT = wantPrev = r.present ? 1 : 0;
-    cloudPalette(r.present);
-    api.onPalette?.(cloudLo, cloudHi);
+    /* Re-light the deck from the NEW palette at the presence we are actually
+       at. This lands at DAY_MARK, where both the curtains and the deck's own
+       night colours are already fully faded out, so a palette that jumps here
+       jumps behind a curtain that is at zero — see the DAY_MARK comment. */
+    setCloudK(presT);
     return r;
   }
 
@@ -745,6 +945,8 @@ void main(){
     skyGain: 1,
     chance: AURORA_CHANCE,
     present: true,
+    envelope: 1,
+    skyEnvelope: 1,
     nightIndex: 0,
     reroll(seed?: number) {
       pinned = true;
@@ -754,9 +956,11 @@ void main(){
       r.present = true;
       api.roll = r;
       api.present = true;
-      presT = wantPrev = 1;
-      cloudPalette(true);
-      api.onPalette?.(cloudLo, cloudHi);
+      /* Straight to full, not a fade: reroll()/next() are for flicking
+         through palettes and a tuning tool that made you wait a minute for
+         each one would be useless. The schedule is what fades. */
+      api.envelope = presT = 1;
+      setCloudK(1);
       return announce(r);
     },
     next() {
@@ -781,49 +985,70 @@ void main(){
       lastNow = now;
 
       /* ---------------- NIGHT BOUNDARY ----------------
-         A "night" is one pass of the day/night clock, and the roll for the
-         next one happens the moment the clock reaches full daylight — NOT at
-         dusk, and certainly not per frame or per lap.
+         A "night" is one pass of the day/night clock, and the LOOK-roll for
+         the next one happens the moment the clock reaches full daylight — NOT
+         at dusk, and certainly not per frame or per lap.
 
-         Why there: at DAY_MARK the curtains are already at exactly zero (the
-         night curve below reaches 0 at dayFactor 0.74) and the cloud deck has
-         already blended fully to its daytime grey, so swapping presence,
-         palette, band layout and the deck's tint is invisible by construction.
-         Rolling at dusk instead would mean the sky changed while it was on
-         screen; rolling per frame or per lap would have curtains popping in
-         and out of a single drive, which is worse than either extreme.
+         Presence is no longer decided here; the envelope below is. What still
+         is: palette, band layout, airglow hue, the galactic plane. At
+         DAY_MARK the curtains are already at exactly zero (the night curve
+         below reaches 0 at dayFactor 0.74) and the cloud deck has already
+         blended fully to its daytime grey, so swapping all of that is
+         invisible by construction. Rolling at dusk instead would mean the
+         sky's COLOUR changed while it was on screen — which is the one kind
+         of change that cannot be faded, since a palette lerp between two
+         curtains is a mud crossfade rather than one aurora replacing another.
 
-         At the default 150× time rate that is one new sky per ~9.6 real
-         minutes, of which ~4.8 are dark. Time paused (T) or scrubbed from the
-         settings simply means fewer boundaries; nothing here needs the clock
-         to be monotonic. */
+         At the default 150× time rate that is one new look per ~9.6 real
+         minutes, of which the envelope's clock (below) collects about 5.8 —
+         call it one and a half scheduling slots per night. Time paused (T) or
+         scrubbed from the settings simply means fewer boundaries; nothing
+         here needs the clock to be monotonic. */
       const isDay = dayF >= DAY_MARK;
       if (wasDay === null) wasDay = isDay;   // opening in daylight is not a boundary
       else if (isDay && !wasDay && !pinned) announce(setNight(nightIx + 1));
       wasDay = isDay;
 
-      /* Presence is re-tested against `chance` every frame rather than latched
-         at the boundary, so `__aurora.chance = 1` from the console turns
-         tonight's sky on where you are standing instead of in nine minutes. */
-      const want = pinned || odds < api.chance ? 1 : 0;
-      if (want !== wantPrev) {
-        wantPrev = want;
-        api.present = want === 1;
-        // the deck is lit by whatever is up there — swap it back and forth
-        // with the curtains or a forced-on aurora leaves moonlit clouds under it
-        cloudPalette(api.present);
-        api.onPalette?.(cloudLo, cloudHi);
-      }
-      if (presT !== want) {
-        // ~1.4 s to settle: a live knob change fades, it never cuts
-        presT += (want - presT) * (1 - Math.exp(-dt / 0.45));
-        if (Math.abs(want - presT) < 0.004) presT = want;
-      }
-
       /* Night is the hero: full strength below dayFactor ≈ 0, gone by ≈ 0.74,
          with the 1.35 power holding it up through most of dusk so the default
          21:24 start opens on a full sky. */
       const night = Math.pow(clamp(1 - dayF * 1.35, 0, 1), 1.35);
+
+      /* ---------------- THE ENVELOPE ----------------
+         The clock only runs while it is actually dark, so an arc is never
+         spent on a sky the player cannot see it against. ×1.6 means the clock
+         is at full rate through the bulk of the night and eases off only in
+         the last of dusk, rather than crawling for the whole of it. */
+      tDark += dt * clamp(night * 1.6, 0, 1);
+      const want = pinned ? 1 : envelopeAt(tDark);
+      /* First frame has no dt, so take the envelope where it stands: an arc
+         already half-way up when the session opens should be half-way up on
+         frame one, not ramp in from nothing as if it had just started. */
+      if (dt <= 0) presT = want;
+      else {
+        presT += (want - presT) * (1 - Math.exp(-dt / 0.45));
+        if (Math.abs(want - presT) < 0.0008) presT = want;
+      }
+      api.envelope = presT;
+      api.present = presT > 0.02;
+      /* The deck is lit by whatever is up there, crossfaded with it. The 1%
+         gate keeps this to a couple of calls a second while an arc is moving
+         and none at all in the gaps — a threshold on the VALUE, not a
+         threshold on the look, so nothing about it can print a step. */
+      if (Math.abs(presT - cloudK) > 0.01) setCloudK(presT);
+
+      /* ---------------- AND THE SKY ITSELF ----------------
+         Airglow really does vary over tens of minutes — it is gravity waves
+         rolling through a 90 km shell, not a constant — so the always-on
+         layer wanders instead of sitting still. Two sines, so it is smooth
+         everywhere by construction and cannot repeat on a schedule anybody
+         will notice. Deliberately shallow: this layer is a few percent of a
+         curtain's peak and is supposed to stay that way. */
+      skyEnv = 0.70 + 0.55 * (
+        0.6 * (0.5 + 0.5 * Math.sin(tDark * (TAU / SKY_PERIOD_A) + skyPhA)) +
+        0.4 * (0.5 + 0.5 * Math.sin(tDark * (TAU / SKY_PERIOD_B) + skyPhB))
+      );
+      api.skyEnvelope = skyEnv;
       /* Fog SOFTENS, it does not gate. This used to run the skyline ring's
          curve, clamp(1.9 - fogMul, .12, 1), which quietly took 35% off the
          aurora at the default "medium" setting for no reason the player could
@@ -837,18 +1062,22 @@ void main(){
          those really are dim enough for haze to swallow. */
       mat.uniforms.uAmt.value = night * clamp(1 - 0.13 * fogMul, 0.62, 1);
       mat.uniforms.uCur.value = presT * Math.max(0, api.gain);
-      mat.uniforms.uSky.value = Math.max(0, api.skyGain);
+      mat.uniforms.uSky.value = Math.max(0, api.skyGain) * skyEnv;
     },
   };
   if (pinned) {
     /* A pin reproduces one exact sky, so it takes the seed verbatim and skips
-       the rarity draw entirely. */
+       the schedule entirely — envelope held open at 1 for the session. */
     api.roll = applyRoll(pin!);
     api.present = true;
-    presT = wantPrev = 1;
-    cloudPalette(true);
+    api.envelope = presT = 1;
+    setCloudK(1);
     announce(api.roll);
   } else {
+    /* Open wherever the schedule already is. Slot -1 can still be running at
+       t = 0, so a session can start mid-arc — which is the point: the sky was
+       doing something before you got in the car. */
+    api.envelope = presT = envelopeAt(0);
     announce(setNight(0));
   }
   return api;
