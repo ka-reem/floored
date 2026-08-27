@@ -49,25 +49,70 @@ let hdrEnv: THREE.Texture | null = null;
 let baseEnv: THREE.Texture | null = null;
 /** multiplier that brings the HDRI back to the cube env's energy */
 let envScale = 1;
+/** Night lift, driven from engine.ts — see setCarEnvLift. Separate from
+ *  envScale on purpose: envScale is a NORMALISATION (it makes the HDRI swap a
+ *  structure change and not a brightness change, which is the contract the
+ *  CUBE_MEAN_LUM note above describes) and must keep meaning that whatever the
+ *  clock says. This is the deliberate departure from it. */
+let lift = 1;
 let started = false;
 
 type EnvMat = THREE.Material & { envMap: THREE.Texture | null; envMapIntensity: number };
 const tracked = new Set<EnvMat>();
 
-/** Point one material at whichever env is live, at the matching intensity.
- *  The authored intensity is stashed on first sight so repeated swaps never
- *  compound the scale. */
-function applyTo(m: EnvMat) {
+/** True for a material pointing at the GAME's env. The garage preview builds
+ *  its own cube in its own GL context and registers here too — it must not be
+ *  swapped (that is the PMREM-across-contexts hazard in the header) and it must
+ *  not be lifted either: the preview is a lit studio turntable with no clock,
+ *  so a night term would just dim it for no reason. */
+const isGameEnv = (m: EnvMat) => m.envMap === hdrEnv || m.envMap === baseEnv;
+
+/** The authored intensity is stashed on first sight, so neither the HDRI swap
+ *  nor a change of lift ever compounds on the previous one. */
+function writeIntensity(m: EnvMat) {
   if (m.userData.baseEnvIntensity === undefined)
     m.userData.baseEnvIntensity = m.envMapIntensity ?? 1;
   const base = m.userData.baseEnvIntensity as number;
-  if (hdrEnv) {
-    if (m.envMap !== hdrEnv) {
-      m.envMap = hdrEnv;
-      m.needsUpdate = true; // cube -> CubeUV mapping is a shader recompile
-    }
-    m.envMapIntensity = base * envScale;
-  } else m.envMapIntensity = base;
+  m.envMapIntensity = base * (m.envMap === hdrEnv ? envScale : 1) * lift;
+}
+
+/** Point one material at whichever env is live, at the matching intensity. */
+function applyTo(m: EnvMat) {
+  if (hdrEnv && m.envMap !== hdrEnv) {
+    m.envMap = hdrEnv;
+    m.needsUpdate = true; // cube -> CubeUV mapping is a shader recompile
+  }
+  writeIntensity(m);
+}
+
+/** Scale what the car's bodywork reflects, on top of the HDRI normalisation.
+ *
+ *  This exists because nothing in the world actually lights the player's car at
+ *  night. The street lamps are painted (emissive strips and ground decals, not
+ *  lights), the headlights point away from it, and the night ambient and hemi
+ *  are floored at 0.07 / 0.05 against near-black colours precisely so an unlit
+ *  wall stays a silhouette. That leaves the env as the ONLY channel with any
+ *  energy in it, and the env is normalised to a hand-painted cube whose mean
+ *  luminance is 0.076 — which was a fine match for a scene whose night fog was
+ *  0x03040a, and is roughly a tenth of what the same scene reads at now that
+ *  the fog is 0x565550. The bodywork did not get darker; everything behind it
+ *  got brighter, so it turned into a cutout.
+ *
+ *  A lift rather than a new light because a three light cannot be scoped to one
+ *  object — it applies to every mesh the camera draws — and the road, the
+ *  parapets and the buildings are all deliberately near-black at night. This
+ *  touches the player's exterior and nothing else in the world.
+ *
+ *  Structure, not just level: the shipped HDRI puts 75% of its energy in the
+ *  brightest 0.1% of its pixels (the lamps), so lifting it walks highlights
+ *  along the shoulder line as the car passes them rather than raising a flat
+ *  wash. That is the part the fog lift cannot do for it.
+ *
+ *  engine.ts fades this in and out on the clock — it is never switched. */
+export function setCarEnvLift(k: number) {
+  if (Math.abs(k - lift) < 0.002) return;
+  lift = k;
+  for (const m of tracked) if (isGameEnv(m)) writeIntensity(m);
 }
 
 /** Mean linear luminance of an RGBA float image. */
@@ -137,7 +182,10 @@ export function primeCarEnv(renderer: THREE.WebGLRenderer, fallback: THREE.Textu
 export function trackEnvMaterial(mat: THREE.Material) {
   const m = mat as EnvMat;
   tracked.add(m);
-  if (hdrEnv && (m.envMap === baseEnv || m.envMap === hdrEnv)) applyTo(m);
+  /* Not gated on hdrEnv any more: with no HDRI on disk applyTo only writes the
+     intensity, and a rig built after the clock had already run needs the lift
+     applying whether or not the swap ever happened. */
+  if (isGameEnv(m)) applyTo(m);
 }
 
 export function untrackEnvMaterial(mat: THREE.Material) {

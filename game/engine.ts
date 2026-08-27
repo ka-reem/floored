@@ -10,7 +10,7 @@ import {
 import { getCar, PAINTS, testDriveSpec, type CarSpec, type PhysicsSpec } from "./carspecs";
 import { pollGamepad, type PadEdge } from "./gamepad";
 import { buildMats, type Mats } from "./world/mats";
-import { primeCarEnv } from "./carenv";
+import { primeCarEnv, setCarEnvLift } from "./carenv";
 import { makeTerrain, buildGround, type Terrain } from "./world/terrain";
 import { buildRoadNet } from "./world/roadnet";
 import { buildHighway, nearestExitAhead } from "./world/highway";
@@ -438,8 +438,38 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
      window.__cabinLight.on = 1          // as if I were pressed
      window.__cabinLight.dome = 0.3      // a dimmer ON state
      window.__cabinLight.glass = 1.6     // more crest sheen, cabin still dark
-     window.__cabinLight.glassHex = 0xffd0a0   // warm it toward the reference */
-const CABIN_LIGHT = { on: 0, dome: 1, glass: 1, glassHex: GLASS_REST.color };
+     window.__cabinLight.glassHex = 0xffd0a0   // warm it toward the reference
+
+   `hover` is the discoverability term, and it is the dome light being used as
+   its own affordance. Resting the cursor on the overhead console eases the
+   lamp this fraction of the way toward the state a CLICK would produce —
+   0.22 up out of dark, or 0.22 down out of lit — then eases back when the
+   cursor leaves. Reported as "idk where to click", and this is the answer that
+   suits the geometry: the console is the donor's own moulded ceiling panel and
+   its material is shared with the floor and the mirror holder, so there is
+   nothing there to make glow without lighting three unrelated parts, and a
+   fresh emissive plate stuck to the roof would read as a UI overlay pasted
+   into the cabin rather than as a control.
+
+   Previewing the OUTCOME dodges both. It needs no new geometry and no second
+   light (a light joining the scene's list re-hashes every lit material in the
+   cabin — the note on setCabinLight in cockpit.ts), it is by construction
+   visible in a cabin that ships pitch dark, it cannot blow to white because it
+   is a fraction of a level that was already tuned, and it explains itself: the
+   thing under the cursor visibly drives the thing the click switches.
+
+   Symmetric on purpose. A lift-only version would answer "where do I turn it
+   on" and leave "where do I turn it off" exactly as lost as before.
+
+     window.__cabinLight.hover = 0.35    // a stronger tell while hunting for it
+     window.__cabinLight.hover = 0       // off; the I key still works */
+const CABIN_LIGHT = { on: 0, dome: 1, glass: 1, glassHex: GLASS_REST.color, hover: 0.22 };
+/* Rate the hover preview eases at, per second, as an exponential time constant
+   — about 0.2 s to settle either way. It is a fade rather than a step because
+   every other light in this file is: a cabin that snaps between two levels as
+   the cursor crosses an invisible edge reads as a glitch, and at this size the
+   swell IS most of the signal that something is under the cursor. */
+const CABIN_HOVER_EASE = 11;
 
 /* ------------------------------------------------------------------- fog ----
 
@@ -505,14 +535,67 @@ const FOG_TUNE = {
   density: 1,
 };
 
+/* The other half of that fog lift — see carenv.ts setCarEnvLift for why the
+   player's car went black when the haze behind it came up, and why the fix is
+   the env rather than a light.
+
+   `night` is the multiplier on every car material's env reflection at full
+   night; it fades to 1 (authored values, untouched) by full day on the same
+   shaped curve the ambient and hemi use, so daylight is byte-for-byte what it
+   was. 3 is a starting point, not a measured number: the paint is metallic
+   (metalness 0.88, envMapIntensity 1.3) so almost all of its read is env
+   specular, and at 1x that lands roughly ten times below the fog it is seen
+   against. 3x closes most of that gap while leaving the car clearly darker
+   than the haze, which is what a dark car at night should be.
+
+   Where it bites first if it goes too far: the glazing (envMapIntensity 1.7 at
+   roughness 0.05) and the mirror caps (1.6, roughness 0.03) reflect the HDRI's
+   lamps almost sharply, and past the ACES knee a coloured highlight becomes a
+   white one. player.ts's tameSpecular knee is what holds that off. Dial `night`
+   down before touching anything in player.ts.
+
+   Live: `window.__carEnv.night = 5` re-lights the bodywork on the next frame.
+   THE CAR IS NOT ON SCREEN IN THE DASHCAM, so nothing here can be judged from
+   it — the exterior group is hidden whenever the camera is inside the car, in
+   the mirror pass as well as the main one. Judge it from CHASE. */
+const CAR_ENV = { night: 3 };
+
+/* Chase framing. Both numbers were literals inside updateCamera(); they are up
+   here so they can carry their reasoning and take a live knob.
+
+   `dist` is the STANDOFF BEFORE the car-length term, not the whole distance —
+   the camera sits at `dist + L * 0.25` metres back, plus up to another 0.9 m
+   that the speed term adds, so a longer car is framed the same way a short one
+   is. On the Kaze (L 4.42) that is 4.11 m at rest against the 4.86 m it used
+   to be: ~15% closer, asked for as "a bit closer". Everything downstream is
+   derived from it rather than fixed — the trail cap at dist + 1.2 and the
+   minimum swing radius at dist * 0.6 both follow it in — so moving this one
+   number does not need three others moved with it.
+
+   `height` is the camera's own height above the car's contact point. It is
+   unchanged: the aim point sits 2.8 m PAST the car, so pulling the camera in
+   by 0.75 m steepens the look-down by less than a degree, and there is nothing
+   here for the height to correct.
+
+   Live: `window.__chase.dist = 2.6`. The menu/intro orbit seeds and the reset
+   snaps keep their own hard-coded 4.4 m and are deliberately NOT on this knob:
+   they are one-frame starting points that the spring eases into whatever this
+   says within about half a second, and pinning them to it would drag the menu
+   framing around with a gameplay setting. */
+const CHASE_CAM = { dist: 3, height: 2.15 };
+
 declare global {
   interface Window {
     __povMount?: { dx: number; dy: number; dz: number };
     __cockpitEye?: { dy: number; dz: number };
     __chaseShake?: number;
     __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number };
-    __cabinLight?: { on: number; dome: number; glass: number; glassHex: number };
+    __cabinLight?: {
+      on: number; dome: number; glass: number; glassHex: number; hover: number;
+    };
     __fog?: { night: number; rain: number; sky: number; skyRain: number; density: number };
+    __carEnv?: { night: number };
+    __chase?: { dist: number; height: number };
   }
 }
 /* 13 degrees of nose-down, on top of whatever the body is doing. This is what
@@ -668,6 +751,29 @@ export class Game {
     return window.__fog;
   }
 
+  /** The live car-env knob — see CAR_ENV. */
+  private carEnvKnob(): typeof CAR_ENV {
+    if (!window.__carEnv) window.__carEnv = { ...CAR_ENV };
+    return window.__carEnv;
+  }
+
+  /** The live chase-framing knob — see CHASE_CAM. */
+  private chaseKnob(): typeof CHASE_CAM {
+    if (!window.__chase) window.__chase = { ...CHASE_CAM };
+    return window.__chase;
+  }
+
+  /** Flip the dome light. One place, because there are two ways to ask for it
+      — the I key and clicking the overhead console (onPointerDown) — and a
+      state this cheap to duplicate is a state that eventually disagrees with
+      itself. Only the knob is written; cabinLightUpdate() below is what carries
+      it into both interiors. */
+  private toggleCabinLight() {
+    const c = this.cabinKnob();
+    c.on = c.on ? 0 : 1;
+    this.ui.toast("INTERIOR LIGHT " + (c.on ? "ON" : "OFF"));
+  }
+
   /** Push the cabin-light level into both interiors, every frame.
 
       Per-frame rather than on the key edge, and that is the whole point: the
@@ -676,10 +782,28 @@ export class Game {
       donor that loaded late lit while the procedural one next to it was dark —
       the same load race mirrorFramingUpdate() exists to close, and the same one
       player.ts's `bodyRef.want` closes for the exterior body. Two float writes
-      is cheaper than remembering to re-apply it in three places. */
-  private cabinLightUpdate() {
+      is cheaper than remembering to re-apply it in three places.
+
+      It also owns the hover preview (CABIN_LIGHT.hover), for the same reason:
+      the ease has to run on the frame clock, and the level it produces has to
+      reach the donor's fill light as well as the procedural dome or the J
+      comparison would show two different cabins. */
+  private cabinLightUpdate(dt: number) {
     const k = this.cabinKnob();
-    const level = k.on * k.dome;
+    /* EVERY way out of the hover state converges here rather than being chased
+       through the events that cause it. The pointer moving off the target and
+       the pointer leaving the canvas are real events and have listeners; pause,
+       a camera change out of the cabin, a touch device and a reload mid-hover
+       are not events at all, they are conditions — and a preview latched on
+       through any of them is worse than never having had one. */
+    if (this.isTouch || !this.running || !this.loaded || !this.inCar())
+      this.cabinHover = 0;
+    this.cabinHoverE = lerp(
+      this.cabinHoverE, this.cabinHover, 1 - Math.exp(-CABIN_HOVER_EASE * dt)
+    );
+    // the state a click would leave it in; the preview travels `hover` of the way
+    const eff = lerp(k.on, k.on ? 0 : 1, this.cabinHoverE * k.hover);
+    const level = eff * k.dome;
     this.rig.cockpit.setCabinLight(level);
     this.rig.cockpitModel?.setFillLight(level);
   }
@@ -1561,12 +1685,13 @@ export class Game {
        Session-only, and deliberately NOT mirrored into settings the way V and
        X are. The dark cabin is the shipped look, so it has to be what every
        session opens on; a persisted flag would let a profile come back with
-       the interior lit and quietly make the lit version the default again. */
-    if (k === "i" && !this.isTouch) {
-      const c = this.cabinKnob();
-      c.on = c.on ? 0 : 1;
-      this.ui.toast("INTERIOR LIGHT " + (c.on ? "ON" : "OFF"));
-    }
+       the interior lit and quietly make the lit version the default again.
+
+       The key is no longer the only way in: onPointerDown puts the same toggle
+       on the overhead console, so it can be reached by pointing at the roof
+       panel the lamp is actually in. The key stays — asked for explicitly, and
+       it is the one that works with the console out of frame. */
+    if (k === "i" && !this.isTouch) this.toggleCabinLight();
     if (k === "h") this.ui.helpRequest();
     if (k === "x") {
       this.mmap = !this.mmap;
@@ -1614,42 +1739,129 @@ export class Game {
     this.hiConsumed = false;
     this.hiDownAt = performance.now() / 1000;
   }
-  /* Click the transport glyphs on the in-dash screen. The head unit is a
-     CanvasTexture on a plane, so this raycasts the cursor onto that plane and
-     hands the hit UV to music.ts, which owns the button rects.
+  /* Reach out and touch things in the cabin. Two controls so far: the
+     transport glyphs on the in-dash screen, and the overhead console, which
+     switches the dome light.
 
-     Only on click, never per frame — a raycast per frame for a control that is
-     touched once a minute is not worth the frame time. Desktop only: gated on
-     music.enabled, which is false on touch. */
-  private musicRay = (() => {
+     ONE ray serves every target and both handlers — the click and the hover —
+     so there is exactly one answer to "what is the cursor over" and the
+     highlight can never point at something the click would miss.
+
+     The ORDER of onPointerDown is the load-bearing part. Everything above the
+     first target is the question every target asks — is this the left button,
+     is the world live, is the camera inside the car, where is the cursor —
+     and every gate that belongs to ONE control sits with that control, below.
+     `music.enabled` used to be the second line of the handler, which quietly
+     made "only while the stereo is on" a precondition of anything added here;
+     the interior light is a tool for comparing the dark cabin against the lit
+     one and has nothing to do with the music, so it must not inherit that. */
+  private clickRay = (() => {
     const r = new THREE.Raycaster();
     /* cockpit.ts puts the whole interior shell on layer 1, and a Raycaster
        only tests objects whose layers intersect its own — a default (layer 0)
        raycaster never hits the head unit at all. It only ever intersects the
-       one panel mesh, so testing every layer costs nothing and also covers a
-       donor screen, which arrives from the GLB on layer 0. */
+       targets it is handed one at a time, so testing every layer costs nothing
+       and also covers a donor screen, which arrives from the GLB on layer 0. */
     r.layers.enableAll();
     return r;
   })();
-  private musicNdc = new THREE.Vector2();
-  private onPointerDown = (e: PointerEvent) => {
-    if (e.button !== 0) return;
-    if (!this.music.enabled || !this.running || !this.loaded) return;
-    /* The raycast ignores `visible`, so without this the buttons would still
-       be clickable — straight through the bodywork — from CHASE and HOOD,
-       where updateCamera() has hidden the whole cockpit group. */
-    if (!this.inCar()) return;
-    const panel = this.rig?.cockpit?.navPanel();
-    if (!panel) return;
-    // Off the canvas rect, not the window: the two agree today (canvas.game is
-    // position:fixed inset:0) but a click is not where the frame time is.
+  private clickNdc = new THREE.Vector2();
+  /** Point `clickRay` through the cursor. Off the canvas rect, not the window:
+      the two agree today (canvas.game is position:fixed inset:0) but neither a
+      click nor a mouse move is where the frame time is. */
+  private aimRay(e: PointerEvent) {
     const r = this.renderer.domElement.getBoundingClientRect();
-    this.musicNdc.set(
+    this.clickNdc.set(
       ((e.clientX - r.left) / r.width) * 2 - 1,
       -((e.clientY - r.top) / r.height) * 2 + 1
     );
-    this.musicRay.setFromCamera(this.musicNdc, this.camera);
-    const hit = this.musicRay.intersectObject(panel, false)[0];
+    this.clickRay.setFromCamera(this.clickNdc, this.camera);
+  }
+
+  /** The overhead-console hit volume, or null when the pointer cannot be over
+      it at all.
+
+      Which console depends on which cabin is on show — cockpit.ts holds a
+      volume for each and they are 28 cm apart — and the test is the one
+      povMount() and cockpitEye() already use, because a donor that has not
+      finished loading is not the cabin on show yet.
+
+      The `inCar` gate is not politeness: a Raycaster ignores `visible`, so
+      without it the console would be hoverable and clickable straight through
+      the bodywork from CHASE and HOOD, where updateCamera() has hidden the
+      whole cockpit group. Desktop only, same as the I key — a touch device has
+      no hover at all, and a stuck highlight is the only thing it could get. */
+  private cabinTarget(): THREE.Object3D | null {
+    if (this.isTouch || !this.running || !this.loaded || !this.inCar()) return null;
+    const ck = this.rig?.cockpit;
+    if (!ck) return null;
+    return ck.cabinSwitch(!!(this.rig.cockpitModel && this.dashImported));
+  }
+
+  /** 1 while the cursor is on the overhead console, 0 otherwise; cabinHoverE is
+      it eased, and is what the light actually rides. See CABIN_LIGHT.hover. */
+  private cabinHover = 0;
+  private cabinHoverE = 0;
+  private hoverX = 0;
+  private hoverY = 0;
+  /* Hover test for the overhead console. Cheap by construction — one ray
+     against one twelve-triangle box, and only after the cursor has actually
+     travelled — but it still runs on a firehose, so it does the least it can:
+     the sub-3px bail kills the redundant work from a hand resting on a mouse
+     without ever being able to swallow a real crossing of the target's edge.
+
+     Nothing re-tests on its own between moves, and nothing needs to: both the
+     console and the camera are fixed in the cabin, so the target does not
+     travel across the frame while the car drives. The states where that stops
+     being true are conditions rather than events, and cabinLightUpdate() clears
+     the hover on all of them. */
+  private onPointerMove = (e: PointerEvent) => {
+    const dx = e.clientX - this.hoverX, dy = e.clientY - this.hoverY;
+    if (dx * dx + dy * dy < 9) return;
+    this.hoverX = e.clientX;
+    this.hoverY = e.clientY;
+    const sw = this.cabinTarget();
+    if (!sw) {
+      this.cabinHover = 0;
+      return;
+    }
+    this.aimRay(e);
+    this.cabinHover = this.clickRay.intersectObject(sw, true).length ? 1 : 0;
+  };
+  /* Leaving the canvas is a real event and gets a real listener: the last
+     pointermove inside the window can easily be one that was still over the
+     console, and without this the preview would stay up while the cursor sat
+     in the browser chrome. */
+  private onPointerLeave = () => {
+    this.cabinHover = 0;
+  };
+  private onPointerDown = (e: PointerEvent) => {
+    if (e.button !== 0) return;
+    if (!this.running || !this.loaded) return;
+    const cockpit = this.rig?.cockpit;
+    if (!cockpit) return;
+    /* The raycast ignores `visible`, so without this the controls would still
+       be clickable — straight through the bodywork — from CHASE and HOOD,
+       where updateCamera() has hidden the whole cockpit group. */
+    if (!this.inCar()) return;
+    this.aimRay(e);
+
+    /* The overhead console, where a real car keeps its dome light. Same toggle
+       as the I key so the two can never disagree, and the same volume the
+       hover highlights, so what lit up is what responds. */
+    const sw = this.cabinTarget();
+    if (sw && this.clickRay.intersectObject(sw, true).length) {
+      this.toggleCabinLight();
+      return;
+    }
+
+    /* The head unit is a CanvasTexture on a plane, so this hands the hit UV to
+       music.ts, which owns the button rects. Desktop only, via music.enabled,
+       which is false on touch. */
+    if (!this.music.enabled) return;
+    const panel = cockpit.navPanel();
+    if (!panel) return;
+    const hit = this.clickRay.intersectObject(panel, false)[0];
     if (!hit || !hit.uv) return;
     const action = hitTransport(hit.uv.x, hit.uv.y);
     if (!action) return;
@@ -1691,6 +1903,11 @@ export class Game {
   private bindInput() {
     addEventListener("keydown", this.onKeyDown);
     this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown);
+    /* Hover feedback for the overhead console. On the canvas rather than the
+       window so the preview cannot be driven by a cursor sitting over the HUD
+       or the pause overlay, and paired with pointerleave so it lets go. */
+    this.renderer.domElement.addEventListener("pointermove", this.onPointerMove);
+    this.renderer.domElement.addEventListener("pointerleave", this.onPointerLeave);
     addEventListener("keyup", this.onKeyUp);
     const bindHold = (id: string, key: string) => {
       const el = document.getElementById(id);
@@ -1935,6 +2152,25 @@ export class Game {
     this.timeSpeed = s.autoTime ? (this.timeSpeed === 0 ? 150 : this.timeSpeed) : 0;
     this.audio.setLevels(s.vol, this.running ? 1 : 0.12);
     this.music.setLevels(s.vol);
+    /* THE ONLY WRITER of castShadow — see sunShadow() for why that matters and
+       what took over the per-frame job. This is the one path that is allowed to
+       recompile the scene's materials, and it is a safe one: the settings panel
+       is a menu, and the user is not driving through the hitch.
+
+       Assigning the same boolean on every slider tick is free. `castShadow` is
+       a plain property with no setter; the recompile comes from the shadow
+       COUNT in the program cache key changing, which an unchanged value cannot
+       do. Only a real flip of the shadows setting costs anything.
+
+       The one-shot below is a pre-warm as much as a refresh. This call runs
+       twice during the staged load, the second time with the world's materials
+       built, so the first depth pass — which is where every mesh's depth
+       program gets compiled — lands behind the loading screen rather than on
+       the frame at dawn when sunShadow() first unfreezes the map. Best effort:
+       whatever has not streamed in by then still compiles when it arrives, the
+       same as it does today. */
+    this.sun.castShadow = s.shadows;
+    this.sun.shadow.needsUpdate = true;
   }
 
   /** The scanned road detail layers — the extra albedo and normal fetches, but
@@ -2013,6 +2249,8 @@ export class Game {
     cancelAnimationFrame(this.raf);
     removeEventListener("keydown", this.onKeyDown);
     this.renderer.domElement.removeEventListener("pointerdown", this.onPointerDown);
+    this.renderer.domElement.removeEventListener("pointermove", this.onPointerMove);
+    this.renderer.domElement.removeEventListener("pointerleave", this.onPointerLeave);
     removeEventListener("keyup", this.onKeyUp);
     removeEventListener("resize", this.onResize);
     window.removeEventListener("error", this.onWindowError);
@@ -2118,6 +2356,68 @@ export class Game {
 
   private dayFactor() {
     return clamp(Math.sin(((this.time - 6) / 12) * Math.PI) * 1.4, 0, 1);
+  }
+
+  /** Fade the sun's shadows in and out with the clock — WITHOUT touching
+      `castShadow`, which is the whole point of this method existing.
+
+      `castShadow` is not a look, it is STRUCTURE. It feeds the directional
+      shadow COUNT in three's program cache key, so flipping it re-derives the
+      defines for every lit material in the scene and recompiles all of them in
+      one frame. This used to be assigned here, every frame, as
+      `f > 0.22 && !perfMode && settings.shadows` — so every in-game dawn
+      rebuilt every shader the moment f crossed 0.22, which is the one-to-two
+      second stall the user reported at the night/day transition. It also armed
+      a second, unreported one: perfMode latches true from perfCheck() after
+      four slow seconds, and hitting that in daylight recompiled everything
+      again, at the exact moment the frame budget was already blown.
+
+      So castShadow is set once, from settings.shadows, in applySettings() —
+      which is reachable only from the menu, where a recompile costs nothing —
+      and the two things that used to ride on it move to channels that carry no
+      defines at all:
+
+      - `shadow.intensity` is a plain uniform (r180; the shader does
+        `mix(1.0, shadow, shadowIntensity)`), so at 0 the shadow term is
+        EXACTLY 1.0 and the depth map is ignored no matter what is in it. That
+        is what makes freezing the map below safe — not an argument about the
+        night sun being dim, which would only have made a stale shadow faint
+        rather than absent.
+      - `shadow.autoUpdate` is read by WebGLShadowMap per light before it
+        renders anything, so dropping it stops a 2048x2048 depth pass per frame
+        without changing a single program.
+
+      WHAT THIS COSTS, stated plainly: keeping the defines constant means the
+      PCF-soft shadow lookup stays in the fragment shader at night, where the
+      old boolean compiled it out. That is a per-pixel tap on every lit surface
+      buying nothing visible — sub-millisecond, but not free. It is the right
+      trade against a multi-second hitch the user feels at every dawn, and it is
+      not a trap for anyone who cannot afford it: `settings.shadows` off makes
+      castShadow false and takes the sampling out of the shader entirely, the
+      same as it always did.
+
+      The ramp replaces the old hard threshold rather than reproducing it. 0.22
+      sits at the centre of the window, so shadows still arrive at the hour
+      they always did — they now take about 16 real seconds at the default
+      clock speed to reach full strength instead of appearing between two
+      frames, and dusk is the same in reverse. Weak, half-strength shadows
+      under a low sun are also what dawn actually looks like. */
+  private sunShadow(f: number) {
+    const w = clamp((f - 0.1) / 0.24, 0, 1);
+    // smoothstep, so the ramp has no kink where it leaves 0 or reaches 1
+    const want =
+      this.settings.shadows && !this.perfMode ? w * w * (3 - 2 * w) : 0;
+    const s = this.sun.shadow;
+    s.intensity = want;
+    /* Rendering the map is worth paying for only while something samples it.
+       The flag is only written on the edge — assigning it every frame would be
+       harmless, but the edge is also where the map has to be brought back up
+       to date after however long it spent frozen. */
+    const live = want > 0.001;
+    if (s.autoUpdate !== live) {
+      s.autoUpdate = live;
+      if (live) s.needsUpdate = true;
+    }
   }
 
   /** Are the mains lit this frame? A held flash always wins; the latch only
@@ -2379,6 +2679,14 @@ export class Game {
     this.sun.intensity = 0.03 + lit * 1.26;
     this.hemi.color.copy(this.hemiN).lerp(this.hemiD, lit);
     this.hemi.groundColor.copy(this.hemiGN).lerp(this.hemiGD, lit);
+    /* The player's bodywork rides the same curve, through the one channel that
+       can reach it without touching the road — see CAR_ENV. It is a fade and
+       not a switch for the same reason everything else here is: a step in the
+       car's reflections at some hour of the clock would read as the paint
+       changing colour mid-drive. Cheap to call per frame — carenv.ts ignores a
+       repeat of the value it already holds, which is what this is for all but
+       a few seconds either side of dawn and dusk. */
+    setCarEnvLift(lerp(this.carEnvKnob().night, 1, lit));
     /* A tiled tunnel bounces its own battens around the tube, so the deck in
        there is *not* the black the open road now is. Put the fill back in
        proportion to the blend, warm, so crushing the night sky doesn't drag
@@ -2393,7 +2701,7 @@ export class Game {
     const sa = ((this.time - 6) / 12) * Math.PI;
     this.sun.position.set(car.x - Math.cos(sa) * 520, Math.max(120, Math.sin(sa) * 640), car.z - 260);
     this.sun.target.position.set(car.x, 0, car.z);
-    this.sun.castShadow = f > 0.22 && !this.perfMode && this.settings.shadows;
+    this.sunShadow(f);
     /* Keep the at-infinity backdrop (dome, skyline ring, mountains, city
        rings) centred on the car. World-fixed it sat centred on the ORIGIN,
        whose rings the 4 km lap physically outruns: nearing z = +Z1 the
@@ -2947,7 +3255,7 @@ export class Game {
     rig.cockpit.group.visible = inside;
     rig.exteriorG.visible = !inside;
     this.lampWash(inside);
-    this.cabinLightUpdate();
+    this.cabinLightUpdate(dt);
     /* Both in-car views now carry their own nav screen (drawScreen above), so
        the external HUD minimap is redundant in either — hide it. POV is the
        view the game is played in, and the head unit reads clearly there, so
@@ -3193,13 +3501,14 @@ export class Game {
       // change, wrong lateral offset after turns) — easing from that on
       // re-entry reads as the camera diving before it settles. Snap instead.
       const freshEntry = this.lastCamMode !== 0;
-      const dist = (3.75 + this.spec.shell.L * 0.25) + clamp(Math.abs(car.u) * 0.03, 0, 0.9);
+      const kc = this.chaseKnob();
+      const dist = (kc.dist + this.spec.shell.L * 0.25) + clamp(Math.abs(car.u) * 0.03, 0, 0.9);
       // flip: 0 = camera behind the car, 1 = in front of it looking back. The
       // swing is an arc around the car, not a lerp through it.
       const flip = this.lookBack ? 1 - this.revCam : this.revCam;
       const ang = car.h + Math.PI * (1 - flip);
       const ax = Math.sin(ang), az = Math.cos(ang);
-      this.tmpV.set(car.x + ax * dist, car.y + 2.15, car.z + az * dist);
+      this.tmpV.set(car.x + ax * dist, car.y + kc.height, car.z + az * dist);
       if (freshEntry) this.chasePos.copy(this.tmpV);
       else this.chasePos.lerp(this.tmpV, 1 - Math.exp(-5.5 * dt));
       // smoothing lags a moving target by ~speed/5.5 m; cap the trail so the

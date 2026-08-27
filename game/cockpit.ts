@@ -52,6 +52,13 @@ export interface Cockpit {
       window.__cabinLight. See the light itself for why this is an intensity
       write and not a `visible` flip. */
   setCabinLight(k: number): void;
+  /** Click volume for the overhead console — the roof panel the dome light is
+      set into — so setCabinLight's switch can be reached with the mouse as
+      well as with the I key. `imported` selects the donor cabin's console over
+      the procedural one; the two roofs are 28 cm apart and only the one
+      belonging to the cabin on show may be live. Returns an Object3D to be
+      raycast RECURSIVELY: see where the volumes are built. */
+  cabinSwitch(imported: boolean): THREE.Object3D;
   setMirrorVis(v: boolean): void;
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
   /** Repaint the head unit. Takes the world/car/traffic the HUD minimap
@@ -1337,6 +1344,60 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   interiorG.add(cabinLight);
   endRegion();
 
+  /* ------------------------------------------- overhead console hit target */
+
+  /* Somewhere for a click to land on the roof panel the dome light lives in,
+     so the lamp above can be switched by reaching up for it and not only by
+     the I key. Pure hit geometry, nothing drawn: BOTH cabins already model an
+     overhead console at these coordinates — the procedural one is the piano
+     housing and amber lens in the headliner block above, the donor's is its
+     `headliner` role (CeilingConsole, bbox [-0.089, 1.319, 0.230] ..
+     [0.089, 1.375, 0.436] in volvo-s90-full.json) — so the ray is being tested
+     against a panel the eye can see, and there is nothing to add to the frame.
+
+     Two volumes rather than one moved between the cabins, because the two
+     roofs are nowhere near each other: the procedural headliner crowns at
+     ROOF_Y 1.70, the donor's roof is at 1.42. One box spanning both would be a
+     40 cm slab hanging through the middle of whichever cabin is up, and worse,
+     from the PROCEDURAL cockpit eye the donor's anchor sits dead ahead at eye
+     level — a click aimed at the road would toggle the interior light.
+     engine.ts asks for the one matching the cabin actually on show.
+
+     `visible = false` rather than a transparent material: a Raycaster ignores
+     the flag (which is exactly why engine.ts still has to check the camera is
+     inside the car) while the renderer honours it, so neither box ever reaches
+     a draw list or a shadow pass. `side` is then the one property on the
+     material that still does anything: Mesh.raycast reads it to decide whether
+     to keep a back-facing triangle, and an eye that ended up inside one of
+     these volumes would find nothing at all under the default FrontSide. */
+  const hitMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  const domeHit = (w: number, h: number, d: number, at: P3) => {
+    const m = new THREE.Mesh(box(w, h, d), hitMat);
+    m.position.set(at[0], at[1], at[2]);
+    m.visible = false;
+    return m;
+  };
+  /* Procedural: the housing is 0.16 x 0.02 x 0.10 at y 1.695 and the volume is
+     grown well past it and hung below into open cabin air, where the nearest
+     other thing is the sun visor's inner tip (x 0.12, z 0.395) — clear of this
+     in z. A switch you have to hit to the millimetre is not a switch. */
+  const domeHitProc = domeHit(0.26, 0.08, 0.18, [0, 1.67, 0.3]);
+  interiorG.add(domeHitProc);
+  /* Donor: its own bbox, 20 mm proud each side across and 20 mm below, and
+     deliberately NOT extended forward — the mirror hangs at z 0.441 and this
+     must not reach into it.
+
+     Wrapped in a group carrying the donor's counter-scale. cockpitmodel.ts
+     hangs the whole donor scene at (1, sx, sx) under this group's (sx, 1, 1)
+     so a donor dash scales uniformly instead of being flattened; a box
+     parented straight to interiorG would get only the (sx, 1, 1) half of that
+     and would drift off the console by however much sx differs from 1. It is 1
+     on the car this ships on, so the group is a no-op today — it is here so
+     the target still lands on a narrower shell. */
+  const donorSpace = new THREE.Group();
+  donorSpace.add(domeHit(0.23, 0.076, 0.23, [0, 1.337, 0.321]));
+  interiorG.add(donorSpace);
+
   /* And its counterpart: a faint cool wash from the base of the windscreen
      raking BACK across the pad toward the seat — the "city light through the
      glass" that gives the pad top its grazing sheen in the reference photo.
@@ -1938,6 +1999,14 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
        lit material in the cabin on each press. Zero intensity is free and the
        toggle is instant. */
     setCabinLight: (k) => { cabinLight.intensity = CABIN_DOME * k; },
+    /* The counter-scale is applied here rather than at build time because
+       player.ts sets group.scale.x AFTER this function returns, so there is no
+       correct value to bake in. Cheap in the right place: this is read once per
+       click, not once per frame. */
+    cabinSwitch(imported) {
+      donorSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
+      return imported ? donorSpace : domeHitProc;
+    },
     setMirrorVis: (v) => {
       mirrorParts.forEach((m) => (m.visible = v));
       // the frame is not in mirrorParts (it is a Group, not a glass plane), so
