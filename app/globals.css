@@ -37,6 +37,15 @@ canvas.game {
   display: block;
   position: fixed;
   inset: 0;
+  /* The canvas is a tap target now: on touch, a tap in the top middle of the
+     frame works the interior light (engine.ts ROOF_TAP), because the roof
+     console the mouse clicks is off the top of the dashcam frame and no
+     finger can reach it. `manipulation` is what makes that tap immediate —
+     it rules out double-tap-to-zoom, and with it the delay a browser holds a
+     tap for while it waits to find out whether a second one is coming. Not
+     `none`: nothing here is a drag gesture, and none is the setting for
+     controls that own one (the steering puck, the pedals). */
+  touch-action: manipulation;
 }
 /* Idle-hidden pointer. Set on <html> rather than on the canvas so it also
    covers the HUD overlays sitting on top of it — hiding the cursor over the

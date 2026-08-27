@@ -296,6 +296,308 @@ function paintMaterial(paint: Paint, env: THREE.Texture): THREE.MeshPhysicalMate
   return tameSpecular(m);
 }
 
+/* ------------------------------------------------- lighting the donor body ----
+
+   "The car is still like black and really dark and hard to see. Can you make it
+   brighter? And can you explain why it's like that?"
+
+   It was black because NOTHING WAS LIGHTING IT. Not "not enough" — nothing.
+
+   The car on screen in CHASE is the imported Volvo shell, not the procedural
+   one: BODY_MODEL configures it for kaze and it lands switched ON. Its
+   materials come straight out of the GLB, and bodymodel.ts sets exactly one
+   thing on them (castShadow). In particular it never gave them an envMap, and
+   there is no scene.environment in this project — the env is wired per
+   material, right here, and only the PROCEDURAL body was ever wired.
+
+   Then look at what the donor's bodywork actually is: `Car_Paint`, metalness
+   1.00, roughness 0.427, clearcoat 1.00 at roughness 0.014. A material at
+   metalness 1 HAS NO DIFFUSE TERM AT ALL. Ambient and hemi cannot touch it, at
+   any level — raising them would light the road and the walls and leave the car
+   exactly as black as it was. A metal shows one thing: what it reflects. With
+   envMap null it reflects nothing, so its entire appearance came from analytic
+   lights, and at night there is one of those — the sun, whose colour is lerped
+   to near-black (engine.ts sunN) — plus the headlights, which point forward,
+   away from a chase camera. Multiply it out and the bodywork renders at very
+   near zero. Not dark. Black, by construction.
+
+   Which is also why the night env lift did not help. CAR_ENV/setCarEnvLift is a
+   multiplier on `envMapIntensity`, and it was reaching only the materials
+   built in this file — the procedural body, which is HIDDEN whenever the donor
+   is up. It was turned up to 3 against a car nobody was looking at.
+
+   So: register the donor's materials the same way the procedural ones are
+   registered. They pick up the world's painted cube env, the HDRI hot-swap when
+   it lands, and the night lift, for free — and the lift becomes a lever that
+   reaches the car instead of one that misses it. No new lights, which matters
+   twice over: three cannot scope a light to one object, so a fill bright enough
+   to read on the car would also raise the road, the parapets and the buildings
+   that are deliberately near-black; and shader cost is being cut elsewhere in
+   the tree right now, so a scene-wide light is the wrong direction. This costs
+   the IBL path on one car's materials, which the procedural body already pays.
+
+   Two guards go on with it — see the calls below. */
+
+/** Give an imported body the env the procedural one has, plus the two guards
+    that stop a metal with a mirror clearcoat blowing to white once it has
+    something to reflect. `reg` is buildPlayerCar's `withEnv`: it registers for
+    the HDRI swap and the night lift, and books the material for disposal. */
+function lightDonorBody(
+  scene: THREE.Object3D, env: THREE.Texture, reg: <T extends THREE.Material>(m: T) => T,
+) {
+  const seen = new Set<THREE.Material>();
+  scene.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    for (const mat of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      const m = mat as THREE.MeshPhysicalMaterial;
+      if (!m || seen.has(m) || m.envMapIntensity === undefined) continue;
+      seen.add(m);
+      if (m.envMap !== env) {
+        m.envMap = env;
+        m.needsUpdate = true; // no-envMap -> envMap is a define change, so a recompile
+      }
+      /* The donor's clear coat is authored at roughness 0.014, which is a
+         mirror. With nothing to reflect that was invisible; with the HDRI
+         behind it, whose energy is almost all in its lamps, it would return
+         them as near-pinpoints and those are what go white first. The floor is
+         the procedural paint's own 0.06 — and that number is itself paired
+         with an orange-peel normal map this donor does not have, so 0.06 is
+         the gentlest correction that puts the donor inside the range of paint
+         this game already ships. Widening the lobe spends the same energy over
+         more of the panel, which is the read we actually want. */
+      if (m.clearcoat > 0 && m.clearcoatRoughness < 0.06) m.clearcoatRoughness = 0.06;
+      // and the soft knee, so whatever still lands hot compresses with its hue
+      // intact instead of clipping to white — see tameSpecular
+      tameSpecular(m);
+      reg(m);
+    }
+  });
+}
+
+/* ------------------------------------------------------------- the hood ----
+
+   "You render all the inside stuff of the car. But I don't see a hood."
+
+   And there is one. The exterior donor (volvo-s90-body-lite.glb, already
+   loaded, already resident) carries the bonnet — it is just hidden wholesale,
+   because every interior camera does `exteriorG.visible = !inside`. So this
+   does not build geometry: it takes a SUBSET of a buffer that is already on
+   the GPU and draws it from the inside.
+
+   WHAT WAS MEASURED, before any of it was written:
+
+   - The donor's painted shell is ONE mesh, "Body Frame_Car Paint_0", 25,770
+     triangles — gltf-transform's `join` merged the body panels by material at
+     build time, so there is no node called Hood to switch on. But the hood is
+     still separable, and exactly: it is a CONNECTED COMPONENT of that mesh,
+     1,546 triangles, disjoint from the rest by index alone (welding
+     coincident positions first changes nothing, so the split needs no
+     position hashing at runtime — just union-find over the index buffer).
+   - Its bounds in donor metres are HOOD_BOX below: 1.62 m across, 1.39 m long,
+     top surface from 1.056 m at the cowl down to about 0.89 m at the front
+     lip. That is a bonnet and nothing else — the front fenders, the fascia and
+     the bumper are their own components and stay hidden.
+
+   WHERE IT GOES, and why not simply un-hiding it in place: bodymodel.ts fits
+   the donor body to the car's spec box on each axis independently, and for
+   kaze that is a 0.861 SQUASH in y (donor roof 1.44 into shell roof 1.24) plus
+   0.891 in z. The donor CABIN gets no such squash — cockpitmodel.ts hangs it
+   at (1, sx, sx) with sx = 1 here — so the fitted hood sits ~14 cm low and
+   ~20 cm back relative to the dash it belongs to, which puts it under the pad
+   and out of sight, and puts its cowl somewhere inside the firewall.
+
+   So the hood is re-hung the way the cabin is: donor coordinates, parented
+   under cockpit.group with the same counter-scale. Then it cannot clip the
+   dash, because in the donor's own space a car's bonnet does not intersect its
+   own dashboard — the two halves are cuts of ONE model and this puts them back
+   in one frame. Confirmed against the manifests rather than assumed: the
+   body-lite's door-mirror component lands at x 0.801..1.005, y 1.017..1.148,
+   z 0.534..0.692, which is volvo-s90-full.json's `sideMirror` bbox to three
+   decimal places. Same space, same origin.
+
+   Parenting into cockpit.group also inherits the camera rule for free, the
+   way bodymodel.ts's group inherits the opposite one: engine.ts already shows
+   that group only from inside and hides it for the mirror pass, so the hood
+   appears in exactly the views that were missing it and nowhere else.
+
+   COST: one draw call and 1,546 triangles while inside. No new vertex data —
+   the hood geometry SHARES the source mesh's attribute buffers and owns only
+   a 4,638-entry index array — and no new material, so no new shader program.
+   The GLB is untouched, so the asset budget is untouched.
+
+   WHAT IT LOOKS LIKE is the part that needs eyes. From the dashcam mount the
+   hood is a SLIVER: swept against the sightline that grazes the donor pad's
+   forward-top corner (y 1.072, z 1.118 in volvo-s90-full.json's `shell`), its
+   crown clears that line by 2.6 cm at z 2.1 and by about 1-2 cm from z 1.7 to
+   z 2.35, and falls back under it at both ends. That is roughly a 10-15 px
+   band along the bottom of a 1080p frame — which is what a real dashcam
+   mounted at the glass actually sees of a bonnet, but it is a fine margin and
+   it moves with POV_MOUNT. Hence window.__hood: `.dy = 0.03` lifts it into
+   frame, `.on = 0` takes it back out. */
+
+/** The hood component's bounds in DONOR metres, measured off
+    volvo-s90-body-lite.glb, and the target the component search matches
+    against. Bounds rather than a triangle count so the search stays a
+    statement about the car and not about a build's decimation. */
+const HOOD_BOX = { x: 0.8094, y0: 0.7858, y1: 1.0555, z0: 0.9934, z1: 2.3869 };
+/** How far off HOOD_BOX a component may be and still be the hood, in metres.
+    Loose enough to survive a re-decimation moving a vertex, tight enough that
+    nothing else in the shell can be mistaken for it: the closest non-hood
+    component is the front fascia, and its nearest bound misses by 0.20 m —
+    more than three times this. Checked over all 30 components; exactly one
+    matches. */
+const HOOD_TOL = 0.06;
+
+/** Lift the donor's bonnet out of the exterior body and hang it in the cabin.
+    Returns the group to parent it, or null if this donor has no hood the
+    search recognises — in which case nothing is added and the interior views
+    are exactly as they were. */
+function attachHood(cockpit: Cockpit, donor: THREE.Object3D): THREE.Group | null {
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  /* Only meshes whose own donor-space bounds could CONTAIN the hood are walked
+     at all, biggest first — on this asset six pass that test (the shell, the
+     doors, the mirror glass, even the brake discs, all of which straddle the
+     hood's band) and the shell is both the first tried and the only one that
+     matches, so exactly one union-find pass actually runs.
+
+     `m.matrix` IS the donor-space matrix: bodymodel.ts applies its fit to the
+     scene ROOT and leaves the nodes alone, so a node's local transform is
+     still the one the donor shipped. updateMatrix() first for the same reason
+     cockpitmodel.ts calls it — a node straight off the loader has its TRS but
+     has not necessarily been through a frame. */
+  const cands: THREE.Mesh[] = [];
+  donor.traverse((o) => {
+    const m = o as THREE.Mesh;
+    const geo = m.geometry as THREE.BufferGeometry;
+    if (!m.isMesh || !geo?.index) return;
+    m.updateMatrix();
+    geo.computeBoundingBox();
+    box.copy(geo.boundingBox!).applyMatrix4(m.matrix);
+    if (
+      box.min.x > -HOOD_BOX.x + HOOD_TOL || box.max.x < HOOD_BOX.x - HOOD_TOL ||
+      box.min.y > HOOD_BOX.y0 + HOOD_TOL || box.max.y < HOOD_BOX.y1 - HOOD_TOL ||
+      box.min.z > HOOD_BOX.z0 + HOOD_TOL || box.max.z < HOOD_BOX.z1 - HOOD_TOL
+    ) return;
+    cands.push(m);
+  });
+  cands.sort((a, b) => b.geometry.index!.count - a.geometry.index!.count);
+
+  let src: THREE.Mesh | null = null;
+  let hoodIdx: number[] | null = null;
+  for (const m of cands) {
+    hoodIdx = hoodIndices(m.geometry as THREE.BufferGeometry, m.matrix);
+    if (hoodIdx) { src = m; break; }
+  }
+  if (!src || !hoodIdx) {
+    console.warn("[player] body donor has no hood component — interior hood skipped");
+    return null;
+  }
+
+  const srcGeo = src.geometry as THREE.BufferGeometry;
+  /* Shares every attribute with the source mesh — same buffers, same GPU
+     upload — and owns only its own index. This is what makes the hood cost a
+     draw call rather than a copy of the bodyshell.
+
+     Sharing survives dispose() below because dispose() is a whole-rig
+     teardown: it traverses carGroup and disposes every geometry it finds,
+     which includes both the hood's and the shell it borrows from, and three
+     treats a second removal of the same attribute buffer as a no-op. Nothing
+     disposes one of the pair on its own. */
+  const geo = new THREE.BufferGeometry();
+  for (const name of Object.keys(srcGeo.attributes))
+    geo.setAttribute(name, srcGeo.attributes[name]);
+  geo.setIndex(hoodIdx);
+  /* Bounds computed from the hood's own vertices rather than left to
+     computeBoundingSphere(), which walks the whole POSITION attribute and
+     would hand the frustum test the entire bodyshell's sphere. */
+  const pos = srcGeo.attributes.position;
+  box.makeEmpty();
+  for (const i of hoodIdx) box.expandByPoint(v.fromBufferAttribute(pos, i));
+  geo.boundingBox = box.clone();
+  geo.boundingSphere = box.getBoundingSphere(new THREE.Sphere());
+
+  const mesh = new THREE.Mesh(geo, src.material);
+  mesh.position.copy(src.position);
+  mesh.quaternion.copy(src.quaternion);
+  mesh.scale.copy(src.scale);
+  /* Layer 1, like the rest of the cabin (cockpit.ts's closing traverse): it is
+     what keeps the interior out of the planar road-reflection camera, which
+     runs on layer 0 only. A hood left on layer 0 would print a bonnet floating
+     in the tarmac with no car attached to it. */
+  mesh.layers.set(1);
+  /* Left OFF deliberately. The exterior body is the car's shadow caster and it
+     is hidden from these cameras; a hood casting on its own would put a
+     bonnet-shaped shadow on the road under a car with no other shadow. */
+  mesh.castShadow = false;
+
+  /* The donor-space frame, inside the cabin's. cockpit.group carries a
+     non-uniform (sx, 1, 1) so procedural trim fits each car's width; the
+     counter-scale turns that into a uniform sx, exactly as cockpitmodel.ts
+     does for the donor dash — read once here rather than per frame because
+     player.ts has already set the parent's scale by the time a donor lands. */
+  const space = new THREE.Group();
+  space.scale.set(1, cockpit.group.scale.x, cockpit.group.scale.x);
+  space.add(mesh);
+  space.visible = false; // engine.ts turns it on with the J flag
+  cockpit.group.add(space);
+  return space;
+}
+
+/** Union-find over `geo`'s index buffer, returning the indices of the one
+    connected component that matches HOOD_BOX — or null if none does. No
+    position welding: the hood is already disjoint by index on this asset
+    (verified against a welded pass, which finds the identical 1,546-triangle
+    component), so this is one linear walk of 26k triangles at load and no
+    hashing of 13k positions. */
+function hoodIndices(geo: THREE.BufferGeometry, mat: THREE.Matrix4): number[] | null {
+  const idx = geo.index!;
+  const n = geo.attributes.position.count;
+  const parent = new Int32Array(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+  const find = (a: number) => {
+    while (parent[a] !== a) a = parent[a] = parent[parent[a]];
+    return a;
+  };
+  const uni = (a: number, b: number) => {
+    a = find(a); b = find(b);
+    if (a !== b) parent[b] = a;
+  };
+  const nTri = idx.count / 3;
+  for (let t = 0; t < nTri; t++) {
+    const a = idx.getX(t * 3), b = idx.getX(t * 3 + 1), c = idx.getX(t * 3 + 2);
+    uni(a, b); uni(b, c);
+  }
+  // one bbox per component, in donor space
+  const pos = geo.attributes.position;
+  const boxes = new Map<number, THREE.Box3>();
+  const v = new THREE.Vector3();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    let b = boxes.get(r);
+    if (!b) boxes.set(r, (b = new THREE.Box3().makeEmpty()));
+    b.expandByPoint(v.fromBufferAttribute(pos, i).applyMatrix4(mat));
+  }
+  let hit = -1;
+  for (const [r, b] of boxes) {
+    if (
+      Math.abs(b.min.x + HOOD_BOX.x) > HOOD_TOL || Math.abs(b.max.x - HOOD_BOX.x) > HOOD_TOL ||
+      Math.abs(b.min.y - HOOD_BOX.y0) > HOOD_TOL || Math.abs(b.max.y - HOOD_BOX.y1) > HOOD_TOL ||
+      Math.abs(b.min.z - HOOD_BOX.z0) > HOOD_TOL || Math.abs(b.max.z - HOOD_BOX.z1) > HOOD_TOL
+    ) continue;
+    hit = r;
+    break;
+  }
+  if (hit < 0) return null;
+  const out: number[] = [];
+  for (let t = 0; t < nTri; t++) {
+    const a = idx.getX(t * 3);
+    if (find(a) !== hit) continue;
+    out.push(a, idx.getX(t * 3 + 1), idx.getX(t * 3 + 2));
+  }
+  return out.length ? out : null;
+}
+
 export interface PlayerRig {
   spec: CarSpec;
   carGroup: THREE.Group;
@@ -315,6 +617,12 @@ export interface PlayerRig {
       donor has loaded (and before it is known whether it ever will): the state
       is remembered and applied when it arrives. */
   setBodyImported(on: boolean): void;
+  /** The donor's HOOD, lifted out of the exterior body and re-hung inside the
+      cabin so the interior cameras can see it — null until the body donor has
+      landed, and on any car that has no body donor. A group in donor space;
+      engine.ts owns its `visible` and the window.__hood nudge. See
+      attachHood(). */
+  readonly hood: THREE.Group | null;
   pivFL: THREE.Group;
   pivFR: THREE.Group;
   wheels: THREE.Group[];
@@ -770,14 +1078,35 @@ export function buildPlayerCar(
      exactly the mismatch the single flag exists to prevent. So the desired
      state is recorded whether or not the handle exists yet, and applied on
      arrival. */
-  const bodyRef = { model: null as BodyModelHandle | null, want: true };
+  const bodyRef = {
+    model: null as BodyModelHandle | null,
+    want: true,
+    hood: null as THREE.Group | null,
+  };
   const bodyDonor = BODY_MODEL[spec.id];
   if (bodyDonor)
     attachBodyModel(exteriorG, P, bodyDonor, [pivFL, pivFR, wRL, wRR, ...glowSprites],
-      (h) => { bodyRef.model = h; h?.setActive(bodyRef.want); });
+      (h) => {
+        bodyRef.model = h;
+        h?.setActive(bodyRef.want);
+        if (h) lightDonorBody(h.group, env, withEnv);
+        /* Its own try/catch, and not for tidiness: bodymodel.ts runs this
+           callback inside one of its own, and a throw from here would be
+           caught THERE and answered by calling this callback a second time
+           with null — a hood that failed to split would silently disown the
+           body that had just loaded fine. The car matters, the hood does
+           not. */
+        if (h)
+          try {
+            bodyRef.hood = attachHood(cockpit, h.group);
+          } catch (e) {
+            console.warn("[player] interior hood skipped", e);
+          }
+      });
 
   return {
     spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,
+    get hood() { return bodyRef.hood; },
     get cockpitModel() { return rigRef.model; },
     cockpitReady,
     get bodyModel() { return bodyRef.model; },

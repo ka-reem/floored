@@ -4,7 +4,7 @@ import { rand, randi, TAU } from "./util";
 import { makeTex, loadPbrSet } from "./textures";
 import { buildInstrumentCluster } from "./dashboard";
 import { loadProfile, resolveRenderTier, TIER_CAPS, type SpeedUnits } from "./settings";
-import { drawCarScreen, type ScreenMusic } from "./carscreen";
+import { drawCarScreen, type ScreenMusic, type ScreenUI } from "./carscreen";
 import type { WorldData } from "./world/data";
 import type { CarState } from "./physics";
 import type { Npc } from "./traffic";
@@ -63,9 +63,11 @@ export interface Cockpit {
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
   /** Repaint the head unit. Takes the world/car/traffic the HUD minimap
    * takes, because the nav pane now draws that same map (carscreen.ts).
-   * `time` is the in-game clock in hours, `now` the engine seconds clock. */
+   * `time` is the in-game clock in hours, `now` the engine seconds clock.
+   * `ui` is which pane is on show and what the cursor is over — engine.ts owns
+   * that, because engine.ts is where the pointer is. */
   drawScreen(world: WorldData, car: CarState, npcs: Npc[], time: number, now: number,
-            music?: ScreenMusic): void;
+            music?: ScreenMusic, ui?: ScreenUI): void;
   dropletsUpdate(dt: number, wiping: boolean, wiperRotZ: number, raining: boolean, speed: number): void;
 
   /* --- swap points for an imported dash (cockpitmodel.ts) ------------------
@@ -113,6 +115,25 @@ export const GLASS_REST = { y: 1.14, z: 1.0, intensity: 0.5, color: 0xbfd0ff };
     counterpart, GLASS_REST above, is OUTSIDE light coming in and is not on the
     switch: it is what gives the pad its grazing sheen when the cabin is dark. */
 export const CABIN_DOME = 0.45;
+
+/* The wiper sweep, as two numbers rather than five copies of two numbers.
+
+   `rest` is the RAISED end of the travel and `park` is the swept-down end,
+   laid along the base of the glass. The arms are built pointing +Y (mkWiper
+   below), so a rotation.z near zero stands one UPRIGHT across the windscreen
+   and -1.35 rad (-77 deg) lays it down.
+
+   Which end is which is the whole reason this is exported. engine.ts eased the
+   arms back to a hardcoded -0.12 when the rain stopped — the raised end — and
+   left two wipers standing up across the glass in clear weather, reported as
+   "the windshield wipers get stuck upwards not down". Nothing about a loose
+   -0.12 says which end of a travel it names, and there were three of them.
+   Now the sweep's two ends are named once and every site derives from them:
+   the build pose, wiperCanvasWipe's mapping back to sweep phase, and
+   engine.ts's animation and park.
+
+   Retuning the sweep moves all of them together, which is the point. */
+export const WIPER = { rest: -0.12, sweep: 1.23, park: -0.12 - 1.23 };
 
 /* Dimensions the fixed interior geometry was modelled against (first car's shell) */
 export const COCKPIT_REF = { belt: 0.82, W: 1.84 };
@@ -1528,12 +1549,13 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   endRegion();
 
   function drawScreen(world: WorldData, car: CarState, npcs: Npc[], time: number, now: number,
-                      music?: ScreenMusic) {
-    /* CarPlay-style split head unit — music card left, live nav map right.
-       All rendering lives in carscreen.ts; this canvas/texture and the call
-       cadence (engine.ts, every ~45 ms in cockpit/POV) are unchanged. The map
-       throttles itself below that cadence — see NAV_MS there. */
-    drawCarScreen(scrCv, world, car, npcs, time, now, music);
+                      music?: ScreenMusic, ui?: ScreenUI) {
+    /* CarPlay-style head unit — the live nav map filling the panel, with the
+       music player as a second view a click away (desktop only). All rendering
+       lives in carscreen.ts; this canvas/texture and the call cadence
+       (engine.ts, every ~45 ms in cockpit/POV) are unchanged. The map throttles
+       itself below that cadence — see NAV_MS there. */
+    drawCarScreen(scrCv, world, car, npcs, time, now, music, ui);
     scrTex.needsUpdate = true;
   }
 
@@ -1886,6 +1908,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
 
   /* ------------------------------------------------------------- wipers */
 
+  // travel from WIPER.rest (raised) to WIPER.park (laid down); see WIPER
   const wiperMat = new THREE.MeshStandardMaterial({ color: 0x0c0d11, roughness: 0.7 });
   const wiperA = new THREE.Group(), wiperB = new THREE.Group();
   function mkWiper() {
@@ -1903,7 +1926,12 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   wiperA.position.set(0.32, 0.86, 0.95);
   wiperB.position.set(-0.28, 0.86, 0.95);
   wiperA.rotation.x = wiperB.rotation.x = -0.42;
-  wiperA.rotation.z = wiperB.rotation.z = -0.12;
+  /* Built PARKED, not at rest. The car starts dry, so the first pose anyone
+     could see is the parked one — and engine.ts's park test is "are you at
+     WIPER.park", so building them anywhere else would have them travelling
+     (and briefly visible) on the first frame of a drive that has had no rain
+     in it. */
+  wiperA.rotation.z = wiperB.rotation.z = WIPER.park;
   interiorG.add(wiperA, wiperB);
   wiperA.visible = wiperB.visible = false;
 
@@ -1926,7 +1954,9 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   let dropAcc = 0;
   function wiperCanvasWipe(zRot: number) {
     for (const px of [352, 160]) {
-      const a = (-zRot - 0.12) / 1.23;
+      // rotation.z back to sweep phase 0..1; the inverse of engine.ts's
+      // `WIPER.rest - ph * WIPER.sweep`, off the same two numbers
+      const a = (WIPER.rest - zRot) / WIPER.sweep;
       dropCtx.save();
       dropCtx.translate(px, 235);
       dropCtx.rotate(-0.5 + a * 1.35);

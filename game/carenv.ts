@@ -67,13 +67,51 @@ const tracked = new Set<EnvMat>();
  *  so a night term would just dim it for no reason. */
 const isGameEnv = (m: EnvMat) => m.envMap === hdrEnv || m.envMap === baseEnv;
 
+/* How much of the lift a near-MIRROR material is allowed to take.
+
+   The lift's whole job is to put light back on the bodywork, and bodywork is
+   rough enough (procedural paint 0.36, the donor's Car_Paint 0.427) to spread
+   what it reflects across a panel. The glazing is not: the procedural glass
+   runs roughness 0.05 and the mirror caps 0.03, and the donor brings a Chrome
+   at 0.038 and a Black_Glossy at 0.032. Those reflect the HDRI almost sharply,
+   and the HDRI puts 75% of its energy in the brightest 0.1% of its pixels — so
+   a lamp lands on them as a near-pinpoint at whatever multiple of its own
+   radiance the lift says.
+
+   Past the composite's ACES knee a coloured highlight stops being coloured and
+   becomes a white one (post.ts: the vibrance term falls to 1.0 as luma climbs,
+   and ACES desaturates on its own above roughly 0.8 output luma). That is the
+   standing complaint — light that blows out instead of fading — and it is what
+   was capping the lift: 3 was as far as a FLAT multiplier could go before the
+   sharp materials went white, on a number that exists for the matte ones.
+
+   So the extra above LIFT_SAFE is weighted by roughness. Rough panels take all
+   of it, mirrors take none of it, and the crossover is a smoothstep rather than
+   a threshold so nothing prints a knee as a car turns. Below LIFT_SAFE the
+   weighting is bypassed entirely, which keeps it continuous through dawn (both
+   branches agree at LIFT_SAFE) and means nothing is ever DARKER than it was
+   before this existed. */
+const LIFT_SAFE = 3;
+const LIFT_SHARP_ROUGH = 0.06;  // at or below: none of the extra
+const LIFT_FULL_ROUGH = 0.22;   // at or above: all of it
+
+function liftFor(m: EnvMat): number {
+  if (lift <= LIFT_SAFE) return lift;
+  const r = (m as { roughness?: number }).roughness;
+  if (typeof r !== "number") return lift;
+  const t = Math.min(
+    1, Math.max(0, (r - LIFT_SHARP_ROUGH) / (LIFT_FULL_ROUGH - LIFT_SHARP_ROUGH))
+  );
+  return LIFT_SAFE + (lift - LIFT_SAFE) * (t * t * (3 - 2 * t));
+}
+
 /** The authored intensity is stashed on first sight, so neither the HDRI swap
  *  nor a change of lift ever compounds on the previous one. */
 function writeIntensity(m: EnvMat) {
   if (m.userData.baseEnvIntensity === undefined)
     m.userData.baseEnvIntensity = m.envMapIntensity ?? 1;
   const base = m.userData.baseEnvIntensity as number;
-  m.envMapIntensity = base * (m.envMap === hdrEnv ? envScale : 1) * lift;
+  m.envMapIntensity = base * (m.envMap === hdrEnv ? envScale : 1) * liftFor(m);
 }
 
 /** Point one material at whichever env is live, at the matching intensity. */

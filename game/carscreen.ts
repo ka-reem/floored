@@ -6,11 +6,27 @@ import type { WorldData } from "./world/data";
 import type { CarState } from "./physics";
 import type { Npc } from "./traffic";
 
-/* CarPlay-style head unit for the cockpit's centre-stack screen: a split UI on
-   the existing 256x160 canvas — a nav map on the right (~60%), a music
-   player card on the left (~40%), thin bezel and a glass reflection over the
-   lot. (Map on the RIGHT: in the dashcam POV the left edge of the tablet is
-   partially occluded by dash geometry, so the important pane lives right.)
+/* CarPlay-style head unit for the cockpit's centre-stack screen — one 256x160
+   canvas, and ONE PANE ON IT AT A TIME.
+
+   It used to be split 60/40, nav map right and a music card left. It is not
+   any more: the map now fills the whole panel and the music player is a
+   SECOND VIEW behind a click on the screen. Why:
+
+   - The map is the only thing on here anyone reads while driving, and at 154
+     px it was reading it through a letterbox. Full width is +66% of pane area
+     and about 100 m more road either side at the same zoom.
+   - The music card was a display, not a control. Its transport glyphs were
+     clickable — nobody could tell, because a static card at a steep angle
+     through the dashcam degrade looks exactly like a picture of a stereo.
+     Given a view of its own it can afford real buttons with real hover
+     states, which is what makes them read as buttons.
+   - On TOUCH there is no music view at all, on purpose. Music is disabled on
+     touch anyway (music.ts `enabled`), so a transport there would be a row of
+     dead buttons; and a tap-to-switch would put a mode change under the
+     player's thumb in the one view they actually need. Phones get the map,
+     full stop — engine.ts never sets `clickable`, so nothing is drawn to
+     suggest otherwise.
 
    The nav pane is the SAME MAP the HUD overlay draws — drawMiniMap from
    minimap.ts, into an offscreen pane canvas, with the pane's own scale and
@@ -30,24 +46,26 @@ import type { Npc } from "./traffic";
      between, the pane costs one drawImage; the marker is drawn live on top at
      the full repaint rate, offset by how far the car has moved since the bake,
      so the "you" arrow never stutters even though the world under it steps.
-   - The MUSIC CARD renders to an offscreen canvas and is repainted only when
-     its content changes: a track change (~ every 2.5-3.5 real minutes) or the
-     progress bar growing by a pixel (~ every 2.5 s). Per frame it costs one
-     drawImage.
+   - The MUSIC VIEW renders to an offscreen canvas and is repainted only when
+     its content changes: a track change (~ every 2.5-3.5 real minutes), the
+     progress bar growing by a pixel (~ every 2.5 s), the play/pause state
+     flipping, or the cursor crossing a button. Per frame it costs one
+     drawImage — and while the map is up it costs nothing at all, because the
+     view is never painted until it is asked for.
    - The GLASS overlays (bezel, reflection, vignette) reuse cached gradients:
      three fills and a stroke per frame. */
 
 /* ------------------------------------------------------------- geometry -- */
 
 const W = 256, H = 160;
-const NAV_W = 154;                 // split: right 60% map, left 40% music
-const NAV_X = W - NAV_W;           // nav pane spans NAV_X..W; music pane 0..NAV_X
-/* Map zoom, pixels per metre. The HUD overlay runs 0.4 on a 172 px canvas;
-   the pane is 154x160 logical and, in the DASHCAM frame it is tuned for, ends
-   up about the same size on screen but read ~26 degrees off-normal. So it is
-   zoomed a notch tighter than the overlay: chunkier roads survive the angle
-   and the degrade, and ±140 x ±145 m still holds several blocks of town, the
-   whole width of the deck and the ramp you are aiming at. */
+/* Map zoom, pixels per metre. The HUD overlay runs 0.4 on a 172 px canvas.
+   The pane is now the full 256x160 and, in the DASHCAM frame it is tuned for,
+   is read ~26 degrees off-normal, so it stays a notch tighter than the
+   overlay: chunkier roads survive the angle and the degrade. At 0.55 over 256
+   px it holds ±233 x ±145 m — several blocks of town, the whole width of the
+   deck and the ramp you are aiming at. Widening the pane widened the VIEW
+   rather than the zoom on purpose: the same roads at the same weight, with
+   more of them. */
 const NAV_SC = 0.55;
 /* Map repaint period, ms. drawScreen itself runs at ~45 ms (engine.ts's
    gauge cadence), and walking the road graph twice as often as the HUD does
@@ -57,8 +75,56 @@ const NAV_SC = 0.55;
    back, since between bakes the arrow slides over a held map instead of the
    whole pane freezing. At 200 km/h a bake is 5 m of travel, under 3 px. */
 const NAV_MS = 90;
-const CARD = { x: 6, y: 6, w: 91, h: 148 };
-const BAR_X = 15, BAR_W = 73, BAR_Y = 128; // progress bar, inside the card
+
+/* --- music view: the layout, and the ONE place the hit rects come from -----
+
+   music.ts used to carry a copy of these numbers so it could hit-test a click
+   for engine.ts, with a comment saying they had to be kept in agreement by
+   hand and ought to be exported from here instead. They are now: hitScreen()
+   below is the only hit test, it reads the same constants the painter does,
+   and music.ts is out of the geometry business. */
+const ART = { x: 14, y: 34, s: 96 };   // album art square
+const COL_X = 124, COL_R = 244;        // the right-hand column: text + controls
+const BAR = { x: COL_X, y: 96, w: COL_R - COL_X, h: 4 };
+/* Transport buttons: three 34 px squares on an 8 px gutter, filling the
+   column exactly (124 + 3*34 + 2*8 = 242). 34 px of a 256 px panel is a
+   generous target for a cursor and, more to the point, big enough to carry a
+   visible hover fill — a glyph alone changing colour is not a state anyone
+   notices at this size through the dashcam degrade. */
+const BTN_S = 34, BTN_Y = 118;
+const BTN_X = [COL_X, COL_X + 42, COL_X + 84];
+/* Back to the map. Top-left, where the eye lands first, and the only way out
+   of this view: dead space deliberately does NOTHING here, so a click that
+   misses a button cannot silently throw the view away. */
+const BACK = { x: 8, y: 7, w: 54, h: 18 };
+/* And the way IN, on the map view: a pill in the top-right corner, clear of
+   the status strip (x 5..93) and the route banner (bottom). The whole panel
+   is the button — see hitScreen — and this is what says so. */
+const PILL = { x: W - 34, y: 6, w: 26, h: 16 };
+
+/** Which pane the head unit is showing. */
+export type ScreenView = "map" | "music";
+/** What a click on the panel does, and equally what the cursor is over. */
+export type ScreenAction = "prev" | "toggle" | "next" | "music" | "map";
+
+/** Map a UV hit on the head-unit plane to what a click there does, or null if
+    it landed on dead space. `v` is flipped because UV origin is bottom-left
+    while the canvas the panel is drawn into is top-down.
+
+    Hover and click ask the same question of the same function, so the thing
+    that lit up is always the thing that responds. */
+export function hitScreen(u: number, v: number, view: ScreenView): ScreenAction | null {
+  const x = u * W, y = (1 - v) * H;
+  if (x < 0 || x > W || y < 0 || y > H) return null;
+  if (view === "map") return "music";  // the whole map panel opens the player
+  if (x >= BACK.x && x <= BACK.x + BACK.w && y >= BACK.y && y <= BACK.y + BACK.h) return "map";
+  if (y >= BTN_Y && y <= BTN_Y + BTN_S) {
+    const ids: ScreenAction[] = ["prev", "toggle", "next"];
+    for (let i = 0; i < 3; i++)
+      if (x >= BTN_X[i] && x <= BTN_X[i] + BTN_S) return ids[i];
+  }
+  return null;
+}
 
 /* ------------------------------------------------------------ tracklist -- */
 
@@ -89,6 +155,10 @@ interface ScreenState {
   paintedIdx: number;      // last track painted into the music canvas
   paintedPx: number;       // last progress-bar width painted
   paintedTitle: string;    // last live-player title painted; "" when on TRACKS
+  /** last hover target and play state painted, so the cursor crossing a button
+      (or the player being paused) is a repaint and nothing else is */
+  paintedHover: ScreenAction | null;
+  paintedPlaying: boolean;
   /** on-bypass latch: the pane has no y, so under/over the bridge crossing is
       disambiguated by continuity (see drawNav) */
   wasBy: boolean;
@@ -124,11 +194,12 @@ function stateFor(cv: HTMLCanvasElement): ScreenState {
   vign.addColorStop(0, "rgba(0,0,0,0)");
   vign.addColorStop(1, "rgba(0,0,0,.42)");
   const music = document.createElement("canvas");
-  music.width = (W - NAV_W) * scale;
-  music.height = H * scale;
+  music.width = Math.max(1, Math.round(W * scale));
+  music.height = Math.max(1, Math.round(H * scale));
   s = {
     g, reflect, vign, music, mg: music.getContext("2d")!,
     trackIdx: 0, trackStart: 0, paintedIdx: -1, paintedPx: -1, paintedTitle: "",
+    paintedHover: null, paintedPlaying: true,
     wasBy: false,
     scale, nav: null, navAt: -1e9, navCX: 0, navCZ: 0,
   };
@@ -148,10 +219,10 @@ function rr(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: num
   g.closePath();
 }
 
-/* ---------------------------------------------------------- music card -- */
+/* ---------------------------------------------------------- music view -- */
 
 /** Procedural square album art: a two-stop gradient plus one simple motif per
-    track, so each cover is distinct at 68 px. */
+    track, so each cover is distinct at 96 px. */
 function paintArt(mg: CanvasRenderingContext2D, t: Track, x: number, y: number, s: number) {
   const gr = mg.createLinearGradient(x, y, x + s, y + s);
   gr.addColorStop(0, t.c0);
@@ -163,45 +234,45 @@ function paintArt(mg: CanvasRenderingContext2D, t: Track, x: number, y: number, 
   const cx = x + s / 2, cy = y + s / 2;
   switch (t.motif) {
     case 0: { // low sun over a grid horizon
-      mg.beginPath(); mg.arc(cx, cy - 6, 14, 0, TAU); mg.fill();
+      mg.beginPath(); mg.arc(cx, cy - 8, 20, 0, TAU); mg.fill();
       mg.fillStyle = "rgba(0,0,0,.35)";
-      for (let i = 0; i < 3; i++) mg.fillRect(x, cy - 4 + i * 5, s, 2);
+      for (let i = 0; i < 3; i++) mg.fillRect(x, cy - 6 + i * 7, s, 3);
       break;
     }
     case 1: { // skyline bars
       mg.fillStyle = "rgba(0,0,0,.4)";
-      for (let i = 0; i < 5; i++) mg.fillRect(x + 6 + i * 12, y + 18 + ((i * 13) % 22), 8, s);
+      for (let i = 0; i < 5; i++) mg.fillRect(x + 8 + i * 17, y + 26 + ((i * 19) % 31), 11, s);
       break;
     }
     case 2: { // overpass wedge
-      mg.beginPath(); mg.moveTo(x + 4, y + s - 8); mg.lineTo(cx, y + 10); mg.lineTo(x + s - 4, y + s - 8);
+      mg.beginPath(); mg.moveTo(x + 6, y + s - 11); mg.lineTo(cx, y + 14); mg.lineTo(x + s - 6, y + s - 11);
       mg.closePath(); mg.fill();
       break;
     }
     case 3: { // twin headlight rings
-      mg.lineWidth = 3;
-      mg.beginPath(); mg.arc(cx - 12, cy, 10, 0, TAU); mg.stroke();
-      mg.beginPath(); mg.arc(cx + 12, cy, 10, 0, TAU); mg.stroke();
+      mg.lineWidth = 4;
+      mg.beginPath(); mg.arc(cx - 17, cy, 14, 0, TAU); mg.stroke();
+      mg.beginPath(); mg.arc(cx + 17, cy, 14, 0, TAU); mg.stroke();
       break;
     }
     case 4: { // streaking tail lights
-      mg.lineWidth = 4; mg.lineCap = "round";
+      mg.lineWidth = 6; mg.lineCap = "round";
       mg.strokeStyle = "rgba(255,255,255,.35)";
       for (let i = 0; i < 3; i++) {
-        mg.beginPath(); mg.moveTo(x + 6, y + 16 + i * 16); mg.lineTo(x + s - 10 - i * 8, y + 10 + i * 16); mg.stroke();
+        mg.beginPath(); mg.moveTo(x + 8, y + 23 + i * 23); mg.lineTo(x + s - 14 - i * 11, y + 14 + i * 23); mg.stroke();
       }
       break;
     }
     case 5: { // interchange loop
-      mg.lineWidth = 4;
-      mg.beginPath(); mg.arc(cx, cy, 16, 0.6, TAU - 0.6); mg.stroke();
-      mg.beginPath(); mg.moveTo(cx + 10, cy + 12); mg.lineTo(x + s - 6, y + s - 6); mg.stroke();
+      mg.lineWidth = 6;
+      mg.beginPath(); mg.arc(cx, cy, 23, 0.6, TAU - 0.6); mg.stroke();
+      mg.beginPath(); mg.moveTo(cx + 14, cy + 17); mg.lineTo(x + s - 8, y + s - 8); mg.stroke();
       break;
     }
     default: { // crescent
-      mg.beginPath(); mg.arc(cx + 4, cy - 4, 14, 0, TAU); mg.fill();
+      mg.beginPath(); mg.arc(cx + 6, cy - 6, 20, 0, TAU); mg.fill();
       mg.fillStyle = t.c1;
-      mg.beginPath(); mg.arc(cx - 2, cy - 8, 12, 0, TAU); mg.fill();
+      mg.beginPath(); mg.arc(cx - 3, cy - 11, 17, 0, TAU); mg.fill();
     }
   }
   // gloss
@@ -212,87 +283,110 @@ function paintArt(mg: CanvasRenderingContext2D, t: Track, x: number, y: number, 
   mg.fillRect(x, y, s, s * 0.5);
 }
 
-/** Repaint the whole card into the offscreen canvas. Only called when the
-    track flips or the progress bar grows a pixel. Coordinates here are in the
-    card's own canvas space (origin at screen x = 0 — the music pane is the
-    left pane, blitted at 0). */
-function paintMusic(st: ScreenState, px: number, live?: ScreenMusic) {
+/** Repaint the whole music view into the offscreen canvas. Only called when
+    something on it actually changed — see the repaint gate in drawCarScreen. */
+function paintMusic(
+  st: ScreenState, px: number, hover: ScreenAction | null, playing: boolean, live?: ScreenMusic
+) {
   /* `live` is the real player when one is running; TRACKS is the fallback
-     rotation for when it is not (mobile, where music is disabled, and any
-     caller that does not pass it). Without this the card cheerfully showed
+     rotation for when it is not. Without this the card cheerfully showed
      "Midnight Loop / Neon Arcade" while Beethoven was actually playing. */
   const mg = st.mg;
   const t = live
     ? { title: live.title, artist: live.composer, dur: 1,
         c0: live.art.a, c1: live.art.b, motif: st.trackIdx }
     : TRACKS[st.trackIdx];
-  const x0 = CARD.x, y0 = CARD.y, cw = CARD.w, ch = CARD.h;
-  const cx = x0 + cw / 2;
-  mg.clearRect(0, 0, st.music.width, st.music.height);
-  // pane ground behind the floating card
+  mg.clearRect(0, 0, W, H);
   mg.fillStyle = "#0a0d13";
-  mg.fillRect(0, 0, st.music.width, st.music.height);
-  // card
-  rr(mg, x0, y0, cw, ch, 9);
-  mg.fillStyle = "#141822";
+  mg.fillRect(0, 0, W, H);
+
+  /* --- back to the map -------------------------------------------------- */
+  const back = hover === "map";
+  rr(mg, BACK.x, BACK.y, BACK.w, BACK.h, 9);
+  mg.fillStyle = back ? "rgba(111,178,255,.22)" : "rgba(255,255,255,.05)";
   mg.fill();
-  mg.strokeStyle = "rgba(255,255,255,.08)";
+  mg.strokeStyle = back ? "rgba(150,200,255,.75)" : "rgba(255,255,255,.14)";
   mg.lineWidth = 1;
   mg.stroke();
+  mg.fillStyle = back ? "#eaf3ff" : "#9aa6bc";
+  mg.font = "700 8px sans-serif";
+  mg.textAlign = "left";
+  mg.fillText("‹  MAP", BACK.x + 9, BACK.y + 12.5);
+
   // header: generic note glyph + "Music" (no Apple marks anywhere)
   mg.fillStyle = "#8f98ab";
-  mg.beginPath(); mg.arc(x0 + 10, y0 + 12, 2.4, 0, TAU); mg.fill();
-  mg.fillRect(x0 + 11.6, y0 + 3.6, 1.4, 8.6);
-  mg.fillRect(x0 + 11.6, y0 + 3.6, 5.4, 2);
+  mg.beginPath(); mg.arc(COL_X + 3, BACK.y + 10, 2.4, 0, TAU); mg.fill();
+  mg.fillRect(COL_X + 4.6, BACK.y + 1.6, 1.4, 8.6);
+  mg.fillRect(COL_X + 4.6, BACK.y + 1.6, 5.4, 2);
   mg.font = "600 8px sans-serif";
-  mg.textAlign = "left";
-  mg.fillText("Music", x0 + 21, y0 + 15);
-  // album art
-  const as = 68, ax = (cx - as / 2) | 0, ay = y0 + 22;
+  mg.fillText("Music", COL_X + 14, BACK.y + 13);
+
+  /* --- album art -------------------------------------------------------- */
   mg.save();
-  rr(mg, ax, ay, as, as, 6);
+  rr(mg, ART.x, ART.y, ART.s, ART.s, 8);
   mg.clip();
-  paintArt(mg, t, ax, ay, as);
+  paintArt(mg, t, ART.x, ART.y, ART.s);
   mg.restore();
-  rr(mg, ax, ay, as, as, 6);
+  rr(mg, ART.x, ART.y, ART.s, ART.s, 8);
   mg.strokeStyle = "rgba(0,0,0,.5)";
+  mg.lineWidth = 1;
   mg.stroke();
-  // title / artist
-  mg.textAlign = "center";
+
+  /* --- title / artist --------------------------------------------------- */
+  mg.textAlign = "left";
   mg.fillStyle = "#eef1f7";
-  mg.font = "700 9px sans-serif";
+  mg.font = "700 13px sans-serif";
   let title = t.title;
-  while (mg.measureText(title).width > cw - 10 && title.length > 3) title = title.slice(0, -2);
-  mg.fillText(title, cx, ay + as + 14);
+  while (mg.measureText(title).width > COL_R - COL_X && title.length > 3)
+    title = title.slice(0, -2);
+  mg.fillText(title, COL_X, ART.y + 24);
   mg.fillStyle = "#98a1b3";
-  mg.font = "8px sans-serif";
-  mg.fillText(t.artist, cx, ay + as + 25);
-  // progress bar
-  const bx = BAR_X;
-  rr(mg, bx, BAR_Y, BAR_W, 3, 1.5);
+  mg.font = "10px sans-serif";
+  let artist = t.artist;
+  while (mg.measureText(artist).width > COL_R - COL_X && artist.length > 3)
+    artist = artist.slice(0, -2);
+  mg.fillText(artist, COL_X, ART.y + 40);
+
+  /* --- progress --------------------------------------------------------- */
+  rr(mg, BAR.x, BAR.y, BAR.w, BAR.h, BAR.h / 2);
   mg.fillStyle = "rgba(255,255,255,.16)";
   mg.fill();
   if (px > 2) {
-    rr(mg, bx, BAR_Y, px, 3, 1.5);
+    rr(mg, BAR.x, BAR.y, px, BAR.h, BAR.h / 2);
     mg.fillStyle = "#6fb2ff";
     mg.fill();
   }
-  // transport glyphs: prev | pause | next
-  const gy = BAR_Y + 15;
-  mg.fillStyle = "#dfe4ec";
-  /** dir = +1 points right, -1 points left */
-  const tri = (tx: number, dir: number) => {
-    mg.beginPath();
-    mg.moveTo(tx - dir * 4, gy - 4);
-    mg.lineTo(tx + dir * 3, gy);
-    mg.lineTo(tx - dir * 4, gy + 4);
-    mg.closePath();
+
+  /* --- transport -------------------------------------------------------- */
+  /* Three states per button and all three are visible on a dark screen at a
+     steep angle: rest is a faint plate that says "this is a control", hover
+     is a blue wash with a lit rim, and the glyph brightens with it. The rim
+     is what carries at the dashcam's angle — a fill alone flattens out. */
+  const ids: ScreenAction[] = ["prev", "toggle", "next"];
+  for (let i = 0; i < 3; i++) {
+    const bx = BTN_X[i], by = BTN_Y, on = hover === ids[i];
+    rr(mg, bx, by, BTN_S, BTN_S, 8);
+    mg.fillStyle = on ? "rgba(111,178,255,.26)" : "rgba(255,255,255,.055)";
     mg.fill();
-  };
-  tri(cx - 26, -1); tri(cx - 19, -1);       // prev ◀◀
-  mg.fillRect(cx - 4, gy - 5, 3, 10);       // pause
-  mg.fillRect(cx + 1, gy - 5, 3, 10);
-  tri(cx + 19, 1); tri(cx + 26, 1);         // next ▶▶
+    mg.strokeStyle = on ? "rgba(160,205,255,.85)" : "rgba(255,255,255,.10)";
+    mg.lineWidth = 1;
+    mg.stroke();
+    const cx = bx + BTN_S / 2, cy = by + BTN_S / 2;
+    mg.fillStyle = on ? "#ffffff" : "#c8d0de";
+    /** dir = +1 points right, -1 points left */
+    const tri = (tx: number, dir: number) => {
+      mg.beginPath();
+      mg.moveTo(tx - dir * 4.5, cy - 5);
+      mg.lineTo(tx + dir * 3.5, cy);
+      mg.lineTo(tx - dir * 4.5, cy + 5);
+      mg.closePath();
+      mg.fill();
+    };
+    if (i === 0) { tri(cx - 3, -1); tri(cx + 5, -1); }
+    else if (i === 2) { tri(cx + 3, 1); tri(cx - 5, 1); }
+    else if (playing) { mg.fillRect(cx - 4.5, cy - 6, 3.5, 12); mg.fillRect(cx + 1, cy - 6, 3.5, 12); }
+    else { tri(cx + 1, 1); }
+  }
 }
 
 /* ------------------------------------------------------------ nav pane -- */
@@ -304,7 +398,7 @@ function paintMusic(st: ScreenState, px: number, live?: ScreenMusic) {
 function bakeMap(st: ScreenState, world: WorldData, car: CarState, npcs: Npc[], now: number) {
   if (!st.nav) {
     const c = document.createElement("canvas");
-    c.width = Math.max(1, Math.round(NAV_W * st.scale));
+    c.width = Math.max(1, Math.round(W * st.scale));
     c.height = Math.max(1, Math.round(H * st.scale));
     c.getContext("2d")!.setTransform(st.scale, 0, 0, st.scale, 0, 0);
     st.nav = c;
@@ -312,7 +406,7 @@ function bakeMap(st: ScreenState, world: WorldData, car: CarState, npcs: Npc[], 
   st.navCX = car.x;
   st.navCZ = car.z;
   drawMiniMap(st.nav, world, car, npcs, now, {
-    sc: NAV_SC, w: NAV_W, h: H,
+    sc: NAV_SC, w: W, h: H,
     // the head unit has a bezel of its own, and the marker is drawn live
     // below rather than baked into a map that is up to NAV_MS stale
     frame: false, noPlayer: true,
@@ -320,16 +414,12 @@ function bakeMap(st: ScreenState, world: WorldData, car: CarState, npcs: Npc[], 
 }
 
 function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
-  car: CarState, npcs: Npc[], timeH: number, now: number, ms: number) {
+  car: CarState, npcs: Npc[], timeH: number, now: number, ms: number,
+  clickable: boolean, hover: ScreenAction | null) {
   if (ms - st.navAt >= NAV_MS) {
     st.navAt = ms;
     bakeMap(st, world, car, npcs, now);
   }
-
-  g.save();
-  g.beginPath();
-  g.rect(NAV_X, 0, NAV_W, H);
-  g.clip();
 
   /* The map's ground is laid down at 80% alpha — on the HUD it sits over the
      page, and that translucency is part of the overlay's look. Here it would
@@ -337,8 +427,8 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
      floor of its own first. One fill; it also covers the pane while the very
      first bake is still a frame away. */
   g.fillStyle = "#070910";
-  g.fillRect(NAV_X, 0, NAV_W, H);
-  if (st.nav) g.drawImage(st.nav, NAV_X, 0, NAV_W, H);
+  g.fillRect(0, 0, W, H);
+  if (st.nav) g.drawImage(st.nav, 0, 0, W, H);
 
   /* The marker — drawn every repaint, not every bake. The map behind it is
      centred on where the car was at NAV_MS ago (navCX/navCZ), so the arrow is
@@ -347,7 +437,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
      (+x runs LEFT), which is why the heading rotates by −h, not +h — the old
      fitted basemap here drew +x to the right and rotated the other way, so
      this map and the HUD's disagreed about which way a left turn bends. */
-  const mx = NAV_X + NAV_W / 2 - (car.x - st.navCX) * NAV_SC;
+  const mx = W / 2 - (car.x - st.navCX) * NAV_SC;
   const my = H / 2 - (car.z - st.navCZ) * NAV_SC;
   g.fillStyle = "rgba(80,150,255,.30)";
   g.beginPath();
@@ -381,7 +471,7 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
   st.wasBy = onBy;
 
   // status strip: clock (the game's in-game clock, hours 0-24) + GPS glyphs
-  rr(g, NAV_X + 5, 5, 88, 15, 7.5);
+  rr(g, 5, 5, 88, 15, 7.5);
   g.fillStyle = "rgba(8,11,18,.78)";
   g.fill();
   g.strokeStyle = "rgba(255,255,255,.07)";
@@ -391,50 +481,65 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
   g.fillStyle = "#dde4f0";
   g.font = "700 9px sans-serif";
   g.textAlign = "left";
-  g.fillText((hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm, NAV_X + 12, 16);
+  g.fillText((hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm, 12, 16);
   // signal bars
   g.fillStyle = "#9aa6bc";
-  for (let b = 0; b < 3; b++) g.fillRect(NAV_X + 60 + b * 4, 15 - b * 2.4, 2.6, 2.6 + b * 2.4);
+  for (let b = 0; b < 3; b++) g.fillRect(60 + b * 4, 15 - b * 2.4, 2.6, 2.6 + b * 2.4);
   // GPS arrow
   g.beginPath();
-  g.moveTo(NAV_X + 84, 8);
-  g.lineTo(NAV_X + 87.5, 16.5);
-  g.lineTo(NAV_X + 84, 14.5);
-  g.lineTo(NAV_X + 80.5, 16.5);
+  g.moveTo(84, 8);
+  g.lineTo(87.5, 16.5);
+  g.lineTo(84, 14.5);
+  g.lineTo(80.5, 16.5);
   g.closePath();
   g.fill();
 
+  /* The way through to the player. Drawn ONLY where there is one to reach —
+     engine.ts passes clickable false on touch and whenever the stereo is off,
+     and an affordance for a thing that cannot happen is worse than no
+     affordance. It lights whenever the cursor is anywhere on the panel,
+     because anywhere on the panel is what opens the player. */
+  if (clickable) {
+    const on = hover === "music";
+    rr(g, PILL.x, PILL.y, PILL.w, PILL.h, 8);
+    g.fillStyle = on ? "rgba(111,178,255,.30)" : "rgba(8,11,18,.78)";
+    g.fill();
+    g.strokeStyle = on ? "rgba(160,205,255,.85)" : "rgba(255,255,255,.10)";
+    g.lineWidth = 1;
+    g.stroke();
+    // the same generic note glyph the player's header carries
+    const nx = PILL.x + 10, ny = PILL.y + 11;
+    g.fillStyle = on ? "#ffffff" : "#9aa6bc";
+    g.beginPath(); g.arc(nx, ny, 2.4, 0, TAU); g.fill();
+    g.fillRect(nx + 1.6, ny - 8.6, 1.4, 8.6);
+    g.fillRect(nx + 1.6, ny - 8.6, 5.4, 2);
+  }
+
   // route banner along the bottom
-  rr(g, NAV_X + 5, H - 20, 96, 15, 7.5);
+  rr(g, 5, H - 20, 96, 15, 7.5);
   g.fillStyle = "rgba(8,11,18,.78)";
   g.fill();
   g.strokeStyle = "rgba(255,255,255,.07)";
+  g.lineWidth = 1;
   g.stroke();
   g.fillStyle = "#6fb2ff";
   g.beginPath();
-  g.moveTo(NAV_X + 14, H - 16);
-  g.lineTo(NAV_X + 17.5, H - 8.5);
-  g.lineTo(NAV_X + 14, H - 10.5);
-  g.lineTo(NAV_X + 10.5, H - 8.5);
+  g.moveTo(14, H - 16);
+  g.lineTo(17.5, H - 8.5);
+  g.lineTo(14, H - 10.5);
+  g.lineTo(10.5, H - 8.5);
   g.closePath();
   g.fill();
   g.fillStyle = "#cfd8e8";
   g.font = "600 8px sans-serif";
   g.fillText(
     onBy ? "湾岸 Bypass ルート" : onDeck ? "首都高 C1 環状線" : "一般道 Surface Rd",
-    NAV_X + 23, H - 9,
+    23, H - 9,
   );
-
-  g.restore();
 }
 
 /* ---------------------------------------------------------- entry point -- */
 
-/** Draw the whole head unit into `cv` (the cockpit's 256x160 screen canvas).
-    Caller flips the CanvasTexture's needsUpdate. `timeH` is the in-game clock
-    in hours; the music player runs on real time so the accelerated day/night
-    clock doesn't spin the playlist. `now` is the engine's seconds clock, and
-    goes straight through to the map (it blinks the police blips). */
 /** What the card needs from the live player (game/music.ts). Structural, not
     an import of MusicPlayer, so carscreen stays independent of the audio
     layer and the mock rotation below still works when it is absent. */
@@ -447,52 +552,78 @@ export interface ScreenMusic {
   progress: number;
 }
 
+/** Which pane to draw and what the cursor is doing to it. Owned by engine.ts,
+    which is where the pointer is: this module paints, it does not remember. */
+export interface ScreenUI {
+  view: ScreenView;
+  /** hitScreen() for wherever the cursor is, or null — including always null
+      on touch, which has no cursor. */
+  hover: ScreenAction | null;
+  /** whether a click on this panel can do anything at all. False on touch and
+      whenever the stereo is off; it is what suppresses the map view's music
+      pill, and with it any suggestion that there is a player to reach. */
+  clickable: boolean;
+}
+
+const UI_MAP: ScreenUI = { view: "map", hover: null, clickable: false };
+
+/** Draw the whole head unit into `cv` (the cockpit's 256x160 screen canvas).
+    Caller flips the CanvasTexture's needsUpdate. `timeH` is the in-game clock
+    in hours; the music player runs on real time so the accelerated day/night
+    clock doesn't spin the playlist. `now` is the engine's seconds clock, and
+    goes straight through to the map (it blinks the police blips). */
 export function drawCarScreen(
   cv: HTMLCanvasElement, world: WorldData, car: CarState, npcs: Npc[],
-  timeH: number, now: number, music?: ScreenMusic
+  timeH: number, now: number, music?: ScreenMusic, ui: ScreenUI = UI_MAP
 ) {
   const st = stateFor(cv);
   const g = st.g;
-
-  // ---- music state: advance on real time, repaint only on visible change --
   const ms = performance.now();
-  let px: number;
-  if (music) {
-    /* Real player: the progress bar and the artwork follow it, and a PAUSED
-       player freezes the bar rather than letting the mock timer walk it on.
-       trackIdx is only carried so the motif (the art pattern) still varies
-       per piece — the title/composer/colours come from the player. */
-    px = Math.min(BAR_W, (music.progress * BAR_W) | 0);
-    if (st.paintedTitle !== music.title) {
-      st.trackIdx = (st.trackIdx + 1) % TRACKS.length;
-      st.paintedTitle = music.title;
-      st.paintedPx = -1;
+
+  if (ui.view === "music") {
+    // ---- music state: advance on real time, repaint only on visible change --
+    let px: number;
+    let playing = true;
+    if (music) {
+      /* Real player: the progress bar and the artwork follow it, and a PAUSED
+         player freezes the bar rather than letting the mock timer walk it on.
+         trackIdx is only carried so the motif (the art pattern) still varies
+         per piece — the title/composer/colours come from the player. */
+      px = Math.min(BAR.w, (music.progress * BAR.w) | 0);
+      playing = music.playing;
+      if (st.paintedTitle !== music.title) {
+        st.trackIdx = (st.trackIdx + 1) % TRACKS.length;
+        st.paintedTitle = music.title;
+        st.paintedPx = -1;
+      }
+    } else {
+      if (!st.trackStart) st.trackStart = ms;
+      let t = TRACKS[st.trackIdx];
+      if ((ms - st.trackStart) / 1000 > t.dur) {
+        st.trackIdx = (st.trackIdx + 1) % TRACKS.length;
+        st.trackStart = ms;
+        t = TRACKS[st.trackIdx];
+      }
+      px = Math.min(BAR.w, ((ms - st.trackStart) / 1000 / t.dur * BAR.w) | 0);
     }
-    if (px !== st.paintedPx) {
-      paintMusic(st, px, music);
+    if (
+      px !== st.paintedPx || st.trackIdx !== st.paintedIdx ||
+      ui.hover !== st.paintedHover || playing !== st.paintedPlaying
+    ) {
+      paintMusic(st, px, ui.hover, playing, music);
       st.paintedPx = px;
-    }
-  } else {
-    if (!st.trackStart) st.trackStart = ms;
-    let t = TRACKS[st.trackIdx];
-    if ((ms - st.trackStart) / 1000 > t.dur) {
-      st.trackIdx = (st.trackIdx + 1) % TRACKS.length;
-      st.trackStart = ms;
-      t = TRACKS[st.trackIdx];
-    }
-    px = Math.min(BAR_W, ((ms - st.trackStart) / 1000 / t.dur * BAR_W) | 0);
-    if (st.trackIdx !== st.paintedIdx || px !== st.paintedPx) {
-      paintMusic(st, px);
       st.paintedIdx = st.trackIdx;
-      st.paintedPx = px;
+      st.paintedHover = ui.hover;
+      st.paintedPlaying = playing;
     }
+    g.drawImage(st.music, 0, 0, W, H);
+  } else {
+    /* Map view: the whole panel. Nothing of the player is drawn or even
+       advanced here — the mock rotation's timer picks up from wherever it left
+       off the next time the view is asked for, and the live player keeps its
+       own clock regardless. */
+    drawNav(g, st, world, car, npcs, timeH, now, ms, ui.clickable, ui.hover);
   }
-
-  // ---- right: nav map (baked minimap blit + live marker + overlays) -------
-  drawNav(g, st, world, car, npcs, timeH, now, ms);
-
-  // ---- left: cached music card, one blit ----------------------------------
-  g.drawImage(st.music, 0, 0, W - NAV_W, H);
 
   // ---- glass: bezel, reflection sweep, vignette ---------------------------
   g.fillStyle = st.reflect;
