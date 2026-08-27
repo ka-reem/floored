@@ -46,8 +46,14 @@ export default function GameApp() {
   const rerender = () => force((n) => n + 1);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const screenRef = useRef<Screen>("main");
+  /* Mirrored for the same reason screenRef is: the UI callbacks handed to the
+     engine are built once in a `[]` effect, so they close over the FIRST
+     render's state forever. Reading `fromPause` directly in helpRequest would
+     see `false` for the life of the session and H would never close. */
+  const fromPauseRef = useRef(false);
 
   screenRef.current = screen;
+  fromPauseRef.current = fromPause;
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -78,11 +84,28 @@ export default function GameApp() {
           setScreen("playing");
         }
       },
+      /* H TOGGLES. It used to only open: the guard was `=== "playing"`, so the
+         second press hit a closed door and the only way out was the mouse.
+         Opening and closing a screen with the same key is the whole point of
+         a single-key overlay, and the asymmetry was just a missing branch.
+
+         Closing goes through the same two calls `resume()` does — setRunning
+         then setScreen — rather than reusing resume() itself, because that one
+         also persists the profile, and a help screen has changed nothing worth
+         writing to disk.
+
+         Only from "controls" reached BY H (fromPause). The same screen is
+         reachable from the main menu, where there is no game to resume and
+         setRunning(true) would start one under the menu. */
       helpRequest: () => {
         if (screenRef.current === "playing") {
           gameRef.current?.setRunning(false);
           setFromPause(true);
           setScreen("controls");
+        } else if (screenRef.current === "controls" && fromPauseRef.current) {
+          gameRef.current?.setRunning(true);
+          setFromPause(false);
+          setScreen("playing");
         }
       },
     });
