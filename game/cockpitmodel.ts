@@ -66,7 +66,16 @@ export interface CockpitModelHandle {
   /** The donor's root, already parented into the cockpit. */
   group: THREE.Group;
   /** Put the procedural dash back. Cheap — nothing is disposed either way, so
-      this is an A/B toggle, not a teardown. */
+      this is a visibility swap, not a teardown.
+
+      NOTHING OUTSIDE THIS FILE CALLS IT any more. It existed for the J key,
+      which A/B'd the donor cabin against the procedural one; the garage decides
+      that now (a donor is only fetched for a car that names one, see player.ts
+      COCKPIT_MODEL), so the handle lands active and stays active for the life
+      of the rig. Kept because the swap it performs is the whole of what this
+      module does and every hidden part below is described in terms of it — and
+      because a future "show me the procedural cabin" needs no new machinery,
+      only a caller. */
   setActive(on: boolean): void;
   /** Level of the donor's fill light, as a multiple of DONOR_FILL. This is the
       donor's half of the cabin light the I key switches — the procedural

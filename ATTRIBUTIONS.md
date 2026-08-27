@@ -239,13 +239,17 @@ would not. That is 119k of its 207k triangles gone for nothing lost. Re-encoded
 from Draco to plain meshopt so no decoder file has to be served: 87,962
 triangles, 0.48 MB on disk.
 
-Loaded by `game/bodymodel.ts` and shown together with the donor dash: they are
-two cuts of the same car, so the J key A/Bs both against the procedural car off
-one flag (`Game.dashImported`) rather than one key each. Only kaze (`BODY_MODEL`
-in `game/player.ts`) has a body donor, and it is invisible in the shipping
-DASHCAM view, which hides the exterior group entirely. Fitted to kaze's shell
-box by a non-uniform scale at runtime, lined up on the axles so the game's own
-wheels sit in its arches.
+Loaded by `game/bodymodel.ts`. It and the donor dash are two cuts of the same
+car and now belong to the same garage entry: the **VOLVO S90**, which is the
+only id in `BODY_MODEL` (`game/player.ts`) and the only one in `COCKPIT_MODEL`.
+Picking that car in the garage is what shows both; picking the KAZE GT shows
+neither. (There used to be a `J` key A/B against the procedural car, off one
+`Game.dashImported` flag — retired, because the choice is the garage's now.)
+The body is invisible in the shipping DASHCAM view, which hides the exterior
+group entirely. Fitted to the Volvo's shell box by a non-uniform scale at
+runtime — very nearly an identity scale, since that shell is the real car's
+4.96 x 1.88 x 1.44 — and lined up on the axles so the game's own wheels sit in
+its arches.
 
 Rebuild the pre-strip source with:
 

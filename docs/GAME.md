@@ -175,7 +175,7 @@ cannot easily shrink. Re-run the script rather than trusting the figures above.
 |---|---|
 | `engine.ts` | **The conductor.** The `Game` class: main loop, cameras, staged world load, weather and time of day, headlight rig, HUD, tunnel acoustics, endless-highway splice, chunk culling, keybinds, debug API |
 | `physics.ts` | Pacejka bicycle-model vehicle sim, drivetrain, the engine flywheel model |
-| `carspecs.ts` | The four cars: body shape params, physics params, paints |
+| `carspecs.ts` | The five cars — two playable, three COMING SOON: body shape params, physics params, paints |
 | `collide.ts` | Player collision against parapets, static geometry, and NPCs |
 | `traffic.ts` | The pooled NPC fleet: IDM car-following, lane changes, wrecks, courtesy/yielding, instanced rendering |
 | `npcmodels.ts` | Loads the nine baked NPC body GLBs |
@@ -321,10 +321,9 @@ so you can tune the mix and the dashcam degrade live from the console.
 | `B` | look back (hold; CHASE and COCKPIT only, POV ignores it by design) |
 | `R` | rain · `T` time-lapse (0 → 150 → 1500) · `V` dashcam grade |
 | `M` | mirrors · `X` minimap · `N` reset to nearest road · `H` controls overlay |
-| `J` | **dev**: A/B the imported dash against the procedural one |
 
 README discrepancies, since you'll trip on them: the README's camera row says
-"chase → cockpit → hood" and omits DASHCAM entirely; `G`, `H` and `J` are
+"chase → cockpit → hood" and omits DASHCAM entirely; `G` and `H` are
 missing from it; arrow keys are undocumented in both the README and the in-game
 panel; and the in-game panel describes `G` as "double-tap to latch" when the code
 is a 2-second hold.
@@ -457,9 +456,12 @@ is a torque split, not extra wheels. Ported from v2 and parameterised per car.
 `stepPhysics(car, input, spec, dt, opts)` mutates `car` in place. Grip comes in
 through `opts.mu` — `1.26` dry, `0.84` in rain, set at the call site.
 
-Four cars in `carspecs.ts`: **KAZE GT** (疾風, RWD turbo coupe, 7400 rpm),
-**SHIRAYUKI** (白雪, RWD sedan, 6700), **TANUKI KEI** (狸, kei car, 850 kg,
-8000), **OKAMI TOURER** (狼, AWD, 6900). Each spec carries a `ShellParams` block
+Five cars in `carspecs.ts`. Two are playable and **drive identically on
+purpose** — they share one `PhysicsSpec` object (`SHARED_PHYS`), so they differ
+only in how they look, inside and out: **VOLVO S90** (ボルボ, the default; donor
+cabin and donor exterior body) and **KAZE GT** (疾風, procedural at both ends).
+Three are `comingSoon`: **SHIRAYUKI** (白雪, RWD sedan, 6700), **TANUKI KEI**
+(狸, kei car, 850 kg, 8000), **OKAMI TOURER** (狼, AWD, 6900). Each spec carries a `ShellParams` block
 (all metres — length, width, ride height, belt line, roof, rake, arch radius,
 wheel positions) consumed by `carshape.ts`, and a `PhysicsSpec` (mass, inertia,
 wheelbase halves, CG height, track, wheel radius, final drive, six gear ratios,
@@ -847,7 +849,11 @@ compositor while the next stage blocks the main thread outright.
 
 ### 5.8 The cockpit and the dash
 
-Two dashboards exist simultaneously, and `J` A/B-toggles them.
+Two dashboards exist simultaneously, and **which one you sit in is decided by
+the car you picked in the garage** — the VOLVO S90 brings the donor cabin, the
+KAZE GT is procedural. (It used to be a `J` key A/B, which is retired: see
+§ the garage.) On `mobile-base` no donor is fetched for either car, so the
+procedural one below is what ships there.
 
 **The procedural interior** (`cockpit.ts`, ~1700 lines) is always built and
 always resident: dash shell, binnacle, vents, centre stack, console, door cards,

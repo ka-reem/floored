@@ -2,7 +2,7 @@
 
 Night driving through a **procedurally generated Japanese town** and its elevated
 expressway. Sim-grade tire physics, dense AI traffic that crashes and wrecks,
-rain, neon, fog, and a garage of four cars.
+rain, neon, fog, and a garage of two cars (three more coming).
 
 Built with **Next.js + Three.js**, deployable to Vercel as-is.
 

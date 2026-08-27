@@ -208,37 +208,53 @@ worse rather than cheaper, so they now run on every tier."*
 
 ## 4. Content locked out of the UI
 
-### Three of the four cars
+### Three of the five cars
 
-`game/carspecs.ts`, `comingSoon: true` at lines 226 (SHIRAYUKI), 247 (TANUKI KEI),
-268 (OKAMI TOURER). **KAZE GT is the only playable car.**
+`game/carspecs.ts`, `comingSoon: true` on SHIRAYUKI, TANUKI KEI and OKAMI
+TOURER. **VOLVO S90 and KAZE GT are the playable pair**, and they share one
+`PhysicsSpec` object — they drive identically by construction and differ only
+in how they look, inside and out. The Volvo is the default (it is first in
+`CARS`, and `DEFAULT_CAR` derives from `PLAYABLE_CARS[0]`).
 
 Everything else about them is whole — shell params, physics spec, torque curves,
 stat bars, cockpit accent colour. The lock is one line and three consequences:
 
 | Layer | File | Behaviour |
 |---|---|---|
-| Roster filter | `carspecs.ts:291` | `PLAYABLE_CARS` excludes them; `DEFAULT_CAR_ID` derives from it |
-| Engine lookup | `carspecs.ts:321` `getCar()` | *"A locked id falls back exactly like an unknown one"* → KAZE |
-| Raw lookup | `carspecs.ts:304` `carById()` | **Ignores** the lock, so the garage card draws the car as itself |
-| Profile scrub | `settings.ts:394` `loadProfile()` | A stored `carId:"tanuki"` is rewritten to `DEFAULT_CAR_ID` on load, so the next save doesn't carry it forward |
+| Roster filter | `carspecs.ts` `PLAYABLE_CARS` | excludes them; `DEFAULT_CAR_ID` derives from it |
+| Engine lookup | `carspecs.ts` `getCar()` | *"A locked id falls back exactly like an unknown one"* → the VOLVO S90 |
+| Raw lookup | `carspecs.ts` `carById()` | **Ignores** the lock, so the garage card draws the car as itself |
+| Profile scrub | `settings.ts` `loadProfile()` | A stored `carId:"tanuki"` is rewritten to `DEFAULT_CAR_ID` on load, so the next save doesn't carry it forward |
 | Garage card | `GameApp.tsx:474-482` | Renders dimmed with a COMING SOON badge; `onClick` is dropped, `aria-disabled` set. Stat bars stay (greyed) *"because they are what the card is teasing, and because a card without them would sit at a different height and break the grid row it shares with KAZE"* |
 
 > *"putting a car back on the roster is deleting this one line."*
 
 **Re-enable:** delete `comingSoon: true` from the spec. Nothing else needs to
 change — the guard is derived, not hardcoded. Be aware the physics numbers have
-not been driven since the lock went on, and the `dashImported` J-key donor
-interior is fitted to KAZE's proportions (the cabin is x-scaled per car, and
-`player.ts:743` flags that *"a real dash is not a stretchable object"*).
+not been driven since the lock went on, and that an unlocked car gets the
+PROCEDURAL cabin and body unless it is also added to `COCKPIT_MODEL` /
+`BODY_MODEL` in `player.ts` — the donor cabin is fitted to the Volvo's
+proportions (the cabin is x-scaled per car, and `attachCockpitModel`'s call site
+flags that *"a real dash is not a stretchable object"*), so pointing another car
+at it is a fitting job, not a table entry.
+
+**One-time profile migration.** `loadProfile()` rewrites a stored
+`carId:"kaze"` to `DEFAULT_CAR_ID` once, under `<KEY>.volvodefault`, because
+every profile written under the one-car roster says "kaze" and kaze no longer
+looks anything like the car it named (the donor body moved to the Volvo). The
+flag is stamped **before** `loadProfile`'s early return, unlike the mblur/fog
+scrubs — otherwise a brand-new player who picks the KAZE GT and reloads would
+be silently put back in the Volvo.
 
 ---
 
 ## 5. Geometry present but hidden at runtime
 
 All of this lives in `game/cockpitmodel.ts` and is hidden **deliberately**, with
-the donor GLB still fully in the scene graph. Nothing here is disposed — the
-J key A/B is a visibility flip, not a teardown.
+the donor GLB still fully in the scene graph. Nothing here is disposed. It is
+loaded only for the car that asks for it (the VOLVO S90) on a tier that can
+afford it, and `setActive` is a visibility flip rather than a teardown, which is
+what the `cabinSwitch` hotspot still flips.
 
 | What is hidden | Where | Why (from the code) |
 |---|---|---|
@@ -255,14 +271,24 @@ overlay and both light rigs"* — the light strips and window glass in particula
 *"are lighting features tuned against the night pass, and a donor's equivalents
 are inert geometry."*
 
-**To see the procedural cabin instead:** press **J** in game. It flips
-`dashImported` and calls `setActive(false)`, which restores every one of the
-above. It also swaps the exterior body, off the same flag — *"they are two cuts
-of the same donor and a car wearing one of them is a car nobody asked for."*
+**To see the procedural cabin instead:** pick the **KAZE GT** in the garage. It
+is procedural at both ends, so no donor is fetched for it at all and every one
+of the rows above is simply never hidden.
 
-**Not currently reachable at all:** on `mobile-base`, `COCKPIT_MODEL` is `""`
-(`game/player.ts:43`), so no donor is fetched and J reports "NO IMPORTED CAR".
-*"The procedural dash is not a placeholder for those players — it is the shipped one."*
+**The `J` key that used to A/B this is RETIRED** — there is no handler and no
+`Game.dashImported` flag any more. *"There are two cars now, and the A/B is the
+garage."* Everything that read the flag now reads `rig.cockpitModel`, which is
+non-null exactly when the donor cabin is the cabin on screen.
+
+**Not fetched at all on `mobile-base`,** even for the Volvo: `COCKPIT_MODEL`'s
+`mobile-base` entry is `""` (`game/player.ts`). *"The procedural dash is not a
+placeholder for those players — it is the shipped one."* The degrade is partial
+and silent — that player still gets the Volvo's donor EXTERIOR, because
+`BODY_MODEL` is not tiered. The one seam that creates is the donor's bonnet,
+lifted out of that body and re-hung inside the cabin (`player.ts` `attachHood`):
+`engine.ts` `hoodUpdate()` gates it on `rig.cockpitModel` rather than on the
+hood merely existing, so a donor bonnet can never hang in front of a procedural
+dash.
 
 ---
 
@@ -378,14 +404,19 @@ CONTROLS screen at `components/GameApp.tsx:294-312`.
 | **X** | minimap | writes `settings.mmap` |
 | **N** | reset to nearest road | |
 | **H** | help screen | |
-| **J** | imported Volvo interior + body ⟷ procedural (A/B) | see §5 |
 | **K** | test mode | see §7 |
 | **P** | music play / pause | desktop only — `music.enabled` is false on touch |
 | **, / .** | previous / next track | desktop only |
 | Esc | pause menu | music pauses with it |
 
-J, K, T and V are the debug/A-B set. There is no build flag hiding them — they
+K, T and V are the debug/A-B set. There is no build flag hiding them — they
 ship live to players, and the CONTROLS screen documents them.
+
+**`J` is gone.** It A/B'd the donor Volvo interior and body against the
+procedural car off one `dashImported` flag. The garage does that now — VOLVO S90
+for the donor pair, KAZE GT for the procedural pair — so the key was removed
+rather than left as a way to unpick the player's own choice. No handler, no
+flag, no row in the CONTROLS screen; `j` falls through `onKeyDown` to nothing.
 
 ---
 
@@ -520,7 +551,8 @@ Why it went: *"it printed sliced edges at wide field of view"* — it was per-ve
 frustum-clipped geometry, so *"it printed torn shards at the frame borders as soon
 as the Field-of-view slider went past what it was cut for, and engine.ts had to
 hold the lens down to 88 whenever it was on screen."* Retiring it removed
-`POV_FOV_MAX_CUT` and collapsed the J key from three states to two.
+`POV_FOV_MAX_CUT` and collapsed the J key from three states to two — and the J
+key itself is gone now (§8).
 
 What survived it: `tools/build-cockpit.mjs` still **freezes the `mirror` role to
 the cut's frustum** *"precisely so the anchors below did not move when it went."*

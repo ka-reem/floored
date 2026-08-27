@@ -69,12 +69,21 @@ export function carPreviewURL(carId: string, paintHex: number): string {
      has to be drawn as itself. getCar() would resolve every locked id to the
      fallback car and put four identical shots on the shelf. */
   const spec = carById(carId) || getCar(carId);
-  /* "mobile-base" purely because it is the tier that configures no donor dash.
-     This shot is rendered and read back SYNCHRONOUSLY on the next line and the
-     rig is disposed immediately after, so an imported dash could never arrive
-     in time to appear in it — on the default tier every car card was kicking
-     off a 17 MB fetch whose only possible outcomes were wasted bandwidth and a
-     wire() call against a disposed cockpit. */
+  /* "mobile-base" purely because it is the tier that configures no donor dash
+     for any car (player.ts COCKPIT_MODEL is keyed by car AND tier now; that row
+     is empty for all of them). This shot is rendered and read back
+     SYNCHRONOUSLY on the next line and the rig is disposed immediately after,
+     so an imported dash could never arrive in time to appear in it — on the
+     default tier the VOLVO card would kick off a 17 MB fetch whose only
+     possible outcomes are wasted bandwidth and a wire() call against a disposed
+     cockpit.
+
+     THE DONOR BODY IS NOT COVERED BY THIS, and never was: BODY_MODEL is keyed
+     by car alone, so the Volvo's card still starts a 0.48 MB fetch it cannot
+     use. Pre-existing — it was the KAZE card doing it until the donor body
+     moved — and harmless beyond the bandwidth, since the callback lands on a
+     disposed rig and nothing reads it. Both cards render PROCEDURALLY either
+     way, which is the intent: the garage draws each car from its ShellParams. */
   const rig = buildPlayerCar(st.scene, spec, paintHex, st.envMap, st.glowTex, st.blankTex, "mobile-base");
   rig.headMat.emissiveIntensity = 2.2;
   rig.carGroup.rotation.y = -2.42; // front-3/4, nose toward camera-left
