@@ -347,6 +347,7 @@ export default function GameApp() {
               <b>X</b><span>minimap</span>
               <b>N</b><span>reset to nearest road</span>
               <b>H</b><span>this help screen</span>
+              <b>I</b><span>interior light (off by default — the cabin is meant to be dark)</span>
               <b>J</b><span>imported Volvo dash + body / the procedural car (A/B)</span>
               <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
               <b>P</b><span>in-dash music: play / pause</span>

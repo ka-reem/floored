@@ -68,6 +68,12 @@ export interface CockpitModelHandle {
   /** Put the procedural dash back. Cheap — nothing is disposed either way, so
       this is an A/B toggle, not a teardown. */
   setActive(on: boolean): void;
+  /** Level of the donor's fill light, as a multiple of DONOR_FILL. This is the
+      donor's half of the cabin light the I key switches — the procedural
+      cabin's dome lamp is cockpit.setCabinLight, and engine.ts drives both off
+      the one flag so the two interiors can never disagree about whether the
+      light is on. Shipped at 0. */
+  setFillLight(k: number): void;
   /** Frame the mirror for the DASHCAM (donor housing hidden, glass walked into
       the POV frame by MIRROR_NUDGE) or for the in-car views (donor housing on
       show, glass seated in its aperture where the OEM mirror actually hangs).
@@ -78,6 +84,11 @@ export interface CockpitModelHandle {
 }
 
 const BASE = "/models/cockpits/";
+
+/** Full-on level of the donor's fill light — see the light itself for why it is
+    shaped the way it is. Shipped OFF (engine.ts's I key is what turns it on),
+    so this is the value the toggle restores rather than the value in the frame. */
+const DONOR_FILL = 1.0;
 
 /** Rotation taking +Z onto `axis`, which is how the donor's raked steering
     column is turned into something the engine's `wheelGroup.rotation.z` can
@@ -445,9 +456,23 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
 
      Parented to the donor scene so it lives and dies with it — the procedural
      dash keeps its own strips and must not be lit twice. */
-  const fill = new THREE.PointLight(0xffb070, 1.0, 4.0, 1.0);
+  const fill = new THREE.PointLight(0xffb070, DONOR_FILL, 4.0, 1.0);
   fill.position.set(0.05, 1.22, 0.42);
+  /* All of which is still true — and is exactly why it ships OFF now. Everything
+     above is a recipe for a wash that covers the WHOLE pad evenly, and an evenly
+     covered pad is a lit interior. At night it should be a black mass: the
+     reference frame this look is tuned against reads its dash from a grazing
+     highlight along the crest and from nothing else, and the wash is what was
+     standing where that highlight should be. The light stays built and stays
+     tuned, because the I key is a comparison tool and the ON state has to be
+     the good version of ON.
+
+     Intensity rather than `visible`, same reason as the procedural dome lamp:
+     dropping a light out of the list re-hashes every lit program in the cabin. */
+  fill.intensity = 0;
   scene.add(fill);
+
+  const setFillLight = (k: number) => { fill.intensity = DONOR_FILL * k; };
 
   /* --- attach ------------------------------------------------------------- */
 
@@ -540,5 +565,5 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
   };
   setActive(true);
 
-  return { group: scene, setActive, setMirrorFraming };
+  return { group: scene, setActive, setFillLight, setMirrorFraming };
 }

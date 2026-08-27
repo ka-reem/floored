@@ -399,12 +399,108 @@ const CHASE_SHAKE = 0;
    = -0.1` re-frames on the next frame — because this is the view whose whole
    point is being moved around. Settled values come back here. */
 const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
+
+/* ---------------------------------------------------------- cabin lighting --
+
+   What is allowed to light the inside of the car, and how much of it.
+
+   The reference the night look is tuned against is a real dashcam capture, and
+   measured off it the cabin has exactly two values: near-zero everywhere (dash
+   face 6/255, door card 19/255, A-pillar 0/255, wheel rim 4/255) and a warm
+   grazing band along the pad crest at 82/255 where the glass lets outside light
+   in. Nothing lights it from inside. Shape comes from the silhouette and that
+   one highlight; the only other things in the frame are emitters — cluster,
+   head unit, accent strips.
+
+   So the two fill sources are switched OFF by default and live on the I key:
+
+     dome   the procedural cabin's warm header lamp (cockpit.ts CABIN_DOME) and
+            the donor's equivalent (cockpitmodel.ts DONOR_FILL), which stands in
+            for the accent strips the donor's own door cards displace. One
+            number drives both — they are two builds of the same fixture, and
+            letting them drift would make the J comparison meaningless.
+     glass  the standing "city light through the glass" point light
+            (cockpit.ts GLASS_REST), which is OUTSIDE light and is NOT on the
+            switch — it is the crest highlight, i.e. the one thing the reference
+            actually has. lampWash() rakes it front-to-back under every
+            streetlight; this is a multiplier on top of that whole envelope.
+     glassHex  its resting colour. GLASS_REST is a cool 0xbfd0ff, which reads as
+            city light between lamps; the reference's crest is distinctly warm
+            (82,70,52) because what is actually coming through the screen there
+            is headlight spill off the road. Exposed as a knob rather than
+            changed, because lampWash already carries it to sodium under every
+            lamp and the between-lamps hue is a taste call for the user's eyes.
+
+   `on` mirrors the I key so the console can force either state, and because
+   `on * dome` is the effective level it also buys a residual: set on = 1 and
+   dome = 0.15 for "not off, just very low" without touching the key.
+
+     window.__cabinLight.on = 1          // as if I were pressed
+     window.__cabinLight.dome = 0.3      // a dimmer ON state
+     window.__cabinLight.glass = 1.6     // more crest sheen, cabin still dark
+     window.__cabinLight.glassHex = 0xffd0a0   // warm it toward the reference */
+const CABIN_LIGHT = { on: 0, dome: 1, glass: 1, glassHex: GLASS_REST.color };
+
+/* ------------------------------------------------------------------- fog ----
+
+   Night fog used to sit on 0x03040a, which is invisible by construction: fog
+   blends a fragment toward the fog colour, and blending near-black geometry
+   toward near-black does nothing at any density. Reported as "the game said we
+   added fog but i dont see any" — correct, and it was never a density problem.
+
+   Real night fog near a city is lit by the light pollution under it. Measured
+   off the reference capture the haze at the road's vanishing point is
+   (62,50,32) — a warm grey-brown, 3.6x brighter than the sky above it — and the
+   far road silhouettes AGAINST it rather than fading into black.
+
+   The shipped colours are solved backwards through the composite and the POV
+   degrade (post.ts) rather than picked by eye, and the answer is a long way
+   from where intuition puts it, in two ways:
+
+   - LEVEL. The ACES toe at the night exposure (0.98) costs about 3.7x on its
+     own, and the dashcam crush then takes a flat 0.06 off before a >1 gamma.
+     A fog colour with the reference haze's own linear luminance renders at
+     (11,4,1) — still black. 0x5f5a4b is what actually lands on (52,42,27).
+   - SATURATION. The crush and the per-channel gamma (1.18/1.24/1.22) massively
+     AMPLIFY saturation down in the shadows, which is the mirror image of the
+     rule the lamp colours follow up in the highlights (where the grade
+     desaturates and a source has to be pushed further toward yellow than its
+     target). Down here the source has to be pushed the other way: 0x5f5a4b is
+     almost neutral — (95,90,75) — and arrives warm.
+
+   Rain night is lifted the same way but left greyer: wet air scatters the
+   whole spectrum, so the brown goes out of it.
+
+   DECOUPLED FROM THE CLEAR COLOUR, which is new. The two used to be the one
+   value, and the note that used to sit here — "the clear colour comes off this
+   same value, so the horizon has to go with it" — is exactly why the fog could
+   never be lifted. They want opposite things: fog is the veil in FRONT of
+   things and has to be brighter than what it veils, while the clear colour is
+   the void BEHIND everything and has to be black or it prints as a flat plate
+   wherever the sky dome does not cover. So sky* below carry the old fog values
+   verbatim, and the clear colour in the frame is byte-for-byte what it was.
+   `__fog.sky = __fog.night` re-couples them if that turns out to be wrong.
+
+   Live, read fresh every frame:
+     window.__fog.night = 0x4a463a    // dial the haze down
+     window.__fog.density = 1.4       // thicker, without touching the setting
+     window.__fog.sky = 0x5f5a4b      // re-couple the clear colour to the fog */
+const FOG_TUNE = {
+  night: 0x5f5a4b,
+  rain: 0x626057,
+  sky: 0x03040a,
+  skyRain: 0x171b26,
+  density: 1,
+};
+
 declare global {
   interface Window {
     __povMount?: { dx: number; dy: number; dz: number };
     __cockpitEye?: { dy: number; dz: number };
     __chaseShake?: number;
     __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number };
+    __cabinLight?: { on: number; dome: number; glass: number; glassHex: number };
+    __fog?: { night: number; rain: number; sky: number; skyRain: number; density: number };
   }
 }
 /* 13 degrees of nose-down, on top of whatever the body is doing. This is what
@@ -546,6 +642,34 @@ export class Game {
   private chaseShake(): number {
     if (window.__chaseShake === undefined) window.__chaseShake = CHASE_SHAKE;
     return window.__chaseShake;
+  }
+
+  /** The live cabin-lighting knob — see CABIN_LIGHT. */
+  private cabinKnob(): typeof CABIN_LIGHT {
+    if (!window.__cabinLight) window.__cabinLight = { ...CABIN_LIGHT };
+    return window.__cabinLight;
+  }
+
+  /** The live fog knob — see FOG_TUNE. */
+  private fogKnob(): typeof FOG_TUNE {
+    if (!window.__fog) window.__fog = { ...FOG_TUNE };
+    return window.__fog;
+  }
+
+  /** Push the cabin-light level into both interiors, every frame.
+
+      Per-frame rather than on the key edge, and that is the whole point: the
+      donor interior arrives asynchronously and can land minutes into a drive,
+      long after the key was pressed. An edge-triggered version would leave a
+      donor that loaded late lit while the procedural one next to it was dark —
+      the same load race mirrorFramingUpdate() exists to close, and the same one
+      player.ts's `bodyRef.want` closes for the exterior body. Two float writes
+      is cheaper than remembering to re-apply it in three places. */
+  private cabinLightUpdate() {
+    const k = this.cabinKnob();
+    const level = k.on * k.dome;
+    this.rig.cockpit.setCabinLight(level);
+    this.rig.cockpitModel?.setFillLight(level);
   }
 
   private povMount(): { dx: number; dy: number; dz: number } {
@@ -1410,6 +1534,27 @@ export class Game {
       this.testMode = !this.testMode;
       this.ui.toast("TEST MODE " + (this.testMode ? "ON" : "OFF"));
     }
+    /* Interior light. I for its initial, and it was free: the handler above
+       already spends C L Q E R T V M J N K H X P B G and the , . transport
+       pair, and W A S D, the arrows, space and F are the driving controls.
+
+       DESKTOP ONLY, by explicit request — "it would only work on like desktop
+       not the mobile version, ill mostly just use it for testing and
+       comparing". Same gate the music transport uses. Belt and braces rather
+       than strictly needed: the touch buttons write keydown[] directly and
+       never reach this handler, so there is no path to it from a phone even
+       without the test. There is no touch button and none is wanted — this is
+       a tool for comparing the dark cabin against the lit one, not a control.
+
+       Session-only, and deliberately NOT mirrored into settings the way V and
+       X are. The dark cabin is the shipped look, so it has to be what every
+       session opens on; a persisted flag would let a profile come back with
+       the interior lit and quietly make the lit version the default again. */
+    if (k === "i" && !this.isTouch) {
+      const c = this.cabinKnob();
+      c.on = c.on ? 0 : 1;
+      this.ui.toast("INTERIOR LIGHT " + (c.on ? "ON" : "OFF"));
+    }
     if (k === "h") this.ui.helpRequest();
     if (k === "x") {
       this.mmap = !this.mmap;
@@ -2152,14 +2297,21 @@ export class Game {
     if (p) p.color.setHex(0xff9c33);
   }
 
-  /* Night fog sits almost on black. Anything lighter reads as a grey haze
-     hanging in front of a black sky, which is the single loudest tell that a
-     night scene is faked — the clear colour comes off this same value, so the
-     horizon has to go with it. */
-  private fogN = new THREE.Color(0x03040a);
+  /* Night fog is a lit city-glow haze, not a black one — see FOG_TUNE for the
+     measurements and for the grade math that puts the source colours where
+     they are. The night ends are knob-driven and reloaded each frame; the day
+     ends are untouched. */
+  private fogN = new THREE.Color(FOG_TUNE.night);
   private fogD = new THREE.Color(0x9db6d8);
-  private fogRN = new THREE.Color(0x171b26);
+  private fogRN = new THREE.Color(FOG_TUNE.rain);
   private fogRD = new THREE.Color(0x6a7480);
+  /* The clear colour's own night ends, decoupled from the fog's. These two are
+     the values the fog ends used to hold, so the void behind the sky dome is
+     byte-for-byte what it always was; the day ends are shared with the fog
+     above, so full daylight is unchanged too. */
+  private skyN = new THREE.Color(FOG_TUNE.sky);
+  private skyRN = new THREE.Color(FOG_TUNE.skyRain);
+  private clearC = new THREE.Color();
   private sunN = new THREE.Color(0x8296d8);
   private sunD = new THREE.Color(0xffe8c8);
   private hemiN = new THREE.Color(0x0d1526);
@@ -2181,11 +2333,27 @@ export class Game {
        is genuinely black and the glow is a faint band rather than a lit
        backdrop. Recovers by early dusk, so nothing above f≈0.45 is touched. */
     sky.skyMat.color.setScalar(lerp(0.45, 1, Math.min(1, f * 2.2)));
+    const fk = this.fogKnob();
+    this.fogN.setHex(fk.night);
+    this.fogRN.setHex(fk.rain);
+    this.skyN.setHex(fk.sky);
+    this.skyRN.setHex(fk.skyRain);
     this.fogC.copy(this.rain ? this.fogRN : this.fogN).lerp(this.rain ? this.fogRD : this.fogD, f);
     (this.scene.fog as THREE.FogExp2).color.copy(this.fogC);
-    this.renderer.setClearColor(this.fogC);
+    /* Fog colour and clear colour part company here — see FOG_TUNE. The clear
+       colour is the void the sky dome does not cover (below the deck edge on
+       the elevated sections, and any gap at the dome's hem); a haze value
+       painted across it reads as a flat grey plate, so it keeps the black it
+       had. Same lerp, same day end, different night end. */
+    this.clearC.copy(this.rain ? this.skyRN : this.skyN).lerp(this.rain ? this.fogRD : this.fogD, f);
+    this.renderer.setClearColor(this.clearC);
+    /* Density is deliberately NOT re-tuned to compensate for the lifted colour.
+       They are one lever pulled twice: dropping density to take the edge off a
+       brighter fog cancels most of the change and leaves the user seeing no
+       difference. Colour moved; density is where it was, with a knob on top. */
     (this.scene.fog as THREE.FogExp2).density =
-      (lerp(0.0021, 0.001, f) + (this.rain ? 0.0015 : 0)) * fogMultiplier(this.settings.fog);
+      (lerp(0.0021, 0.001, f) + (this.rain ? 0.0015 : 0)) *
+      fogMultiplier(this.settings.fog) * fk.density;
     /* Ambient is shaped, not lerped. A straight lerp on f leaves a floor of
        fill light at midnight that lights every surface the lamps never reach,
        and that even wash is what makes a night scene read as "day with a blue
@@ -2767,6 +2935,7 @@ export class Game {
     rig.cockpit.group.visible = inside;
     rig.exteriorG.visible = !inside;
     this.lampWash(inside);
+    this.cabinLightUpdate();
     /* Both in-car views now carry their own nav screen (drawScreen above), so
        the external HUD minimap is redundant in either — hide it. POV is the
        view the game is played in, and the head unit reads clearly there, so
@@ -2874,6 +3043,16 @@ export class Game {
      as the car passes under the head, and carries on back over the seat. */
   private lampWash(inside: boolean) {
     const gl = this.rig.cockpit.glassLight;
+    /* The cabin knob's `glass` arm scales this ENTIRE envelope — rest level and
+       sodium peak alike — rather than only the trough, so dialling it never
+       changes the shape of the sweep, only how much of it there is. It is the
+       one interior source that survives the I key being off (see CABIN_LIGHT):
+       this light is the city coming IN through the screen, not the car lighting
+       itself, and with the dome off it is the only thing left describing the
+       pad. `rest` is the resting hue, knob-overridable off GLASS_REST.color. */
+    const kn = this.cabinKnob();
+    const gk = kn.glass;
+    const rest = kn.glassHex;
     /* Every gate that stops the lamps being drawn has to stop the wash too:
        the interior not being on screen, daylight (the pools and glow fade out
        on the same factor — amber strobing at noon is the tell), a tier that
@@ -2886,8 +3065,8 @@ export class Game {
     const z = this.cor.zAt(this.car.x, this.car.z);
     if (night <= 0.01 || this.cor.inTunnel(z) || this.cor.inToll(z)) {
       gl.position.set(0, GLASS_REST.y, GLASS_REST.z);
-      gl.intensity = GLASS_REST.intensity;
-      gl.color.setHex(GLASS_REST.color);
+      gl.intensity = GLASS_REST.intensity * gk;
+      gl.color.setHex(rest);
       return;
     }
     /* Low tiers thin the lamps in PAIRS on the folded lattice index (see
@@ -2897,8 +3076,8 @@ export class Game {
     const every = Math.max(1, (cones ? caps.lampConeEvery : caps.lampPoolEvery) ?? 1);
     const li = this.cor.latticeIndex(z, PITCH.light, PHASE.light);
     if (li % (2 * every) >= 2) {
-      gl.intensity = GLASS_REST.intensity;
-      gl.color.setHex(GLASS_REST.color);
+      gl.intensity = GLASS_REST.intensity * gk;
+      gl.color.setHex(rest);
       return;
     }
     /* Signed position within the pitch: 0 directly under the head, -0.5 half a
@@ -2956,13 +3135,13 @@ export class Game {
        and a saturated orange at a moderate level reads far more "streetlight"
        than a blown hotspot does. The trough stays where it was, just under the
        resting 0.5 cd, so the cabin is never darker than with a static light. */
-    gl.intensity = lerp(GLASS_REST.intensity, lerp(0.46, 0.82, w), night);
+    gl.intensity = lerp(GLASS_REST.intensity, lerp(0.46, 0.82, w), night) * gk;
     /* Hue is decoupled from level: the colour saturates to full sodium well
        before the intensity peak (w * 2.2) and stays there for the whole time a
        lamp is influencing the cabin. Tying the blend to the brightness
        envelope was the other half of the white read — at half pulse the light
        was still mostly the cool 0xbfd0ff. */
-    gl.color.setHex(GLASS_REST.color).lerp(LAMP_SODIUM, Math.min(1, w * 2.2));
+    gl.color.setHex(rest).lerp(LAMP_SODIUM, Math.min(1, w * 2.2));
   }
 
   private static hash1(n: number): number {

@@ -46,6 +46,12 @@ export interface Cockpit {
    * engine rakes it front-to-back once per streetlight pitch, so a passing
    * lamp reads as a wash sweeping over the trim; see LAMP_WASH in engine.ts. */
   glassLight: THREE.PointLight;
+  /** Level of the cabin's own DOME light, as a multiple of CABIN_DOME — the
+      warm header lamp that fills the trim from inside. 0 puts the cabin in the
+      dark, which is the shipped default; engine.ts drives it off the I key and
+      window.__cabinLight. See the light itself for why this is an intensity
+      write and not a `visible` flip. */
+  setCabinLight(k: number): void;
   setMirrorVis(v: boolean): void;
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
   /** Repaint the head unit. Takes the world/car/traffic the HUD minimap
@@ -93,6 +99,13 @@ export interface Cockpit {
     and must be able to put them back exactly, so they live here rather than as
     literals at the construction site. */
 export const GLASS_REST = { y: 1.14, z: 1.0, intensity: 0.5, color: 0xbfd0ff };
+
+/** Full-on level of the cabin's warm header lamp — the DOME light, the thing
+    the I key switches. Authored here so engine.ts's knob can stay a plain
+    multiplier and the tuned number never has to leave this file. Its
+    counterpart, GLASS_REST above, is OUTSIDE light coming in and is not on the
+    switch: it is what gives the pad its grazing sheen when the cabin is dark. */
+export const CABIN_DOME = 0.45;
 
 /* Dimensions the fixed interior geometry was modelled against (first car's shell) */
 export const COCKPIT_REF = { belt: 0.82, W: 1.84 };
@@ -1311,8 +1324,16 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      hundreds of candela): ~0.5 cd at 0.5-1 m gives the pad a soft 1-2 lux
      wash, well under the exterior street lighting. distance clamps it inside
      the cabin; it lives in interiorG so chase view never pays for it. */
-  const cabinLight = new THREE.PointLight(0xffd2a4, 0.45, 3.0, 2);
+  const cabinLight = new THREE.PointLight(0xffd2a4, CABIN_DOME, 3.0, 2);
   cabinLight.position.set(0, 1.42, 0.28);
+  /* Shipped OFF. At night a real cabin is a silhouette — the reference capture
+     the look is tuned against has a dash, door card, A-pillar and wheel rim
+     that are all pure black, and everything you can read is either an emitter
+     (cluster, screen, accent strips) or a grazing highlight off OUTSIDE light.
+     A fill light from inside the car is the one thing that cannot happen at
+     night, and it was the loudest tell in the frame. `glassLight` below is the
+     source that stays. */
+  cabinLight.intensity = 0;
   interiorG.add(cabinLight);
   endRegion();
 
@@ -1912,6 +1933,11 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     mirrorGlass: mirrorMesh,
     mirrorFrame,
     glassLight,
+    /* Intensity, not `visible`: a light that leaves the scene's light list
+       changes the material program hash, so flipping it would recompile every
+       lit material in the cabin on each press. Zero intensity is free and the
+       toggle is instant. */
+    setCabinLight: (k) => { cabinLight.intensity = CABIN_DOME * k; },
     setMirrorVis: (v) => {
       mirrorParts.forEach((m) => (m.visible = v));
       // the frame is not in mirrorParts (it is a Group, not a glass plane), so
