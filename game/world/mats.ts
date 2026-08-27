@@ -4,6 +4,7 @@ import {
   streakTexF, smokeTexF, envFaceCanvas, chevTexF, goreTexF, xingTexF, studTexF,
   fenceTexF, grimeTexF, loadPbrSet, makeTex, type PbrSet,
 } from "../textures";
+import { worldTierCaps } from "../settings";
 
 /* Shared materials + textures. Planar-reflection sampling is injected into the
    road materials here (ported from v2, adapted to the linear HDR pipeline).
@@ -464,8 +465,31 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
      defaults are where they are. Shared objects, one per world: every wall
      material holds the same reference, so one assignment moves all of them. */
   const uBeamRake = { value: 1 };
-  const uReliefK = { value: 1 };
-  const uGritK = { value: 1 };
+  /* ---- and the two that are also the PERF gate for this whole band ----
+     Both are read inside `if (…)` tests on a UNIFORM, so at 0 the GPU skips
+     the guarded body outright for every fragment rather than multiplying a
+     result by zero — the same trick uWeatherK already uses, and the reason
+     this is a gate and not just a dimmer. What each one skips:
+
+       uGritK   = 0  the tGrit fetch. One texture read per concrete fragment,
+                     and with wGrit left at its neutral 0.5 every downstream
+                     grit term (two on albedo, one on roughness, one on the
+                     height field) collapses to zero for free.
+       uReliefK = 0  the Mikkelsen surface-gradient block at
+                     <normal_fragment_maps>: 4 derivative instructions, two
+                     cross products, a dot and a normalize, ~45 ALU, on every
+                     fragment of every parapet and fascia in frame. This is
+                     the expensive half by a wide margin — the fetch is one
+                     cache-friendly read off a 512² atlas, the gradient is
+                     unconditional maths.
+
+     Seeded from TierCaps.wallDetail (settings.ts): 1 on desktop, 0.5 on
+     mobile-high (grit, no relief), 0 on mobile-base. worldTierCaps() is the
+     same escape hatch highway/sky/scenery already use — mats is built by the
+     engine but is handed only `{pbr}`, so it cannot reach tierCaps directly. */
+  const wallDetail = worldTierCaps().wallDetail ?? 1;
+  const uReliefK = { value: wallDetail >= 1 ? 1 : 0 };
+  const uGritK = { value: wallDetail > 0 ? 1 : 0 };
   const uCopingK = { value: 1 };
   /** 1 at midnight, 0 at noon; set by setBeam, read by the coping catch */
   const uNight = { value: 1 };
@@ -779,8 +803,14 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       const rakeSrc = rake > 0
         ? `
   vec3 bl = -bd / max(bdist, 1e-4);
-  // the shading normal is view-space; the beam is world-space
-  float ndl = dot(inverseTransformDirection(normal, viewMatrix), bl);
+  /* The shading normal is view-space; the beam is world-space. Rather than
+     lift the normal into world space (a mat3 multiply AND a normalize) and dot
+     it there, push the light vector down into view space and dot it here:
+     mat3(viewMatrix) is orthonormal, so dot(Mᵀn, l) == dot(n, Ml) exactly, and
+     the normalize inverseTransformDirection would have run is provably a no-op
+     on an already-unit vector under an orthonormal transform. Same number,
+     one fewer normalize per fragment. */
+  float ndl = dot(normal, (viewMatrix * vec4(bl, 0.0)).xyz);
   lit *= clamp(
     1.0 + (ndl - ${rakeRef.toFixed(3)}) * ${(rake / rakeRef).toFixed(3)} * uBeamRake,
     0.32, 1.45);`
@@ -884,8 +914,18 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
 {
   /* The SHADING normal, so the coping's own relief breaks the line up rather
      than it running as a drawn stroke — and so a chamfer or a fallen kerb
-     angle reads differently from a flat top, which is the whole point. */
-  float ny = max(inverseTransformDirection(normal, viewMatrix).y, 0.0);
+     angle reads differently from a flat top, which is the whole point.
+
+     This wants ONE COMPONENT of the world normal, and asking
+     inverseTransformDirection() for it buys the other two and a normalize as
+     well. It expands to normalize((vec4(n,0) * viewMatrix).xyz), i.e.
+     transpose(mat3(viewMatrix)) * n — and viewMatrix is the inverse of a
+     camera world matrix, which carries no scale, so that mat3 is orthonormal:
+     the normalize is provably a no-op on an already-unit normal, and the .y
+     component of a transpose-multiply is just dot(n, viewMatrix[1].xyz).
+     Bit-for-bit the same value for 5 ALU instead of ~25, on every barrier
+     fragment in frame. */
+  float ny = max(dot(normal, viewMatrix[1].xyz), 0.0);
   totalEmissiveRadiance +=
     diffuseColor.rgb * vec3(1.0, 0.795, 0.545)
     * (pow(ny, ${sharp.toFixed(2)}) * uNight * uCopingK * ${gain.toFixed(3)});
@@ -1200,8 +1240,16 @@ ${
       ? `  /* CONCRETE GRIT — see the block at the top of this file. One fetch, at a
      scale deliberately between the joint pitch and the fine grain: this is the
      0.02-0.35 m band, which nothing else in this shader occupies and which is
-     the band the eye is actually in from the dashcam. */
-  wGrit = texture2D(tGrit, wUV * ${f(gritK)}).rgb;
+     the band the eye is actually in from the dashcam.
+
+     Behind a UNIFORM branch, for the same reason the outer uWeatherK test is:
+     every fragment in a quad takes the same path, so at uGritK = 0 the fetch
+     genuinely does not happen — and because it is uniform control flow the
+     implicit-derivative mip selection inside texture2D stays well defined,
+     which a per-fragment distance branch here would NOT (see the DISTANCE
+     note below). wGrit keeps its neutral 0.5, so every term that reads it
+     falls to zero on its own and no downstream line needs a second gate. */
+  if (uGritK > 0.001) wGrit = texture2D(tGrit, wUV * ${f(gritK)}).rgb;
 `
       : ""
   }${
@@ -1325,7 +1373,41 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
          same depth at every distance. It fades on its own anyway — jw below is
          widened by fwidth, so past ~50 m the groove is a sub-pixel feature
          spread over a pixel and its slope falls off with it, which is the
-         correct anti-aliasing behaviour and needs no distance term. */
+         correct anti-aliasing behaviour and needs no distance term.
+
+         ---- DISTANCE: why there is no near-field cutoff here ----
+         This block is the expensive half of the concrete work — 4 derivative
+         instructions, two cross products, a dot and a normalize, ~45 ALU on
+         every parapet and fascia fragment — and the band it serves is only
+         legible over about 2-6 m, so "compute it near the camera and fade it
+         out beyond that" is the obvious saving. It was worked out and
+         rejected, on two independent grounds, and both are worth keeping:
+
+         1. THE NEAR FIELD IS THE PIXELS. A wall running beside the road
+            subtends screen height proportional to 1/d and screen width
+            proportional to 1/d, so the fragments it contributes between d and
+            d+dd go as d^-3. Integrating over the range the dashcam can
+            actually see a parapet — it clears the windscreen aperture around
+            6 m and the beam wash dies at 78 — the integral of d^-3 from 6 to
+            15 is 0.0117 against 0.0021 from 15 to 78. Eighty-five per cent of
+            the wall's fragments are inside 15 m. A cutoff at 15-25 m saves
+            ~15 % of the cost, and removes none of it from the place the cost
+            actually is, which is also the one place the detail has to stay.
+
+         2. A DISTANCE BRANCH IS DIVERGENT, and this block takes derivatives.
+            dFdx/dFdy in non-uniform control flow are undefined — the same
+            constraint the uWeatherK note above is written around. Skipping the
+            body per fragment makes the gradient garbage on every quad
+            straddling the cutoff, and hoisting the derivatives out to keep
+            them defined leaves the cost outside the branch anyway. A smooth
+            fade is well defined but saves nothing: the gradient still runs and
+            merely multiplies out to zero.
+
+         So the lever here is the uniform gate on the line below, not distance.
+         uReliefK is 0 on mobile-high and mobile-base (TierCaps.wallDetail) and
+         is half of what `__wall.detail` moves, so the block is skipped for
+         every fragment or for none — coherent, and derivative-safe by
+         construction. */
       if (anyRelief)
         sh.fragmentShader = sh.fragmentShader.replace(
           "#include <normal_fragment_maps>",
@@ -1696,13 +1778,34 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
     section: 0.075, topClean: 0.1, rough: 0.22, normalise: true, relief: 0.016,
     grit: 0.3, gritScale: 1.7, gritRelief: 1, band: 0.22, scanBoost: 1.6,
   };
-  /* Shallower on the fascia: a box-girder segment joint is a sealed
-     construction joint, not a slipformed groove, and there is no rake down
-     there to read it anyway (the fascia carries no beam wash — it faces away
-     from the road), so this only ever answers ambient and the env cube. */
+  /* NO relief on the fascia, and that is a cost cut made on the strength of
+     the note that used to argue for a shallow one. It said a box-girder
+     segment joint is a sealed construction joint rather than a slipformed
+     groove, that the fascia carries no beam wash (it faces away from the
+     road), and that its relief therefore "only ever answers ambient and the
+     env cube". Both halves of that are worse than it allowed: `conc` and
+     `concDouble` are declared with no envMap at all, and AmbientLight is
+     normal-free by definition — so after dark the only thing left reading a
+     perturbed normal down there is HemisphereLight at 0.05 intensity. Nine
+     millimetres of groove tilts the normal a couple of degrees; times 0.05
+     that is not a visible quantity.
+
+     What it costs is not small, because `relief` is what sets `anyRelief` and
+     `anyRelief` is what compiles the Mikkelsen surface-gradient block into the
+     shader: 4 derivative instructions, two cross products, a dot and a
+     normalize on EVERY fascia and soffit fragment, on every tier, to move a
+     height field that is identically zero except within about 2 cm of a joint
+     line at an 11.5 m pitch. That is worse than a fade that multiplies out to
+     zero — it is a full gradient taken of a field that is flat almost
+     everywhere.
+
+     The joint does not disappear with it: `joint: 0.28` still darkens the
+     groove, and an albedo groove is what you actually read on a girder face
+     lit by ambient. Put `relief: 0.009` back if a DAYLIGHT pass shows the
+     soffit going flat — the sun is the one light that would notice. */
   const FASCIA_WEATHER: WeatherOpts = {
     macro: 0.15, streak: 0.24, joint: 0.28, jointPitch: 11.5,
-    section: 0.06, topClean: 0.04, rough: 0.2, relief: 0.009,
+    section: 0.06, topClean: 0.04, rough: 0.2,
     // a girder face is seen from further away and mostly in the mirrors, so
     // the grit tiles coarser (its fine end would be below a pixel anyway) and
     // carries no relief — nothing rakes it
@@ -1855,12 +1958,19 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
       if (on) void ensurePbr();
       if (detailOn === on) return;
       detailOn = on;
-      /* Weathering rides the same switch: two extra texture fetches and a
-         handful of ALU on every concrete and fence fragment. Flipping the
-         shared uniform rather than recompiling is deliberate — the branch it
-         guards is uniform-valued, so it is fully coherent and the GPU skips
-         the body outright, and nobody eats a shader-compile hitch mid-drive
-         for a quality toggle. */
+      /* Weathering rides the same switch: three extra texture fetches (two
+         grime, one grit) and a couple of hundred ALU on every concrete and
+         fence fragment. Flipping the shared uniform rather than recompiling is
+         deliberate — the branch it guards is uniform-valued, so it is fully
+         coherent and the GPU skips the body outright, and nobody eats a
+         shader-compile hitch mid-drive for a quality toggle.
+
+         Note this is the OUTERMOST of three nested uniform gates and it
+         subsumes both inner ones: uWeatherK = 0 already skips the grit fetch
+         and the surface-gradient block, so perfCheck()'s automatic drop needs
+         no knowledge of TierCaps.wallDetail and there is no second mechanism
+         to keep in step with this one. wallDetail gates the same work a level
+         further in, for devices that are not in trouble yet. */
       uWeatherK.value = on ? 1 : 0;
       /* Perf mode drops the two extra road texture fetches per pixel — the
          detail albedo and the normal map — while keeping the roughness map,
@@ -1956,8 +2066,25 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
        __wall.relief = 0        drops the joint grooves' and grit's relief
        __wall.normalScale = 0.85   the previous scan normal strength
 
-     Setting all five restores the pre-change look bit for bit, which is the
-     point: A/B it at speed rather than from memory. Reach for `coping` first —
+     and one more that is a PERF control rather than a look control:
+
+       __wall.detail = 1        what desktop ships
+       __wall.detail = 0.5      grit, no relief — the mobile-high setting
+       __wall.detail = 0        neither: the tGrit fetch and the whole
+                                surface-gradient block are skipped outright
+
+     `detail` is the one to reach for when the question is "is the concrete
+     what is costing me frames?" rather than "does the concrete look right".
+     It drives uGritK and uReliefK together, and both are tested against a
+     UNIFORM inside the shader, so 0 makes the GPU jump over the body instead
+     of multiplying a computed result by zero — the frame time moves or it does
+     not, and either answer is the diagnosis. It seeds from TierCaps.wallDetail
+     (1 / 0.5 / 0 down the tiers) and setting it by hand overrides that for the
+     session without touching the saved profile.
+
+     Setting all five look knobs restores the pre-change look bit for bit,
+     which is the point: A/B it at speed rather than from memory. Reach for
+     `coping` first —
      it is the one that decides whether the barrier reads as an edge of the
      road at all, and it is the term the reference frame is really built on.
      `grit` second, and note it is deliberately low: 0 / 0.5 / 1 / 2 brackets
@@ -1976,6 +2103,14 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
       set grit(v: number) { uGritK.value = v; },
       get coping() { return uCopingK.value; },
       set coping(v: number) { uCopingK.value = v; },
+      /* The perf lever: 1 / 0.5 / 0 in one assignment. Reading it back reports
+         the LEVEL rather than either uniform, so `__wall.detail` round-trips
+         even after someone has poked `grit` or `relief` on their own. */
+      get detail() { return uGritK.value > 0 ? (uReliefK.value > 0 ? 1 : 0.5) : 0; },
+      set detail(v: number) {
+        uGritK.value = v > 0 ? 1 : 0;
+        uReliefK.value = v >= 1 ? 1 : 0;
+      },
       get normalScale() { return barrier.normalScale.x; },
       set normalScale(v: number) { for (const m of concFamily) m.normalScale.set(v, v); },
     };

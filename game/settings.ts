@@ -73,6 +73,34 @@ export interface TierCaps {
   roadDecals?: boolean;
   /** sodium ground pool under every Nth deck streetlight (1 = all) */
   lampPoolEvery?: number;
+
+  /** Procedural concrete decimetre detail on parapets, deck fascia and the
+      tunnel crown — the grit atlas fetch plus the surface-gradient normal
+      perturbation it and the contraction joints drive (mats.weatherSurface).
+      Unlike every other cap here this is a LEVEL, not a boolean, because the
+      two halves have very different prices:
+
+        1    grit fetch + relief. What desktop ships.
+        0.5  grit fetch, no relief. Drops the whole Mikkelsen gradient block
+             — 4 derivative ops, two cross products and a normalize on every
+             concrete fragment — while keeping the albedo variation, which is
+             what actually stops the wall reading as a flat card.
+        0    neither. One uniform branch skips the texture fetch too.
+
+      Read once at world-build time by mats.ts, which seeds uGritK/uReliefK
+      from it; `window.__wall.detail` overrides both live, no reload. */
+  wallDetail?: number;
+
+  /** Edge length of the procedural expressway-deck asphalt canvas
+      (highway.ts). Its own cap rather than a rider on wallDetail, because it
+      buys back a different resource: wallDetail is ALU on the parapets, this
+      is texture BANDWIDTH on the road. textures.makeTex sets anisotropy 16 on
+      everything, and a road seen from a dashcam is the most grazing surface in
+      the frame — the geometry that makes the sampler take all sixteen taps. At
+      1024 the map plus mips is ~5.5 MB and those taps miss cache; at 256 they
+      do not. Desktop 1024, mobile-high 512, mobile-base 256. Read at
+      world-build time, so it needs a reload to change. */
+  deckTexPx?: number;
 }
 
 export const TIER_CAPS: Record<RenderTier, TierCaps> = {
@@ -85,7 +113,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     dualBloom: false, filmLook: false,
     lampCones: false, lampConeEvery: 2, jetFans: false, catwalks: false,
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
-    lampPoolEvery: 2,
+    lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -94,7 +122,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     dualBloom: false, filmLook: false,
     lampCones: true, lampConeEvery: 2, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
-    lampPoolEvery: 1,
+    lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -103,7 +131,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     dualBloom: true, filmLook: true,
     lampCones: true, lampConeEvery: 1, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
-    lampPoolEvery: 1,
+    lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024,
   },
 };
 
