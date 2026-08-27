@@ -6,6 +6,11 @@ import { worldTierCaps } from "../settings";
 import { buildAurora, FX_AURORA, type Aurora } from "./aurora";
 import { buildNightClouds, FX_NIGHT_CLOUDS, type NightClouds } from "./nightclouds";
 
+declare global {
+  interface Window { __sky?: { mtnScale: number; mtnColor: number } }
+}
+
+
 /* Sky dome, stars, moon, distant skyline ring, mountains, and the two
    landmarks (broadcast tower west, ferris wheel east). Ported from v2.
    Lane A adds the layered point-cloud city (buildCityGlow) and the airport
@@ -131,16 +136,39 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
 
   // mountains
   {
+    /* Live, because a ridgeline can only be judged against the sky it sits in
+       and that sky is now tunable too (window.__fog):
+         window.__sky.mtnScale = 1     // the original, full-height peaks
+         window.__sky.mtnColor = 0x05070f  // the original near-black
+       Read once at build time — reload or re-enter to apply. */
+    const sk = (typeof window !== "undefined"
+      ? (window.__sky ??= { mtnScale: 0.5, mtnColor: 0x0b0d16 })
+      : { mtnScale: 0.5, mtnColor: 0x0b0d16 });
+    const mtnScale = sk.mtnScale, MTN_COLOR = sk.mtnColor;
     /* Silhouette only. Once the night dome is taken down to black the old
        value read as *lighter* than the sky behind it, which inverted the
        ridgeline — it has to sit under the horizon glow band, not above it. */
-    const mMat = new THREE.MeshBasicMaterial({ color: 0x05070f, fog: false });
+    /* HEIGHT. The cones used to run 220-520 m at 2.0-2.5 km, which puts the
+       tallest ones well ABOVE the horizon glow they are supposed to sit under
+       — from the dashcam a 520 m peak at 2 km subtends ~15 degrees and stands
+       as a hard black pyramid in the middle of the sky. Reported as "the
+       pyramid... it blocks the view". Halved, so the ridgeline reads as
+       distant relief rather than as an object. `__sky.mtnScale` restores it.
+
+       COLOUR. `fog: false` is deliberate — see below — but it means these did
+       not follow when the night fog was lifted and warmed. They stayed at
+       0x05070f while the haze behind them came up, so instead of a silhouette
+       just under the glow they became a black hole punched in it. Lifted to
+       sit under the new band rather than under the old one; still darker than
+       the sky behind, which is the property that matters and the reason the
+       original note says it must not invert. */
+    const mMat = new THREE.MeshBasicMaterial({ color: MTN_COLOR, fog: false });
     // one ridgeline, one draw call: the cones never move relative to each
     // other, so the transforms are baked instead of costing 14 draws a frame
     const cones: THREE.BufferGeometry[] = [];
     for (let i = 0; i < 14; i++) {
       const a = rand(0, TAU), r = rand(2000, 2500);
-      const g = new THREE.ConeGeometry(rand(300, 700), rand(220, 520), 5);
+      const g = new THREE.ConeGeometry(rand(300, 700), rand(220, 520) * mtnScale, 5);
       g.rotateY(rand(0, TAU));
       g.translate(Math.cos(a) * r, 0, Math.sin(a) * r);
       cones.push(g);

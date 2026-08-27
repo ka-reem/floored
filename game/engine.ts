@@ -486,7 +486,19 @@ const CABIN_LIGHT = { on: 0, dome: 1, glass: 1, glassHex: GLASS_REST.color };
      window.__fog.density = 1.4       // thicker, without touching the setting
      window.__fog.sky = 0x5f5a4b      // re-couple the clear colour to the fog */
 const FOG_TUNE = {
-  night: 0x5f5a4b,
+  /* 0x5f5a4b was the first cut and it came out YELLOW on nearby buildings.
+     The maths: fog is most of what you see over UNLIT geometry, because the
+     surface contributes almost nothing of its own. A dark building at 150 m
+     sits under ~14% fog, but 14% of a saturated colour over near-black is not
+     a tint — it is the whole read, so the building becomes the fog rather than
+     being veiled by it. R95 G90 B75 has a 20-point red-to-blue spread, which
+     is plenty to show as yellow once it is the only thing there.
+
+     Halved to a 6-point spread: still warm, still city-glow rather than
+     moonlight, but no longer able to paint a building. Distant haze barely
+     changes — at 400 m the fog is thick enough that saturation reads as
+     colour temperature instead of as a hue. */
+  night: 0x565550,
   rain: 0x626057,
   sky: 0x03040a,
   skyRain: 0x171b26,
