@@ -341,8 +341,15 @@ export default function GameApp() {
             backFrom(true);
           }}
           onReseed={() => {
-            const p = profileRef.current!;
-            p.seed = (Math.random() * 100000) | 0;
+            /* Write the new seed to the GAME, not to the profile. persist()
+               below does `p.seed = g.seed` before saving, so setting p.seed
+               here was overwritten by the old value one line later and the
+               reload rebuilt the identical town — the button did nothing, and
+               the panel's own "Town seed" readout proved it by not changing.
+               Going through the game is also the only version that survives
+               someone reordering persist(). */
+            const g = gameRef.current;
+            if (g) g.seed = (Math.random() * 100000) | 0;
             persist();
             location.reload();
           }}
@@ -776,6 +783,13 @@ function SettingsPanel({
             onClick={() => {
               Object.assign(game.settings, defaultSettings());
               game.applySettings(game.settings);
+              /* Every other write to settings goes through upd(), which calls
+                 this; DEFAULTS assigns straight onto game.settings and so
+                 skipped it. applySettings does not cover the rival — it is
+                 driven separately — so resetting left the rival in whatever
+                 state it was in while the panel claimed it was back to
+                 default. */
+              syncRivalMode(game.settings);
               force((n) => n + 1);
             }}
           >
