@@ -142,8 +142,8 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
          window.__sky.mtnColor = 0x05070f  // the original near-black
        Read once at build time — reload or re-enter to apply. */
     const sk = (typeof window !== "undefined"
-      ? (window.__sky ??= { mtnScale: 0.5, mtnColor: 0x0b0d16 })
-      : { mtnScale: 0.5, mtnColor: 0x0b0d16 });
+      ? (window.__sky ??= { mtnScale: 0, mtnColor: 0x0b0d16 })
+      : { mtnScale: 0, mtnColor: 0x0b0d16 });
     const mtnScale = sk.mtnScale, MTN_COLOR = sk.mtnColor;
     /* Silhouette only. Once the night dome is taken down to black the old
        value read as *lighter* than the sky behind it, which inverted the
@@ -153,7 +153,19 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
        — from the dashcam a 520 m peak at 2 km subtends ~15 degrees and stands
        as a hard black pyramid in the middle of the sky. Reported as "the
        pyramid... it blocks the view". Halved, so the ridgeline reads as
-       distant relief rather than as an object. `__sky.mtnScale` restores it.
+       distant relief rather than as an object.
+
+       Then reported AGAIN after that, so mtnScale now ships at 0 and the
+       ridgeline is not built at all. Halving it was not enough: the backdrop
+       is re-centred on the car every frame (engine.weather), so these sit at a
+       fixed 2.0-2.5 km forever — they are always in the frame, and the loop
+       seam is simply where you look up and notice. There is no distance at
+       which they stop being a black triangle on the horizon, only a height at
+       which you stop minding, and the user does not want them.
+
+       Nothing else changes: the skyline ring, city light rings, dome, stars
+       and aurora all still draw. `__sky.mtnScale = 0.5` brings the ridgeline
+       back at the reduced height, `= 1` at the original.
 
        COLOUR. `fog: false` is deliberate — see below — but it means these did
        not follow when the night fog was lifted and warmed. They stayed at
@@ -165,15 +177,22 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     const mMat = new THREE.MeshBasicMaterial({ color: MTN_COLOR, fog: false });
     // one ridgeline, one draw call: the cones never move relative to each
     // other, so the transforms are baked instead of costing 14 draws a frame
+    /* mtnScale 0 builds nothing at all — not 14 flattened cones, and not an
+       invisible mesh. rand() is still consumed for all 14 so the seeded stream
+       stays aligned: everything after this (city rings, tower placement) draws
+       from the same generator, and skipping the draws would silently reseed
+       the whole skyline. */
     const cones: THREE.BufferGeometry[] = [];
     for (let i = 0; i < 14; i++) {
       const a = rand(0, TAU), r = rand(2000, 2500);
-      const g = new THREE.ConeGeometry(rand(300, 700), rand(220, 520) * mtnScale, 5);
+      const rad = rand(300, 700), h = rand(220, 520) * mtnScale;
+      if (mtnScale <= 0) continue;
+      const g = new THREE.ConeGeometry(rad, h, 5);
       g.rotateY(rand(0, TAU));
       g.translate(Math.cos(a) * r, 0, Math.sin(a) * r);
       cones.push(g);
     }
-    scene.add(new THREE.Mesh(mergeGeometries(cones, false)!, mMat));
+    if (cones.length) scene.add(new THREE.Mesh(mergeGeometries(cones, false)!, mMat));
   }
   /* The distant city, as three staggered rings of window-lights between the
      mountains and the skyline ring. The load-bearing trick is CLUSTERING:
