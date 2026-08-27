@@ -11,6 +11,25 @@ body {
 }
 
 * {
+  /* iOS long-press defences, applied globally rather than per control.
+
+     Holding a button on iOS Safari raises the selection callout and the
+     MAGNIFIER LOUPE — the little round lens that pops up over the text
+     cursor. Reported as "sometimes i hold down the buttons and then it like
+     magnifies it". body already carries user-select:none, but that alone does
+     not stop the callout: -webkit-touch-callout is a separate opt-out, and
+     without it a long press on any element can still raise the loupe.
+
+     The steering puck already had both because it was hit first and fixed in
+     isolation; every other control (throttle, brake, gear, handbrake, the menu
+     buttons) was left with only half the set. Doing it globally is correct
+     here — this is a game, there is no prose to select, and a control that
+     misses the guard is a bug waiting to be reported one button at a time.
+
+     tap-highlight-color kills the grey flash iOS paints over a tapped
+     element, which on dark glass controls reads as a misfire. */
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
   box-sizing: border-box;
 }
 
@@ -686,5 +705,10 @@ body.touch #gearBtn {
   justify-content: center;
   cursor: pointer;
   user-select: none;
+  /* Not `none`: this one is a plain tap target, and touch-action:none would
+     also swallow the double-tap-to-zoom suppression browsers give for free.
+     `manipulation` keeps the tap instant (no 300 ms click delay) while still
+     letting the browser rule out gestures it does not need to wait for. */
+  touch-action: manipulation;
   backdrop-filter: blur(6px);
 }
