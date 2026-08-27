@@ -129,21 +129,27 @@ zeroed, at `traffic.ts:3319` (`const townTarget = TOWN_TRAFFIC ? … : …`).
 **Re-enable:** set to `true` and rebuild. Expect a real frame-rate cost — this is
 the largest single disabled feature in the repo.
 
-### 3c. Road SSR — forced to zero regardless of the settings toggle
+### 3c. Road SSR — NO LONGER DISABLED (as of `7621f1e`)
 
-`game/world/mats.ts:1139-1147`, inside `setWet()`. `const str = 0;` with
-`void reflectionsOn;` swallowing the parameter.
+This entry described road reflections as pinned to zero with the settings
+parameter voided. **That is no longer true and the restore path it gave is not
+what shipped.** Kept as a record because the reasoning explains the current
+design.
 
-> *"Road SSR is disabled outright (str 0 regardless of the settings toggle):
-> even luminance-gated, the mirrored skyline painted white patches across the
-> road that no tuning pass killed — the user chose to drop the effect. The
-> shader path and wet/rough plumbing stay; restore by reverting to
-> `reflectionsOn ? d.refStr * (on ? 2.6 : 1) : 0` if a future reflection source
-> is better behaved."*
+It *was* disabled because a full-scene reflection mirrored the SKYLINE and
+"painted white patches across the road that no tuning pass killed". The fix was
+not to re-tune the strength — it was to stop putting the sky in the source. The
+reflection now samples post.ts's bloom bright-pass, so the threshold gates the
+SOURCE: sky glow at 0.5 linear luma arrives as 0.0045, a lamp head at 4.0
+arrives as 3.05. The sky is excluded arithmetically rather than by tuning.
 
-**Re-enable:** exactly the line the comment gives. Note the **Reflections**
-checkbox in the settings panel currently controls only the planar reflection RT,
-not this — so the box is partially inert on the road surface.
+The second full scene render that used to run every frame is deleted, so the
+working effect costs LESS than the disabled one did.
+
+**To disable again:** `REF_GAIN = 0` in `game/world/mats.ts` makes the road
+pixel-identical to the old disabled state (the shader branch is uniform-valued
+and gets skipped). Live equivalent: `__wetTune.gain = 0`. The Road-reflections
+setting also still gates the whole thing.
 
 ### 3d. NPC engine voices — the doppler drone pool, disabled outright
 

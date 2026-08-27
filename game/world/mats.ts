@@ -84,6 +84,14 @@ const REF_LO_W = 0.45;
     A sodium streak therefore stays orange at its hottest, which is the entire
     difference between this and the white patches that got the effect cut. */
 const REF_MAX = 0.42;
+/** Master gain, and the one edit that makes this effect a visual no-op.
+    Set to 0 and the road is pixel-identical to the disabled version — uRefStr
+    goes to 0, so the shader's uniform-valued branch is skipped and road
+    fragments cost exactly what they did before this existed. The engine-side
+    saving (the second scene render, deleted) is kept either way; all that is
+    left running is post.ts's one quarter-res smear, which at ~0.05 ms is not
+    worth a second switch to suppress. Also live at `__wetTune.gain`. */
+const REF_GAIN = 1;
 
 /* ======================================================================
    CONCRETE GRIT — the missing decimetre
@@ -493,7 +501,7 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   const uRefMax = { value: REF_MAX };
   /** overall multiplier on the reflection strength, live-tunable; the wet/dry
       and per-surface shares stay where they are underneath it */
-  let refGain = 1;
+  let refGain = REF_GAIN;
   /** last setWet() arguments, so a live knob can re-apply without the engine */
   let wetState = false, wetRefOn = false;
   let detailOn = true;
@@ -2390,7 +2398,7 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
     const num = (v: unknown, d: number) => (typeof v === "number" && isFinite(v) ? v : d);
     (window as unknown as { __wetTune: unknown }).__wetTune = {
       get gain() { return refGain; },
-      set gain(v: number) { refGain = Math.max(0, num(v, 1)); apply(); },
+      set gain(v: number) { refGain = Math.max(0, num(v, REF_GAIN)); apply(); },
       get wet() { return wetState; },
       set wet(v: boolean) { mats.setWet(!!v, wetRefOn); },
       get max() { return uRefMax.value; },
