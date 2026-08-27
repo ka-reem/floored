@@ -12,10 +12,18 @@ import type { RenderTier } from "./settings";
 import { carEnvMap, isSharedEnv, trackEnvMaterial, untrackEnvMaterial } from "./carenv";
 import { paintByHex, type CarSpec, type Paint } from "./carspecs";
 
-/* Which donor INTERIOR each render tier loads, or "" for none — a build stem
-   under public/models/cockpits/, see tools/build-cockpit.mjs.
+/* Which donor INTERIOR to load, by CAR and then by render tier — a build stem
+   under public/models/cockpits/, see tools/build-cockpit.mjs. An id that is
+   not in this table, or a tier whose entry is "", drives the procedural cabin.
 
-   One donor, not a choice of two. This used to name `volvo-s90`, a per-vertex
+   TWO KEYS, because the question has two independent halves and folding them
+   into one is what made the old J toggle necessary. WHICH cabin you sit in is
+   a property of the car picked in the garage: the Volvo has a donor, kaze is
+   procedural inside and out, and from the dashcam that is the whole difference
+   between them. WHETHER the donor is affordable is a property of the device,
+   and no car choice may override it.
+
+   One donor asset, not a choice of two. This used to name `volvo-s90`, a per-vertex
    frustum CUT of the same car: sharper over the third of the cabin it kept,
    but sliced geometry, so it printed torn shards at the frame borders as soon
    as the Field-of-view slider went past what it was cut for, and engine.ts had
@@ -32,23 +40,46 @@ import { paintByHex, type CarSpec, type Paint } from "./carspecs";
    -4k variant and point desktop at it if a brighter interior ever makes the
    difference visible.
 
-   mobile-base gets nothing. It is the tier unknown hardware falls back to (see
-   resolveRenderTier), so it has to assume the weakest plausible device, and a
-   third of a million triangles of cabin on top of traffic and world geometry
-   is not a bet worth taking there. The procedural dash is not a placeholder
-   for those players — it is the shipped one. */
-const COCKPIT_MODEL: Record<RenderTier, string> = {
-  desktop: "volvo-s90-full",
-  "mobile-high": "volvo-s90-full",
-  "mobile-base": "",
+   mobile-base gets nothing, EVEN WHEN THE PLAYER PICKED THE VOLVO. It is the
+   tier unknown hardware falls back to (see resolveRenderTier), so it has to
+   assume the weakest plausible device, and a third of a million triangles of
+   cabin on top of traffic and world geometry is not a bet worth taking there.
+   The procedural dash is not a placeholder for those players — it is the
+   shipped one.
+
+   That degrade is silent and PARTIAL by design: the Volvo is still selectable
+   there and still gets its own exterior (BODY_MODEL is not tiered), it just
+   has a procedural cabin — exactly what already happens when a donor GLB fails
+   to fetch, which leaves that one half procedural rather than taking the car
+   down with it. Nothing hides the car and nothing forces the cabin. */
+const COCKPIT_MODEL: Record<string, Record<RenderTier, string>> = {
+  volvo: {
+    desktop: "volvo-s90-full",
+    "mobile-high": "volvo-s90-full",
+    "mobile-base": "",
+  },
 };
-/* Which cars have an imported EXTERIOR body, by spec id. Only kaze: the donor
-   is a real S90 and kaze is the one shell close enough to it to be fitted by
-   scaling alone — the 3.14 m kei car is not, and never will be. Keyed by car
-   rather than by tier because it is a 0.5 MB static shell that only shows in
-   the chase cameras; there is nothing here for a weaker device to opt out of
-   that hiding the exterior does not already handle. */
-const BODY_MODEL: Record<string, string> = { kaze: "volvo-s90-body-lite" };
+/* Which cars have an imported EXTERIOR body, by spec id. Only the Volvo: the
+   donor IS an S90 and that car's shell is now that car's real box, so the fit
+   is very nearly an identity scale — the 3.14 m kei car is not a candidate and
+   never will be. Not tiered, unlike the cabin above: it is a 0.5 MB static
+   shell that only shows in the chase cameras, so there is nothing here for a
+   weaker device to opt out of that hiding the exterior does not already
+   handle.
+
+   IT USED TO BE KEYED TO kaze, which is why kaze looked photoreal in chase up
+   to now. Two cars cannot share one exterior and still be two cars, so the
+   donor body followed the donor cabin to the car it actually belongs to, and
+   kaze reverted to its generated shell — 4.42 m, wing, hood bulge, straight
+   off its own ShellParams. Less photoreal, deliberately. */
+const BODY_MODEL: Record<string, string> = { volvo: "volvo-s90-body-lite" };
+/** The donor cabin this car wants on this device, or "" for the procedural
+    one. The only place the car/tier matrix above is read: everything else asks
+    the RIG whether a donor cabin is up (`rig.cockpitModel`), so there is no
+    second copy of the rule to keep in step — and no way for the camera offsets
+    to believe in a cabin that was never fetched. */
+const cockpitDonor = (carId: string, tier: RenderTier): string =>
+  COCKPIT_MODEL[carId]?.[tier] || "";
 /* The headlight carpet's alpha field: a WEDGE spreading forward from the
    bumper, not a radial pool.
 
@@ -304,7 +335,7 @@ function paintMaterial(paint: Paint, env: THREE.Texture): THREE.MeshPhysicalMate
    It was black because NOTHING WAS LIGHTING IT. Not "not enough" — nothing.
 
    The car on screen in CHASE is the imported Volvo shell, not the procedural
-   one: BODY_MODEL configures it for kaze and it lands switched ON. Its
+   one: BODY_MODEL configures it for the Volvo and it lands switched ON. Its
    materials come straight out of the GLB, and bodymodel.ts sets exactly one
    thing on them (castShadow). In particular it never gave them an envMap, and
    there is no scene.environment in this project — the env is wired per
@@ -539,7 +570,7 @@ function attachHood(cockpit: Cockpit, donor: THREE.Object3D): THREE.Group | null
   const space = new THREE.Group();
   space.scale.set(1, cockpit.group.scale.x, cockpit.group.scale.x);
   space.add(mesh);
-  space.visible = false; // engine.ts turns it on with the J flag
+  space.visible = false; // engine.ts owns it — hoodUpdate(), once a donor cabin is up
   cockpit.group.add(space);
   return space;
 }
@@ -605,18 +636,19 @@ export interface PlayerRig {
   exteriorG: THREE.Group;
   cockpit: Cockpit;
   /** The imported dash once it has loaded, else null. Null is the normal
-      steady state when no donor is configured or the fetch failed. */
+      steady state when this car configures no donor, when this tier configures
+      none for it, or when the fetch failed — and it is also engine.ts's ONE
+      test for "is the donor cabin the cabin on screen", which is why the
+      car/tier matrix does not have to be re-read anywhere else. */
   readonly cockpitModel: CockpitModelHandle | null;
   /** Settles once the donor dash has landed or been given up on; already
       settled on a tier that configures no donor. Never rejects. */
   readonly cockpitReady: Promise<void>;
   /** The imported exterior body once it has loaded, else null — null is the
-      normal steady state for every car but kaze, and for a failed fetch. */
+      normal steady state for every car but the Volvo, and for a failed fetch.
+      It shows itself when it lands and is never switched off again; the car it
+      belongs to cannot change without this whole rig being rebuilt. */
   readonly bodyModel: BodyModelHandle | null;
-  /** Show the imported body, or the procedural one. Safe to call before the
-      donor has loaded (and before it is known whether it ever will): the state
-      is remembered and applied when it arrives. */
-  setBodyImported(on: boolean): void;
   /** The donor's HOOD, lifted out of the exterior body and re-hung inside the
       cabin so the interior cameras can see it — null until the body donor has
       landed, and on any car that has no body donor. A group in donor space;
@@ -1053,7 +1085,7 @@ export function buildPlayerCar(
      a real dash is not a stretchable object — narrow it to the procedural
      region once a donor is more than a prototype. */
   const rigRef = { model: null as CockpitModelHandle | null };
-  const donor = COCKPIT_MODEL[tier];
+  const donor = cockpitDonor(spec.id, tier);
   /* Settled when the donor question is answered — landed, failed, or never
      asked. The staged load in engine.ts waits on this (with a budget) so the
      dash is already fitted on the first frame the player sees: the dashcam POV
@@ -1067,20 +1099,20 @@ export function buildPlayerCar(
   else dashDone();
 
   /* Imported exterior body, if this car has one. Same fire-and-forget shape as
-     the dash above, the same fallback rule, and the same default: the donor
-     dash and the donor body are two cuts of one car and are shown together,
-     off engine.ts's single J flag. Nothing waits on this one — it is invisible
-     in the POV the game is played in, so there is no pop worth paying for.
+     the dash above, and the same fallback rule. Nothing waits on this one — it
+     is invisible in the POV the game is played in, so there is no pop worth
+     paying for.
 
-     `want` is what closes the load race. The body can land AFTER the player
-     has already toggled back to the procedural car, and a handle that switched
-     itself on at that point would put a Volvo body under a procedural dash —
-     exactly the mismatch the single flag exists to prevent. So the desired
-     state is recorded whether or not the handle exists yet, and applied on
-     arrival. */
+     No desired-state latch any more. There used to be a `want` flag here to
+     close a race against the J key: the body could land AFTER the player had
+     toggled back to the procedural car, and a handle that switched itself on
+     at that point would put a Volvo body under a procedural dash. J is retired
+     and the exterior now follows the car that was picked — a choice made
+     before this rig exists and unchangeable without rebuilding it (engine.ts
+     setCar) — so there is no window left to land in the wrong state, and
+     bodymodel.ts's own setActive(true) is the whole of the answer. */
   const bodyRef = {
     model: null as BodyModelHandle | null,
-    want: true,
     hood: null as THREE.Group | null,
   };
   const bodyDonor = BODY_MODEL[spec.id];
@@ -1088,7 +1120,6 @@ export function buildPlayerCar(
     attachBodyModel(exteriorG, P, bodyDonor, [pivFL, pivFR, wRL, wRR, ...glowSprites],
       (h) => {
         bodyRef.model = h;
-        h?.setActive(bodyRef.want);
         if (h) lightDonorBody(h.group, env, withEnv);
         /* Its own try/catch, and not for tidiness: bodymodel.ts runs this
            callback inside one of its own, and a throw from here would be
@@ -1110,7 +1141,6 @@ export function buildPlayerCar(
     get cockpitModel() { return rigRef.model; },
     cockpitReady,
     get bodyModel() { return bodyRef.model; },
-    setBodyImported(on: boolean) { bodyRef.want = on; bodyRef.model?.setActive(on); },
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
     beamCarpet, beamCarpetMat, beamCarpetG: carpetG,

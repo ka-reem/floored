@@ -246,6 +246,7 @@ type TrimId = "coupe" | "sedan" | "kei" | "rally";
     a 3rd arg) that takes priority and the inference becomes a pure fallback. */
 function trimFor(accent: number, carId?: string): TrimId {
   switch (carId) {
+    case "volvo": return "sedan";
     case "kaze": return "coupe";
     case "shirayuki": return "sedan";
     case "tanuki": return "kei";
@@ -255,7 +256,7 @@ function trimFor(accent: number, carId?: string): TrimId {
     case 0x3a5a8f: return "sedan";
     case 0xc98f10: return "kei";
     case 0x2a5c40: return "rally";
-    default: return "coupe"; // includes kaze's 0x8f1a22
+    default: return "coupe"; // includes kaze's 0x8f1a22 and the Volvo's 0xb08d57
   }
 }
 

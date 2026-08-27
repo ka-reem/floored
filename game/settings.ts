@@ -387,6 +387,28 @@ export function loadProfile(): Profile {
   const base = defaultProfile();
   try {
     const raw = localStorage.getItem(KEY);
+    /* ONE-TIME: move a profile that predates the two-car garage off "kaze".
+
+       Same shape as the mblur/fog scrubs below and for a stronger reason. For
+       the whole life of the one-car roster every profile stored carId:"kaze",
+       and kaze wore the imported Volvo body — that mapping has moved to the
+       new VOLVO S90, and kaze now renders from its own generated shell. So a
+       returning player who reloads into "the car I had" would find the same
+       name on a car that no longer looks remotely like it, having chosen
+       nothing. The default moved; move them with it, once.
+
+       STAMPED BEFORE THE EARLY RETURN, which the two scrubs below cannot be
+       and do not need to be. Their fix is a settings value whose new default
+       is right for a fresh player anyway, so a first-ever load that skips the
+       flag costs nothing. This one rewrites a CHOICE: leave the flag unset on
+       a first load and a new player who goes to the garage, picks the KAZE GT
+       and reloads would be silently put back in the Volvo — the migration
+       eating a genuine selection, which is the one thing it must never do.
+       Stamping here means it can only ever fire against a profile that was
+       already on disk when this shipped. */
+    const CAR_MIGRATED = KEY + ".volvodefault";
+    const migrateCar = !localStorage.getItem(CAR_MIGRATED);
+    if (migrateCar) localStorage.setItem(CAR_MIGRATED, "1");
     if (!raw) return base;
     const p = JSON.parse(raw);
     /* JSON.parse happily yields a string/number/array/null for a mangled entry;
@@ -462,6 +484,12 @@ export function loadProfile(): Profile {
        not carry it forward. */
     if (typeof prof.carId !== "string" || !isPlayableCar(prof.carId))
       prof.carId = DEFAULT_CAR_ID;
+    /* The one-time default move, applied after the scrub above so it can only
+       ever see a valid id. Deliberately narrow: only the id that WAS the sole
+       default is rewritten, so a profile that somehow already names another
+       car is left alone, and once the flag is stamped the car belongs to the
+       player again — someone who picks the KAZE GT after this keeps it. */
+    if (migrateCar && prof.carId === "kaze") prof.carId = DEFAULT_CAR_ID;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     return prof;
   } catch {

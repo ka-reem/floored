@@ -200,7 +200,70 @@ export const PAINTS: Paint[] = [
 export const paintByHex = (hex: number): Paint =>
   PAINTS.find((p) => p.hex === hex) || { name: "Custom", hex, finish: "metallic" };
 
+/* ---- The two playable cars share ONE physics object -------------------
+   "they drive the exact same. We're not going to worry about different
+   driving or anything. They just both look different."
+
+   So this is not two specs that happen to hold matching numbers — it is one
+   spec, referenced twice. Copying the table would leave a retune of either car
+   silently desyncing the pair, and the desync would be invisible until someone
+   drove both back to back. Object identity also keeps engine.ts's testPhys
+   memo (keyed on the spec object, not on the car id) from rebuilding a
+   test-mode derivation that would come out identical anyway.
+
+   Nothing mutates a PhysicsSpec — testDriveSpec() spreads into a new one — so
+   the sharing is safe as well as cheap. Give one of the cars its own numbers
+   the day they are meant to drive differently, and not before. */
+const SHARED_PHYS: PhysicsSpec = {
+  M: 1390, IZ: 2210, LA: 1.16, LB: 1.48, HCG: 0.5, TRACK: 1.56, WR: 0.325,
+  FINAL: 3.7, RATIOS: [3.54, 2.13, 1.48, 1.15, 0.92, 0.76], REV: 3.82,
+  TQ_R: [1000, 2000, 3000, 4000, 4600, 5400, 6200, 7200],
+  TQ_T: [165, 235, 285, 320, 335, 330, 300, 248],
+  gripF: 1.0, gripR: 1.04, steerMax: 0.62, steerHi: 0.026, steerAy: 20.5, revLimit: 6400, drag: 0.4,
+};
+/* And therefore ONE set of stat bars. The bars are a claim about how the car
+   drives, and two cars on one PhysicsSpec drive identically — printing
+   different bars on the two cards would be the garage lying about the only
+   thing the bars are for. They separate the day the physics does. */
+const SHARED_STATS = { speed: 0.92, accel: 0.88, grip: 0.78, handling: 0.85 };
+
 export const CARS: CarSpec[] = [
+  /* The default car, and the reason the roster is ordered this way: DEFAULT_CAR
+     is derived as PLAYABLE_CARS[0] (see below), so "the Volvo is the default"
+     is expressed by putting it first rather than by a second constant that
+     could fall out of step with the list.
+
+     This is the one car with imported art at BOTH ends — the donor cabin
+     (player.ts COCKPIT_MODEL) and the donor exterior shell (BODY_MODEL) — so
+     the shell below is not free invention: it is a real S90's box, 4.96 x 1.88
+     x 1.44, which is what bodymodel.ts fits the donor to. Getting it right
+     costs nothing and buys a near-identity scale where kaze's old numbers
+     forced a 0.861 squash in y. wzF/wzR average to 1.47, half the donor's
+     2.94 m wheelbase, which is what puts the game's own wheels in the donor's
+     arches (see bodymodel.ts fit(): the axle midpoints are what it lines up).
+
+     The shell still matters on its own account: it is what the garage card
+     renders (carpreview.ts draws every card procedurally, imported or not),
+     and it is what mobile-base drives, where no donor cabin is fetched. */
+  {
+    id: "volvo",
+    name: "VOLVO S90",
+    jp: "ボルボ",
+    blurb: "Swedish executive saloon. Long, quiet, and hard to hurry.",
+    shell: {
+      L: 4.96, W: 1.88, ride: 0.36, nose: 0.58, tail: 0.62, belt: 0.92, roof: 1.44,
+      hood: 1.24, trunk: 1.08, rakeF: 0.82, rakeR: 0.7, archR: 0.45, wzF: 1.5,
+      wzR: 1.44, wheelR: 0.34, wheelWidth: 0.25, spoiler: null,
+    },
+    phys: SHARED_PHYS,
+    stats: SHARED_STATS,
+    /* Warm tan, and it has to be UNIQUE: cockpit.ts trimFor() falls back to
+       inferring the interior trim from this colour when it does not recognise
+       the car id. It does recognise "volvo" now, so this is only the belt to
+       that braces — but a duplicate accent would still be a trap for the next
+       car added. */
+    cockpitAccent: 0xb08d57,
+  },
   {
     id: "kaze",
     name: "KAZE GT",
@@ -211,14 +274,8 @@ export const CARS: CarSpec[] = [
       hood: 1.32, trunk: 0.92, rakeF: 0.95, rakeR: 0.78, archR: 0.44, wzF: 1.38,
       wzR: 1.32, wheelR: 0.325, wheelWidth: 0.26, spoiler: "wing", hoodBulge: true,
     },
-    phys: {
-      M: 1390, IZ: 2210, LA: 1.16, LB: 1.48, HCG: 0.5, TRACK: 1.56, WR: 0.325,
-      FINAL: 3.7, RATIOS: [3.54, 2.13, 1.48, 1.15, 0.92, 0.76], REV: 3.82,
-      TQ_R: [1000, 2000, 3000, 4000, 4600, 5400, 6200, 7200],
-      TQ_T: [165, 235, 285, 320, 335, 330, 300, 248],
-      gripF: 1.0, gripR: 1.04, steerMax: 0.62, steerHi: 0.026, steerAy: 20.5, revLimit: 6400, drag: 0.4,
-    },
-    stats: { speed: 0.92, accel: 0.88, grip: 0.78, handling: 0.85 },
+    phys: SHARED_PHYS,
+    stats: SHARED_STATS,
     cockpitAccent: 0x8f1a22,
   },
   {
@@ -290,8 +347,9 @@ export const CARS: CarSpec[] = [
 /** The cars the player may actually drive, in roster order. */
 export const PLAYABLE_CARS = CARS.filter((c) => !c.comingSoon);
 
-/** Where every bad or locked car id lands. Derived rather than hardcoded to
- *  "kaze" so that unlocking or reordering the roster cannot leave a stale
+/** Where every bad or locked car id lands, and the car a new profile starts
+ *  in. Derived rather than hardcoded to an id so that unlocking or reordering
+ *  the roster cannot leave a stale
  *  default pointing at a car that is no longer first — or no longer playable.
  *  `|| CARS[0]` only matters if every car is ever marked comingSoon, which
  *  would be a bug; falling back to a driveable car beats crashing on load. */

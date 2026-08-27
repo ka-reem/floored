@@ -275,9 +275,12 @@ const POV_MOUNT = { dx: 0.28, dy: -0.03, dz: 0.61 };
    framing notes above were fitted at that height). A donor dash has real
    depth, so from the same mount the lens looks down onto it from too far above
    and reads as a camera on a pole rather than one stuck to the glass. Tied to
-   which interior is actually visible rather than picked globally, so the J
-   toggle stays an honest A/B — and the split has to stay for that reason even
-   though there is only one donor left.
+   which interior is actually VISIBLE rather than picked globally, and that
+   split has to stay now that the cabin is a property of the selected car:
+   these numbers are the Volvo's seating position and POV_MOUNT.dy is kaze's,
+   and on mobile-base even the Volvo drives the procedural one. The value
+   itself is unchanged — it cost a long argument to settle and none of this
+   re-opens it.
 
    THIS IS THE SEATING POSITION, and it is squeezed from both sides. In
    cockpit-local metres the lens sits at y = EYE.y + this = 1.175, with the
@@ -641,7 +644,7 @@ const TAP_PAD_PX = 22;
    the measurements behind it are in player.ts's attachHood(); this is only the
    switch and the nudge.
 
-     on   1 shows it (with the J flag), 0 takes it out of the frame
+     on   1 shows it (whenever the donor cabin is up), 0 takes it out of frame
      dy   lift, metres. The hood clears the dash's sightline by 1-3 cm from
           the dashcam mount, so this is the knob that decides whether it reads
           as a bonnet or as a suggestion of one. It also has to move whenever
@@ -855,8 +858,9 @@ const POV_REF_ASPECT = 16 / 9;
 const POV_V_CAP = 1.25;
 const POV_V_FLOOR = 62;
 const POV_H_CEIL = 118;
-/* How wide the lens may go. ONE number now, for both interiors the J key
-   cycles, and that is a property of the asset rather than a preference:
+/* How wide the lens may go. ONE number for both interiors — the procedural
+   cabin and the donor one — and that is a property of the assets rather than a
+   preference:
 
      PROCEDURAL           built geometry — nothing was ever cut off it
      VOLVO FULL INTERIOR  whole donor nodes, decimated, never frustum-clipped
@@ -899,13 +903,21 @@ export class Game {
   running = false; // simulation advancing (menus closed)
   rain = false;
   grade = false; // set from settings.dashcam in the constructor
-  /** The imported Volvo, INTERIOR and exterior body, against the procedural
-      car. ONE flag for both halves rather than one each: they are two cuts of
-      the same donor and a car wearing one of them is a car nobody asked for. J
-      toggles it; either half may be missing, and the flag still means "show
-      whichever of them loaded". Also selects the lens position — see
-      povMount(), which is why this is read every frame and not just on J. */
-  dashImported = true;
+  /* THERE IS NO `dashImported` ANY MORE, and its absence is the point.
+
+     It was one boolean meaning "the donor Volvo is on show, interior and
+     exterior body together", flipped by J, and read by the lens offsets, the
+     interior hood and the cabin hotspot. With two cars in the garage the same
+     question has a better answer: WHICH interior you are in is decided by the
+     car you picked, so the state already exists in the rig that was built for
+     that car, and a second copy of it here could only ever disagree.
+
+     Every former reader now tests `this.rig.cockpitModel` instead — the donor
+     cabin handle, non-null exactly when the donor cabin is the cabin on screen
+     (player.ts COCKPIT_MODEL: the Volvo has one, kaze does not, and mobile-base
+     gets none either way). That test was ALREADY there next to the flag at
+     every site, because a donor still in flight is not the cabin on show yet;
+     dropping the flag just leaves the half that was doing the work. */
   /** Drive the car on testDriveSpec() instead of its own spec — grip, brakes
       and power up, for getting somewhere in the world quickly. Toggled by K
       in game and by a row in the settings panel.
@@ -920,11 +932,12 @@ export class Game {
   get testMode() { return this.settings.testMode; }
   set testMode(v: boolean) { this.settings.testMode = v; }
 
-  /** Lens OFFSET for the interior currently on screen, all three axes. Reads
-      live rather than being cached, so the J toggle moves the camera in the
-      same frame it swaps the interior — otherwise the A/B compares two
-      interiors at one eye point and whichever one it does not suit loses
-      unfairly.
+  /* Lens OFFSET for the interior currently on screen, all three axes — see
+     povMount(), which this describes. Read live rather than cached because the
+     donor cabin arrives ASYNCHRONOUSLY: the rig is on screen before the GLB
+     lands, and the frame it lands in is the frame the lens has to move in, or
+     the eye sits at the procedural height inside a donor dash until something
+     else happens to invalidate a cache.
 
       Z IS HERE FOR A REASON, and it is not symmetry. The retired dash was
       frustum-CLIPPED: build-cockpit.mjs deleted every vertex outside the
@@ -1092,23 +1105,25 @@ export class Game {
       edge to hang this on that the hood is guaranteed to exist for. Three
       writes on a group that is usually not even drawn.
 
-      Tied to `dashImported` — the SAME single J flag that decides whether the
-      donor interior and the donor body are on show. The hood is a piece of
-      that body seen from inside that interior, and a hood hanging in front of
-      the procedural cabin would be exactly the half-and-half car the one flag
-      exists to prevent. It also rides cockpit.group's own visibility, so
-      nothing here has to know about the camera rule. */
+      Gated on the donor CABIN, not merely on the hood existing. The hood is a
+      piece of the donor body seen from inside the donor interior, and the two
+      no longer arrive together: BODY_MODEL is not tiered while COCKPIT_MODEL
+      is, so on mobile-base the Volvo has its donor body — and therefore this
+      hood — in front of a PROCEDURAL dash. A donor bonnet hanging over a
+      procedural cabin is exactly the half-and-half car the old J flag existed
+      to prevent, and it is the one place that mismatch can still occur. It
+      also rides cockpit.group's own visibility, so nothing here has to know
+      about the camera rule. */
   private hoodUpdate() {
     const hood = this.rig?.hood;
     if (!hood) return;
     const k = this.hoodKnob();
-    hood.visible = k.on > 0 && this.dashImported;
+    hood.visible = k.on > 0 && !!this.rig.cockpitModel;
     hood.position.set(0, k.dy, k.dz);
   }
 
   private povMount(): { dx: number; dy: number; dz: number } {
-    if (!(this.rig.cockpitModel && this.dashImported))
-      return { dx: 0, dy: POV_MOUNT.dy, dz: 0 };
+    if (!this.rig.cockpitModel) return { dx: 0, dy: POV_MOUNT.dy, dz: 0 };
     if (!window.__povMount) window.__povMount = { ...POV_MOUNT_DELTA };
     return window.__povMount;
   }
@@ -1129,7 +1144,7 @@ export class Game {
       camera as debug-only, so it gets knobs and defaults rather than a tuning
       pass — bring settled values back into COCKPIT_EYE_IMPORTED. */
   private cockpitEye(): { dy: number; dz: number } {
-    if (!(this.rig.cockpitModel && this.dashImported)) return { dy: 0, dz: 0 };
+    if (!this.rig.cockpitModel) return { dy: 0, dz: 0 };
     if (!window.__cockpitEye) window.__cockpitEye = { ...COCKPIT_EYE_IMPORTED };
     return window.__cockpitEye;
   }
@@ -2037,39 +2052,19 @@ export class Game {
       this.rig.cockpit.setMirrorVis(this.mirror);
       this.ui.toast("MIRROR " + (this.mirror ? "ON" : "OFF"));
     }
-    /* A/B the imported car against the procedural one — the donor INTERIOR and
-       the donor exterior body together, off the one flag, so the two can never
-       disagree about which car you are sitting in. Both are built and resident,
-       so this is a visibility flip: the point is to judge the import against
-       what it replaces in the same frame and the same light, which is the only
-       comparison that means anything.
+    /* J IS RETIRED — deliberately, and it is not coming back as a debug key.
 
-       Two states, not three. There used to be a middle one for volvo-s90.glb,
-       the frustum-CUT dash, so the two donor interiors could be compared — the
-       cut is retired (see COCKPIT_MODEL in player.ts) and the whole-cabin
-       import is the only one left. It is also a real donor in its own right
-       now rather than a skin over the cut one: cockpitmodel.ts wires it
-       directly, which is where the live cluster, the nav screen, the mirror
-       glass and the steering rim come from.
+       It A/B'd the donor Volvo (interior and exterior body, off one flag)
+       against the procedural car, from a time when there was one car in the
+       garage wearing both. There are two cars now, and the A/B is the garage:
+       pick the VOLVO S90 for the donor cabin and donor body, pick the KAZE GT
+       for the procedural ones. A key that could put the other car's interior
+       in the car you selected would be a key that unpicks your choice, and
+       nothing downstream (the lens offsets, the interior hood, the cabin
+       hotspot) would have any way to know which car it was really drawing.
 
-       Each half is applied only if it loaded. That is the fail-soft rule both
-       importers already follow (cockpitmodel.ts, bodymodel.ts): a missing GLB
-       leaves THAT half procedural rather than taking the toggle down with it.
-       The body half is invisible from the dashcam POV, which hides the whole
-       exterior group — the interior is what this key is judged by from in
-       there, and the toast is the only other feedback. */
-    if (k === "j") {
-      const m = this.rig.cockpitModel;
-      if (!m && !this.rig.bodyModel) this.ui.toast("NO IMPORTED CAR");
-      else {
-        this.dashImported = !this.dashImported;
-        m?.setActive(this.dashImported);
-        /* Not `bodyModel?.setActive` — this one goes through the rig so the
-           state sticks even if the body GLB is still in flight. */
-        this.rig.setBodyImported(this.dashImported);
-        this.ui.toast(this.dashImported ? "VOLVO INTERIOR" : "PROCEDURAL");
-      }
-    }
+       No handler, no flag, no entry in the CONTROLS screen. `j` now falls
+       through this switch to nothing, the same as every other unbound key. */
     if (k === "n") {
       this.resetCar();
       this.ui.toast("RESET");
@@ -2216,7 +2211,7 @@ export class Game {
     if (!this.running || !this.loaded || !this.inCar()) return null;
     const ck = this.rig?.cockpit;
     if (!ck) return null;
-    return ck.cabinSwitch(!!(this.rig.cockpitModel && this.dashImported));
+    return ck.cabinSwitch(!!this.rig.cockpitModel);
   }
 
   /** The head-unit panel, when a pointer on it can do anything — or null.

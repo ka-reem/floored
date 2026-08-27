@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Game } from "@/game/engine";
 import type { LoadReport } from "@/game/loading";
-import { CARS, PAINTS, getCar } from "@/game/carspecs";
+import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
@@ -267,7 +267,7 @@ export default function GameApp() {
           <div className="menuJp">首都高ナイトドライブ</div>
           <p className="menuSub">a procedurally generated town · elevated expressway · dense traffic</p>
           <p className="menuSub">
-            car: <b>{getCar(g?.carId || "kaze").name}</b> · paint:{" "}
+            car: <b>{getCar(g?.carId || DEFAULT_CAR_ID).name}</b> · paint:{" "}
             {PAINTS[(g?.paintIx || 0) % PAINTS.length].name} · town seed {g?.seed}
           </p>
           <div className="menuBtns">
@@ -378,7 +378,6 @@ export default function GameApp() {
               <b>N</b><span>reset to nearest road</span>
               <b>H</b><span>this help screen</span>
               <b>I</b><span>interior light (off by default — the cabin is meant to be dark)</span>
-              <b>J</b><span>imported Volvo dash + body / the procedural car (A/B)</span>
               <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
               <b>P</b><span>in-dash music: play / pause</span>
               <b>, / .</b><span>previous / next piece</span>
@@ -543,7 +542,8 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
                the handler is the whole lock; the dimming is just how it reads.
                The stat bars stay (greyed) because they are what the card is
                teasing, and because a card without them would sit at a
-               different height and break the grid row it shares with KAZE. */
+               different height and break the grid row it shares with the two
+               playable cars. */
             const locked = !!c.comingSoon;
             return (
               <div

@@ -100,6 +100,17 @@ const PROFILES: Record<string, EngineProfile> = {
      lumpier than a straight six — that unevenness is what stops it droning),
      turbo and burble well down from the coupe's showy settings. */
   kaze: { cyl: 4, odd: 0.34, bright: 1.18, turbo: 0.5, level: 1.0, revLimit: 6400, burble: 0.3 },
+  /* The VOLVO S90, and note that the paragraph above is now literally about
+     THIS car — the four-cylinder reasoning was written when the donor cabin
+     was the only interior and kaze was the only car wearing it. Same numbers,
+     because the two share one PhysicsSpec (carspecs.ts SHARED_PHYS) and
+     revLimit is duplicated here from it: a profile that disagreed with the
+     tacho would be a bug, not a character. Its own entry rather than an alias
+     so the two can be voiced apart — which is what should happen, and is a
+     tuning pass rather than part of splitting the roster. Without an entry
+     here setCar() would fall back to `generic`, whose revLimit is 7200, and
+     the limiter would fire 800 rpm off the needle. */
+  volvo: { cyl: 4, odd: 0.34, bright: 1.18, turbo: 0.5, level: 1.0, revLimit: 6400, burble: 0.3 },
   // Executive sedan: even, refined, muted.
   shirayuki: { cyl: 6, odd: 0.1, bright: 1.25, turbo: 0.15, level: 0.82, revLimit: 6700, burble: 0.08 },
   // 660cc kei triple: buzzy, uneven, screams at the top.
