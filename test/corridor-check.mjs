@@ -30,7 +30,7 @@ for (const f of ["corridor.js", "ramps.js"]) {
   const p = path.join(dir, f);
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 }
-const { getCorridor, assertPitches, signPlan, SIGN, PITCH, PHASE, TUNNEL, TOLL, TOLL_PLAZA, BRIDGE } =
+const { getCorridor, assertPitches, signPlan, tunnels, SIGN, PITCH, PHASE, TUNNEL, TOLL, TOLL_PLAZA, BRIDGE } =
   await import(path.join(dir, "corridor.js"));
 const { buildRamps, parapetGap, spawnWindow, spawnZ, RAMP_PLAN } =
   await import(path.join(dir, "ramps.js"));
@@ -421,7 +421,8 @@ if (!signs.some((s) => s.kind === "exit-gore")) bad("no board at the exit gore")
     if (s.z1 <= s.z0) bad(`section ${s.kind} @${s.z0} has no length`);
     if (s.z0 < c.Z0 || s.z1 > c.Z1) bad(`section ${s.kind} @${s.z0} leaves the canonical band`);
     if (s.kind !== "bridge") {
-      if (s.z0 < TUNNEL.z1 && s.z1 > TUNNEL.z0) bad(`section ${s.kind} @${s.z0} is in the tunnel`);
+      for (const t of tunnels())
+        if (s.z0 < t.z1 && s.z1 > t.z0) bad(`section ${s.kind} @${s.z0} is in ${t.nameEn}`);
       if (s.z0 < TOLL.z1 && s.z1 > TOLL.z0) bad(`section ${s.kind} @${s.z0} is in the toll zone`);
     }
     if (s.kind === "mesh" || s.kind === "screen")
@@ -500,25 +501,56 @@ if (!signs.some((s) => s.kind === "exit-gore")) bad("no board at the exit gore")
   if (c.inTunnel(TOLL.plazaZ0) || c.inTunnel(TOLL.plazaZ1)) bad("the plaza is inside the tunnel");
 }
 
-/* ---- tunnel ---- */
+/* ---- tunnels ------------------------------------------------------------
+   There is more than one now, and where they are, how long they are and how
+   wide the bore is all come off the road seed — so nothing here may name a z.
+   The blend is the one with teeth: engine.ts drives the audio reverb and the
+   interior EQ off tunnelBlend(), and a value that never returns to zero
+   between two tubes leaves the reverb on out in the open air. */
 {
-  const len = TUNNEL.z1 - TUNNEL.z0;
-  let maxHw = 0;
-  for (let z = TUNNEL.z0; z <= TUNNEL.z1; z += 2) maxHw = Math.max(maxHw, c.halfWidth(z));
-  console.log(`tunnel: ${len} m long, ${f(TUNNEL.clearH)} m clear, widest half-width ${f(maxHw)} m,` +
-    ` blend ${f(c.tunnelBlend(TUNNEL.z0 - 5))}→${f(c.tunnelBlend((TUNNEL.z0 + TUNNEL.z1) / 2))}` +
-    `→${f(c.tunnelBlend(TUNNEL.z1 + 5))}`);
-  if (TUNNEL.clearH < 5.2) bad("the tunnel is too low for the traffic in it");
-  if (c.tunnelBlend(TUNNEL.z0 - 1) > 0.001 || c.tunnelBlend(TUNNEL.z1 + 1) > 0.001)
-    bad("tunnelBlend is non-zero outside the tunnel");
-  if (c.tunnelBlend((TUNNEL.z0 + TUNNEL.z1) / 2) < 0.999)
-    bad("tunnelBlend never reaches 1 inside the tunnel");
-  if (TUNNEL.z1 > TOLL.z0) bad("the tunnel overlaps the toll zone");
-  // nothing tall may be inside it
-  for (const z of c.lattice(PITCH.gantry))
-    if (c.inTunnel(z) && HWY.gantryH > TUNNEL.clearH) {
-      /* generator skips these; assert the skip is still the rule */
+  const T = tunnels();
+  console.log(`tunnels: ${T.length}`);
+  let total = 0;
+  for (const t of T) {
+    const len = t.z1 - t.z0;
+    total += len;
+    let maxHw = 0, minHw = 1e9, lanes = new Set();
+    for (let z = t.z0; z <= t.z1; z += 2) {
+      maxHw = Math.max(maxHw, c.halfWidth(z));
+      minHw = Math.min(minHw, c.halfWidth(z));
+      lanes.add(c.lanes(z));
     }
+    console.log(`  ${t.nameEn.padEnd(12)} z ∈ [${f(t.z0)}, ${f(t.z1)}]  ${f(len)} m` +
+      `, ${[...lanes].join("/")} lanes, half-width ${f(minHw)}–${f(maxHw)} m` +
+      `, blend ${f(c.tunnelBlend(t.z0 - 5))}→${f(c.tunnelBlend((t.z0 + t.z1) / 2))}` +
+      `→${f(c.tunnelBlend(t.z1 + 5))}`);
+    if (t.clearH < 5.2) bad(`${t.nameEn} is too low for the traffic in it`);
+    if (len < 150) bad(`${t.nameEn} is only ${f(len)} m — a lid, not a tunnel`);
+    if (lanes.size !== 1) bad(`${t.nameEn} changes lane count inside the bore`);
+    if (t.lanes < 3 || t.lanes > 5) bad(`${t.nameEn} has ${t.lanes} lanes (3–5 allowed)`);
+    if (c.lanes((t.z0 + t.z1) / 2) !== t.lanes)
+      bad(`${t.nameEn}: spec says ${t.lanes} lanes, the deck has ${c.lanes((t.z0 + t.z1) / 2)}`);
+    if (c.tunnelBlend(t.z0 - 1) > 0.001 || c.tunnelBlend(t.z1 + 1) > 0.001)
+      bad(`tunnelBlend is non-zero outside ${t.nameEn}`);
+    if (c.tunnelBlend((t.z0 + t.z1) / 2) < 0.999)
+      bad(`tunnelBlend never reaches 1 inside ${t.nameEn}`);
+    if (t.z0 < TOLL.z1 && t.z1 > TOLL.z0) bad(`${t.nameEn} overlaps the toll zone`);
+    if (t.z0 < c.Z0 + c.EXT || t.z1 > c.Z1 - c.EXT)
+      bad(`${t.nameEn} reaches into the splice overrun — it would need a twin`);
+    // nothing tall may be inside a bore: the generators skip on inTunnel(), so
+    // assert the predicate covers this tube rather than just the first one
+    for (const z of c.lattice(PITCH.gantry))
+      if (z > t.z0 && z < t.z1 && !c.inTunnel(z))
+        bad(`gantry z=${z} is in ${t.nameEn} but inTunnel() says otherwise`);
+  }
+  console.log(`  ${f(total)} m of tunnel per ${c.LOOP} m lap` +
+    ` (${((100 * total) / c.LOOP).toFixed(0)}%)`);
+  // the fades must not meet, or tunT never closes between the two
+  for (let i = 1; i < T.length; i++)
+    if (T[i].z0 - T[i - 1].z1 < 120)
+      bad(`${T[i - 1].nameEn} and ${T[i].nameEn} are ${f(T[i].z0 - T[i - 1].z1)} m apart`);
+  if (TUNNEL !== T[0] && (TUNNEL.z0 !== T[0].z0 || TUNNEL.z1 !== T[0].z1))
+    bad("the legacy TUNNEL export has drifted from tunnels()[0]");
 }
 
 /* ---- ramps: each span straight and level, and the gore geometry sane ---- */

@@ -41,7 +41,11 @@ const dir = path.join(out, "game", "world");
   const p = path.join(dir, "corridor.js");
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 }
-const { getCorridor, TOLL } = await import(path.join(dir, "corridor.js"));
+const { getCorridor, setRoadSeed, TOLL } = await import(path.join(dir, "corridor.js"));
+/* The lane schedule is rolled from the road seed now, so the lap the rival
+   drives is a different lap on a different road. ROAD_SEED=<n> re-plans the
+   corridor before the scenario is built. */
+if (process.env.ROAD_SEED) setRoadSeed(+process.env.ROAD_SEED);
 const c = getCorridor();
 
 let fail = 0;

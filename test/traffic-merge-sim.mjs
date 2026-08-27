@@ -46,7 +46,12 @@ const dir = path.join(out, "game", "world");
   const p = path.join(dir, "corridor.js");
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 }
-const { getCorridor } = await import(path.join(dir, "corridor.js"));
+const { getCorridor, setRoadSeed } = await import(path.join(dir, "corridor.js"));
+/* The lane schedule is rolled from the road seed now, so the shrink this sim
+   drives is a different shrink on a different road. ROAD_SEED=<n> re-plans
+   the corridor before the scenario is built, which is how this file gets run
+   against more than the one road that ships by default. */
+if (process.env.ROAD_SEED) setRoadSeed(+process.env.ROAD_SEED);
 const c = getCorridor();
 
 let fail = 0;
@@ -68,10 +73,73 @@ const lerp = (a, b, t) => a + (b - a) * t;
 /* mirrors traffic.ts */
 const LANE_FOLLOW_RATE = 3.4;
 
-/* the shrink under test: 5 → 4 → 3 over z 640..860 (see LANE_STEPS) */
-const Z_IN = 200;      // seeding starts here, well upstream (5 lanes)
-const Z_OUT = 1150;    // recycle past here (3 lanes, settled)
-const TAPER_LO = 600, TAPER_HI = 900; // window the overlap stats care about most
+/* The shrink under test. It used to be written down here — "5 → 4 → 3 over
+   z 640..860 (see LANE_STEPS)" — because the lane schedule was a hand-written
+   table and that was the only shrink the road had. It is rolled from the road
+   seed now, so the window is FOUND instead: the longest continuous fall in
+   the lane count over the lap, which is the hardest merge the schedule can
+   ask traffic to perform, plus room either side to arrive and settle.
+
+   Finding it rather than naming it is also the assertion that matters most
+   here. A planner that emitted a two-lane fan-in in one taper would move this
+   window onto it automatically and the overlap check would fail — which is
+   exactly what happened, and why corridor.ts chains drops one lane at a
+   time now. */
+const shrink = (() => {
+  /* `lanes()` rounds, so a taper is not a run of its own — it shows up as the
+     boundary between two runs. Collect the FALLING boundaries and group ones
+     close enough together to be a single chained fan-in; the group with the
+     biggest total fall is the hardest merge on this road. */
+  const edges = [];
+  for (let z = c.Z0 + 1; z < c.Z1; z += 1) {
+    const a2 = c.lanes(z - 1), b2 = c.lanes(z);
+    if (b2 < a2) edges.push({ z, from: a2, to: b2 });
+  }
+  let best = null;
+  for (let i = 0; i < edges.length; i++) {
+    let j = i;
+    while (j + 1 < edges.length && edges[j + 1].z - edges[j].z < 200) j++;
+    const cand = { z0: edges[i].z, z1: edges[j].z, from: edges[i].from, to: edges[j].to };
+    if (!best || cand.from - cand.to > best.from - best.to) best = cand;
+    i = j;
+  }
+  return best ?? { z0: 700, z1: 800, from: 5, to: 3 };
+})();
+// the taper straddles each boundary; 130 m clears the longest single step
+const TAPER_LO = shrink.z0 - 130, TAPER_HI = shrink.z1 + 130;
+/* Seeding and recycling both have to happen on SETTLED road — a lane count
+   that is not mid-taper. That used to be free, because the window was written
+   down and z = 200 was 440 m of five-lane straight. Now the window is found,
+   and "440 m upstream" can land inside the widen that opens the stretch the
+   shrink later closes: cars then get seeded onto lane centres that are still
+   sliding, at a fractional lane count, which the spawner's own 20 m spacing
+   check cannot see. That is a harness artifact and it reads exactly like a
+   merge failure — 25 overlaps and a 2.3 m correction on the default seed. */
+const settled = (z) => {
+  for (let d = -30; d <= 30; d += 5)
+    if (Math.abs(c.laneCount(z + d) - c.laneCount(z)) > 1e-9) return false;
+  return true;
+};
+/** nearest settled z at or beyond `want`, searching away from the taper */
+const clearOf = (want, dir, limit) => {
+  for (let z = want; dir < 0 ? z > limit : z < limit; z += dir * 5)
+    if (settled(z)) return z;
+  return want;
+};
+const Z_IN = clearOf(TAPER_LO - 440, -1, c.Z0 + 60);   // seeding, well upstream
+/* …and recycling stops short of the NEXT shrink. Running cars on into one
+   would fold a merge this scenario is not set up for into the same overlap
+   count, and the assertion would then be about a taper the header does not
+   name. */
+const nextDrop = (() => {
+  for (let z = shrink.z1 + 140; z < c.Z1; z += 1)
+    if (c.lanes(z) < c.lanes(z - 1)) return z;
+  return c.Z1;
+})();
+const Z_OUT = Math.min(clearOf(TAPER_HI + 250, +1, c.Z1 - 60), nextDrop - 150);
+console.log(`shrink under test: ${shrink.from} → ${shrink.to} lanes` +
+  ` over z ${shrink.z0}..${shrink.z1}, seeded from z ${Z_IN} (${c.lanes(Z_IN)} lanes,` +
+  ` settled), recycled at ${Z_OUT} (${c.lanes(Z_OUT)} lanes)`);
 
 function makeSim(mode, seed) {
   const rng = mulberry32(seed);
@@ -365,7 +433,8 @@ function run(mode, seed) {
   return stats;
 }
 
-console.log(`shrink under test: lanes ${c.lanes(500)} @ z=500 → ${c.lanes(755)} @ z=755 → ${c.lanes(900)} @ z=900`);
+console.log(`lane count across the window: ${c.lanes(Z_IN)} @ z=${Z_IN} → ` +
+  `${c.lanes((shrink.z0 + shrink.z1) / 2)} mid-taper → ${c.lanes(Z_OUT)} @ z=${Z_OUT}`);
 for (const seed of [0xbeef, 42, 7, 1234, 99, 2026]) {
   const oldS = run("old", seed);
   const newS = run("new", seed);

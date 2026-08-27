@@ -352,7 +352,7 @@ export function buildHighway(
     world.routes !== undefined &&
     (Math.abs(z - DIVERGE_Z) < r || Math.abs(z - MERGE_Z) < r);
   /** the tunnel supplies its own walls, so skip the parapet through it */
-  const inTube = (z: number) => z > TUNNEL.z0 - 3 && z < TUNNEL.z1 + 3;
+  const inTube = (z: number) => cor.inTunnel(z, 3);
   /* corridor.ts resolves the section plan, but it cannot see the bypass gores
      without importing routegraph.ts, which imports it — so the last veto is
      applied here. It is applied to the whole RUN, not to the station: a guard
@@ -1826,6 +1826,23 @@ function buildBridge(
 
 /* ============================ tunnel ==================================== */
 
+/* Every tunnel on the lap, built in ONE pass.
+
+   The lap used to have exactly one tube at a fixed z, so this function read
+   TUNNEL.z0/z1 straight out of corridor.ts and made a mesh per part. There
+   are two tubes now — and how long, how wide and where they are all come off
+   the road seed — so everything here is driven from `cor.tunnels()`, and
+   every part that repeats is pooled across the tubes rather than duplicated
+   per tube: one set of soups for the bores, one instanced mesh per portal
+   part for all four mouths, one batten/fan/cabinet/exit-board instance buffer
+   for the lot.
+
+   That is not tidiness, it is the budget. Built the old way, two tubes cost
+   ~72 draw calls; pooled, two tubes cost ~24 — fewer than the single tunnel
+   used to, because the portal architecture (21 separate meshes per pair of
+   mouths) is the part that dominates and it is now 7. The extra geometry is
+   noise by comparison: the bore is ~11 quads per 4 m station per side, so a
+   670 m lap of tunnel is ~8k triangles. */
 function buildTunnel(
   scene: THREE.Scene,
   mats: Mats,
@@ -1833,7 +1850,9 @@ function buildTunnel(
   cor: ReturnType<typeof getCorridor>,
   pt: (i: number, lat: number, dy?: number) => Vec3
 ) {
-  const H = 6.4; // clear height under the ceiling
+  const TUBES = cor.tunnels();
+  if (!TUBES.length) return;
+  const H = TUBES[0].clearH; // clear height under the ceiling
   /* Tiled walls, shared from mats so the scanned concrete can reach them (see
      the fascia note above). The material's self-illumination stands in for the
      bounce light a real tunnel gets off its own tiling — without it the tube
@@ -1860,7 +1879,9 @@ function buildTunnel(
        roof reading as one grey plane sliding past.
 
      The profile is stated once, as (inward offset from the wall face, height)
-     pairs, and swept; the walkway, dado, duct and crown all come off it. */
+     pairs, and swept; the walkway, dado, duct and crown all come off it. It is
+     swept from the corridor's own stations, so a five-lane bore needs nothing
+     here: the wall face is a.hw + TUBE_OUT and a.hw already knows. */
   const TUBE_OUT = 1.55; // wall face, outboard of the pavement edge
   /* Kerb face at halfWidth + 0.06 — the same lateral line the parapet's inner
      face uses everywhere else, and the same line the analytic clamp in
@@ -1879,64 +1900,66 @@ function buildTunnel(
 
   const wallS = new Soup(), ceilS = new Soup(), dadoS = new Soup(),
     walkS = new Soup(), ductS = new Soup();
-  const i0 = Math.max(0, Math.floor((TUNNEL.z0 - cor.ZB0) / 4));
-  const i1 = Math.min(cor.stations.length - 2, Math.ceil((TUNNEL.z1 - cor.ZB0) / 4));
-  for (let i = i0; i < i1; i++) {
-    const a = cor.stations[i], b = cor.stations[i + 1];
-    const wa = a.hw + TUBE_OUT, wb = b.hw + TUBE_OUT;
-    for (const sgn of [-1, 1]) {
-      /** wall-relative: `o` metres inward from the face, `y` metres up */
-      const P = (i2: number, w: number, o: number, y: number) =>
-        pt(i2, sgn * (w - o), y);
-      // raised service walkway: top face, then its kerb down to the deck
-      const ka = a.hw + KERB_IN, kb = b.hw + KERB_IN;
-      walkS.quad(
-        pt(i, sgn * wa, WALK_H), pt(i + 1, sgn * wb, WALK_H),
-        pt(i + 1, sgn * kb, WALK_H), pt(i, sgn * ka, WALK_H)
-      );
-      // …and its kerb, carried below the deck like the parapet's own skirt so
-      // no sliver of the drop shows at the join
-      walkS.quad(
-        pt(i, sgn * ka, -0.3), pt(i + 1, sgn * kb, -0.3),
-        pt(i + 1, sgn * kb, WALK_H), pt(i, sgn * ka, WALK_H)
-      );
-      // dark lower band — a real tube is filthy at splash height and clean
-      // above it, and the line between the two is a longitudinal speed cue
-      dadoS.quad(
-        P(i, wa, 0, WALK_H), P(i + 1, wb, 0, WALK_H),
-        P(i + 1, wb, 0, DADO_Y), P(i, wa, 0, DADO_Y)
-      );
-      // clean upper wall, up to the springing
-      wallS.quad(
-        P(i, wa, 0, DADO_Y), P(i + 1, wb, 0, DADO_Y),
-        P(i + 1, wb, 0, SPRING_Y), P(i, wa, 0, SPRING_Y)
-      );
-      // haunch facets
-      for (let k = 0; k < HAUNCH.length - 1; k++) {
-        const [o0, y0] = HAUNCH[k], [o1, y1] = HAUNCH[k + 1];
+  for (const T of TUBES) {
+    const i0 = Math.max(0, Math.floor((T.z0 - cor.ZB0) / 4));
+    const i1 = Math.min(cor.stations.length - 2, Math.ceil((T.z1 - cor.ZB0) / 4));
+    for (let i = i0; i < i1; i++) {
+      const a = cor.stations[i], b = cor.stations[i + 1];
+      const wa = a.hw + TUBE_OUT, wb = b.hw + TUBE_OUT;
+      for (const sgn of [-1, 1]) {
+        /** wall-relative: `o` metres inward from the face, `y` metres up */
+        const P = (i2: number, w: number, o: number, y: number) =>
+          pt(i2, sgn * (w - o), y);
+        // raised service walkway: top face, then its kerb down to the deck
+        const ka = a.hw + KERB_IN, kb = b.hw + KERB_IN;
+        walkS.quad(
+          pt(i, sgn * wa, WALK_H), pt(i + 1, sgn * wb, WALK_H),
+          pt(i + 1, sgn * kb, WALK_H), pt(i, sgn * ka, WALK_H)
+        );
+        // …and its kerb, carried below the deck like the parapet's own skirt so
+        // no sliver of the drop shows at the join
+        walkS.quad(
+          pt(i, sgn * ka, -0.3), pt(i + 1, sgn * kb, -0.3),
+          pt(i + 1, sgn * kb, WALK_H), pt(i, sgn * ka, WALK_H)
+        );
+        // dark lower band — a real tube is filthy at splash height and clean
+        // above it, and the line between the two is a longitudinal speed cue
+        dadoS.quad(
+          P(i, wa, 0, WALK_H), P(i + 1, wb, 0, WALK_H),
+          P(i + 1, wb, 0, DADO_Y), P(i, wa, 0, DADO_Y)
+        );
+        // clean upper wall, up to the springing
         wallS.quad(
-          P(i, wa, o0, y0), P(i + 1, wb, o0, y0),
-          P(i + 1, wb, o1, y1), P(i, wa, o1, y1)
+          P(i, wa, 0, DADO_Y), P(i + 1, wb, 0, DADO_Y),
+          P(i + 1, wb, 0, SPRING_Y), P(i, wa, 0, SPRING_Y)
+        );
+        // haunch facets
+        for (let k = 0; k < HAUNCH.length - 1; k++) {
+          const [o0, y0] = HAUNCH[k], [o1, y1] = HAUNCH[k + 1];
+          wallS.quad(
+            P(i, wa, o0, y0), P(i + 1, wb, o0, y0),
+            P(i + 1, wb, o1, y1), P(i, wa, o1, y1)
+          );
+        }
+        // boxed cable-tray run: underside, face, top
+        const oD = -DUCT_OUT; // outward of the wall face is a negative "inward"
+        ductS.quad(
+          P(i, wa, 0, DUCT_Y), P(i + 1, wb, 0, DUCT_Y),
+          P(i + 1, wb, oD, DUCT_Y), P(i, wa, oD, DUCT_Y)
+        );
+        ductS.quad(
+          P(i, wa, oD, DUCT_Y), P(i + 1, wb, oD, DUCT_Y),
+          P(i + 1, wb, oD, DUCT_Y + DUCT_H), P(i, wa, oD, DUCT_Y + DUCT_H)
+        );
+        ductS.quad(
+          P(i, wa, oD, DUCT_Y + DUCT_H), P(i + 1, wb, oD, DUCT_Y + DUCT_H),
+          P(i + 1, wb, 0, DUCT_Y + DUCT_H), P(i, wa, 0, DUCT_Y + DUCT_H)
         );
       }
-      // boxed cable-tray run: underside, face, top
-      const oD = -DUCT_OUT; // outward of the wall face is a negative "inward"
-      ductS.quad(
-        P(i, wa, 0, DUCT_Y), P(i + 1, wb, 0, DUCT_Y),
-        P(i + 1, wb, oD, DUCT_Y), P(i, wa, oD, DUCT_Y)
-      );
-      ductS.quad(
-        P(i, wa, oD, DUCT_Y), P(i + 1, wb, oD, DUCT_Y),
-        P(i + 1, wb, oD, DUCT_Y + DUCT_H), P(i, wa, oD, DUCT_Y + DUCT_H)
-      );
-      ductS.quad(
-        P(i, wa, oD, DUCT_Y + DUCT_H), P(i + 1, wb, oD, DUCT_Y + DUCT_H),
-        P(i + 1, wb, 0, DUCT_Y + DUCT_H), P(i, wa, 0, DUCT_Y + DUCT_H)
-      );
+      // flat crown between the two haunches
+      const ca = wa - CROWN_IN, cb = wb - CROWN_IN;
+      ceilS.quad(pt(i, -ca, H), pt(i + 1, -cb, H), pt(i + 1, cb, H), pt(i, ca, H));
     }
-    // flat crown between the two haunches
-    const ca = wa - CROWN_IN, cb = wb - CROWN_IN;
-    ceilS.quad(pt(i, -ca, H), pt(i + 1, -cb, H), pt(i + 1, cb, H), pt(i, ca, H));
   }
   /* DoubleSide like every other surface in the tube, and not optional: the
      wall quads above are emitted with one vertex order for both values of
@@ -1960,49 +1983,106 @@ function buildTunnel(
   scene.add(new THREE.Mesh(walkS.geom(false), mats.concDarkDouble));
   scene.add(new THREE.Mesh(ductS.geom(false), ductMat));
 
-  /* Portal architecture. The bare collar read as a cardboard cut-out; a real
-     urban tunnel mouth is a piece of civil engineering — a headwall carrying
-     the hill, splayed wing walls, and a rack of signage bolted to the face.
-     All of it shares the deck-concrete material so the photoscan reaches it. */
+  const M = new THREE.Matrix4(), L = new THREE.Matrix4(), G = new THREE.Matrix4(),
+    V = new THREE.Vector3(), Q = new THREE.Quaternion(),
+    E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
+
+  /* ---- portal architecture ----------------------------------------------
+     The bare collar read as a cardboard cut-out; a real urban tunnel mouth is
+     a piece of civil engineering — a headwall carrying the hill, splayed wing
+     walls, and a rack of signage bolted to the face. All of it shares the
+     deck-concrete material so the photoscan reaches it.
+
+     Every part is instanced from a unit box or a unit plane and sized by the
+     instance scale, because the four mouths are four different widths (the
+     bore follows the lane count) — a per-mouth BoxGeometry would be four
+     geometries and four draw calls each. The one exception is the name board,
+     which carries a different texture per tunnel and so cannot share. */
   const portalMat = mats.concDouble;
-  for (const z of [TUNNEL.z0, TUNNEL.z1]) {
-    const entry = z === TUNNEL.z0;
-    // the hill is inside the tube: +z of the entry mouth, -z of the exit one
-    const inward = entry ? 1 : -1;
-    const p = cor.pose(z);
-    const hw = cor.halfWidth(z) + TUBE_OUT;
-    const g = new THREE.Group();
-    const top = new THREE.Mesh(new THREE.BoxGeometry(hw * 2 + 3.4, 2.2, 1.6), portalMat);
-    top.position.y = H + 1.1;
-    g.add(top);
-    for (const s of [-1, 1]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(1.7, H + 2.2, 1.6), portalMat);
-      leg.position.set(s * (hw + 0.85), (H + 2.2) / 2, 0);
-      g.add(leg);
-    }
-    // headwall above and behind the collar, and wing walls splaying off it
-    const head = new THREE.Mesh(new THREE.BoxGeometry(hw * 2 + 13, 5.4, 1.1), portalMat);
-    head.position.set(0, H + 2.6, inward * 1.5);
-    g.add(head);
-    for (const s of [-1, 1]) {
-      const wing = new THREE.Mesh(new THREE.BoxGeometry(1.1, H + 4.4, 7), portalMat);
-      wing.position.set(s * (hw + 5.6), (H + 4.4) / 2 - 1.6, inward * 3.4);
-      wing.rotation.y = s * 0.42;
-      wing.rotation.z = s * 0.05;
-      g.add(wing);
-    }
-    /* Hazard chevrons across the header. This texture has an opaque near-black
-       background, so unlike the (bright) sign panels it must respect fog —
-       otherwise it stays jet black while the portal around it fades out, and
-       reads as a black polygon hanging in the air. */
-    const hz = new THREE.Mesh(new THREE.PlaneGeometry(hw * 2 + 3, 1.0),
-      new THREE.MeshBasicMaterial({ map: mats.chevTex }));
-    // 5 cm off the collar face was close enough to z-fight at distance
-    hz.position.set(0, H + 1.1, -0.95);
-    hz.rotation.y = Math.PI;
-    g.add(hz);
-    if (entry) {
-      // tunnel name board on the headwall face, over the mouth
+  const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+  const UNIT_PLANE = new THREE.PlaneGeometry(1, 1);
+  const mouths = TUBES.length * 2;
+  const inst = (g: THREE.BufferGeometry, m: THREE.Material, n: number) => {
+    const im = new THREE.InstancedMesh(g, m, n);
+    im.count = 0;
+    return im;
+  };
+  const tops = inst(UNIT_BOX, portalMat, mouths);
+  const legs = inst(UNIT_BOX, portalMat, mouths * 2);
+  const heads = inst(UNIT_BOX, portalMat, mouths);
+  const wings = inst(UNIT_BOX, portalMat, mouths * 2);
+  const chevs = inst(UNIT_PLANE, new THREE.MeshBasicMaterial({ map: mats.chevTex }), mouths);
+  /* Signage textures are drawn once and shared by every entry mouth: only the
+     name board says anything tunnel-specific. */
+  const clrTex = makeTex(224, 96, (ctx, w2, h2) => {
+    ctx.fillStyle = "#d8a41c";
+    ctx.fillRect(0, 0, w2, h2);
+    ctx.fillStyle = "#171204";
+    ctx.textAlign = "center";
+    ctx.font = "800 40px sans-serif";
+    ctx.fillText("制限高", w2 / 2, 40);
+    ctx.fillText("4.5m", w2 / 2, 82);
+  });
+  const spdTex = makeTex(128, 128, (ctx, w2, h2) => {
+    ctx.clearRect(0, 0, w2, h2);
+    ctx.fillStyle = "#f2f5f9";
+    ctx.beginPath();
+    ctx.arc(w2 / 2, h2 / 2, 58, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#c81e28";
+    ctx.lineWidth = 12;
+    ctx.beginPath();
+    ctx.arc(w2 / 2, h2 / 2, 50, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = "#20449c";
+    ctx.textAlign = "center";
+    ctx.font = "800 56px sans-serif";
+    ctx.fillText("60", w2 / 2, h2 / 2 + 20);
+  });
+  const clrs = inst(UNIT_PLANE, new THREE.MeshBasicMaterial({ map: clrTex }), TUBES.length);
+  const spds = inst(UNIT_PLANE,
+    new THREE.MeshBasicMaterial({ map: spdTex, transparent: true }), TUBES.length);
+  /** place one instanced part in the mouth's local frame */
+  const put = (
+    im: THREE.InstancedMesh, px: number, py: number, pz: number,
+    sx: number, sy: number, sz: number, ry = 0, rz = 0
+  ) => {
+    E.set(0, ry, rz);
+    Q.setFromEuler(E);
+    L.compose(V.set(px, py, pz), Q, S.set(sx, sy, sz));
+    M.multiplyMatrices(G, L);
+    im.setMatrixAt(im.count++, M);
+  };
+
+  for (const T of TUBES) {
+    for (const z of [T.z0, T.z1]) {
+      const entry = z === T.z0;
+      // the hill is inside the tube: +z of the entry mouth, -z of the exit one
+      const inward = entry ? 1 : -1;
+      const p = cor.pose(z);
+      const hw = cor.halfWidth(z) + TUBE_OUT;
+      E.set(0, p.h, 0);
+      G.compose(V.set(p.x, p.y, p.z), Q.setFromEuler(E), S.set(1, 1, 1));
+      put(tops, 0, H + 1.1, 0, hw * 2 + 3.4, 2.2, 1.6);
+      for (const s of [-1, 1])
+        put(legs, s * (hw + 0.85), (H + 2.2) / 2, 0, 1.7, H + 2.2, 1.6);
+      // headwall above and behind the collar, and wing walls splaying off it
+      put(heads, 0, H + 2.6, inward * 1.5, hw * 2 + 13, 5.4, 1.1);
+      for (const s of [-1, 1])
+        put(wings, s * (hw + 5.6), (H + 4.4) / 2 - 1.6, inward * 3.4,
+          1.1, H + 4.4, 7, s * 0.42, s * 0.05);
+      /* Hazard chevrons across the header. This texture has an opaque
+         near-black background, so unlike the (bright) sign panels it must
+         respect fog — otherwise it stays jet black while the portal around it
+         fades out, and reads as a black polygon hanging in the air.
+         5 cm off the collar face was close enough to z-fight at distance. */
+      put(chevs, 0, H + 1.1, -0.95, hw * 2 + 3, 1.0, 1, Math.PI);
+      if (!entry) continue;
+      // clearance board on the left leg, speed roundel on the right
+      put(clrs, -(hw + 0.85), 4.1, -0.85, 1.7, 0.75, 1, Math.PI);
+      put(spds, hw + 0.85, 4.1, -0.85, 0.95, 0.95, 1, Math.PI);
+      // tunnel name board on the headwall face, over the mouth. Its own
+      // texture — the name and the length are what make one tube not another.
       const nameTex = makeTex(512, 96, (ctx, w2, h2) => {
         ctx.fillStyle = "#12312b";
         ctx.fillRect(0, 0, w2, h2);
@@ -2012,55 +2092,25 @@ function buildTunnel(
         ctx.fillStyle = "#eef6f1";
         ctx.textAlign = "center";
         ctx.font = '700 44px "Hiragino Sans","Yu Gothic",sans-serif';
-        ctx.fillText("汐留トンネル", w2 / 2, 44);
+        ctx.fillText(T.nameJa, w2 / 2, 44);
         ctx.font = "700 26px sans-serif";
-        ctx.fillText("SHIODOME TN  340m", w2 / 2, 80);
+        ctx.fillText(`${T.nameEn}  ${Math.round(T.z1 - T.z0)}m`, w2 / 2, 80);
       });
       const name = new THREE.Mesh(new THREE.PlaneGeometry(7.4, 1.4),
         new THREE.MeshBasicMaterial({ map: nameTex }));
       name.position.set(0, H + 2.8, inward * 1.5 - inward * 0.6);
       name.rotation.y = Math.PI;
+      const g = new THREE.Group();
       g.add(name);
-      // clearance board on the left leg, speed roundel on the right
-      const clrTex = makeTex(224, 96, (ctx, w2, h2) => {
-        ctx.fillStyle = "#d8a41c";
-        ctx.fillRect(0, 0, w2, h2);
-        ctx.fillStyle = "#171204";
-        ctx.textAlign = "center";
-        ctx.font = "800 40px sans-serif";
-        ctx.fillText("制限高", w2 / 2, 40);
-        ctx.fillText("4.5m", w2 / 2, 82);
-      });
-      const clr = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 0.75),
-        new THREE.MeshBasicMaterial({ map: clrTex }));
-      clr.position.set(-(hw + 0.85), 4.1, -0.85);
-      clr.rotation.y = Math.PI;
-      g.add(clr);
-      const spdTex = makeTex(128, 128, (ctx, w2, h2) => {
-        ctx.clearRect(0, 0, w2, h2);
-        ctx.fillStyle = "#f2f5f9";
-        ctx.beginPath();
-        ctx.arc(w2 / 2, h2 / 2, 58, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = "#c81e28";
-        ctx.lineWidth = 12;
-        ctx.beginPath();
-        ctx.arc(w2 / 2, h2 / 2, 50, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.fillStyle = "#20449c";
-        ctx.textAlign = "center";
-        ctx.font = "800 56px sans-serif";
-        ctx.fillText("60", w2 / 2, h2 / 2 + 20);
-      });
-      const spd = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.95),
-        new THREE.MeshBasicMaterial({ map: spdTex, transparent: true }));
-      spd.position.set(hw + 0.85, 4.1, -0.85);
-      spd.rotation.y = Math.PI;
-      g.add(spd);
+      g.position.set(p.x, p.y, p.z);
+      g.rotation.y = p.h;
+      scene.add(g);
     }
-    g.position.set(p.x, p.y, p.z);
-    g.rotation.y = p.h;
-    scene.add(g);
+  }
+  for (const im of [tops, legs, heads, wings, chevs, clrs, spds]) {
+    im.instanceMatrix.needsUpdate = true;
+    im.computeBoundingSphere();
+    scene.add(im);
   }
 
   /* Ceiling lighting: twin-tube fluorescent fixtures — a dark housing carrying
@@ -2075,16 +2125,17 @@ function buildTunnel(
      gives the tube a lighting rhythm that changes as you travel through it —
      dense, opening out, dense again — instead of one metronome from end to
      end, and it does it by moving fixtures rather than by changing any
-     brightness, so nothing here can print an edge. */
+     brightness, so nothing here can print an edge. The threshold is per-tube,
+     so a short bore is all threshold and a long one has a sparse middle. */
   const battenMat = new THREE.MeshBasicMaterial({ color: 0xfff0cf, fog: false });
   const housingMat = new THREE.MeshStandardMaterial({
     color: 0x272b33, roughness: 0.6, metalness: 0.5 });
   /** fixture z's: 7 m through the first and last THRESH metres, 14 m between */
   const battenZ: number[] = [];
-  {
-    const THRESH = 70, LEN = TUNNEL.z1 - TUNNEL.z0;
+  for (const T of TUBES) {
+    const THRESH = 70, LEN = T.z1 - T.z0;
     for (let d = 3.5; d < LEN; ) {
-      battenZ.push(TUNNEL.z0 + d);
+      battenZ.push(T.z0 + d);
       d += Math.min(d, LEN - d) < THRESH ? 7 : 14;
     }
   }
@@ -2097,14 +2148,13 @@ function buildTunnel(
   const washer = new THREE.InstancedMesh(
     new THREE.BoxGeometry(0.55, 0.1, 0.9),
     new THREE.MeshBasicMaterial({ color: 0xffe3ae, fog: false }), NL * 2);
-  const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
-    E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
   const glowPts: number[] = [];
   let n = 0, nt = 0, nw = 0;
   for (const z of battenZ) {
     const p = cor.pose(z);
     E.set(0, p.h, 0);
     Q.setFromEuler(E);
+    S.set(1, 1, 1);
     V.set(p.x, p.y + H - 0.1, p.z);
     M.compose(V, Q, S);
     housing.setMatrixAt(n++, M);
@@ -2140,7 +2190,8 @@ function buildTunnel(
      is exactly what they are in life. */
   if (FX_JET_FANS && worldTierCaps().jetFans !== false) {
     const fanZ: number[] = [];
-    for (let z = TUNNEL.z0 + 50; z < TUNNEL.z1 - 30; z += 84) fanZ.push(z);
+    for (const T of TUBES)
+      for (let z = T.z0 + 50; z < T.z1 - 30; z += 84) fanZ.push(z);
     const NF = fanZ.length * 2;
     const shroudG = new THREE.CylinderGeometry(0.62, 0.62, 2.6, 12, 1, true);
     shroudG.rotateX(Math.PI / 2);
@@ -2159,6 +2210,7 @@ function buildTunnel(
         const fx = p.x + lat * p.nx, fz = p.z + lat * p.nz, fy = p.y + H - 1.15;
         E.set(0, p.h, 0);
         Q.setFromEuler(E);
+        S.set(1, 1, 1);
         V.set(fx, fy, fz);
         M.compose(V, Q, S);
         shrouds.setMatrixAt(nf, M);
@@ -2185,12 +2237,17 @@ function buildTunnel(
      they interleave with the green exit boards on the opposite wall rather
      than passing at the same instant. */
   {
-    const NP = Math.floor((TUNNEL.z1 - TUNNEL.z0 - 90) / 84);
-    if (NP > 0) {
+    const sosZ: number[] = [];
+    for (const T of TUBES) {
+      const NP = Math.floor((T.z1 - T.z0 - 90) / 84);
+      for (let k = 0; k < NP; k++) sosZ.push(T.z0 + 72 + k * 84);
+    }
+    if (sosZ.length) {
       const boxMat = new THREE.MeshStandardMaterial({
         color: 0xb9812a, roughness: 0.6, metalness: 0.35,
       });
-      const box = new THREE.InstancedMesh(new THREE.BoxGeometry(0.36, 1.15, 0.78), boxMat, NP);
+      const box = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(0.36, 1.15, 0.78), boxMat, sosZ.length);
       const sosTex = makeTex(192, 96, (ctx, w2, h2) => {
         ctx.fillStyle = "#d4531c";
         ctx.fillRect(0, 0, w2, h2);
@@ -2203,10 +2260,10 @@ function buildTunnel(
       });
       const plate = new THREE.InstancedMesh(
         new THREE.PlaneGeometry(0.68, 0.34),
-        new THREE.MeshBasicMaterial({ map: sosTex, fog: false }), NP);
+        new THREE.MeshBasicMaterial({ map: sosTex, fog: false }), sosZ.length);
       let np = 0;
-      for (let k = 0; k < NP; k++) {
-        const z = TUNNEL.z0 + 72 + k * 84;
+      S.set(1, 1, 1);
+      for (const z of sosZ) {
         const p = cor.pose(z);
         const lat = cor.halfWidth(z) + TUBE_OUT - 0.2;
         E.set(0, p.h, 0);
@@ -2233,6 +2290,11 @@ function buildTunnel(
      the tube that is not sodium. Unlit like the battens: it is night in here
      at every hour. */
   {
+    const exitZ: number[] = [];
+    for (const T of TUBES) {
+      const NE = Math.floor((T.z1 - T.z0 - 60) / 56);
+      for (let k = 0; k < NE; k++) exitZ.push(T.z0 + 44 + k * 56);
+    }
     const exitTex = makeTex(224, 96, (ctx, w2, h2) => {
       ctx.fillStyle = "#0c7a44";
       ctx.fillRect(0, 0, w2, h2);
@@ -2244,11 +2306,11 @@ function buildTunnel(
       ctx.fillText("→", w2 - 40, 62);
     });
     const exitMat = new THREE.MeshBasicMaterial({ map: exitTex, fog: false });
-    const NE = Math.floor((TUNNEL.z1 - TUNNEL.z0 - 60) / 56);
-    const exits = new THREE.InstancedMesh(new THREE.PlaneGeometry(1.2, 0.55), exitMat, NE);
+    const exits = new THREE.InstancedMesh(
+      new THREE.PlaneGeometry(1.2, 0.55), exitMat, Math.max(1, exitZ.length));
     let ne = 0;
-    for (let k = 0; k < NE; k++) {
-      const z = TUNNEL.z0 + 44 + k * 56;
+    S.set(1, 1, 1);
+    for (const z of exitZ) {
       const p = cor.pose(z);
       const lat = -(cor.halfWidth(z) + TUBE_OUT - 0.08);
       E.set(0, p.h + Math.PI / 2, 0);
@@ -2291,6 +2353,7 @@ function buildTunnel(
   // deliberately not registered in world.neonMats: the engine dims those with
   // daylight, and a tunnel's lights are exactly the ones that must stay on
 }
+
 
 /* ============================ toll plaza ================================ */
 

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { mulberry32 } from "../util";
-import { getCorridor, TUNNEL, TOLL } from "./corridor";
+import { getCorridor, tunnels, TOLL } from "./corridor";
 import { CONNECT_Z } from "./const";
 import { loadDecalMaps } from "./decaltex";
 
@@ -150,7 +150,10 @@ export function buildRoadDecals(scene: THREE.Scene) {
 
   /* ---- moisture streaks: tunnel walls ---- */
   const tubeSlots: Slot[] = [];
-  for (let z = TUNNEL.z0 + 14; z < TUNNEL.z1 - 8; z += 21) {
+  // every bore on the lap, not just the first — see corridor.tunnels()
+  const tubeZ: number[] = [];
+  for (const t of tunnels()) for (let z = t.z0 + 14; z < t.z1 - 8; z += 21) tubeZ.push(z);
+  for (const z of tubeZ) {
     for (const side of [-1, 1]) {
       const rng = rngFor(Math.round(z) * 2 + (side > 0 ? 1 : 0), 0x7e0a);
       if (rng() < 0.35) continue;
