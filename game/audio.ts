@@ -49,7 +49,20 @@
    real underpass impulse response for the tunnel reverb, and recorded
    crash/impact/horn one-shots. Samples lazy-load on the same user
    gesture that unlocks the AudioContext; until they decode — or with
-   engineMode="synth" — the synthesized model carries everything, unchanged. */
+   engineMode="synth" — the synthesized model carries everything, unchanged.
+
+   Tunnels are a whole acoustic mode rather than a wet knob, and they come in
+   two separable halves — the ECHO and the GROWL. The echo is four sends into
+   the underpass IR (engine loudest by a distance, then events, tyres, and a
+   deliberately restrained ambience send) through a tail with its own
+   pre-delay, resonance, tunnel-factor darkening, soft clip and optional
+   stereo spread. The growl is the concrete tube itself: a resonant low-mid
+   boost applied to the player's engine bus post-limiter, to the master bus,
+   and to the tail, with a high shelf taking the top off at the same time.
+   Entry and exit are shaped as an event, not a crossfade. All of it is
+   live-editable from the console via window.__tunnel, echo and growl on
+   separate knobs so a bad mix can be diagnosed to one half —
+   see TUNNEL_TUNE_SPEC. */
 
 /** Per-car engine character. Chosen by setCar(); "generic" is the fallback. */
 export interface EngineProfile {
@@ -277,9 +290,30 @@ const smoothstep = (e0: number, e1: number, x: number) => {
    Everything the engine makes — the synth body (engG) AND the recorded rpm
    ladder (sampBus) — now sums into one shared output stage before master:
 
-     engG ─┐
-           ├─> engLevel ─> engShelf ─> engLim ─> engMakeup ─> master
-     sampBus ┘        └─> engSend (reverb, so tunnels track the new level)
+     engG ────┐
+              ├─> engLevel ─> engShelf ─> engLim ─> engMakeup
+     sampBus ─┘         │                              └─> engGrowl
+                        │                                  └─> engGrowlTrim
+                        │                                      └─> master
+                        └─> engSend (reverb, so tunnels track the new level)
+
+   engGrowl/engGrowlTrim are flat and unity except in a tunnel — see
+   TUNNEL_TUNE_SPEC.growl. The filter is post-limiter on purpose, so the
+   tunnel's low-mid boost is real level rather than something engLim hands
+   straight back as gain reduction; the trim beside it gives half of that
+   boost back broadband so the boost costs no peak headroom.
+
+   For the wider picture, the four reverb sends and what feeds each (see
+   TUNNEL_TUNE_SPEC and wireConvolver):
+
+     engLevel, turboG, whineG, npc pool ─> engSend  ─┐
+     tyre hum/sing/screech/skid/brakeSq/scrape ─> tireSend ─┤
+     sfxBus (crash, horns, chirp, every burst) ─> sfxSend  ─┼─> reverbIn
+     wind, roadRumble ─────────────────────────> ambSend  ─┘
+
+   Everything else — UI tick, stalk click, trim creaks, rain — goes straight
+   to master and stays dry: those are made inside the cabin (or, for rain,
+   do not happen inside a tunnel at all).
 
    so "louder / more rumble" is a one-number edit here rather than a hunt
    through the per-layer coefficients in update(). Those per-layer numbers
@@ -440,6 +474,159 @@ function readAudioTune(): AudioTune {
   };
 }
 
+/* ---- Tunnel acoustics: THE knobs -------------------------------------
+   Everything that makes a concrete tube sound like one, in one place and
+   live-editable from the console as `window.__tunnel` (same pattern as
+   window.__audioTune above and window.__povTune in post.ts). update() polls
+   this every frame and only re-applies when a value actually moved, so a
+   value typed mid-transit is audible on the next frame without a reload —
+   which matters more here than for most knobs, because a tunnel mix cannot
+   be judged from a screenshot or a description.
+
+   The four `*Send` values are the fixed-ratio feeds into the reverb input;
+   they do NOT scale with the tunnel factor (the wet gain gates the whole
+   thing), so they are pure "how much of THIS source does the tunnel hear".
+   Rough guide: continuous broadband sources want a low ratio or the tail
+   turns to porridge; transient events want a high one, because a horn or a
+   backfire bouncing off the walls is most of what "tunnel" sounds like and
+   a transient can't build up.
+
+   THE TWO HALVES, and the reason they are separate knobs. What a driver
+   calls "the tunnel" is not one effect:
+
+     `wet`   is the ECHO — the tail, the thing that keeps sounding after the
+             exhaust note has moved on. Raising this alone gives you a wash:
+             more reverb, but reverb that could be any large room.
+     `growl` is the TUBE — a hard resonant low-mid boost and a rolled-off
+             top. This is what makes the walls sound CLOSE, and it is the
+             half that actually reads as concrete rather than as cathedral.
+             It is applied in three places at once (engine bus, master bus,
+             reverb tail) because a real tunnel colours the direct sound and
+             the reflected sound alike.
+
+   Kept apart on purpose: if it sounds wrong, one number tells you which
+   half is wrong. Wash and no character = more growl. Character but no
+   space = more wet.
+
+   The wet numbers are not guesses. A ConvolverNode with normalize=true
+   applies the spec's fixed scale (0.00125 / RMS(ir) * 44100/sampleRate),
+   which for tunnel_ir.wav — 3.2s, 22.05kHz, RMS 0.033 — works out to a
+   broadband gain of 0.45x once it is resampled to a 48kHz context (0.47x at
+   44.1kHz). So the steady-state tail level of any source is
+   (send * 0.45 * wet) against its own dry level:
+
+     PLAYER ENGINE  0.75 * 0.45 * 1.15 / 1.15 (bus makeup)  =  -9dB
+     tyres          0.60 * 0.45 * 1.15                      = -11dB
+     events         0.70 * 0.45 * 1.15                      = -10dB
+     wind           0.18 * 0.45 * 1.15                      = -22dB
+
+   The player's own engine is deliberately the loudest tail in the tunnel —
+   that is the specific thing being asked for, and -9dB under the dry engine
+   is an echo you cannot miss rather than one you can measure. Wind stays
+   restrained because it is already the loudest source at speed and a 3.2s
+   tail full of broadband hiss is a wash, not a tunnel.
+
+   For scale, the setting this replaced put the engine's tail at
+   0.18 send * 0.3 wet * 0.45 = -33dB under its own dry signal. That is not
+   a quiet tunnel, it is no tunnel — which is exactly how it was reported. */
+const TUNNEL_TUNE_SPEC = {
+  /** Convolver wet gain at full tunnel, before the portal curve. The single
+      "more tunnel / less tunnel" number; everything else is character. */
+  wet: { d: 1.15, lo: 0, hi: 2.5 },
+  /** Portal curve exponent: wet = wet * t^gamma. gamma < 1 front-loads the
+      transition so the reverb slams on at the mouth instead of easing in
+      over the corridor's 26m tunnelBlend fade — which at 110 km/h is the
+      better part of a second, i.e. the reason entry felt like a crossfade
+      rather than like hitting a wall of sound. At 0.5, half the wet is up
+      within ~4m of the portal. 1 = the old linear ramp. */
+  gamma: { d: 0.5, lo: 0.15, hi: 3 },
+  /** THE GROWL. One number for the whole "concrete tube" tone change, in the
+      three places a tunnel applies it. At 1.0:
+
+        +7.0dB  on the ENGINE BUS, post-limiter (so the growl is real level
+                and not something the limiter immediately gives back), with
+                half of it returned as broadband trim so the engine's PEAK
+                barely moves — see applyTunnel for the measurements, this is
+                a headroom requirement and not a taste call. Net: +3.5dB in
+                band, -3.5dB out of it, 7dB of contrast. This is the half the
+                request is actually about — it lands on the player's exhaust
+                note directly, not on a reverb of it.
+        +3.5dB  on the master bus, so tyres, traffic and everything else get
+                enclosed too rather than the car growling alone in an
+                otherwise open-sounding world.
+       +10.0dB  on the reverb tail, so the echo is a tube's echo. The tail
+                can take far more than the dry paths because it is a
+                separate bus with its own soft clip.
+        -2.5dB  high shelf above 3.2kHz on the master bus — the "rolls the
+                top off" half. This is not decoration: cutting the top makes
+                the low-mid read as more dominant WITHOUT adding level, so
+                it buys growl and headroom at the same time.
+
+      0 = pure reverb, no tone change at all (useful for isolating which
+      half is wrong). Goes to 2 if 1.0 is not enough. */
+  growl: { d: 1, lo: 0, hi: 2 },
+  /** Centre of the growl, Hz. 100-300 is the band a concrete tube honks in;
+      which end suits depends on the car, because this stacks on top of the
+      engine's OWN body resonance (a fixed +6dB peak at 165Hz in the engine
+      tone chain) and the two reinforce each other when they line up. 170 is
+      deliberately near that peak — the tunnel exaggerating the car's own
+      note is more convincing than a second, unrelated resonance. Down
+      toward 100 = chestier and boomier, up toward 300 = more nasal/boxy. */
+  growlHz: { d: 170, lo: 60, hi: 400 },
+  /** Scales how far the tail's lowpass closes at full tunnel (concrete
+      absorbs the top end on every bounce; the direct sound is untouched).
+      0 = the tail stays open at 9kHz, 1 = it closes to 4kHz. */
+  dark: { d: 1, lo: 0, hi: 2 },
+  /** Pre-delay in ms before the convolver. A tunnel wall is metres away, so
+      its first reflection arrives a real interval after the direct sound —
+      without this the tail glues itself to the source and reads as a filter
+      rather than as a space. */
+  pre: { d: 18, lo: 0, hi: 120 },
+  /** L/R offset in ms on the tail. The IR is mono, so without this the whole
+      tunnel sits in a point at the centre of your head, inside a space that
+      is physically wider than the car; a few ms of one-sided delay opens it
+      out to roughly the width of the tube.
+
+      DEFAULTS TO 0 (mono tail, i.e. exactly what shipped before) on purpose,
+      not because it is the better sound. The trade is real and it is a
+      listening call, not an arithmetic one: the offset buys width but costs
+      a lean toward the early side (this IR has a strong direct spike, peak
+      0.892, so its onset does localize) and some low-mid combing when a
+      laptop speaker sums it back to mono. Try `__tunnel.width = 9` — this is
+      the knob most worth A/B-ing, and the one that could not be settled
+      without ears. */
+  width: { d: 0, lo: 0, hi: 40 },
+  /** Level scale on the entry/exit pressure whump (tunnelThump). */
+  thump: { d: 1, lo: 0, hi: 3 },
+  /** Engine send: player engine (both voices, post the loudness knob) plus
+      turbo whistle, gearbox whine and the NPC doppler pool. THE ONE THAT
+      MATTERS — highest of the four, because the effect being asked for is
+      specifically the player's own exhaust note coming back off the walls.
+      If the tunnel has to be dialled back, take the others down first and
+      leave this one alone. */
+  engSend: { d: 0.75, lo: 0, hi: 1.5 },
+  /** Rolling/contact send: tyre hum, sing, screech, recorded skid, brake
+      squeal and the barrier scrape. */
+  tireSend: { d: 0.6, lo: 0, hi: 1.5 },
+  /** Event send: crashes, both horns, npc chirps and every burst() one-shot
+      (backfires, shift chuffs, gravel, the portal whump itself). Highest of
+      the four on purpose — see the note above. */
+  sfxSend: { d: 0.7, lo: 0, hi: 1.5 },
+  /** Ambience send: wind roar and road rumble. Deliberately the lowest:
+      these are wide-band beds that are already the loudest thing in the mix
+      at speed, and feeding much of them to a 3.2s tail is the fastest way
+      to turn a tunnel into a wash. */
+  ambSend: { d: 0.18, lo: 0, hi: 1.5 },
+} as const;
+
+// -readonly: the spec is `as const` so its own fields are frozen, but these
+// are console knobs — the whole point is that they can be assigned to.
+export type TunnelTune = { -readonly [K in keyof typeof TUNNEL_TUNE_SPEC]: number };
+const TUNNEL_KEYS = Object.keys(TUNNEL_TUNE_SPEC) as (keyof TunnelTune)[];
+const TUNNEL_TUNE_DEFAULT: TunnelTune = Object.fromEntries(
+  TUNNEL_KEYS.map((k) => [k, TUNNEL_TUNE_SPEC[k].d])
+) as TunnelTune;
+
 /** One voice in the NPC doppler pool: a cheap oscillator (not the full
     player engine graph) routed through a StereoPanner. Assigned to nearby
     traffic cars by updateNpcs() with simple position-tracked voice
@@ -571,10 +758,25 @@ export class GameAudio {
   /* cabin EQ (interior/exterior switch) */
   private cabinLP!: BiquadFilterNode;
   private cabinPeak!: BiquadFilterNode;
+  /** Tunnel low-mid honk on the master bus — the part of "concrete tube"
+      that is a tone change on the whole mix rather than a tail. Unity (0dB)
+      outside a tunnel, so it is inaudible until setReverb() opens it. */
+  private tunPeak!: BiquadFilterNode;
+  /** The other half of the tube EQ: a high shelf that cuts the top as the
+      tunnel closes in. Flat (0dB) outside a tunnel. */
+  private tunShelf!: BiquadFilterNode;
+  /** THE GROWL. A peaking filter on the player's engine bus, post-limiter,
+      driven by the tunnel factor — the one place the tunnel lands on the
+      exhaust note itself rather than on a reverb of it. Flat outside a
+      tunnel, so the open-road engine is untouched. */
+  private engGrowl!: BiquadFilterNode;
+  /** Broadband trim that gives back HALF of engGrowl's boost in dB. Keeps
+      the growl a tone change rather than a level change — see applyTunnel. */
+  private engGrowlTrim!: GainNode;
 
   /* reverb bus: feedback-delay network, no IR assets. Fed by fixed-ratio
-     sends from the engine and tire buses; overall wet level + darkening
-     driven by setReverb(t). */
+     sends from the engine, tire, event and ambience buses; overall wet level
+     + darkening driven by setReverb(t). */
   private reverbIn!: GainNode;
   private reverbLP!: BiquadFilterNode;
   private reverbFeedback!: GainNode;
@@ -582,6 +784,28 @@ export class GameAudio {
   /** Shared reverb send for all tire layers (synth + recorded skid). Built
       in init(); a field so the lazily-wired skid loop can join it. */
   private tireSend!: GainNode;
+  /** Engine-family send (player engine + turbo + whine + npc pool). A field
+      for the same reason tireSend is: layers built after the reverb section
+      join it. */
+  private engSend!: GainNode;
+  /** Event bus: every transient one-shot that a tunnel should throw back at
+      you — crashes, horns, chirps, backfires, the portal whump. Sums to
+      master at unity (so the dry path is bit-identical to routing straight
+      to master) and taps sfxSend off the same point. In-cabin sounds
+      (stalk click, trim creaks) and UI sounds deliberately do NOT join it:
+      a switch on the steering column does not echo off a wall 4m away. */
+  private sfxBus!: GainNode;
+  private sfxSend!: GainNode;
+  /** Ambience send: wind + road rumble. */
+  private ambSend!: GainNode;
+  /* convolver wet chain (built by wireConvolver once the IR decodes) */
+  private convPre: DelayNode | null = null;
+  private convHP: BiquadFilterNode | null = null;
+  private convPeak: BiquadFilterNode | null = null;
+  private convLP: BiquadFilterNode | null = null;
+  private convWidth: DelayNode | null = null;
+  /** Live tunnel knobs, refreshed from window.__tunnel by update(). */
+  private tun: TunnelTune = { ...TUNNEL_TUNE_DEFAULT };
 
   /* recorded-sample layers (lazy-loaded in init(), wired when decoded) */
   private engineMode: EngineMode = "sampled";
@@ -736,7 +960,41 @@ export class GameAudio {
       this.cabinPeak.frequency.value = 210;
       this.cabinPeak.Q.value = 1.1;
       this.cabinPeak.gain.value = 0;
-      this.master.connect(this.cabinLP).connect(this.cabinPeak).connect(ctx.destination);
+      /* Tunnel band, in the same master-chain slot and for the same reason:
+         a concrete tube does not only add a tail, it puts a low-mid honk on
+         everything you hear inside it. Separate node from cabinPeak rather
+         than sharing it, because the two are driven by different things
+         (which camera you are on vs. where the car is) and would otherwise
+         fight over one gain value. 0dB until setReverb() opens it, so
+         nothing changes outside a tunnel. */
+      this.tunPeak = ctx.createBiquadFilter();
+      this.tunPeak.type = "peaking";
+      this.tunPeak.frequency.value = 200;
+      this.tunPeak.Q.value = 0.9;
+      this.tunPeak.gain.value = 0;
+      /* ...and the top rolls off as the walls close in. A shelf CUT rather
+         than a lowpass so it cannot fight cabinLP (which setInterior owns
+         and parks at 6.4kHz for the dashcam), and because a cut is the one
+         move that buys growl for free: taking the top off makes the low-mid
+         read as more dominant without adding any level at all. */
+      this.tunShelf = ctx.createBiquadFilter();
+      this.tunShelf.type = "highshelf";
+      this.tunShelf.frequency.value = 3200;
+      this.tunShelf.gain.value = 0;
+      this.master
+        .connect(this.cabinLP)
+        .connect(this.cabinPeak)
+        .connect(this.tunPeak)
+        .connect(this.tunShelf)
+        .connect(ctx.destination);
+      /* Event bus. Built here, before any of the one-shot voices, so they
+         can land on it instead of on master; its reverb send is wired in
+         the reverb section below once reverbIn exists. Unity gain — the dry
+         path through it is bit-identical to the direct-to-master routing
+         these voices used before. */
+      this.sfxBus = ctx.createGain();
+      this.sfxBus.gain.value = 1;
+      this.sfxBus.connect(this.master);
       const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
       const d = buf.getChannelData(0);
       for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
@@ -850,11 +1108,31 @@ export class GameAudio {
       this.engLim.release.value = 0.15;
       this.engMakeup = ctx.createGain();
       this.engMakeup.gain.value = ENGINE_TUNE_DEFAULT.makeup;
+      /* THE GROWL, and its position in the chain is the whole point of it.
+         AFTER the limiter, not before: a boost in front of engLim is a boost
+         the limiter immediately hands back as gain reduction, so the engine
+         would get denser in a tunnel without getting bigger — the opposite
+         of what a tunnel does. Post-limiter it is real level.
+
+         Flat (0dB) until applyTunnel opens it, so the open-road engine is
+         bit-identical to before. It stacks deliberately on top of body1, the
+         engine's own fixed +6dB peak at 165Hz: a tunnel exaggerating the
+         car's existing note reads as the walls being close, where a second
+         unrelated resonance elsewhere just reads as an EQ. */
+      this.engGrowl = ctx.createBiquadFilter();
+      this.engGrowl.type = "peaking";
+      this.engGrowl.frequency.value = TUNNEL_TUNE_DEFAULT.growlHz;
+      this.engGrowl.Q.value = 1.2;
+      this.engGrowl.gain.value = 0;
+      this.engGrowlTrim = ctx.createGain();
+      this.engGrowlTrim.gain.value = 1;
       this.engG.connect(this.engLevel);
       this.engLevel
         .connect(this.engShelf)
         .connect(this.engLim)
         .connect(this.engMakeup)
+        .connect(this.engGrowl)
+        .connect(this.engGrowlTrim)
         .connect(this.master);
 
       // rev-limiter stutter: a square LFO added into the engine gain param
@@ -869,7 +1147,7 @@ export class GameAudio {
       // one-shot bus for crackles / shift chuffs / limiter bangs
       this.crackleBus = ctx.createGain();
       this.crackleBus.gain.value = 1;
-      this.crackleBus.connect(this.master);
+      this.crackleBus.connect(this.sfxBus);
 
       // turbo spool
       this.turboOsc = ctx.createOscillator();
@@ -1082,17 +1360,48 @@ export class GameAudio {
          but PRE the rumble shelf and the soft clip: the feedback network is
          the one place extra bottom end turns into mud rather than into beef,
          and the send should not be carrying folded-over saturation either.
-         At level=1 this is bit-identical to the two separate 0.18 sends the
-         synth body and the sampled bus used to have. */
-      const engSend = ctx.createGain();
-      engSend.gain.value = 0.18;
-      this.engLevel.connect(engSend).connect(this.reverbIn);
+         0.18 -> 0.45 (window.__tunnel.engSend): 0.18 was set when the wet
+         ceiling was 0.3, which put the engine's tail 33dB under its own dry
+         signal — measurable, inaudible. See TUNNEL_TUNE_SPEC. */
+      this.engSend = ctx.createGain();
+      this.engSend.gain.value = TUNNEL_TUNE_DEFAULT.engSend;
+      this.engLevel.connect(this.engSend).connect(this.reverbIn);
+      // Turbo whistle and gearbox whine are engine sounds that happen to
+      // bypass the engine output stage (they are post-limiter by design, so
+      // a spool whistle doesn't duck the whole engine); they still belong in
+      // the tunnel at the engine's ratio.
+      this.turboG.connect(this.engSend);
+      this.whineG.connect(this.engSend);
+
       this.tireSend = ctx.createGain();
-      this.tireSend.gain.value = 0.22;
+      this.tireSend.gain.value = TUNNEL_TUNE_DEFAULT.tireSend;
       this.tireRoadG.connect(this.tireSend);
       this.singG.connect(this.tireSend);
       this.screechG.connect(this.tireSend);
+      // Brake squeal is a contact-patch sound like the three above, and a
+      // hard stop inside an underpass is one of the loudest things a tunnel
+      // gives back.
+      this.brakeSqG.connect(this.tireSend);
       this.tireSend.connect(this.reverbIn);
+
+      /* Event send. Highest ratio of the four: transients are what actually
+         read as "tunnel" — a horn, a backfire or a crash bouncing back off
+         the walls — and unlike the continuous beds they cannot accumulate
+         into a wash, because each one is over before the next arrives. */
+      this.sfxSend = ctx.createGain();
+      this.sfxSend.gain.value = TUNNEL_TUNE_DEFAULT.sfxSend;
+      this.sfxBus.connect(this.sfxSend).connect(this.reverbIn);
+
+      /* Ambience send. Lowest ratio of the four, deliberately: wind and road
+         rumble are broadband beds that are already the loudest thing in the
+         mix at speed, so this is the one send where being generous makes the
+         tunnel sound worse rather than bigger. It is not zero because a
+         tunnel genuinely does put a low roar under everything. */
+      this.ambSend = ctx.createGain();
+      this.ambSend.gain.value = TUNNEL_TUNE_DEFAULT.ambSend;
+      this.wG.connect(this.ambSend);
+      this.roadRumbleG.connect(this.ambSend);
+      this.ambSend.connect(this.reverbIn);
 
       /* ---- sampled engine bus ----
          Prebuilt empty (cheap: three nodes, no sources) so the lazily
@@ -1139,6 +1448,16 @@ export class GameAudio {
         oscG.connect(mixG);
         const panner = ctx.createStereoPanner();
         mixG.connect(panner).connect(this.master);
+        /* Traffic into the tunnel, at the engine ratio — passing a truck
+           inside an underpass is a large part of the effect. INERT TODAY:
+           NPC_VOICES_ENABLED is false, so mixG never leaves 0 and this send
+           carries silence (see docs/DISABLED.md §3d). Wired anyway because
+           it costs one connection on a node that already exists, and
+           re-enabling the pool without it would quietly ship traffic that
+           stays bone dry in a tunnel while the player's own car does not.
+           Pre-panner, i.e. mono into the reverb: the tail's width comes from
+           the convolver chain, not from where the car was. */
+        mixG.connect(this.engSend);
         this.npcVoices.push({ osc, oscG, mixG, panner, active: false, lastX: 0, lastZ: 0 });
       }
 
@@ -1166,6 +1485,9 @@ export class GameAudio {
         this.scrapeFilters.push({ f, baseFreq: b.f });
       }
       this.scrapeG.connect(this.master);
+      // Scraping a barrier is a sustained contact noise like the tyre
+      // layers, and inside a tunnel the barrier IS the tunnel wall.
+      this.scrapeG.connect(this.tireSend);
 
       this.ok = true;
       // Recorded samples: kick the fetch+decode off now — init() runs on the
@@ -1285,10 +1607,49 @@ export class GameAudio {
   }
 
   /** Real underpass impulse response on a ConvolverNode wet bus, fed by the
-      same engine/tire sends as the synthetic feedback-delay reverb. Once
-      wired, setReverb() drives this instead of the FDN (never both — two
-      reverbs would smear); with no IR decoded, setReverb() behaves exactly
-      as before. UI sounds never touch reverbIn, so they stay dry. */
+      four sends (engine / tire / event / ambience) that also feed the
+      synthetic feedback-delay reverb. Once wired, setReverb() drives this
+      instead of the FDN (never both — two reverbs would smear); with no IR
+      decoded, setReverb() behaves exactly as before. UI sounds and in-cabin
+      sounds never touch reverbIn, so they stay dry.
+
+      The chain around the convolver is what turns "a 3.2s underpass IR at
+      some wet level" into something that reads as a tunnel from the driver's
+      seat:
+
+        reverbIn -> convPre -> conv -> convHP -> convPeak -> convLP
+                 -> [ L: 0ms | R: width ms ] -> convWet -> convSat -> master
+
+      convPre  pre-delay, so the first reflection arrives a real interval
+               after the direct sound. Without it the tail glues itself onto
+               the source and reads as a filter, not as a space.
+      convHP   80Hz highpass. The tail's job is low-MID honk; sub content in
+               a 3.2s reverb is just mud sitting on top of the engine's own
+               fundamental, and it is the fastest way to eat headroom.
+      convPeak the growl, on the tail: up to +10dB at growlHz*1.18, opened by
+               applyTunnel with the tunnel factor. Far more than either dry
+               path gets, because a tail is diffuse — a resonance that would
+               be a honk on a direct signal is just "the size of the tube" on
+               a reverb, and this bus has its own soft clip to catch it.
+      convLP   closes with the tunnel factor: concrete absorbs the top end a
+               little more on every bounce, so a long tail should be darker
+               than the sound that made it. Only the TAIL darkens — the
+               direct sound is untouched, which is what stops this reading
+               as "someone put a blanket over the car".
+      convSat  the same unity-at-origin soft clip the FDN loop uses, and
+               placed AFTER convWet so it bounds the wet bus's contribution
+               to master at |1| whatever the wet knob says. That is what
+               makes `__tunnel.wet` safe to crank while listening — the knob
+               is the deliverable here, so it must not be a way to blow the
+               output up. Not for character: at ordinary tail levels it is
+               transparent (tanh(0.3) = -0.3dB), and there is no master-bus
+               limiter downstream to catch anything it misses.
+      L/R      optional stereo spread for the mono IR, OFF by default —
+               window.__tunnel.width = 9 to try it. Both sides go through a
+               DelayNode rather than only the offset side, so that whatever
+               latency an implementation gives a DelayNode it gives to both,
+               and width = 0 is therefore exactly mono rather than
+               nearly-mono. See the spec entry for the trade. */
   private wireConvolver() {
     const buf = this.samples.get("ir");
     if (!buf) return;
@@ -1296,10 +1657,43 @@ export class GameAudio {
     this.conv = c.createConvolver();
     this.conv.normalize = true;
     this.conv.buffer = buf;
+
+    this.convPre = c.createDelay(0.2);
+    this.convPre.delayTime.value = this.tun.pre / 1000;
+    this.convHP = c.createBiquadFilter();
+    this.convHP.type = "highpass";
+    this.convHP.frequency.value = 80;
+    this.convHP.Q.value = 0.7;
+    this.convPeak = c.createBiquadFilter();
+    this.convPeak.type = "peaking";
+    this.convPeak.frequency.value = 200;
+    this.convPeak.Q.value = 0.9;
+    this.convPeak.gain.value = 0;
+    this.convLP = c.createBiquadFilter();
+    this.convLP.type = "lowpass";
+    this.convLP.frequency.value = 9000;
+    this.convLP.Q.value = 0.7;
+    const convSat = c.createWaveShaper();
+    convSat.curve = this.limiterCurve();
+    convSat.oversample = "none";
+    const convL = c.createDelay(0.1);
+    convL.delayTime.value = 0;
+    this.convWidth = c.createDelay(0.1);
+    this.convWidth.delayTime.value = this.tun.width / 1000;
+    const merger = c.createChannelMerger(2);
+
     this.convWet = c.createGain();
     this.convWet.gain.value = 0;
-    this.reverbIn.connect(this.conv);
-    this.conv.connect(this.convWet).connect(this.master);
+    this.reverbIn.connect(this.convPre).connect(this.conv);
+    this.conv.connect(this.convHP).connect(this.convPeak).connect(this.convLP);
+    this.convLP.connect(convL).connect(merger, 0, 0);
+    this.convLP.connect(this.convWidth).connect(merger, 0, 1);
+    // convSat sits AFTER convWet, not before it: that way the wet bus's
+    // contribution to master is hard-bounded at |1| no matter what the wet
+    // knob is set to, so `__tunnel.wet` is safe to crank while listening
+    // without being able to blow the output up. At working levels (~0.3) it
+    // is transparent — tanh(0.3) is -0.3dB.
+    merger.connect(this.convWet).connect(convSat).connect(this.master);
     // Hand the tail over: kill the FDN's wet/feedback so the convolver is
     // the only reverb voice from here on, and replay the current tunnel
     // amount onto the new wet bus so wiring mid-tunnel doesn't go dry.
@@ -1371,6 +1765,27 @@ export class GameAudio {
       rain: this.rG.gain.value,
       scrape: this.scrapeG.gain.value,
       reverbWet: this.reverbWet.gain.value,
+      /* tunnel state — enough to answer "is the reverb even on?" from one
+         pasted snapshot: which voice is live (convolverWet above is null
+         until the IR decodes), the smoothed factor engine.ts last sent, the
+         four send ratios, and the two EQ moves. */
+      tunnelT: this.lastReverbT,
+      tunnelSends: {
+        eng: this.engSend.gain.value,
+        tire: this.tireSend.gain.value,
+        sfx: this.sfxSend.gain.value,
+        amb: this.ambSend.gain.value,
+      },
+      /* the growl, in its three positions — if the tunnel sounds wrong,
+         these say which of them is not doing what you think */
+      tunnelGrowlEngineDb: this.engGrowl.gain.value,
+      tunnelGrowlEngineTrim: this.engGrowlTrim.gain.value,
+      tunnelGrowlMasterDb: this.tunPeak.gain.value,
+      tunnelGrowlTailDb: this.convPeak ? this.convPeak.gain.value : null,
+      tunnelGrowlHz: this.engGrowl.frequency.value,
+      tunnelTopCutDb: this.tunShelf.gain.value,
+      tunnelTailHz: this.convLP ? this.convLP.frequency.value : null,
+      tunnelTune: this.tun,
       npcVoicesActive: this.npcVoices.filter((v) => v.active).length,
       npcOscSum,
       npcNearest: nearest,
@@ -1390,7 +1805,11 @@ export class GameAudio {
     if (!this.peakAnalyser) {
       this.peakAnalyser = this.ctx.createAnalyser();
       this.peakAnalyser.fftSize = 2048;
-      this.cabinPeak.connect(this.peakAnalyser);
+      // Tap the LAST node in the master chain, so "what the speakers get"
+      // includes the tunnel EQ — the growl is the one move here that adds
+      // level, and audio-mix-check.mjs's |peak| < 0.99 assertion is the only
+      // automated thing standing between it and a clipped output.
+      this.tunShelf.connect(this.peakAnalyser);
       this.peakBuf = new Float32Array(this.peakAnalyser.fftSize);
     }
     this.peakAnalyser.getFloatTimeDomainData(this.peakBuf!);
@@ -1835,7 +2254,7 @@ export class GameAudio {
       lp.type = "lowpass";
       lp.frequency.value = rattle ? Math.min(lpHz, 1800) : lpHz;
       lp.Q.value = 0.7;
-      lp.connect(g).connect(this.master);
+      lp.connect(g).connect(this.sfxBus);
       const layers: string[] = [];
       const play = (key: string, lg: number, r: number, delay = 0) => {
         const buf = this.samples.get(key);
@@ -1897,7 +2316,7 @@ export class GameAudio {
     f.frequency.value = lpHz;
     const g = c.createGain();
     g.gain.value = (rattle ? 0.4 : 1) * Math.min(0.5, 0.08 + u * 0.45);
-    src.connect(f).connect(g).connect(this.master);
+    src.connect(f).connect(g).connect(this.sfxBus);
     src.start(t);
     src.stop(t + buf.duration + 0.02);
     log({ kind: "synth", layers: [], gain: g.gain.value, lpHz, rate });
@@ -2008,7 +2427,7 @@ export class GameAudio {
       const g = c.createGain();
       g.gain.setValueAtTime(0.0001, t);
       g.gain.linearRampToValueAtTime(0.16, t + 0.015);
-      src.connect(g).connect(this.master);
+      src.connect(g).connect(this.sfxBus);
       src.start(t, onset);
       this.hornStarts++;
       this.hornSample = { src, g };
@@ -2034,7 +2453,7 @@ export class GameAudio {
       g.gain.value = 0.06;
       o1.connect(g);
       o2.connect(g);
-      g.connect(this.master);
+      g.connect(this.sfxBus);
       o1.start();
       o2.start();
       this.hornStarts++;
@@ -2094,6 +2513,16 @@ export class GameAudio {
       this.convWet.gain.value = 0;
     }
     this.reverbWet.gain.value = 0;
+    /* The growl is a tone change on the DRY path, so it has to be dumped
+       with the tail it belongs to — otherwise pausing inside a tunnel leaves
+       the menu sitting in a +3.5dB honk with its top rolled off, and the
+       engine keeps its +7dB when the game resumes somewhere else. */
+    for (const p of [this.engGrowl.gain, this.tunPeak.gain, this.tunShelf.gain]) {
+      p.cancelScheduledValues(this.ctx.currentTime);
+      p.value = 0;
+    }
+    this.engGrowlTrim.gain.cancelScheduledValues(this.ctx.currentTime);
+    this.engGrowlTrim.gain.value = 1; // unity, not 0 — this one is a trim
     this.scrapeG.gain.value = 0;
     this.lastScrapeTarget = 0;
     this.scrapeWasActive = false;
@@ -2221,6 +2650,14 @@ export class GameAudio {
        method already does, and smoothing them means a live edit glides in
        instead of clicking. */
     const tune = readAudioTune();
+    /* Same idea for the tunnel knobs (window.__tunnel), but gated on an
+       actual change: inside a tunnel the factor is pinned at 1.0 and
+       engine.ts stops calling setReverb, so this is the only path by which a
+       console edit reaches the graph while you are in there — and audio is
+       the one thing that genuinely cannot be judged without driving through
+       it. In the common case (nobody at the console) this is a handful of
+       number compares and no param writes at all. */
+    if (this.readTunnelTune()) this.applyTunnel();
     this.sp(this.engLevel.gain, tune.level, 0.05);
     this.sp(this.engShelf.gain, tune.rumbleDb, 0.05);
     this.sp(this.engShelf.frequency, tune.rumbleHz, 0.05);
@@ -2736,28 +3173,150 @@ export class GameAudio {
       and feedback gain to their floor immediately, so returning to t=0
       always fully stops new energy from re-entering the loop rather than
       just trending toward it — belt-and-suspenders alongside the gain-
-      staging fix, not a substitute for it. */
+      staging fix, not a substitute for it.
+
+      This is now a thin wrapper: it records the tunnel factor, refreshes the
+      console knobs and hands off to applyTunnel(), which is also called
+      per-frame by update() so a knob edit made mid-tunnel is heard
+      immediately. All of the actual behaviour — sends, portal curve, tunnel
+      EQ, wet level, hard kill — lives there. */
   setReverb(t: number) {
     if (!this.ok) return;
-    const tt = clamp01(t);
-    this.lastReverbT = tt;
+    this.lastReverbT = clamp01(t);
+    this.readTunnelTune();
+    this.applyTunnel();
+  }
+
+  /** Poll window.__tunnel into this.tun. Returns true when any value moved,
+      so the per-frame caller can skip the param writes in the overwhelmingly
+      common case where nobody is at the console. Writes in place — no
+      allocation, this runs every frame. */
+  private readTunnelTune(): boolean {
+    if (typeof window === "undefined") return false;
+    const w = window as unknown as { __tunnel?: TunnelTune };
+    if (!w.__tunnel) w.__tunnel = { ...TUNNEL_TUNE_DEFAULT };
+    const t = w.__tunnel;
+    let changed = false;
+    for (const k of TUNNEL_KEYS) {
+      const s = TUNNEL_TUNE_SPEC[k];
+      // Non-numeric (a fat-fingered `__tunnel.wet = "loud"`) falls back to
+      // the default rather than NaN-ing a gain node into permanent silence,
+      // exactly as readAudioTune does.
+      const v = Number.isFinite(t[k]) ? clampRange(t[k], s.lo, s.hi) : s.d;
+      if (v !== this.tun[k]) {
+        this.tun[k] = v;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** Push the current tunnel factor (this.lastReverbT) and the current knob
+      values onto the graph. Split out of setReverb() so update() can re-run
+      it when a console edit lands while the tunnel factor is pinned — inside
+      a tunnel, tunT sits at 1.0 and engine.ts stops calling setReverb
+      entirely, so without this a value typed mid-transit would not be heard
+      until the next portal.
+
+      The hard kill at zero is the pause/exit contract and is load-bearing:
+      at t=0 every wet path is cancelled and snapped to literal 0 rather than
+      being allowed to approach it, so leaving a tunnel or pausing can never
+      leave a tail alive. (The FDN could genuinely feed itself; the convolver
+      cannot, but it has a 3.2s decay, which in the menu is the same bug from
+      the player's side.) */
+  private applyTunnel() {
+    const tt = this.lastReverbT;
+    const k = this.tun;
+    const now = this.ctx.currentTime;
+
+    // Sends are fixed ratios into the reverb input, NOT scaled by tt — the
+    // wet gain is what gates the tunnel. Re-applied here only so the console
+    // knobs reach them.
+    this.sp(this.engSend.gain, k.engSend, 0.05);
+    this.sp(this.tireSend.gain, k.tireSend, 0.05);
+    this.sp(this.sfxSend.gain, k.sfxSend, 0.05);
+    this.sp(this.ambSend.gain, k.ambSend, 0.05);
+
+    /* Portal curve. The corridor's tunnelBlend is a 26m linear-ish fade, so
+       a linear wet ramp spends most of a second easing the reverb in at
+       speed; a real portal is a wall arriving. gamma < 1 front-loads it. */
+    const wetCurve = tt <= 0 ? 0 : Math.pow(tt, k.gamma);
+
+    /* THE GROWL, in its three dry-path positions. All driven by the same
+       curve as the wet, so the tube tone and the echo arrive together at the
+       portal rather than one sliding in behind the other.
+
+       Snapped rather than eased at zero, unlike the wet gains and for a
+       different reason: setTargetAtTime only ever APPROACHES its target, and
+       these sit on the DRY path, so a residual fraction of a dB left
+       standing after the exit would colour the open road — and the menu —
+       for the rest of the session. */
+    this.sp(this.engGrowl.frequency, k.growlHz, 0.05);
+    this.sp(this.tunPeak.frequency, k.growlHz * 1.18, 0.05);
+    if (tt < 1e-4) {
+      this.engGrowl.gain.cancelScheduledValues(now);
+      this.engGrowl.gain.value = 0;
+      this.engGrowlTrim.gain.cancelScheduledValues(now);
+      this.engGrowlTrim.gain.value = 1;
+      this.tunPeak.gain.cancelScheduledValues(now);
+      this.tunPeak.gain.value = 0;
+      this.tunShelf.gain.cancelScheduledValues(now);
+      this.tunShelf.gain.value = 0;
+    } else {
+      // The player's engine gets the biggest dry boost of the three: it is
+      // the source the effect is actually about.
+      const growlDb = 7 * k.growl * wetCurve;
+      this.sp(this.engGrowl.gain, growlDb, 0.06);
+      /* ...and half of it comes straight back off as broadband trim, which
+         is not timidity, it is the only thing standing between this and a
+         clipped output. Measured on a synthesized engine bus (12-partial
+         stack at the firing frequency, peak-normalised to a plausible
+         post-makeup 0.40) with this exact filter — RBJ peaking, 170Hz,
+         Q 1.2:
+
+           +7dB, no trim   peak x1.64 / x1.58 / x1.66 at 3000 / 5100 / 6400rpm
+           +7dB, -3.5dB    peak x1.10 / x1.05 / x1.11
+
+         i.e. uncompensated this raises the engine's PEAK by ~4.4dB at every
+         rpm — not just where the fundamental lands in the band — and there
+         is no master-bus limiter downstream to catch it. Half-compensated it
+         is peak-neutral while keeping the full 7dB of in-band contrast,
+         which is the part that is audible as growl.
+
+         The principle this follows, and the reason it is not a compromise:
+         a tunnel IS louder, but the extra loudness comes from reverberant
+         energy, not from the exhaust suddenly making more sound. So the dry
+         paths get TONE and the wet bus gets LEVEL — the tail is separately
+         soft-clipped and can take it, the dry engine cannot. */
+      this.sp(this.engGrowlTrim.gain, Math.pow(10, -growlDb / 40), 0.06);
+      this.sp(this.tunPeak.gain, 3.5 * k.growl * wetCurve, 0.06);
+      this.sp(this.tunShelf.gain, -2.5 * k.growl * wetCurve, 0.06);
+    }
+
     /* Recorded-IR path: once the underpass impulse response is wired, it IS
        the tunnel reverb — the FDN stays parked at zero (wireConvolver()
-       killed it) and only the convolver wet level moves. Kept deliberately
-       subtle: 0.3 max wet, engine+tire sends only. Same hard-kill-at-zero
-       contract as the FDN path so pausing/exiting can't leave a tail
-       feeding itself. */
+       killed it) and only the convolver chain moves. */
     if (this.convWet) {
+      if (this.convPre) this.sp(this.convPre.delayTime, k.pre / 1000, 0.05);
+      if (this.convWidth) this.sp(this.convWidth.delayTime, k.width / 1000, 0.05);
+      if (this.convPeak) {
+        this.sp(this.convPeak.frequency, k.growlHz * 1.18, 0.05);
+        this.sp(this.convPeak.gain, 10 * k.growl * wetCurve, 0.06);
+      }
+      if (this.convLP)
+        this.sp(this.convLP.frequency, Math.max(600, 9000 - 5000 * k.dark * wetCurve), 0.06);
       if (tt < 1e-4) {
-        this.convWet.gain.cancelScheduledValues(this.ctx.currentTime);
+        this.convWet.gain.cancelScheduledValues(now);
         this.convWet.gain.value = 0;
         return;
       }
-      this.sp(this.convWet.gain, tt * 0.3, 0.15);
+      // 0.06 rather than the old 0.15: this ramp is the portal, and 150ms of
+      // smoothing on top of the corridor fade was most of what made entering
+      // feel like a crossfade.
+      this.sp(this.convWet.gain, k.wet * wetCurve, 0.06);
       return;
     }
     if (tt < 1e-4) {
-      const now = this.ctx.currentTime;
       this.reverbWet.gain.cancelScheduledValues(now);
       this.reverbWet.gain.value = 0;
       this.reverbFeedback.gain.cancelScheduledValues(now);
@@ -2765,8 +3324,13 @@ export class GameAudio {
       this.sp(this.reverbLP.frequency, 6000, 0.15);
       return;
     }
-    this.sp(this.reverbWet.gain, tt * 0.35, 0.15);
-    this.sp(this.reverbLP.frequency, 6000 - tt * 4300, 0.15);
+    /* FDN fallback (IR not decoded yet, or the fetch failed). Scaled by the
+       same knobs so a console edit isn't silently a no-op on this path, but
+       feedback stays on the ORIGINAL 0.15 + tt*0.25 schedule and is not
+       exposed as a knob: that cap is the proof of loop stability documented
+       in init(), not a taste control. */
+    this.sp(this.reverbWet.gain, k.wet * wetCurve * 0.44, 0.06);
+    this.sp(this.reverbLP.frequency, Math.max(600, 6000 - k.dark * wetCurve * 4300), 0.06);
     this.sp(this.reverbFeedback.gain, 0.15 + tt * 0.25, 0.15);
   }
 
@@ -2805,9 +3369,19 @@ export class GameAudio {
       the same character, just call it twice. */
   tunnelThump(intensity = 1) {
     if (!this.ok) return;
-    const k = clampRange(intensity, 0, 2);
+    const k = clampRange(intensity, 0, 2) * this.tun.thump;
     this.burst(0.16 * k, 62, 0.09, 0.85);
     this.burst(0.07 * k, 38, 0.17, 0.55);
+    /* Third layer, ~165Hz. The two above are 38 and 62Hz — genuinely
+       correct for a pressure change, and almost entirely inaudible on the
+       laptop speakers this is played on, which is why the portal did not
+       land as an event. This one carries the same transient into a band a
+       small speaker can actually reproduce; on headphones it reads as the
+       slap of the wall arriving rather than as a separate sound. It routes
+       through crackleBus -> sfxBus like every burst(), so once the tunnel
+       wet is up the whump gets the tunnel's own tail thrown back at it —
+       which is the other half of what makes a portal feel like one. */
+    this.burst(0.1 * k, 165, 0.055, 1.1);
   }
 
   /** Rotate a world-space offset into the player's camera-relative right
@@ -3025,7 +3599,7 @@ export class GameAudio {
     if (hb) {
       const pn = c.createStereoPanner();
       pn.pan.value = pan;
-      pn.connect(this.master);
+      pn.connect(this.sfxBus);
       this.playSample(hb, gain * (heavy ? 1.1 : 1), pn, 0.96 + Math.random() * 0.08);
       return;
     }
@@ -3051,7 +3625,7 @@ export class GameAudio {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
     o1.connect(g);
     o2.connect(g);
-    g.connect(body).connect(pn).connect(this.master);
+    g.connect(body).connect(pn).connect(this.sfxBus);
     o1.start(t);
     o2.start(t);
     o1.stop(t + 0.52);
@@ -3084,7 +3658,7 @@ export class GameAudio {
     g.gain.value = gain;
     const pn = c.createStereoPanner();
     pn.pan.value = pan;
-    src.connect(f).connect(g).connect(pn).connect(this.master);
+    src.connect(f).connect(g).connect(pn).connect(this.sfxBus);
     src.start(t);
     src.stop(t + decay * 3 + 0.02);
   }
