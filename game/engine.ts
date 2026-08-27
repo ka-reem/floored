@@ -18,7 +18,6 @@ import { buildTown } from "./world/townmesh";
 import { buildScenery } from "./world/scenery";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
-import { DECKY } from "./world/const";
 import { getCorridor, TUNNEL, PITCH, PHASE } from "./world/corridor";
 import { getRouteGraph, BYPASS_EDGE } from "./world/routegraph";
 import { spawnZ } from "./world/ramps";
@@ -26,10 +25,11 @@ import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./p
 import { collidePlayer } from "./collide";
 import { buildPlayerCar, type PlayerRig } from "./player";
 import type { CockpitModelHandle, MirrorFraming } from "./cockpitmodel";
-import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, type GaugeFlags } from "./cockpit";
+import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, WIPER, type GaugeFlags } from "./cockpit";
 import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
-import { MusicPlayer, hitTransport } from "./music";
+import { MusicPlayer } from "./music";
+import { hitScreen, type ScreenAction, type ScreenView } from "./carscreen";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap } from "./minimap";
@@ -388,9 +388,12 @@ const CHASE_SHAKE = 0;
      1.25 walks into it, and the headliner is at 1.375.
    - fov 78 vertical, which is ~110 degrees horizontal at 16:9 — against ~99
      for the 67-degree default and ~105 for the dashcam, so it is the widest
-     lens in the car, which is the point. Its own number on purpose: povFov() is
-     bound to the FOV slider and to per-interior clamps, and this camera exists
-     to be experimented with, not to inherit the shipping view's constraints.
+     lens in the car, which is the point. It is a BASELINE, not a fixed lens:
+     consoleFov() reads it as the framing this camera has when the Field of
+     view slider is at its default and scales it with the slider from there.
+     Its own number so an experimental view can sit wider than the shipping
+     one; still on the slider, because the slider is the user's setting and a
+     camera the setting cannot move is a setting that does not work.
    - tilt 0.02 rad of nose-down, nominal. The dashcam needs 0.227 because it has
      to rake the cluster into frame from above it; this one sits behind and
      level with the dash and does not.
@@ -542,23 +545,39 @@ const FOG_TUNE = {
    `night` is the multiplier on every car material's env reflection at full
    night; it fades to 1 (authored values, untouched) by full day on the same
    shaped curve the ambient and hemi use, so daylight is byte-for-byte what it
-   was. 3 is a starting point, not a measured number: the paint is metallic
-   (metalness 0.88, envMapIntensity 1.3) so almost all of its read is env
+   was. The paint is metallic (procedural: metalness 0.88 at envMapIntensity
+   1.3; the donor's Car_Paint: metalness 1.00) so almost all of its read is env
    specular, and at 1x that lands roughly ten times below the fog it is seen
-   against. 3x closes most of that gap while leaving the car clearly darker
-   than the haze, which is what a dark car at night should be.
+   against.
 
-   Where it bites first if it goes too far: the glazing (envMapIntensity 1.7 at
-   roughness 0.05) and the mirror caps (1.6, roughness 0.03) reflect the HDRI's
-   lamps almost sharply, and past the ACES knee a coloured highlight becomes a
-   white one. player.ts's tameSpecular knee is what holds that off. Dial `night`
-   down before touching anything in player.ts.
+   IT WAS 3, AND FOR MOST OF THAT TIME IT WAS POINTING AT THE WRONG CAR. The
+   lift only ever reached materials registered with carenv, and until
+   player.ts's lightDonorBody() only the PROCEDURAL body was — which is hidden
+   whenever the imported Volvo shell is up, i.e. by default. The car actually on
+   screen in CHASE had no envMap at all and, being metalness 1, no diffuse term
+   either, so it rendered at very near zero however far this was turned up.
+   That is the "impossible to see the car" report, and the full account of it is
+   in the block above lightDonorBody().
 
-   Live: `window.__carEnv.night = 5` re-lights the bodywork on the next frame.
-   THE CAR IS NOT ON SCREEN IN THE DASHCAM, so nothing here can be judged from
-   it — the exterior group is hidden whenever the camera is inside the car, in
-   the mirror pass as well as the main one. Judge it from CHASE. */
-const CAR_ENV = { night: 3 };
+   5 now that it lands on the car being looked at. Two things let it go past the
+   old ceiling, and neither is "turn it up and hope":
+
+   - carenv.ts weights the amount ABOVE 3 by material roughness. What used to
+     bite first was the near-mirror trim — the glazing (envMapIntensity 1.7 at
+     roughness 0.05), the mirror caps (1.6, 0.03), and now the donor's Chrome
+     (0.038) and Black_Glossy (0.032) — reflecting the HDRI's lamps nearly
+     sharply and going white past the ACES knee. Those take none of the extra;
+     the panels it is meant for take all of it.
+   - the donor's mirror clearcoat is floored to the procedural paint's 0.06 and
+     wears player.ts's tameSpecular knee, so a hot reflection compresses with
+     its hue rather than clipping.
+
+   Live: `window.__carEnv.night = 8` re-lights the bodywork on the next frame,
+   `= 3` puts it back where it was. THE CAR IS NOT ON SCREEN IN THE DASHCAM, so
+   nothing here can be judged from it — the exterior group is hidden whenever
+   the camera is inside the car, in the mirror pass as well as the main one.
+   Judge it from CHASE. */
+const CAR_ENV = { night: 5 };
 
 /* Chase framing. Both numbers were literals inside updateCamera(); they are up
    here so they can carry their reasoning and take a live knob.
@@ -584,12 +603,208 @@ const CAR_ENV = { night: 3 };
    framing around with a gameplay setting. */
 const CHASE_CAM = { dist: 3, height: 2.15 };
 
+/* ------------------------------------------------------------ roof tap ----
+
+   Where a FINGER has to land to work the interior light, as fractions of the
+   canvas: the top `top` of the frame, within `half` of the centreline.
+
+   It is a screen-space region and not a hit volume, and that is forced rather
+   than chosen. The overhead console — the volume the mouse clicks and the
+   hover previews — sits at a slope of about 0.78 above the dashcam lens, while
+   the top of the dashcam frame is at 0.37 (0.55 on a portrait phone, where
+   POV_V_CAP opens the vertical up). It is off the top of the shipping view
+   entirely, so on a phone there is no pixel whose ray could reach it, however
+   fat the finger or however padded the box. The request was "press on the top
+   middle part of the car", and in the frame the player is actually looking at,
+   the top middle IS the roof. So that is the target.
+
+   0.20 x ±0.28 is 20% of frame height by 56% of its width. Sized against what
+   else is up there: nothing. Every touch control is a fixed DOM element at the
+   bottom (the steering puck/wheel, throttle, brake, CAM, LTS, HORN) and takes
+   its own pointerdown before the canvas ever sees one; the only thing at the
+   top is #gearBtn, in the right corner at right:12 — outside ±0.28 of centre on
+   any aspect a phone has, and an element of its own besides.
+
+   Live, because how big a tap target wants to be is a thing you find out with
+   a thumb: `window.__roofTap.top = 0.3` widens the band, `.top = 0` turns the
+   gesture off without touching the mouse path. */
+const ROOF_TAP = { top: 0.2, half: 0.28 };
+/* Ring of extra rays a touch tap fires around the contact point, in units of
+   TAP_PAD_PX — for the views where the console IS in frame (COCKPIT, CONSOLE)
+   and the tap should land on the real switch rather than on the band. */
+const TAP_RING: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+const TAP_PAD_PX = 22;
+
+/* ---------------------------------------------------------------- hood ----
+
+   The donor's bonnet, shown from inside the car. All of the geometry work and
+   the measurements behind it are in player.ts's attachHood(); this is only the
+   switch and the nudge.
+
+     on   1 shows it (with the J flag), 0 takes it out of the frame
+     dy   lift, metres. The hood clears the dash's sightline by 1-3 cm from
+          the dashcam mount, so this is the knob that decides whether it reads
+          as a bonnet or as a suggestion of one. It also has to move whenever
+          POV_MOUNT_DY_IMPORTED does, in the same direction — the eye going
+          down hides the hood as surely as the hood going down does.
+     dz   forward/back, metres. Wants to be 0: the hood sits in the donor's own
+          coordinates and the cowl is where the donor put it. Here because a
+          nose that reads too close is a thing you fix by eye, not by argument.
+
+     window.__hood.dy = 0.03   // lift it a visible band into frame
+     window.__hood.on = 0      // back to no hood at all
+
+   Settled values come back here. */
+const HOOD = { on: 1, dy: 0, dz: 0 };
+/* How fast the wipers lay down once the rain stops, as an exponential time
+   constant per second — about 0.5 s to arrive. See the park block in frame(). */
+const WIPER_PARK_EASE = 6;
+/* How the loading bar creeps through a wait it cannot measure — see
+   Game.creepAwait. CREEP_CAP is deliberately short of 1: the stage's own
+   completion is what finishes it, and a bar that reaches the end of a stage
+   before the stage does has lied about the only thing it is for. CREEP_MS is
+   well under the ~4 ms a 400 px bar needs to move one pixel's worth of a
+   stage, and runStages rounds to whole percent before touching the DOM. */
+const CREEP_CAP = 0.9;
+const CREEP_MS = 120;
+
+/* ----------------------------------------------------------- cabin vibe ----
+
+   How hard the road buzzes the COCKPIT eye. See the road micro-vibration block
+   in updateCamera() for what the noise is and why it is keyed off position
+   rather than time — none of that changes here; this is only how much of it
+   reaches the eye.
+
+     amp   overall scale. 1 is the level as built; 0.65 is where it is now,
+           reported as "that interior view has shakiness sometimes when you're
+           at high speed, can you just lower it, just a nudge". 0 is off.
+     pow   the speed exponent. 2 as built.
+     slip  the tyre-slip term's share, which is what buzzes it in a slide
+           rather than on a straight.
+
+   AMPLITUDE IS THE LEVER, NOT THE EXPONENT, and the arithmetic is worth
+   writing down because it reads the other way round. spN is speed NORMALISED
+   to 1 at ~180 km/h, so spN^n is 1 at the top whatever n is: lowering the
+   exponent cannot take the top off, it only lifts the middle. At 100 km/h,
+   spN^1.5 is 0.352 against spN^2's 0.262 — 34% MORE buzz, with the 180 km/h
+   peak untouched. Since the complaint is specifically about high speed, the
+   exponent is the wrong knob and 0.65 on the amplitude is the right one: peak
+   y jitter goes from ±1.70 mm to ±1.11 mm and the curve keeps its shape, so
+   the road still reads as road and the top is a third quieter.
+
+   RAISING pow is the version that shapes rather than scales — spN^3 keeps the
+   peak and empties the 100-140 km/h band — and is here for that, if 0.65
+   turns out to have taken too much out of the cruise.
+
+     window.__cabinVibe.amp = 0.4    // quieter still
+     window.__cabinVibe.amp = 1      // back to as-built
+     window.__cabinVibe.pow = 3      // same peak, calmer mid-range
+
+   Settled values come back here. */
+const CABIN_VIBE = { amp: 0.65, pow: 2, slip: 1 };
+
+/* ------------------------------------------------------------- chase fx ----
+
+   "For the third-person view, remove the shakiness and camera effects totally.
+   Like just remove them. They're so bad."
+
+   All three ship at 0. What each one was, and why it counted as an effect
+   rather than as the camera doing its job, is at its own site in the chase
+   branch of updateCamera():
+
+     lag        the lateral trailing lean. An UNDERDAMPED spring (ratio 0.61)
+                that overshot and rang after every corner. This was the shake.
+     aimSwing   the aim point sliding sideways with the steering ANGLE, which
+                on a keyboard snaps between stops and jerked the view with it.
+     speedPull  the camera easing up to 0.9 m further back with speed. Never
+                shook; removed for consistency with the FOV speed kick, which
+                CHASE_SHAKE already zeroes in this view.
+
+   WHAT IS DELIBERATELY NOT ON THIS KNOB, because it is the camera FOLLOWING
+   the car and a camera welded rigidly to a car looks worse, not better:
+
+   - the position ease onto the ideal chase point (5.5/s) and the aim ease onto
+     the look point (9/s). Both are first-order — they approach and stop, they
+     cannot overshoot and cannot ring. Take these out and the camera becomes a
+     rigid boom: every kerb strike and every steering input is transmitted to
+     the frame at full amplitude, which is the opposite of what was asked for.
+   - the trail-length clamps, the minimum radius, and the terrain height floor.
+     Those stop the camera stretching away at speed, cutting through the car
+     mid-swing, and sinking into the deck.
+   - revCam, the swing to the front of the car when genuinely reversing. A
+     feature with its own trigger and hysteresis, not a motion applied to a
+     view that was otherwise still.
+
+   The chase camera also never took the body's pitch or roll — it looks at a
+   world point, and `lookAt` levels the horizon — so there was nothing of that
+   kind here to remove. The car pitching and rolling IN FRAME is the car doing
+   it, not the camera.
+
+     window.__chaseFx.lag = 1        // the old trailing lean back
+     window.__chaseFx.speedPull = 1  // the old pull-back with speed
+
+   Settled values come back here. */
+const CHASE_FX = { lag: 0, aimSwing: 0, speedPull: 0 };
+
+/* ---------------------------------------------------------- cam smooth ----
+
+   How much the DASHCAM's yaw is allowed to lag the car's heading.
+
+     pov   the lag's time constant, in seconds. 0 restores exact tracking
+           bit for bit — povYawUpdate() short-circuits on it and writes
+           nothing.
+     max   the most the lens may ever sit off the nose, in radians.
+
+   A DELIBERATE DEPARTURE FROM "HARD-MOUNTED", and it is written down here so
+   the next person does not read AGENTS.md and correct it back. A real bracket
+   yaws exactly with the car, which is why this view was built with
+   `rotation.y = car.h + PI` and nothing else. Then 432a53d flattened the
+   keyboard steer-rate droop for test mode and a full-lock reversal at speed
+   went from ~1.18 s to ~0.5 s. The camera was faithfully reproducing all of
+   it: "if there's any aggressive turning ... can you move the camera a bit
+   less aggressively? it's a bit overwhelming, just a tad bit. I notice it when
+   I'm jerking left to right a lot."
+
+   A FIRST-ORDER LAG IS ALREADY RATE-SCALED, which is why there is no separate
+   rate term. The offset a lag produces is the yaw rate times its time
+   constant, so it is proportional to how fast the heading is actually moving:
+   at 0.06 s a stock corner (r ~ 0.3 rad/s) trails by 1.0 degrees, which is
+   nothing, while a test-mode flick (r ~ 1.5-2) trails by 5-7 and gets clamped
+   to `max`. It takes the top off a whip and leaves ordinary steering alone,
+   with no mode in it and no threshold to tune.
+
+   ALWAYS ON, not test-mode only. The whip is the same phenomenon at stock
+   steering, just smaller — and the scaling above means the correction is
+   smaller with it, automatically. A camera that changed how it followed the
+   car when K was pressed would be a second surprise on top of the first.
+
+   CAM_POV ONLY. CAM_COCKPIT is a head, not a bracket: it has springs and its
+   own eased lookahead already, and a lag on top would be two filters arguing.
+   CAM_CONSOLE is a rigid mount with the same whip, but AGENTS.md rates it
+   debug-only and this is a feel change for the view that ships.
+
+   It settles to EXACT tracking — that is what makes it a lag and not a
+   decoupling. Steady state is zero error, so the lens cannot end up pointing
+   somewhere the car is not; overdo `pov` and it reads as the view swimming,
+   which is worse than the whip, so this errs light.
+
+     window.__camSmooth.pov = 0.1   // softer
+     window.__camSmooth.pov = 0     // off, exactly as before
+
+   Settled values come back here. */
+const CAM_SMOOTH = { pov: 0.06, max: 0.09 };
+
 declare global {
   interface Window {
     __povMount?: { dx: number; dy: number; dz: number };
     __cockpitEye?: { dy: number; dz: number };
     __chaseShake?: number;
     __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number };
+    __roofTap?: { top: number; half: number };
+    __hood?: { on: number; dy: number; dz: number };
+    __cabinVibe?: { amp: number; pow: number; slip: number };
+    __chaseFx?: { lag: number; aimSwing: number; speedPull: number };
+    __camSmooth?: { pov: number; max: number };
     __cabinLight?: {
       on: number; dome: number; glass: number; glassHex: number; hover: number;
     };
@@ -661,6 +876,17 @@ const POV_H_CEIL = 118;
    settings.ts's NUM_KEYS pass, which would also catch a hand-edited profile —
    that file belongs to another agent right now. */
 const POV_FOV_MAX = 100;
+/* The Field of view slider's DEFAULT, mirrored from settings.ts's DEFAULTS.
+   Not a preference — it is the anchor consoleFov() scales CONSOLE_CAM.fov
+   about, so that the tuned 78 still means 78 when the slider is where it
+   shipped. If settings.ts's default ever moves, this moves with it or the
+   console camera silently re-frames for everyone. */
+const FOV_SLIDER_REF = 67;
+/* Sanity bound on the console lens, well clear of the 116 the top of the
+   slider asks for. Same job as POV_FOV_MAX and nothing more: settings.ts
+   type-checks fovBase but does not range-check it, so a profile can carry any
+   number at all, and a projection matrix is not the place to find that out. */
+const CONSOLE_FOV_MAX = 130;
 
 export class Game {
   // public state the UI reads
@@ -796,8 +1022,12 @@ export class Game {
        a camera change out of the cabin, a touch device and a reload mid-hover
        are not events at all, they are conditions — and a preview latched on
        through any of them is worse than never having had one. */
-    if (this.isTouch || !this.running || !this.loaded || !this.inCar())
+    if (this.isTouch || !this.running || !this.loaded || !this.inCar()) {
       this.cabinHover = 0;
+      // the head unit's hover is the same kind of state and goes out the same
+      // door, or a button left lit at the pause menu stays lit behind it
+      this.screenHover = null;
+    }
     this.cabinHoverE = lerp(
       this.cabinHoverE, this.cabinHover, 1 - Math.exp(-CABIN_HOVER_EASE * dt)
     );
@@ -806,6 +1036,74 @@ export class Game {
     const level = eff * k.dome;
     this.rig.cockpit.setCabinLight(level);
     this.rig.cockpitModel?.setFillLight(level);
+  }
+
+  /** The dashcam's yaw, softened — see CAM_SMOOTH. Returns the heading the
+      lens should hold this frame, which with the knob at 0 is `h` exactly. */
+  private povYaw = 0;
+  private povYawUpdate(h: number, dt: number): number {
+    const k = this.camSmoothKnob();
+    if (!(k.pov > 0)) {
+      this.povYaw = h;
+      return h;                       // today's behaviour, bit for bit
+    }
+    let d = h - this.povYaw;
+    /* A heading that jumped rather than turned is not a flick to absorb: a
+       respawn, a splice, or the very first frame after a reload. Snap. */
+    if (d > 0.5 || d < -0.5) {
+      this.povYaw = h;
+      return h;
+    }
+    this.povYaw += d * (1 - Math.exp(-dt / k.pov));
+    // and never let the lens sit further off the nose than this, however hard
+    // the flick — past a few degrees it stops reading as compliance
+    d = h - this.povYaw;
+    if (d > k.max) this.povYaw = h - k.max;
+    else if (d < -k.max) this.povYaw = h + k.max;
+    return this.povYaw;
+  }
+
+  /** Live knob for the dashcam yaw softening — see CAM_SMOOTH. */
+  private camSmoothKnob(): typeof CAM_SMOOTH {
+    if (!window.__camSmooth) window.__camSmooth = { ...CAM_SMOOTH };
+    return window.__camSmooth;
+  }
+
+  /** Live knob for what the chase camera is still allowed to do — see
+      CHASE_FX. All three terms ship at 0. */
+  private chaseFx(): typeof CHASE_FX {
+    if (!window.__chaseFx) window.__chaseFx = { ...CHASE_FX };
+    return window.__chaseFx;
+  }
+  /** Live knob for the cockpit road buzz — see CABIN_VIBE. */
+  private vibeKnob(): typeof CABIN_VIBE {
+    if (!window.__cabinVibe) window.__cabinVibe = { ...CABIN_VIBE };
+    return window.__cabinVibe;
+  }
+  /** Live knob for the interior hood — see HOOD. */
+  private hoodKnob(): typeof HOOD {
+    if (!window.__hood) window.__hood = { ...HOOD };
+    return window.__hood;
+  }
+  /** Carry the hood knob into the rig, every frame.
+
+      Per-frame for the same reason cabinLightUpdate() is: the body donor
+      arrives asynchronously and can land minutes into a drive, so there is no
+      edge to hang this on that the hood is guaranteed to exist for. Three
+      writes on a group that is usually not even drawn.
+
+      Tied to `dashImported` — the SAME single J flag that decides whether the
+      donor interior and the donor body are on show. The hood is a piece of
+      that body seen from inside that interior, and a hood hanging in front of
+      the procedural cabin would be exactly the half-and-half car the one flag
+      exists to prevent. It also rides cockpit.group's own visibility, so
+      nothing here has to know about the camera rule. */
+  private hoodUpdate() {
+    const hood = this.rig?.hood;
+    if (!hood) return;
+    const k = this.hoodKnob();
+    hood.visible = k.on > 0 && this.dashImported;
+    hood.position.set(0, k.dy, k.dz);
   }
 
   private povMount(): { dx: number; dy: number; dz: number } {
@@ -884,13 +1182,12 @@ export class Game {
       numbers had to be paid for in geometry: re-clipping it from 88 to 100 was
       measured at 0.87 MB, 8.28 -> 9.15.)
 
-      A saved profile can still hold more than POV_FOV_MAX; the clamp below is
-      the last gate before the projection matrix. */
-  private povFov(aspect: number): number {
+      A saved profile can still hold more than POV_FOV_MAX; the clamp in
+      povFov() is the last gate before the projection matrix. */
+  private lensFov(base: number, aspect: number): number {
     const halfTan = (deg: number) => Math.tan((deg * Math.PI) / 360);
     const fullAng = (t: number) => (2 * Math.atan(t) * 180) / Math.PI;
-    const base = clamp(this.settings.fovBase, 58, POV_FOV_MAX);
-    // the slider is the vertical fov at 16:9; that fixes the horizontal
+    // the base is the vertical fov at 16:9; that fixes the horizontal
     const h = fullAng(halfTan(base) * POV_REF_ASPECT);
     let v = fullAng(halfTan(h) / aspect);
     // a tall frame must not become a fisheye...
@@ -898,6 +1195,49 @@ export class Game {
     // ...and a wide one must not become a letterbox slit, up to the point
     // where propping the vertical up would push the horizontal past the clip
     return Math.max(v, Math.min(POV_V_FLOOR, fullAng(halfTan(POV_H_CEIL) / aspect)));
+  }
+  private povFov(aspect: number): number {
+    return this.lensFov(clamp(this.settings.fovBase, 58, POV_FOV_MAX), aspect);
+  }
+
+  /** The console camera's lens — CONSOLE_CAM's own wider baseline, MOVED BY
+      the Field of view slider.
+
+      It used to be a flat `consoleCam().fov`, which made the slider dead in
+      this view: the reasoning for giving it a lens of its own was about the
+      CAPS (an experimental camera should not inherit the shipping view's
+      ceiling) and got applied to the slider as well, which was never the
+      intent. The slider is the user's setting and every camera should answer
+      to it.
+
+      So the knob's `fov` is re-read as the baseline AT THE SLIDER'S DEFAULT
+      and scaled from there: 78 at 67, 70 at 60, 93 at 80. Whatever
+      window.__consoleCam.fov is set to keeps meaning "what this camera looks
+      like with the slider where it shipped", so a tuning session is not undone
+      by someone else's setting.
+
+      Then through the SAME aspect machinery as the dashcam (lensFov), and
+      that part is not optional. Assigning a base straight to camera.fov is
+      exactly the naive form POV_V_CAP / POV_H_CEIL exist to prevent: read as
+      a plain vertical angle, a 78-degree lens on a 9:19.5 phone is a
+      36-degree horizontal slit, and read as plain horizontal it fisheyes the
+      other way. Holding the horizontal constant off 16:9, with the relative
+      vertical cap, is what keeps the framing recognisable through a rotation.
+
+      What it does NOT pick up is any per-interior cap. There is only one such
+      cap left in the file (POV_FOV_MAX, the saved-profile gate) and its
+      retired sibling POV_FOV_MAX_CUT existed for a frustum-CUT dash that
+      printed torn shards past the angle it was sliced for. This camera looks
+      forward over the console at geometry that was never clipped for it, so
+      it has nothing to tear. CONSOLE_FOV_MAX is a sanity bound, not a
+      contract: it is only there so a hand-edited profile cannot ask for a
+      degenerate projection. */
+  private consoleFov(aspect: number): number {
+    const base = clamp(
+      this.consoleCam().fov * (clamp(this.settings.fovBase, 58, POV_FOV_MAX) / FOV_SLIDER_REF),
+      40, CONSOLE_FOV_MAX
+    );
+    return this.lensFov(base, aspect);
   }
   mirror = true;
   mmap = true;
@@ -938,7 +1278,6 @@ export class Game {
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
   private rearCam: THREE.PerspectiveCamera;
-  private refCam = new THREE.PerspectiveCamera();
   /* The world half of the engine. All of it is built by load(), not by the
      constructor, so every one of these is undefined until `loaded` is true —
      which is why the handful of methods the menus can reach before Drive
@@ -984,7 +1323,6 @@ export class Game {
   private chaseLag = { x: 0, vx: 0 };
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
-  private mirM = new THREE.Matrix4();
   private last = 0;
   private acc = 0;
   private frameN = 0;
@@ -1079,7 +1417,6 @@ export class Game {
     this.camera.rotation.order = "YXZ";
     this.rearCam = new THREE.PerspectiveCamera(50, 2.5, 0.6, 460);
     this.rearCam.layers.enable(LAYER_NOREF);
-    this.refCam.matrixAutoUpdate = false;
 
     this.hemi = new THREE.HemisphereLight(0x3948a8, 0x0b0b14, 0.32);
     this.scene.add(this.hemi);
@@ -1241,15 +1578,46 @@ export class Game {
       expressway at a station every 4 m, then the town) dominate everything
       else put together; the canvas textures are a distant third; the fetches
       (bodyshells, donor dash) are network-bound and therefore wildly variable,
-      so they are weighted at what a warm cache costs rather than a cold one. */
+      so they are weighted at what a warm cache costs rather than a cold one.
+
+      SECOND PASS, and the reason is in the first paragraph: "estimates of where
+      the time goes ON A MID-RANGE PHONE". Reported again as "it loads fast then
+      gets stuck towards the end every time", from a desktop — and a desktop
+      redistributes this badly. The two mesh builds are pure JS on one core and
+      a fast CPU eats them; the tail is not CPU at all. Fetching a 5.7 MB donor
+      dash takes what it takes, a driver linking a few hundred programs takes
+      what it takes, and neither scales with the thing that makes the front of
+      this list fast. So on anything quick the front over-runs and the back
+      under-runs, which is the bar racing then parking.
+
+      Weight moved off `highway` (26 -> 17) and `town` (22 -> 14) and onto the
+      three tail stages that wait on the network and the GPU: `traffic` 8 -> 10,
+      `car` 8 -> 15 (it is the largest single fetch in the game AND a full rig
+      build), `shaders` 12 -> 16. `warm` stays at 22 — it was corrected once
+      already and it is the one stage whose weight was fitted to a real
+      complaint. The front of the bar now spends 42% rather than 57% getting to
+      the end of the town, which is the requested direction without becoming
+      the opposite complaint.
+
+      THE WEIGHTS WERE ONLY HALF OF IT. Of the eight stages, `warm` was the
+      only one reporting intra-stage progress; `traffic`, `car` and `shaders`
+      each moved the bar in ONE jump while waiting on a promise with a budget
+      of 5, 8 and 15 seconds. Together they covered 64% -> 94%, so "stuck
+      towards the end" was three back-to-back single jumps, and no amount of
+      reweighting fixes a stall inside one stage — it only changes the number
+      it stalls on. They creep now; see creepAwait.
+
+      STILL ESTIMATES. runStages() records real per-stage milliseconds and the
+      load hangs them off `__neonx.loadTimings`, so fitting these properly is
+      one console read on the machine that complained. */
   private static readonly LOAD_WEIGHTS = {
-    mats: 12,
-    land: 6,
-    highway: 26,
-    town: 22,
-    traffic: 8,
-    car: 8,
-    shaders: 12,
+    mats: 10,
+    land: 4,
+    highway: 17,
+    town: 14,
+    traffic: 10,
+    car: 15,
+    shaders: 16,
     /* 6 -> 22. This stage renders real frames — every shader, every first-use
        texture upload, the post chain and both extra camera passes — and is
        one of the two most expensive things in the load, not the cheapest.
@@ -1362,7 +1730,7 @@ export class Game {
       {
         label: "PUTTING CARS ON THE ROAD",
         weight: W.traffic,
-        run: async () => {
+        run: async (onStep) => {
           this.traffic = new Traffic(
             this.scene, this.world, this.mats.envMap, this.mats.glowTex, 120
           );
@@ -1374,13 +1742,15 @@ export class Game {
           // wait for the bodyshells: a style with no model is barred from
           // spawning, so driving off before they land means an empty road that
           // fills itself in over the first few seconds
-          await withBudget(this.traffic.fleetLoaded, Game.FLEET_BUDGET_MS);
+          await Game.creepAwait(
+            this.traffic.fleetLoaded, Game.FLEET_BUDGET_MS, 1200, onStep, 0.25
+          );
         },
       },
       {
         label: "WARMING THE ENGINE",
         weight: W.car,
-        run: async () => {
+        run: async (onStep) => {
           /* Spawn on the corridor rather than at a fixed offset: the centreline
              wanders by up to 62 m and the deck rises and falls by 5, so a
              hardcoded (HX, DECKY) start would drop the car beside or under the
@@ -1401,13 +1771,18 @@ export class Game {
           // re-run now that mats exists: the constructor's call could only
           // reach the renderer/post half of it (see applySettings)
           this.applySettings(this.settings);
-          await withBudget(this.rig.cockpitReady, Game.DASH_BUDGET_MS);
+          /* The rig build above is real work and is done, so the creep starts
+             from a share of the stage rather than from zero — the dash fetch
+             is the rest of it. */
+          await Game.creepAwait(
+            this.rig.cockpitReady, Game.DASH_BUDGET_MS, 2500, onStep, 0.4
+          );
         },
       },
       {
         label: "COMPILING SHADERS",
         weight: W.shaders,
-        run: async () => {
+        run: async (onStep) => {
           /* three compiles a material's program the first time it is DRAWN, so
              a world this size pays for a few hundred link calls spread over the
              first seconds of driving — the classic hitch right after a loading
@@ -1415,9 +1790,9 @@ export class Game {
              (traverse, not traverseVisible: the culled chunks count too) and,
              where KHR_parallel_shader_compile exists, lets the driver link off
              the main thread while we sit here. */
-          await withBudget(
+          await Game.creepAwait(
             this.renderer.compileAsync(this.scene, this.camera),
-            Game.COMPILE_BUDGET_MS
+            Game.COMPILE_BUDGET_MS, 3000, onStep
           );
         },
       },
@@ -1479,6 +1854,43 @@ export class Game {
   }
 
   /** Run the render loop, paused, until `n` frames have been drawn. */
+  /** Await `p` (with its budget) while walking `onStep` from `from` toward 1,
+      so a stage that is only waiting still moves the bar.
+
+      For the three stages that wait on something opaque — the traffic
+      bodyshells, the donor dash, and the shader link — none of which can
+      report a fraction of itself. A promise has no progress, and a bar that
+      cannot move is a bar the player reads as hung: those three sat on one
+      number each for up to 5, 8 and 15 seconds.
+
+      The curve is `1 - e^(-t/est)`, which is the honest shape for a wait whose
+      length is not known. It moves fastest at the start, where the wait
+      usually ends, and it is ASYMPTOTIC — it approaches CREEP_CAP and cannot
+      reach it however long the wait runs, so it never claims a stage is
+      finished before it is, and a wait that runs long slows down rather than
+      running out of bar. `est` sets the pace and is a guess by construction;
+      being wrong about it changes the feel, never the correctness.
+
+      The interval only ticks while the main thread is idle enough to service
+      a timer, which for all three of these is exactly while they are waiting
+      on the network or the driver. */
+  private static async creepAwait(
+    p: Promise<unknown>, budgetMs: number, estMs: number,
+    onStep: (f: number) => void, from = 0
+  ): Promise<void> {
+    const t0 = performance.now();
+    const timer = setInterval(() => {
+      const t = (performance.now() - t0) / estMs;
+      onStep(from + (1 - from) * CREEP_CAP * (1 - Math.exp(-t)));
+    }, CREEP_MS);
+    try {
+      await withBudget(p, budgetMs);
+    } finally {
+      clearInterval(timer);
+    }
+    onStep(1);
+  }
+
   private warmFrames(n: number, onStep?: (frac: number) => void): Promise<void> {
     this.beginLoop();
     return new Promise((resolve) => {
@@ -1766,16 +2178,19 @@ export class Game {
     return r;
   })();
   private clickNdc = new THREE.Vector2();
-  /** Point `clickRay` through the cursor. Off the canvas rect, not the window:
-      the two agree today (canvas.game is position:fixed inset:0) but neither a
-      click nor a mouse move is where the frame time is. */
-  private aimRay(e: PointerEvent) {
+  /** Point `clickRay` through a client-space point. Off the canvas rect, not
+      the window: the two agree today (canvas.game is position:fixed inset:0)
+      but neither a click nor a mouse move is where the frame time is. */
+  private aimRayAt(cx: number, cy: number) {
     const r = this.renderer.domElement.getBoundingClientRect();
     this.clickNdc.set(
-      ((e.clientX - r.left) / r.width) * 2 - 1,
-      -((e.clientY - r.top) / r.height) * 2 + 1
+      ((cx - r.left) / r.width) * 2 - 1,
+      -((cy - r.top) / r.height) * 2 + 1
     );
     this.clickRay.setFromCamera(this.clickNdc, this.camera);
+  }
+  private aimRay(e: PointerEvent) {
+    this.aimRayAt(e.clientX, e.clientY);
   }
 
   /** The overhead-console hit volume, or null when the pointer cannot be over
@@ -1789,14 +2204,38 @@ export class Game {
       The `inCar` gate is not politeness: a Raycaster ignores `visible`, so
       without it the console would be hoverable and clickable straight through
       the bodywork from CHASE and HOOD, where updateCamera() has hidden the
-      whole cockpit group. Desktop only, same as the I key — a touch device has
-      no hover at all, and a stuck highlight is the only thing it could get. */
-  private cabinTarget(): THREE.Object3D | null {
-    if (this.isTouch || !this.running || !this.loaded || !this.inCar()) return null;
+      whole cockpit group.
+
+      `hover` is the only thing the touch gate belongs to. A touch device has
+      no cursor, so a hover preview there could only ever latch on and stay —
+      but the CLICK path is wanted on touch now (see roofTap), and hanging the
+      device test on the target itself was what made the switch unreachable
+      from a phone in the first place. */
+  private cabinTarget(hover: boolean): THREE.Object3D | null {
+    if (hover && this.isTouch) return null;
+    if (!this.running || !this.loaded || !this.inCar()) return null;
     const ck = this.rig?.cockpit;
     if (!ck) return null;
     return ck.cabinSwitch(!!(this.rig.cockpitModel && this.dashImported));
   }
+
+  /** The head-unit panel, when a pointer on it can do anything — or null.
+
+      Desktop only, via `music.enabled` (false on touch): the panel's second
+      view is the music player, and a phone has neither a player to drive nor
+      a cursor to show which button it is on. On touch the panel stays what it
+      is on desktop by default, a full-panel map, and nothing on it responds. */
+  private screenTarget(): THREE.Mesh | null {
+    if (this.isTouch || !this.music.enabled) return null;
+    if (!this.running || !this.loaded || !this.inCar()) return null;
+    return this.rig?.cockpit?.navPanel() ?? null;
+  }
+
+  /** Which pane the head unit is showing, and what the cursor is over on it.
+      Session state, deliberately not persisted: the map is what the panel is
+      FOR, so every session opens on it however the last one was left. */
+  private screenView: ScreenView = "map";
+  private screenHover: ScreenAction | null = null;
 
   /** 1 while the cursor is on the overhead console, 0 otherwise; cabinHoverE is
       it eased, and is what the light actually rides. See CABIN_LIGHT.hover. */
@@ -1820,13 +2259,25 @@ export class Game {
     if (dx * dx + dy * dy < 9) return;
     this.hoverX = e.clientX;
     this.hoverY = e.clientY;
-    const sw = this.cabinTarget();
-    if (!sw) {
+    const sw = this.cabinTarget(true);
+    const panel = this.screenTarget();
+    if (!sw && !panel) {
       this.cabinHover = 0;
+      this.screenHover = null;
       return;
     }
+    /* ONE aim for both targets, the same one onPointerDown uses. Two rays
+       would be two answers to "what is the cursor over", and the highlight
+       could then point at something the click would miss. */
     this.aimRay(e);
-    this.cabinHover = this.clickRay.intersectObject(sw, true).length ? 1 : 0;
+    this.cabinHover = sw && this.clickRay.intersectObject(sw, true).length ? 1 : 0;
+    /* The panel is a single quad and the test is one intersect — cheap enough
+       to run on a move firehose that has already survived the 3 px bail, and
+       it has to run here or the transport buttons have no hover state at all,
+       which is the whole reason the player got a view of its own. */
+    const hit = panel ? this.clickRay.intersectObject(panel, false)[0] : undefined;
+    this.screenHover =
+      hit && hit.uv ? hitScreen(hit.uv.x, hit.uv.y, this.screenView) : null;
   };
   /* Leaving the canvas is a real event and gets a real listener: the last
      pointermove inside the window can easily be one that was still over the
@@ -1834,12 +2285,12 @@ export class Game {
      in the browser chrome. */
   private onPointerLeave = () => {
     this.cabinHover = 0;
+    this.screenHover = null;
   };
   private onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0) return;
     if (!this.running || !this.loaded) return;
-    const cockpit = this.rig?.cockpit;
-    if (!cockpit) return;
+    if (!this.rig?.cockpit) return;
     /* The raycast ignores `visible`, so without this the controls would still
        be clickable — straight through the bodywork — from CHASE and HOOD,
        where updateCamera() has hidden the whole cockpit group. */
@@ -1849,25 +2300,83 @@ export class Game {
     /* The overhead console, where a real car keeps its dome light. Same toggle
        as the I key so the two can never disagree, and the same volume the
        hover highlights, so what lit up is what responds. */
-    const sw = this.cabinTarget();
-    if (sw && this.clickRay.intersectObject(sw, true).length) {
+    const sw = this.cabinTarget(false);
+    if (sw && this.hitCabinSwitch(e, sw)) {
+      this.toggleCabinLight();
+      return;
+    }
+    /* Touch's way to the same switch, and the reason it needs one: the roof
+       console is ABOVE the dashcam's frame. Measured — the donor volume's
+       nearest lit corner sits at a slope of 0.78 above the lens, against a
+       top-of-frame slope of 0.37 at the default lens (0.55 on a portrait
+       phone, where the vertical cap opens it up) — so in the one view the
+       game is played in there is no pixel a finger could put a ray through.
+       A padded ray cannot fix that; nothing can, short of a target that is
+       not the console. So the tap region is screen-space instead: the top
+       middle of the frame, which is where the roof is even when the panel
+       itself is out of shot, and which is exactly what was asked for. Same
+       toggleCabinLight() either way — this is a second WAY IN, not a second
+       switch. In COCKPIT and CONSOLE, where the console IS in frame, the
+       raycast above answers first and the tap lands on the real thing. */
+    if (this.isTouch && this.inRoofBand(e)) {
       this.toggleCabinLight();
       return;
     }
 
     /* The head unit is a CanvasTexture on a plane, so this hands the hit UV to
-       music.ts, which owns the button rects. Desktop only, via music.enabled,
-       which is false on touch. */
-    if (!this.music.enabled) return;
-    const panel = cockpit.navPanel();
+       carscreen.ts, which owns the layout and therefore the button rects.
+       Desktop only, via screenTarget()/music.enabled, which is false on touch:
+       phones get the map and no way off it. */
+    const panel = this.screenTarget();
     if (!panel) return;
     const hit = this.clickRay.intersectObject(panel, false)[0];
     if (!hit || !hit.uv) return;
-    const action = hitTransport(hit.uv.x, hit.uv.y);
+    const action = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
     if (!action) return;
+    if (action === "music" || action === "map") {
+      this.screenView = action === "music" ? "music" : "map";
+      /* The hover is stale the instant the view flips — the cursor has not
+         moved, but what is under it has. Re-ask with the ray already aimed. */
+      this.screenHover = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
+      return;
+    }
     const msg = this.music.click(action);
     if (msg) this.ui.toast(msg);
   };
+
+  /** Did this pointer hit the overhead console? A mouse gets the one ray it
+      aimed; a FINGER gets four more on a ring around it, because a fingertip
+      is a ~9 mm contact patch and the console is a small box read at an angle.
+      Only on the click path and only on touch, so it costs nothing anywhere
+      else — and it is four more tests against one twelve-triangle box. */
+  private hitCabinSwitch(e: PointerEvent, sw: THREE.Object3D): boolean {
+    if (this.clickRay.intersectObject(sw, true).length) return true;
+    if (!this.isTouch) return false;
+    for (const [ox, oy] of TAP_RING) {
+      this.aimRayAt(e.clientX + ox * TAP_PAD_PX, e.clientY + oy * TAP_PAD_PX);
+      if (this.clickRay.intersectObject(sw, true).length) return true;
+    }
+    this.aimRay(e); // leave the ray where the caller aimed it
+    return false;
+  }
+
+  /** The roof tap region — see ROOF_TAP. Fractions of the canvas rect rather
+      than of the window, same as aimRayAt, so a canvas that is ever inset
+      still measures its own frame. */
+  private inRoofBand(e: PointerEvent): boolean {
+    const k = this.roofTapKnob();
+    if (!(k.top > 0)) return false;
+    const r = this.renderer.domElement.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    const x = (e.clientX - r.left) / r.width;
+    const y = (e.clientY - r.top) / r.height;
+    return y <= k.top && Math.abs(x - 0.5) <= k.half;
+  }
+  /** Live knob for the roof tap region — see ROOF_TAP. */
+  private roofTapKnob(): typeof ROOF_TAP {
+    if (!window.__roofTap) window.__roofTap = { ...ROOF_TAP };
+    return window.__roofTap;
+  }
 
   private onKeyUp = (e: KeyboardEvent) => {
     const k = e.key.toLowerCase();
@@ -3254,6 +3763,7 @@ export class Game {
     const inside = this.inCar();
     rig.cockpit.group.visible = inside;
     rig.exteriorG.visible = !inside;
+    this.hoodUpdate();
     this.lampWash(inside);
     this.cabinLightUpdate(dt);
     /* Both in-car views now carry their own nav screen (drawScreen above), so
@@ -3292,13 +3802,44 @@ export class Game {
     let wiping = false;
     if (this.rain) {
       const ph = Math.sin(now * 3.6) * 0.5 + 0.5;
-      rig.cockpit.wiperA.rotation.z = -0.12 - ph * 1.23;
-      rig.cockpit.wiperB.rotation.z = -0.12 - ph * 1.23;
+      const z = WIPER.rest - ph * WIPER.sweep;
+      rig.cockpit.wiperA.rotation.z = rig.cockpit.wiperB.rotation.z = z;
       rig.cockpit.wiperA.visible = rig.cockpit.wiperB.visible = true;
       wiping = true;
     } else {
-      rig.cockpit.wiperA.rotation.z = lerp(rig.cockpit.wiperA.rotation.z, -0.12, 0.1);
-      rig.cockpit.wiperB.rotation.z = lerp(rig.cockpit.wiperB.rotation.z, -0.12, 0.1);
+      /* PARK, not rest. This used to ease to WIPER.rest, which is the RAISED
+         end of the sweep — so switching the rain off left both arms standing
+         upright across the windscreen instead of laying down. Off the sweep's
+         own constants now (cockpit.ts WIPER), so retuning the travel cannot
+         leave the park pointing at the other end of it again.
+
+         Framerate-independent, which the old `lerp(cur, target, 0.1)` was not:
+         a fixed fraction PER FRAME parked twice as slowly at 30 fps as at 60.
+         WIPER_PARK_EASE 6 reproduces the old 0.1 at 60 fps almost exactly
+         (1 - e^-0.1 = 0.095), so the feel is unchanged where it was tuned and
+         only the framerate dependence goes. */
+      const z = lerp(
+        rig.cockpit.wiperA.rotation.z, WIPER.park, 1 - Math.exp(-WIPER_PARK_EASE * dt)
+      );
+      rig.cockpit.wiperA.rotation.z = rig.cockpit.wiperB.rotation.z = z;
+      /* HIDDEN once parked, and that is a decision rather than the missing
+         half of the `visible = true` above.
+
+         Parked, the arm runs from its pivot (0.32, 0.86, 0.95) out to a tip at
+         about (0.88, 0.97, 0.90) — which is inside the donor dash's own volume
+         (x ±0.751, y 0.512..1.072, z -0.244..1.118 in volvo-s90-full.json).
+         These arms are placed against the PROCEDURAL windscreen and the donor
+         cabin brings its own glass, so a parked arm is not tucked at the base
+         of that glass, it is buried in that dashboard, and the half of it that
+         is not buried can poke through. Depth would hide most of it from the
+         dashcam anyway — the whole parked arm sits below the sightline that
+         grazes the pad — so hiding it explicitly costs nothing visible and
+         removes the one way it could go wrong.
+
+         It hides on ARRIVAL, not on the rain edge: the arms have to be seen
+         laying down, or the fix reads as them vanishing mid-sweep. */
+      const parked = Math.abs(z - WIPER.park) < 0.02;
+      rig.cockpit.wiperA.visible = rig.cockpit.wiperB.visible = !parked;
     }
     this.gaugeT += dt;
     this.dropT += dt;
@@ -3334,7 +3875,15 @@ export class Game {
               playing: this.music.playing,
               progress: this.music.progress,
             }
-          : undefined
+          : undefined,
+        /* `clickable` is what draws the map view's music pill, so it has to be
+           the same test the click path uses — !isTouch && music.enabled — or
+           the panel advertises a view a phone cannot reach. */
+        {
+          view: this.screenView,
+          hover: this.screenHover,
+          clickable: !this.isTouch && this.music.enabled,
+        }
       );
     }
     if (this.dropT > 0.033) {
@@ -3502,7 +4051,18 @@ export class Game {
       // re-entry reads as the camera diving before it settles. Snap instead.
       const freshEntry = this.lastCamMode !== 0;
       const kc = this.chaseKnob();
-      const dist = (kc.dist + this.spec.shell.L * 0.25) + clamp(Math.abs(car.u) * 0.03, 0, 0.9);
+      const cfx = this.chaseFx();
+      /* The speed pull-back — the camera easing away from the car as it winds
+         up — is an EFFECT, not the camera following, and it is off (fx 0). It
+         never shook, but it is the same class of thing as the FOV speed kick,
+         which CHASE_SHAKE already zeroes here: framing that moves for reasons
+         the car is not giving it. Leaving one of that pair on and calling the
+         other removed would be arbitrary. On the knob rather than deleted
+         because 0.9 m of pull is a real sensation of speed and this is the
+         cheapest of the three to want back. */
+      const dist =
+        (kc.dist + this.spec.shell.L * 0.25) +
+        clamp(Math.abs(car.u) * 0.03, 0, 0.9) * cfx.speedPull;
       // flip: 0 = camera behind the car, 1 = in front of it looking back. The
       // swing is an arc around the car, not a lerp through it.
       const flip = this.lookBack ? 1 - this.revCam : this.revCam;
@@ -3527,14 +4087,26 @@ export class Game {
         this.chasePos.y,
         this.terrain.heightAt(this.chasePos.x, this.chasePos.z, car.y) + 1.2
       );
-      /* mild lateral lag: the camera drifts a beat behind the car's yaw rate,
-         then eases back to centre — a trailing lean rather than an instant
-         follow. Purely a position offset so it can't disturb the trail-length
-         clamps above or the raise/snap-on-switch logic. */
+      /* THE LATERAL LAG WAS THE SHAKE, and it is off (fx.lag 0).
+
+         "For the third-person view, remove the shakiness and camera effects
+         totally." CHASE_SHAKE was already 0, which kills the head-spring bob,
+         the G-lean roll and the FOV kick — but it never reached this, and this
+         is a SECOND-ORDER SPRING: stiffness 24 against damping 6 is a damping
+         ratio of 0.61, i.e. underdamped, so it overshoots the target and rings
+         on the way back. Every corner exit handed the camera a sideways
+         wobble that had nothing to do with where the car was. That is not the
+         camera following, it is the camera having a suspension of its own, and
+         it is the one thing in this branch that genuinely oscillates.
+
+         Kept as code on a knob rather than deleted, because a trailing lean IS
+         a real chase-camera idea and someone may want a critically-damped
+         version of it later — but it starts at zero, and the ring is the
+         reason. */
       const rgX = fz, rgZ = -fx; // world-space "right" of the car's heading
       const lagTarget = freshEntry
         ? 0
-        : clamp(-car.r * Math.abs(car.u) * 0.028, -0.35, 0.35);
+        : clamp(-car.r * Math.abs(car.u) * 0.028, -0.35, 0.35) * cfx.lag;
       if (freshEntry) {
         this.chaseLag.x = 0;
         this.chaseLag.vx = 0;
@@ -3546,8 +4118,16 @@ export class Game {
       this.camera.position.copy(this.chasePos);
       this.camera.position.x += rgX * this.chaseLag.x;
       this.camera.position.z += rgZ * this.chaseLag.x;
-      // aim past the car, away from wherever the camera currently sits
-      const lat = car.delta * 1.6 * (1 - 2 * flip);
+      /* Aim past the car, away from wherever the camera currently sits.
+
+         The lateral swing on that aim point is an effect too, and off
+         (fx.aimSwing 0): `car.delta` is the STEERING ANGLE, and on a keyboard
+         that is a value which snaps between stops, so the aim jerked sideways
+         on every tap of A or D. The smoothing below was put there to cover
+         exactly that, which is the tell — a term that needs a filter to be
+         watchable is a term the view is better off without. What is left aims
+         at the car, which is what a chase camera is for. */
+      const lat = car.delta * 1.6 * (1 - 2 * flip) * cfx.aimSwing;
       this.tmpV2.set(
         car.x - ax * 2.8 + fz * lat,
         car.y + 0.95,
@@ -3559,15 +4139,20 @@ export class Game {
       this.camera.lookAt(this.lookPos);
     } else if (this.camMode === CAM_POV) {
       /* Hard-mounted dashcam. No head springs, no lookahead, no lean, no
-         look-back: it is a bracket over the dash, so the only motion it has is
-         the body's own. Entering the mode also parks the cockpit head state at
-         neutral, so stepping back into the cockpit view starts from centre
-         instead of resuming a stale spring and dipping. */
+         look-back: it is a bracket over the dash, so the motion it has is the
+         body's own — with ONE deliberate exception, a light lag on the yaw
+         that takes the top off a fast steering flick and settles to exact
+         tracking. See CAM_SMOOTH for why a bracket was given any compliance at
+         all, and set `pov` to 0 there to have none. Entering the mode also
+         parks the cockpit head state at neutral, so stepping back into the
+         cockpit view starts from centre instead of resuming a stale spring and
+         dipping. */
       if (this.lastCamMode !== CAM_POV) {
         this.head.x = this.head.y = this.head.z = this.head.roll = 0;
         this.head.vx = this.head.vy = this.head.vz = this.head.vroll = 0;
         this.lookaheadYaw = 0;
         this.lbLean = 0;
+        this.povYaw = car.h; // no lag to inherit on entry — see CAM_SMOOTH
       }
       const P = this.spec.shell;
       const mount = this.povMount();
@@ -3582,7 +4167,7 @@ export class Game {
           )
         )
       );
-      this.camera.rotation.y = car.h + Math.PI;
+      this.camera.rotation.y = this.povYawUpdate(car.h, dt) + Math.PI;
       // same sign flip as the cockpit (body pitch is nose-up-negative, camera
       // pitch is look-up-positive), plus the fixed downward cant of the bracket
       this.camera.rotation.x = -this.rig.bodyG.rotation.x - POV_TILT;
@@ -3684,10 +4269,18 @@ export class Game {
          scales with speed^2 (capped ~180 km/h) so it's essentially silent
          under 100 km/h and builds fast above it, plus a smaller boost from
          tire slip on rough moments. Millimetre-scale, layered on top of the
-         G-force lean above rather than replacing it. */
+         G-force lean above rather than replacing it.
+
+         CAM_COCKPIT ONLY, and that is the `camMode === 1` test rather than
+         inCar(): the dashcam and the console camera are brackets, not heads,
+         and take no head springs at all — they have their own branches above
+         and never reach this line. So this is not the shipping view shaking.
+         See CABIN_VIBE for the level. */
       if (this.camMode === 1) {
+        const k = this.vibeKnob();
         const spN = clamp(Math.abs(car.u) / 50, 0, 1); // 1.0 ≈ 180 km/h
-        const vibeAmt = spN * spN * 0.85 + clamp(car.slipAmt, 0, 1) * 0.15;
+        const vibeAmt =
+          (Math.pow(spN, k.pow) * 0.85 + clamp(car.slipAmt, 0, 1) * 0.15 * k.slip) * k.amp;
         if (vibeAmt > 0.001) {
           local.x += Game.roadTexture(car.z, 0) * vibeAmt * 0.003;
           local.y += Game.roadTexture(car.z, 57.9) * vibeAmt * 0.002;
@@ -3716,17 +4309,17 @@ export class Game {
        ignores is the user's own setting — povFov() turns the slider into the
        lens, once per frame, per aspect.
 
-       The console camera takes its lens from its own knob instead, and not
-       from povFov(): that one is the slider crossed with the per-interior caps
-       the build tool's frustum contract is written against, and an
-       experimental view wants to be dialled wide without dragging the shipping
-       view's constraints along. No speed kick there either, same reason — it
-       is a bracket, not a driver. */
+       The console camera keeps a WIDER BASELINE of its own — an experimental
+       view wants to be dialled wide without dragging the shipping view's
+       ceiling along — but it reads the slider through it now rather than
+       ignoring it, and through the same aspect machinery. See consoleFov().
+       No speed kick there either, same reason — it is a bracket, not a
+       driver. */
     const fovT =
       this.camMode === CAM_POV
         ? this.povFov(this.camera.aspect)
         : this.camMode === CAM_CONSOLE
-          ? this.consoleCam().fov
+          ? this.consoleFov(this.camera.aspect)
           : this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
     if (Math.abs(this.camera.fov - fovT) > 0.25) {
       this.camera.fov = fovT;
@@ -3755,23 +4348,6 @@ export class Game {
       if (m.userData.sh) m.userData.sh.uniforms.uRefStr.value = m.userData.curStr;
     rig.cockpit.group.visible = iv;
     rig.exteriorG.visible = ev;
-  }
-
-  private renderReflection() {
-    this.camera.updateMatrixWorld();
-    // mirror plane at the current road height — the deck itself rises and
-    // falls by several metres, so the clamp has to allow for the high points
-    const h = clamp(this.car.y, 0, DECKY + 6);
-    this.mirM.makeScale(1, -1, 1);
-    this.mirM.setPosition(0, 2 * h, 0);
-    this.refCam.matrix.copy(this.camera.matrixWorld).premultiply(this.mirM);
-    this.refCam.updateMatrixWorld(true);
-    this.refCam.projectionMatrix.copy(this.camera.projectionMatrix);
-    this.refCam.projectionMatrix.elements[0] *= -1;
-    this.renderer.setRenderTarget(this.post.reflectRT);
-    this.renderer.clear();
-    this.renderer.render(this.scene, this.refCam);
-    this.renderer.setRenderTarget(null);
   }
 
   private hud(now: number, dt: number) {
@@ -3979,12 +4555,14 @@ export class Game {
     // console camera stares straight up the centreline at it, which is the one
     // place in the car where the mirror is dead ahead rather than off to a side
     if (this.mirror && this.frameN % 2 === 0 && this.inCar()) this.renderMirror();
-    // reflectionsOn folds in the tier: on mobile tiers this is the ONLY call
-    // site that writes reflectRT, so gating it here means the RT genuinely
-    // never sees a per-frame render (setWet zeroes uRefStr at the same time,
-    // so no material samples it either)
-    if (this.reflectionsOn && (!this.perfMode || this.frameN % 2 === 0))
-      this.renderReflection();
+    /* The wet-road reflection source is no longer a second scene render: it
+       is built inside post.process() from the bloom bright pass, which is
+       already there (see the WET-ROAD REFLECTION block in world/mats.ts for
+       why reflecting only the bright sources is what finally made the effect
+       shippable). All that is left here is telling post whether to run that
+       one quarter-res pass. reflectionsOn still folds in the tier, and setWet
+       has zeroed uRefStr to match, so `false` costs nothing on either side. */
+    this.post.setReflect(this.reflectionsOn);
     this.camera.updateMatrixWorld();
     this.renderer.setRenderTarget(this.post.sceneRT);
     this.renderer.clear();

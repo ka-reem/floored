@@ -7,6 +7,11 @@ import * as THREE from "three";
    manual sRGB encode) → FXAA + adaptive sharpen → optional dashcam degrade →
    frame-blend motion blur → screen.
 
+   One pass hangs off the side of that chain rather than feeding the screen:
+   the wet-road reflection source (REF_SPREAD below), a vertical smear of the
+   bright pass that the road materials sample on the following frame. It
+   replaced a second full scene render — see the block comment there.
+
    `grade` no longer means "slightly different colours": it swaps the clean
    look for the full dashcam pass (soft cheap lens, chroma bleed, sensor noise,
    crushed highlights, rolling-shutter wobble, burnt-in timestamp).
@@ -107,6 +112,35 @@ const POV_TUNE_DEFAULT = {
   mirrorShield: MIRROR_SHIELD, screenShield: SCREEN_SHIELD,
 };
 
+/* ---- Wet-road reflection source ------------------------------------------
+   The road's planar reflection used to be a SECOND full `renderer.render(scene)`
+   from a mirrored camera, and it never shipped: reflecting the whole scene
+   meant reflecting the sky band and the skyline glow, which painted pale slabs
+   across the deck at grazing angles that no output-side gate killed (see
+   docs/DISABLED.md §3c). The strength was pinned to 0 while the pass carried on
+   costing a whole extra scene render every frame.
+
+   What replaced it: a real wet road at night does not mirror the sky, it
+   mirrors *point sources* — lamp heads, sign faces, tail lights — smeared into
+   vertical streaks by the surface roughness. That is precisely the content the
+   bloom bright-pass already isolates, at quarter res, for free. So the
+   reflection source is now brightRT stretched vertically, and the road samples
+   it by reprojecting its own fragment through an assumed source height
+   (mats.ts). The skyline never enters the source at all: brightMat's soft-knee
+   threshold (T .95, K .55) leaves anything under ~0.4 luma at essentially zero,
+   and the night sky and its glow sit well below that.
+
+   Net: the second scene render is gone; what is left is one quarter-res pass. */
+/** Vertical half-extent of the reflection smear, as a fraction of frame height.
+ *  This is the roughness of the road expressed in screen space: a fragment's
+ *  reflection integrates a *range* of source heights, and this is that range.
+ *  Wider = wetter/rougher and dimmer (the same energy over more pixels). */
+const REF_SPREAD = 0.035;
+/** Lorentzian falloff of the smear (weight = 1/(1+k·i²)). Deliberately not a
+ *  Gaussian: the long low tail is what makes a streak fade out over its last
+ *  third instead of ending, per the realistic-light rules. */
+const REF_TAIL = 0.38;
+
 /* ---- Cinematic night look (engine wires tierCaps.dualBloom/.filmLook
    through setCinema; mobile tiers pass false, which zeroes uFilmVig/uFilmCA/
    uFilmDirt and skips the halo passes, leaving the composite bit-identical to
@@ -206,10 +240,19 @@ export class PostFX {
   private povA!: THREE.WebGLRenderTarget;
   private povB!: THREE.WebGLRenderTarget;
   private perf = false;
-  /** mobile-tier RT policy (see setMobile): half-size mirror, quarter-res
-      reflection allocation. Distinct from `perf`, which is the reactive
-      frame-time fallback and can fire on top of this on any tier. */
+  /** mobile-tier RT policy (see setMobile): half-size mirror. Distinct from
+      `perf`, which is the reactive frame-time fallback and can fire on top of
+      this on any tier. */
   private mobile = false;
+  /** engine's per-frame answer to "is the road reflecting?" (user setting AND
+      tier). Off means the reflection source pass is skipped outright — the RT
+      keeps its last contents but nothing samples it, since setWet zeroes
+      uRefStr in the same breath. */
+  private reflectOn = false;
+  /** reflectRT has been cleared since it was last (re)allocated — see
+      setReflect, which owns the one-shot prime */
+  private refPrimed = false;
+  private refClear = new THREE.Color();
   /** desktop-tier cinematic extras (setCinema): two-scale bloom + film look */
   private cineDual = false;
   private cineFilm = false;
@@ -259,6 +302,7 @@ export class PostFX {
   private fxaaMat: THREE.ShaderMaterial;
   private mbMat: THREE.ShaderMaterial;
   private copyMat: THREE.ShaderMaterial;
+  private refMat: THREE.ShaderMaterial;
   private smearMat: THREE.ShaderMaterial;
   private povMat: THREE.ShaderMaterial;
   private povSrcMat: THREE.ShaderMaterial;
@@ -282,6 +326,34 @@ void main(){ vec3 c=min(texture2D(tIn,vUv).rgb*uExp,vec3(14.));
  float sk=clamp(l-T+K,0.,2.*K); sk=sk*sk/(4.*K);
  float w=max(sk,l-T)/max(l,1e-4);
  gl_FragColor=vec4(c*w,1.); }`,
+    });
+    /* Wet-road reflection source: the bright pass, stretched vertically.
+       Vertical only — a wet-road streak is narrow across and long down, and
+       keeping it narrow is also what stops a lamp turning into a blob.
+       The half-texel horizontal alternation rides the same eleven taps and
+       costs nothing: it folds a two-texel box across, which is what keeps a
+       distant lamp from twinkling as its quarter-res footprint crosses a texel
+       boundary at speed.
+       uExpInv undoes brightMat's exposure multiply — the road shader mixes
+       this into gl_FragColor, which is still pre-exposure at that point (the
+       composite applies uExp later), so the two have to be in the same space
+       or the reflection is 1.12x hot. */
+    this.refMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tIn: { value: null },
+        uTexel: { value: new THREE.Vector2(1, 1) },
+        uSpread: { value: REF_SPREAD },
+        uExpInv: { value: 1 },
+      },
+      vertexShader: VSH,
+      fragmentShader: `varying vec2 vUv; uniform sampler2D tIn;
+uniform vec2 uTexel; uniform float uSpread, uExpInv;
+void main(){ vec3 s=vec3(0.); float wsum=0.;
+ for(int i=-5;i<=5;i++){ float fi=float(i);
+  float w=1./(1.+fi*fi*${REF_TAIL.toFixed(3)});
+  vec2 uv=vUv+vec2((mod(fi,2.)-.5)*uTexel.x, fi*uSpread*.2);
+  s+=texture2D(tIn,uv).rgb*w; wsum+=w; }
+ gl_FragColor=vec4(s/wsum*uExpInv,1.); }`,
     });
     this.blurMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -756,15 +828,13 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     const hw = Math.max(80, w >> 3), hh = Math.max(45, h >> 3);
     this.haloA = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType });
     this.haloB = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType });
-    // mobile tiers never render into the reflection RT (the engine's tier
-    // gate skips the pass entirely), so its allocation drops to the perf-mode
-    // quarter size there — it only exists to keep the material binding valid
-    const rShift = perfMode || this.mobile ? 2 : 1;
-    this.reflectRT = new THREE.WebGLRenderTarget(
-      Math.max(220, w >> rShift),
-      Math.max(124, h >> rShift),
-      { type: THREE.HalfFloatType }
-    );
+    // the reflection source is the bright pass smeared, so it lives at exactly
+    // the bright pass's resolution: same UVs, one texel per texel, no resample.
+    // Quarter res is also the right resolution for the effect — what the road
+    // shows is a blurred streak, and the road samples it hugely magnified.
+    this.reflectRT = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
+    this.refMat.uniforms.uTexel.value.set(1 / bw, 1 / bh);
+    this.refPrimed = false;
     this.ldrRT = new THREE.WebGLRenderTarget(w, h);
     this.fxaaRT = new THREE.WebGLRenderTarget(w, h);
     this.mbRT = new THREE.WebGLRenderTarget(w, h);
@@ -810,6 +880,33 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.mobile = on;
     this.mirrorRT.setSize(on ? 160 : 320, on ? 64 : 128);
     return true;
+  }
+
+  /** Whether to build the wet-road reflection source this frame. The engine
+   * calls this every frame with its own `reflectionsOn` (user setting AND
+   * tier), so it needs no state of its own to keep in step. False costs
+   * nothing at all: no pass runs, and mats' uRefStr is 0 so no road fragment
+   * samples the stale RT either. */
+  setReflect(on: boolean) {
+    /* Prime on the off->on edge. The road samples reflectRT during the scene
+       render, one frame ahead of the pass that fills it, so the first frame
+       after the toggle (or after a resize reallocated the target) would
+       otherwise read whatever was in that memory. Cleared to black
+       explicitly — renderer.clear() alone would use the scene's clear colour,
+       which is the sky, i.e. exactly the content this effect exists to keep
+       off the road. This runs once per toggle, not per frame. */
+    if (on && !this.refPrimed) {
+      const r = this.renderer;
+      r.getClearColor(this.refClear);
+      const a = r.getClearAlpha();
+      r.setClearColor(0x000000, 1);
+      r.setRenderTarget(this.reflectRT);
+      r.clear(true, false, false);
+      r.setRenderTarget(null);
+      r.setClearColor(this.refClear, a);
+      this.refPrimed = true;
+    }
+    this.reflectOn = on;
   }
 
   /** Tier wiring for the desktop-only cinematic extras (two-scale bloom and
@@ -1015,7 +1112,8 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.dirtTex?.dispose();
     for (const m of [
       this.brightMat, this.blurMat, this.compMat, this.fxaaMat, this.mbMat,
-      this.copyMat, this.dashMat, this.smearMat, this.povMat, this.povSrcMat,
+      this.copyMat, this.refMat, this.dashMat, this.smearMat, this.povMat,
+      this.povSrcMat,
     ])
       m.dispose();
   }
@@ -1072,6 +1170,27 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
           this.runPass(this.blurMat, this.haloA);
         }
       }
+    }
+    /* Wet-road reflection source. Rides on brightRT, which the bloom chain
+       above has just filled for free; with bloom switched off in settings it
+       is one extra quarter-res pass to fill it ourselves rather than couple
+       two unrelated user toggles.
+
+       The road reads this on the NEXT frame — it samples tRef during the scene
+       render, which is over by the time process() runs. One frame of lag on a
+       vertical smear of a light source is not visible: at 200 km/h a frame is
+       0.9 m, and the streak it lands in is tens of metres long. Taking the lag
+       is what buys the whole effect for one quarter-res pass instead of a
+       second scene render. */
+    if (this.reflectOn) {
+      if (!opts.bloom) {
+        this.brightMat.uniforms.tIn.value = this.sceneRT.texture;
+        this.brightMat.uniforms.uExp.value = opts.exposure;
+        this.runPass(this.brightMat, this.brightRT);
+      }
+      this.refMat.uniforms.tIn.value = this.brightRT.texture;
+      this.refMat.uniforms.uExpInv.value = 1 / Math.max(opts.exposure, 1e-3);
+      this.runPass(this.refMat, this.reflectRT);
     }
     // 0 below 80 km/h, ramps to 1 by 200 km/h — shared by the speed vignette
     // (compMat) and the peripheral radial blur / motion-blur boost (mbMat).

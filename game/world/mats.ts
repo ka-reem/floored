@@ -37,6 +37,55 @@ import { worldTierCaps } from "../settings";
    aggregate around them. That is what reads as standing water. */
 
 /* ======================================================================
+   WET-ROAD REFLECTION — reflect the lights, not the sky
+   ======================================================================
+
+   The first attempt at this was a true planar mirror: engine.ts rendered the
+   whole scene a second time from a camera mirrored through the road plane and
+   the road sampled it by screen UV. It was correct and it looked wrong — the
+   sky band and the skyline glow are big, dim, diffuse things, and at grazing
+   angles a mirror hands them back as pale slabs lying across the deck. No
+   output-side luminance gate killed it, so the strength was pinned to 0 and
+   the second scene render went on being paid for every frame.
+
+   The replacement starts from what a wet road at night actually does: it
+   mirrors POINT sources — lamp heads, sign faces, tail lights — drawn out into
+   vertical streaks by the surface roughness, separated by darkness. So the
+   source is post.ts's bloom bright-pass, smeared vertically (post.ts
+   REF_SPREAD). Its soft-knee threshold IS the gate: the night sky and its glow
+   sit far below it and contribute nothing, while a lamp head survives. That is
+   the whole fix — the exclusion happens at the source, where it is free, not
+   at the output, where it never worked.
+
+   The lookup is a reprojection rather than a screen-space flip. Reflect the
+   camera->fragment ray about the deck, walk it to an assumed source height H,
+   and project that point back to screen: exact for anything actually at H, and
+   correct under any pitch, crest or bank, because the fragment's own world
+   position supplies the plane. Two heights are sampled, because the two things
+   worth reflecting live at very different ones. */
+/** Low tap: tail lights and NPC head glow, ~0.9 m off the deck. Its reflection
+    lands on the road at roughly 0.55x the source's distance, i.e. right under
+    the car ahead — the red smear that sells a wet road more than anything. */
+const REF_H_LO = 0.9;
+/** High tap: lamp heads, gantry sign faces, lit windows. At c≈1.3 m eye height
+    a 7 m source reflects at ~0.7x of the full mirror position, so this is also
+    what keeps the streaks well clear of the horizon line. */
+const REF_H_HI = 7.0;
+/** Share of the low tap in the blend. Under half: lamps outnumber and outshine
+    tail lights, and the low tap is the one that can graze the road's own
+    headlight pool and feed back on itself. */
+const REF_LO_W = 0.45;
+/** Soft ceiling on the reflected colour, in pre-exposure linear. Applied as
+    refC *= uRefMax/(uRefMax+luma) — an asymptote, not a clamp, so a brighter
+    source keeps getting brighter by less and nothing ever reaches a hard stop.
+    0.42 was picked against the grade, not by eye: at exposure 1.12 the worst
+    case is ACES(0.47) ≈ 0.48 display, comfortably under the 0.72 blown-white
+    clip and the ~0.8 where the composite's vibrance rolloff bleaches hue out.
+    A sodium streak therefore stays orange at its hottest, which is the entire
+    difference between this and the white patches that got the effect cut. */
+const REF_MAX = 0.42;
+
+/* ======================================================================
    CONCRETE GRIT — the missing decimetre
    ======================================================================
 
@@ -361,6 +410,10 @@ export interface Mats {
   refMats: THREE.MeshStandardMaterial[];
   addReflection(mat: THREE.MeshStandardMaterial, strength: number): void;
   setReflectionTexture(tex: THREE.Texture): void;
+  /** Vestigial. The reflection lookup used to be `gl_FragCoord / screen`;
+      it is now a reprojection, which is resolution-independent, so nothing
+      reads this. Kept because the engine calls it from three places on every
+      resize and tier flip, and a no-op there is cheaper than a patch. */
   setReflectionScreen(w: number, h: number): void;
   setWet(on: boolean, reflectionsOn: boolean): void;
   /** Drop the scanned normal/detail layers when the frame budget is blown.
@@ -431,6 +484,18 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
   const refMats: THREE.MeshStandardMaterial[] = [];
   let pendingRefTex: THREE.Texture | null = null;
   const screen = new THREE.Vector2(1, 1);
+  /* Wet-road reflection knobs, shared by every road material — one write moves
+     all of them, no per-material loop and no recompile. Exposed on
+     window.__wetTune (see below) so the balance can be found live. */
+  const uRefLo = { value: REF_H_LO };
+  const uRefHi = { value: REF_H_HI };
+  const uRefLoW = { value: REF_LO_W };
+  const uRefMax = { value: REF_MAX };
+  /** overall multiplier on the reflection strength, live-tunable; the wet/dry
+      and per-surface shares stay where they are underneath it */
+  let refGain = 1;
+  /** last setWet() arguments, so a live knob can re-apply without the engine */
+  let wetState = false, wetRefOn = false;
   let detailOn = true;
   let pbrStarted = false;
 
@@ -519,7 +584,11 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       const hasGroove = detailOn && d.grooveAmt > 0;
       sh.uniforms.tRef = { value: pendingRefTex };
       sh.uniforms.uRefStr = { value: d.curStr };
-      sh.uniforms.uScreen = { value: screen };
+      sh.uniforms.uRefLo = uRefLo;
+      sh.uniforms.uRefHi = uRefHi;
+      sh.uniforms.uRefLoW = uRefLoW;
+      sh.uniforms.uRefMax = uRefMax;
+      sh.uniforms.uNight = uNight;
       sh.uniforms.tDet = { value: hasDet ? d.detTex : null };
       sh.uniforms.uDetRep = { value: d.detRep };
       sh.uniforms.uDetK = { value: hasDet ? d.detK : 0 };
@@ -534,10 +603,38 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
       sh.uniforms.uGrooveF = { value: d.grooveFreq };
       d.sh = sh;
 
+      /* World position of the fragment, for the reflection reprojection below.
+         Its own y IS the mirror plane, so hills, crests and banked curves need
+         no uniform and cannot drift out of agreement with the geometry. */
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vWPos;")
+        .replace(
+          "#include <project_vertex>",
+          "#include <project_vertex>\nvWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;"
+        );
+
       sh.fragmentShader = sh.fragmentShader.replace(
         "#include <common>",
         "#include <common>\n" +
-          "uniform sampler2D tRef; uniform float uRefStr; uniform vec2 uScreen;\n" +
+          "uniform sampler2D tRef; uniform float uRefStr;\n" +
+          "uniform float uRefLo, uRefHi, uRefLoW, uRefMax, uNight;\n" +
+          /* three declares viewMatrix and cameraPosition in the fragment
+             prefix but not projectionMatrix; redeclaring it links to the same
+             uniform the vertex stage already has, and the renderer sets it by
+             name, so this needs no plumbing on the engine side. */
+          "uniform mat4 projectionMatrix;\n" +
+          "varying vec3 vWPos;\n" +
+          /* One reflected sample at assumed source height h. The edge feather
+             is what keeps a source leaving the frame from smearing along the
+             border: it fades the tap out over the outer 7% instead of letting
+             the clamped edge texel repeat. */
+          "vec3 refTap(vec3 p, vec3 r, float h){\n" +
+          " vec4 cp = projectionMatrix * viewMatrix * vec4(p + r * (h / r.y), 1.0);\n" +
+          " vec2 uv = cp.xy / max(cp.w, 1e-4) * .5 + .5;\n" +
+          " vec2 e = smoothstep(vec2(0.), vec2(.07), uv)\n" +
+          "        * (1. - smoothstep(vec2(.93), vec2(1.), uv));\n" +
+          " return texture2D(tRef, uv).rgb * e.x * e.y * step(1e-4, cp.w);\n" +
+          "}\n" +
           (hasDet
             ? "uniform sampler2D tDet; uniform vec2 uDetRep; uniform float uDetK; uniform float uDetMean;\n"
             : "") +
@@ -585,10 +682,20 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
 
       sh.fragmentShader = sh.fragmentShader.replace(
         "#include <dithering_fragment>",
-        "vec2 sUV=gl_FragCoord.xy/uScreen; sUV.x=1.0-sUV.x;" +
-          "vec3 refC=texture2D(tRef,sUV).rgb;" +
+        /* Uniform-valued branch: with reflections off (setting or tier) every
+           fragment in the draw takes the same side, so the GPU skips the body
+           outright and the road costs exactly what it did before the effect
+           existed. Nothing else is needed to "turn it off". */
+        "if (uRefStr > 0.0) {" +
           "float ndv=clamp(dot(normalize(vNormal),normalize(vViewPosition)),0.,1.);" +
           "float fr=uRefStr*pow(1.0-ndv,2.0);" +
+          /* Daylight damp. The whole point of this effect is that the bright
+             pass excludes the sky — but by day the sky IS above the bright
+             threshold, so the taps come back full of it and a distant wet road
+             would go back to wearing a pale slab. A real wet road does mirror
+             a daytime sky, so this is a damp and not a gate: it rides the day
+             cycle smoothly and leaves enough for a sheen. */
+          "fr*=mix(.35,1.0,uNight);" +
           (hasRough
             ? /* Puddle modulation. roughnessFactor is the scan's roughness at
                  this texel; where it dips below the map's mean the surface is
@@ -599,24 +706,25 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
               "fr*=mix(1.0, clamp(uRoughRef/max(roughnessFactor,0.02),0.0,3.0), uRoughMod);"
             : "") +
           "fr=clamp(fr,0.,1.);" +
-          /* Real asphalt only visibly mirrors concentrated LIGHT SOURCES —
-             lamps, tail-lights, lit signs. Broad dim content (the sky band,
-             the skyline glow) reflects too, but at road reflectance it is
-             far below what the eye picks up; reflecting it here painted a
-             hard-edged bright patch across the road at grazing angles (the
-             "white box that vanishes as you approach" bug). Gate the
-             reflected colour by its own luminance so point lights keep
-             their streaks and area glow contributes almost nothing, and cap
-             the sky-dominant blue channel's share so what remains cannot
-             read as a pale slab. */
+          /* Mirror the view ray about the deck. dir.y is negative looking down
+             the road; the floor on the flip covers a crest rising above the
+             camera, where the ray would otherwise never reach the source
+             height — it just walks the tap out toward the horizon instead. */
+          "vec3 dir=normalize(vWPos-cameraPosition);" +
+          "vec3 rr=vec3(dir.x, max(-dir.y, .02), dir.z);" +
+          "vec3 refC=mix(refTap(vWPos,rr,uRefHi), refTap(vWPos,rr,uRefLo), uRefLoW);" +
+          /* Soft ceiling (REF_MAX): an asymptote on luminance, so hue survives
+             — a per-channel clamp would walk a sodium streak to white exactly
+             where it is brightest, which is the failure this effect was cut
+             for the first time round. */
           "float rl=dot(refC,vec3(.299,.587,.114));" +
-          "refC*=smoothstep(.20,.60,rl);" +
-          "fr*=mix(.25,1.,smoothstep(.14,.45,rl));" +
+          "refC*=uRefMax/(uRefMax+rl);" +
           // blend toward the reflection instead of stacking it on top —
           // additive stacking let a bright reflected highlight (e.g. the
           // car's own tail-lights) blow the pixel out to solid white,
           // especially at grazing angles on wet roads where fr is near 1
-          "gl_FragColor.rgb=mix(gl_FragColor.rgb,refC,fr);\n#include <dithering_fragment>"
+          "gl_FragColor.rgb=mix(gl_FragColor.rgb,refC,fr);" +
+          "}\n#include <dithering_fragment>"
       );
     };
     // three keys its program cache partly on this; without it the detail and
@@ -1921,6 +2029,8 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
       screen.set(w, h);
     },
     setWet(on, reflectionsOn) {
+      wetState = on;
+      wetRefOn = reflectionsOn;
       const rough = on ? 0.13 : 0.4;
       setRough(road, rough);
       setRough(front, rough);
@@ -1928,14 +2038,18 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
       setRough(ramp, rough);
       for (const m of refMats) {
         const d = ud(m);
-        /* Road SSR is disabled outright (str 0 regardless of the settings
-           toggle): even luminance-gated, the mirrored skyline painted white
-           patches across the road that no tuning pass killed — the user
-           chose to drop the effect. The shader path and wet/rough plumbing
-           stay; restore by reverting to `reflectionsOn ? d.refStr * (on ?
-           2.6 : 1) : 0` if a future reflection source is better behaved. */
-        void reflectionsOn;
-        const str = 0;
+        /* Wet vs dry is a big multiplier, not a small one, because it is the
+           real difference: dry asphalt scatters nearly everything and returns
+           a barely-there sheen at grazing angles, standing water returns a
+           near-mirror. The dry share is deliberately not zero — a dry road at
+           night still picks up a faint smear under a lamp — but at 0.4 the
+           Fresnel term has to be almost fully grazing before anything shows.
+
+           This is what the old disabled-outright `const str = 0` replaced.
+           The white patches it was cut for came from the SOURCE (a full scene
+           re-render, sky included), not from this number; the source is now
+           the bright pass, so the strength is live again. */
+        const str = reflectionsOn ? d.refStr * (on ? 2.0 : 0.4) * refGain : 0;
         d.curStr = str;
         if (d.sh) d.sh.uniforms.uRefStr.value = str;
         /* Puddle-patch modulation is a rain effect. On a dry road the scan's
@@ -2255,6 +2369,39 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
     upgradeSurface(pole, metalSet, {
       repeat: [1, 4], normalScale: 0.45, roughness: 0.7,
     });
+  }
+
+  /* Live console knobs for the wet-road reflection. World materials are built
+     once, so a hot reload will NOT show a change to any of the constants
+     above — this is how the balance gets found without a rebuild:
+
+       __wetTune.gain = 2        // whole effect stronger (or 0 to A/B it off)
+       __wetTune.max = 0.7       // raise the soft ceiling; watch for bleaching
+       __wetTune.hi = 9          // reflect taller sources (lamp heads)
+       __wetTune.lo = 0.8        // reflect lower ones (tail lights)
+       __wetTune.loW = 0.7       // bias the blend toward the low tap
+       __wetTune.wet = true      // force the wet road without waiting for rain
+
+     The four uniform objects are shared by every road material, so each write
+     lands on all of them; `gain` and `wet` go back through setWet because the
+     strength is computed per material. */
+  if (typeof window !== "undefined") {
+    const apply = () => mats.setWet(wetState, wetRefOn);
+    const num = (v: unknown, d: number) => (typeof v === "number" && isFinite(v) ? v : d);
+    (window as unknown as { __wetTune: unknown }).__wetTune = {
+      get gain() { return refGain; },
+      set gain(v: number) { refGain = Math.max(0, num(v, 1)); apply(); },
+      get wet() { return wetState; },
+      set wet(v: boolean) { mats.setWet(!!v, wetRefOn); },
+      get max() { return uRefMax.value; },
+      set max(v: number) { uRefMax.value = Math.max(0.02, num(v, REF_MAX)); },
+      get hi() { return uRefHi.value; },
+      set hi(v: number) { uRefHi.value = Math.max(0.05, num(v, REF_H_HI)); },
+      get lo() { return uRefLo.value; },
+      set lo(v: number) { uRefLo.value = Math.max(0.05, num(v, REF_H_LO)); },
+      get loW() { return uRefLoW.value; },
+      set loW(v: number) { uRefLoW.value = Math.min(1, Math.max(0, num(v, REF_LO_W))); },
+    };
   }
 
   return mats;
