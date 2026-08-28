@@ -1066,17 +1066,6 @@ export class Game {
     this.ui.toast("INTERIOR LIGHT " + (c.on === 0 ? "OFF" : c.on === 1 ? "DIM" : "ON"));
   }
 
-  /** A click on the hazard hit volume. Both signals together, same reading as
-      traffic.ts gives a wrecked or stopped NPC's blinkers — there is no
-      separate hazard flag on CarState, just sigL and sigR lit in lockstep. */
-  private clickHazard() {
-    const car = this.car;
-    const on = !(car.sigL && car.sigR);
-    car.sigL = car.sigR = on;
-    this.audio.stalkClick();
-    this.ui.toast("HAZARDS " + (on ? "ON" : "OFF"));
-  }
-
   /** Push the cabin-light level into both interiors, every frame.
 
       Per-frame rather than on the key edge, and that is the whole point: the
@@ -1104,7 +1093,6 @@ export class Game {
       // the head unit's hover is the same kind of state and goes out the same
       // door, or a button left lit at the pause menu stays lit behind it
       this.screenHover = null;
-      this.wheelHover = null;
       this.renderer.domElement.style.cursor = "";
     }
     this.cabinHoverE = lerp(
@@ -2420,20 +2408,6 @@ export class Game {
     return ck.cabinSwitch(!!this.rig.cockpitModel);
   }
 
-  /** The hazard hit volume, or null when the pointer cannot be over it at
-      all. Desktop only, unconditionally — unlike the console there is no
-      touch fallback here (see the call site), so this gates isTouch out for
-      hover AND click alike rather than hover only. (The l/r signal volumes
-      that used to share this lookup were removed at the owner's request.) */
-  private wheelTarget(kind: "hazard"): THREE.Object3D | null {
-    if (this.isTouch) return null;
-    if (!this.running || !this.loaded || !this.inCar()) return null;
-    const ck = this.rig?.cockpit;
-    if (!ck) return null;
-    const imported = !!this.rig.cockpitModel;
-    return ck.hazardSwitch(imported);
-  }
-
   /** The head-unit panel, when a pointer on it can do anything — or null.
 
       Desktop only, via `music.enabled` (false on touch): the panel's second
@@ -2456,10 +2430,6 @@ export class Game {
       it eased, and is what the light actually rides. See CABIN_LIGHT.hover. */
   private cabinHover = 0;
   private cabinHoverE = 0;
-  /** Whether the cursor is over the hazard volume — it has no light of its
-      own to preview like the dome switch, so this drives the cursor swap
-      only (see onPointerMove). */
-  private wheelHover: "hazard" | null = null;
   private hoverX = 0;
   private hoverY = 0;
   /* Hover test for the overhead console. Cheap by construction — one ray
@@ -2480,11 +2450,9 @@ export class Game {
     this.hoverY = e.clientY;
     const sw = this.cabinTarget(true);
     const panel = this.screenTarget();
-    const wz = this.wheelTarget("hazard");
-    if (!sw && !panel && !wz) {
+    if (!sw && !panel) {
       this.cabinHover = 0;
       this.screenHover = null;
-      this.wheelHover = null;
       this.renderer.domElement.style.cursor = "";
       return;
     }
@@ -2500,13 +2468,11 @@ export class Game {
     const hit = panel ? this.clickRay.intersectObject(panel, false)[0] : undefined;
     this.screenHover =
       hit && hit.uv ? hitScreen(hit.uv.x, hit.uv.y, this.screenView) : null;
-    this.wheelHover =
-      wz && this.clickRay.intersectObject(wz, true).length ? "hazard" : null;
     /* One cursor for every cabin target, new and old alike — none of them had
        one before this lane; a control that only reveals itself once you have
        already clicked it is not discoverable. */
     this.renderer.domElement.style.cursor =
-      this.cabinHover || this.screenHover || this.wheelHover ? "pointer" : "";
+      this.cabinHover || this.screenHover ? "pointer" : "";
   };
   /* Leaving the canvas is a real event and gets a real listener: the last
      pointermove inside the window can easily be one that was still over the
@@ -2515,7 +2481,6 @@ export class Game {
   private onPointerLeave = () => {
     this.cabinHover = 0;
     this.screenHover = null;
-    this.wheelHover = null;
     this.renderer.domElement.style.cursor = "";
   };
   private onPointerDown = (e: PointerEvent) => {
@@ -2534,16 +2499,6 @@ export class Game {
     const sw = this.cabinTarget(false);
     if (sw && this.hitCabinSwitch(e, sw)) {
       this.toggleCabinLight();
-      return;
-    }
-    /* Hazards only, reached the same way as the dome switch above: one ray
-       against a volume near the wheel rim (see hazardSwitch in cockpit.ts).
-       The l/r turn-signal click zones were removed at the owner's request —
-       signals are keyboard-only (Q/E); the hazard triangle stays because it
-       is a real dash button. Desktop only (wheelTarget excludes touch). */
-    const hz = this.wheelTarget("hazard");
-    if (hz && this.clickRay.intersectObject(hz, true).length) {
-      this.clickHazard();
       return;
     }
     /* Touch's way to the same switch, and the reason it needs one: the roof
