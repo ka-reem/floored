@@ -34,6 +34,22 @@ const SKIP = 2;
 
 const _p = { x: 0, y: 0, z: 0 };
 
+/* Canvas text cannot read CSS custom properties, so resolve the UI's
+   --font-display token (ui-redesign's type system, globals.css) once and
+   build the exit-number font from it — the map's numerals should sit in the
+   same face as the HUD chrome around them, not a hardcoded sans-serif.
+   Resolved lazily at first draw, when the stylesheet is certainly live, and
+   only cached once it answers non-empty. */
+let _exitFont: string | null = null;
+function exitFont(): string {
+  if (_exitFont !== null) return _exitFont;
+  const fam = getComputedStyle(document.documentElement)
+    .getPropertyValue("--font-display").trim();
+  const f = `700 9px ${fam || "sans-serif"}`;
+  if (fam) _exitFont = f;
+  return f;
+}
+
 /* The merge gore marker sits at a fixed station, so its world point is static
    for the life of a corridor. It was being rebuilt — and freshly allocated,
    since worldOf() without an `out` returns a new object — once per lap pass,
@@ -282,7 +298,7 @@ export function drawMiniMap(
   }
 
   // ---- exit numbers, on the town side of the deck ----
-  g.font = "700 9px sans-serif";
+  g.font = exitFont();
   g.textAlign = "center";
   g.fillStyle = "rgba(120,255,190,.95)";
   for (const ex of world.exits) {

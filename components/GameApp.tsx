@@ -287,14 +287,9 @@ export default function GameApp() {
         <div className="gear" id="gearTxt">D1</div>
         {/* No Hesi score + combo (game/engine.ts's noHesiUpdate writes the
             text; hidden via the setting, not via this style, so the engine
-            is the one source of truth for whether it's on). Semantic id/
-            class only — inline-minimal placement, real styling is the
-            ui-redesign lane's to hand off (see the rival-whiteline report). */}
-        <div
-          className="noHesi"
-          id="noHesi"
-          style={{ fontSize: "0.55em", opacity: 0.85, marginTop: "2px" }}
-        />
+            is the one source of truth for whether it's on). Styled in
+            globals.css with the HUD tokens — see #hud .noHesi. */}
+        <div className="noHesi" id="noHesi" />
       </div>
       <div id="toast" style={{ opacity: toast ? 1 : 0 }}>{toast}</div>
       <div id="exitHint" style={{ opacity: exitHint && playing ? 1 : 0 }}>{exitHint}</div>
