@@ -1,9 +1,21 @@
 /* Bakes the player car's LOW-RES BODY — everything the dashcam cut throws away.
 
      node --max-old-space-size=12288 tools/build-car-body.mjs <donor.glb> \
-       [--out NAME] [--tris N] [--tex N] [--rest] [--compress MODE] [--no-join] [--dry]
+       [--out NAME] [--tris N] [--tex N] [--rest] [--compress MODE] [--no-join] \
+       [--rear-bias] [--tex-rear N] [--strip] [--dry]
 
    Run offline, not at build time — the GLB it writes is committed.
+
+   --rear-bias: this asset is a THIRD-PERSON body — the dashcam that ships
+   the game never sees it (AGENTS.md), only the chase cam, the mirror, and
+   the garage card, all of which frame the car from behind or at a 3/4 rear
+   angle far more than they frame the front. Skews the per-part budget (see
+   WEIGHTS below) and the texture pass toward -Z, the donor's rear.
+
+   --strip: the game drives its own wheels — they steer and spin, the
+   donor's don't — so its rim/tyre/disc/caliper/hub nodes are pure waste in
+   this asset. Drops them at selection time instead of the ad-hoc post-strip
+   the shipped build used, which left one leftover disc mesh behind.
 
    tools/build-cockpit.mjs keeps the handful of nodes the rigidly-mounted POV
    lens actually frames and discards the other 90% of the donor: bodywork,
@@ -61,14 +73,20 @@ const INTERIOR = argv.includes("--interior");
    why this only appeared once the full cabin did. The PASSENGER seat and the
    rear bench stay: nothing is ever inside those. */
 const DRIVER_SEAT = /^Driver Seat/i;
+/* --strip: the corner the game re-supplies itself — rim, tyre, wheelhub,
+   and the disc/caliper behind them, all four wheels. */
+const WHEEL_STRIP = /^Rim |^Tire |Wheelhub|Brake Disc|Caliper/i;
 const COMPRESS = flag("--compress", "quantize");   // none | quantize | meshopt | draco
 const JOIN = !argv.includes("--no-join");
 const TANGENTS = argv.includes("--tangents");
 const DRY = argv.includes("--dry");
 const OUT_DIR = path.resolve(flag("--outdir", path.resolve(import.meta.dirname, "../public/assets-staging")));
+const REAR_BIAS = argv.includes("--rear-bias");
+const TEX_REAR = Number(flag("--tex-rear", 512));
+const STRIP = argv.includes("--strip");
 
 if (!SRC || !fs.existsSync(SRC)) {
-  console.error("usage: node tools/build-car-body.mjs <donor.glb> [--out NAME] [--tris N] [--tex N] [--error E] [--rest] [--exterior] [--interior] [--compress none|quantize|meshopt|draco] [--no-join] [--tangents] [--outdir DIR] [--debug] [--dry]");
+  console.error("usage: node tools/build-car-body.mjs <donor.glb> [--out NAME] [--tris N] [--tex N] [--error E] [--rest] [--exterior] [--interior] [--compress none|quantize|meshopt|draco] [--no-join] [--tangents] [--rear-bias] [--tex-rear N] [--strip] [--outdir DIR] [--debug] [--dry]");
   process.exit(1);
 }
 
@@ -146,7 +164,8 @@ const walk = (node, parentMat) => {
   const drop = node.getMesh() && ((REST && COCKPIT_OWNED.test(node.getName())) ||
                                  (EXTERIOR && CABIN_ONLY.test(node.getName())) ||
                                  (INTERIOR && !CABIN_ONLY.test(node.getName())) ||
-                                 (INTERIOR && DRIVER_SEAT.test(node.getName())));
+                                 (INTERIOR && DRIVER_SEAT.test(node.getName())) ||
+                                 (STRIP && WHEEL_STRIP.test(node.getName())));
   if (node.getMesh() && !drop) keep.push({ node, matrix: m });
   for (const c of node.listChildren()) walk(c, m);
 };
@@ -201,6 +220,17 @@ const WEIGHTS = [
      high-res cockpit is drawn over the front half of it anyway */
   [/Seat|Carpet|Floor|^Shell_|DoorPanel|Dashboard|Console|RearShelf|SeatBelt|Pedal|PlasticTrim|SunRoof|^Plane\./i, 0.5, false],
 ];
+/* --rear-bias overrides WEIGHTS for named rear parts (checked first, since
+   ruleFor takes the first match) and demotes the front. Weight 8 clamps
+   ratio_i = min(1, k*weight) to 1.0 at any budget this script is likely to
+   be run at — the tail-lamp stack, trunk, rear bumper and badges come out
+   effectively undecimated. The generic Headlight|Taillight|... rule in
+   WEIGHTS above still catches everything these two miss (fog lights, wing
+   mirrors) at its old, even-handed weight. */
+const REAR_WEIGHTS = [
+  [/Taillight|TrunkTaillight|ReverseLight|Bumper[ _]?Rear|^Trunk[ _]|Lettering[ _]?Rear|Quarter|Exhaust/i, 8.0, true],
+  [/Grille|Headlight|Bumper[ _]?Front|Fender[ _]?Front|Emblem[ _]?Front|Runninglight|Turnsignal|Wiper/i, 0.6, true],
+];
 /* An interior asset inverts the exterior's priorities completely. The WEIGHTS
    above put the cabin at 0.5 because from outside it is a blur behind tinted
    glass; from INSIDE, the dash is 30 cm from the lens and is the whole shot,
@@ -218,7 +248,28 @@ const INTERIOR_WEIGHTS = [
 ];
 const ruleFor = (name) =>
   (INTERIOR ? INTERIOR_WEIGHTS.find(([re]) => re.test(name)) : null) ??
+  (REAR_BIAS ? REAR_WEIGHTS.find(([re]) => re.test(name)) : null) ??
   WEIGHTS.find(([re]) => re.test(name)) ?? [null, 1.0, true];
+
+/* Belt-and-braces for --rear-bias: the name rules above miss anything the
+   donor's authors didn't name after its lamps (a stray reflector, a badge
+   fused into "Car Paint"), so also read the part's own world-space Z — the
+   donor is +Z forward (verified with tools/inspect-glb.mjs: front bumper
+   spans z 1.79..2.51, taillights z -2.37..-2.02), so a bbox centred well
+   behind the rear axle is rear regardless of what it's called. */
+function meshWorldZCenter(mesh, m) {
+  let zmin = Infinity, zmax = -Infinity, el = [];
+  for (const prim of mesh.listPrimitives()) {
+    const pos = prim.getAttribute("POSITION"); if (!pos) continue;
+    for (let i = 0; i < pos.getCount(); i++) {
+      pos.getElement(i, el);
+      const z = m[2] * el[0] + m[6] * el[1] + m[10] * el[2] + m[14];
+      if (z < zmin) zmin = z;
+      if (z > zmax) zmax = z;
+    }
+  }
+  return zmin <= zmax ? (zmin + zmax) / 2 : 0;
+}
 
 /* Weight per distinct mesh, taken from a node that references it, plus how
    many nodes do — an instanced wheel corner costs its triangles four times
@@ -226,7 +277,13 @@ const ruleFor = (name) =>
 const meshInfo = new Map();
 for (const node of root.getDefaultScene().listChildren()) {
   const mesh = node.getMesh(); if (!mesh) continue;
-  const [, weight, lock] = ruleFor(node.getName());
+  const [, ruleWeight, lock] = ruleFor(node.getName());
+  let weight = ruleWeight;
+  if (REAR_BIAS) {
+    const z = meshWorldZCenter(mesh, node.getMatrix());
+    if (z < -1.5) weight *= 3;
+    else if (z > 1.0) weight *= 0.5;
+  }
   const info = meshInfo.get(mesh) ?? { weight, lock, instances: 0, tris: meshTris(mesh) };
   info.instances++;
   meshInfo.set(mesh, info);
@@ -268,8 +325,15 @@ for (let pass = 0; pass < 6; pass++) {
        pass that fails to reach target relaxes it further still. Without this
        the low-weight parts simply refuse — the brake discs stall at 5x their
        share, and the whole car lands 50% over budget with the surplus spent
-       entirely behind the wheels. */
-    const err = (ERROR / info.weight) * Math.pow(3, pass);
+       entirely behind the wheels.
+
+       A high-weight part (>= 3, i.e. paint/glass or a --rear-bias lamp
+       cluster) is exempted from the escalation: it is meant to stall near
+       full resolution, not eventually give way to it. Without this gate the
+       tail-lamp stack's many boundary-locked shells — the exact geometry
+       --rear-bias exists to protect — get progressively unlocked by
+       Math.pow(3, pass) across six passes and end up as crushed as before. */
+    const err = (ERROR / info.weight) * (info.weight >= 3 ? 1 : Math.pow(3, pass));
     for (const prim of mesh.listPrimitives())
       simplifyPrimitive(prim, { simplifier: MeshoptSimplifier, ratio: info.target / now, error: err, lockBorder: info.lock });
   }
@@ -378,9 +442,27 @@ if (JOIN) { bakeTransforms(); await doc.transform(join({ keepNamed: false }), pr
 
 /* --------------------------------------------------------------- texture -- */
 
-if (TEX) await doc.transform(textureCompress({
-  encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
-}));
+/* Rear-lamp materials get their own, larger target: at 128px the taillight
+   graphic is the single biggest "looks cheap" contributor at chase distance
+   (per-part budget above only buys triangle silhouette, not the texture
+   drawn across it), while the decoded-VRAM cost of a few 512px maps is
+   trivial next to the donor's 3.5 GB. Runs BEFORE the general pass so it
+   works off the untouched source texture, not an already-downsized one —
+   and the general pass then excludes anything it already sized. */
+const REAR_TEX = /Taillight|TrunkTaillight|ReverseLight|Bumper[ _]?Rear|^Trunk|Quarter|Lettering[ _]?Rear/i;
+if (TEX && REAR_BIAS) {
+  await doc.transform(textureCompress({
+    encoder: sharp, targetFormat: "webp", resize: [TEX_REAR, TEX_REAR], resizeFilter: "lanczos3", pattern: REAR_TEX,
+  }));
+  await doc.transform(textureCompress({
+    encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
+    pattern: new RegExp(`^(?!.*(?:${REAR_TEX.source})).*$`, "i"),
+  }));
+} else if (TEX) {
+  await doc.transform(textureCompress({
+    encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
+  }));
+}
 
 const vramBytes = await vram();
 
@@ -398,12 +480,12 @@ else if (COMPRESS === "draco") await doc.transform(quantize(), draco());
 const after = drawn();
 const pc = (a, b) => `${((100 * a) / b).toFixed(1)}%`;
 
-console.log(`\n${path.basename(SRC)} -> ${OUT_NAME}.glb   ${INTERIOR ? (REST ? "(cabin only, minus the cockpit dash)" : "(cabin only)") : EXTERIOR ? "(exterior only: cabin dropped)" : REST ? "(rest-of-car: cockpit parts dropped)" : "(whole car)"}`);
+console.log(`\n${path.basename(SRC)} -> ${OUT_NAME}.glb   ${INTERIOR ? (REST ? "(cabin only, minus the cockpit dash)" : "(cabin only)") : EXTERIOR ? "(exterior only: cabin dropped)" : REST ? "(rest-of-car: cockpit parts dropped)" : "(whole car)"}${REAR_BIAS ? " [rear-bias]" : ""}${STRIP ? " [wheels stripped]" : ""}`);
 console.log(`  selected  : ${donor.tris.toLocaleString()} -> ${selected.tris.toLocaleString()} drawn tris  (${pc(selected.tris, donor.tris)} of donor)`);
 console.log(`  decimated : ${selected.tris.toLocaleString()} -> ${simplified.tris.toLocaleString()} drawn tris  (target ${TRIS.toLocaleString()}, passes ${passes.map((p) => p.toLocaleString()).join(" -> ")})`);
 console.log(`  triangles : ${after.tris.toLocaleString()} drawn, ${Math.round(unique()).toLocaleString()} distinct`);
 console.log(`  draw calls: ${after.calls}  (donor: ${donor.calls}),  ${root.listMaterials().length} materials`);
-console.log(`  textures  : ${donor.img} -> ${root.listTextures().length}${TEX ? ` @ ${TEX}px webp` : " (source resolution)"}`);
+console.log(`  textures  : ${donor.img} -> ${root.listTextures().length}${TEX ? (REAR_BIAS ? ` @ ${TEX}px webp (${TEX_REAR}px for rear-lamp maps)` : ` @ ${TEX}px webp`) : " (source resolution)"}`);
 console.log(`  VRAM      : ${(vramBytes / 1e6).toFixed(1)} MB decoded RGBA8 + mips  (donor: 3,500 MB)`);
 console.log(`  compress  : ${COMPRESS}${TANGENTS ? " +tangents" : ""}`);
 
