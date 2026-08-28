@@ -73,6 +73,16 @@ export interface TierCaps {
   roadDecals?: boolean;
   /** sodium ground pool under every Nth deck streetlight (1 = all) */
   lampPoolEvery?: number;
+  /** emit every Nth TOWN streetlamp into the glow-point cloud (1 = all).
+      Deck lamps are never thinned by this — see townmesh.ts. Halves the
+      point count feeding the horizon stack on the tier that lags most;
+      safe to thin because the streetlight placement loop consumes no rng
+      calls per lamp, so skipping some doesn't reseed the town layout. */
+  lampGlowEvery?: number;
+  /** window InstancedMeshes cast shadows (townmesh.ts). Town shadows fall
+      from a ~170 m shadow box the deck never sees from the dashcam, so the
+      two mobile tiers buy back the shader recompile + shadow-pass cost. */
+  townCastShadow?: boolean;
 
   /** Procedural concrete decimetre detail on parapets, deck fascia and the
       tunnel crown — the grit atlas fetch plus the surface-gradient normal
@@ -138,6 +148,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: false, lampConeEvery: 2, jetFans: false, catwalks: false,
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
+    lampGlowEvery: 2, townCastShadow: false,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -147,6 +158,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: true, lampConeEvery: 2, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
+    lampGlowEvery: 1, townCastShadow: false,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -156,6 +168,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: true, lampConeEvery: 1, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
+    lampGlowEvery: 1, townCastShadow: true,
   },
 };
 
