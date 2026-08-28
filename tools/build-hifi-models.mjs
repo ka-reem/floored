@@ -146,11 +146,12 @@ function collectTris(doc, nodeFilter) {
     for (const prim of doc.json.meshes[n.mesh].primitives) {
       const pos = accessor(doc, prim.attributes.POSITION);
       const uv = prim.attributes.TEXCOORD_0 !== undefined ? accessor(doc, prim.attributes.TEXCOORD_0) : null;
+      const nor = prim.attributes.NORMAL !== undefined ? accessor(doc, prim.attributes.NORMAL) : null;
       const idx = prim.indices !== undefined
         ? accessor(doc, prim.indices)
         : Float64Array.from({ length: pos.length / 3 }, (_, k) => k);
       for (let k = 0; k < idx.length; k += 3) {
-        const t = { p: [], uv: [], mat: prim.material ?? -1 };
+        const t = { p: [], uv: [], n: [], mat: prim.material ?? -1 };
         for (let e = 0; e < 3; e++) {
           const ix = idx[k + e];
           const x = pos[ix * 3], y = pos[ix * 3 + 1], z = pos[ix * 3 + 2];
@@ -160,6 +161,15 @@ function collectTris(doc, nodeFilter) {
             m[2] * x + m[6] * y + m[10] * z + m[14],
           ]);
           t.uv.push(uv ? [uv[ix * 2], uv[ix * 2 + 1]] : [0.5, 0.5]);
+          if (nor) {
+            // rotation part only — the donors carry no shear, and normals renormalize
+            const nx = nor[ix * 3], ny = nor[ix * 3 + 1], nz = nor[ix * 3 + 2];
+            const wx = m[0] * nx + m[4] * ny + m[8] * nz;
+            const wy = m[1] * nx + m[5] * ny + m[9] * nz;
+            const wz = m[2] * nx + m[6] * ny + m[10] * nz;
+            const l = Math.hypot(wx, wy, wz) || 1;
+            t.n.push([wx / l, wy / l, wz / l]);
+          } else t.n.push(null);
         }
         tris.push(t);
       }
@@ -339,7 +349,8 @@ function visibilityCull(tris, res = 420) {
     dirs.push([Math.cos(a) * 0.985, -0.17, Math.sin(a) * 0.985]); // under-view grazing
     dirs.push([Math.cos(a) * 0.985, 0.17, Math.sin(a) * 0.985]);
   }
-  const visible = new Uint8Array(tris.length);
+  const visible = new Uint16Array(tris.length);
+  const seen = new Uint8Array(tris.length);
   const zb = new Float64Array(res * res);
   const ib = new Int32Array(res * res);
   for (const d of dirs) {
@@ -394,9 +405,24 @@ function visibilityCull(tris, res = 420) {
           }
         }
     }
-    for (let o = 0; o < ib.length; o++) if (ib[o] >= 0) visible[ib[o]] = 1;
+    for (let o = 0; o < ib.length; o++) if (ib[o] >= 0) seen[ib[o]] = 1;
+    for (let i = 0; i < tris.length; i++)
+      if (seen[i]) {
+        visible[i]++;
+        seen[i] = 0;
+      }
   }
-  return tris.filter((_, i) => visible[i]);
+  /* View-count doubles as baked ambient occlusion: a panel seen from most
+     directions is open sky, a grille slat or wheel-well wall seen from two
+     is a cavity. Shaped gently so it shades, never dirties. */
+  const out = [];
+  for (let i = 0; i < tris.length; i++) {
+    if (!visible[i]) continue;
+    const t = tris[i];
+    t.ao = 0.42 + 0.58 * Math.pow(Math.min(1, visible[i] / 34), 0.55);
+    out.push(t);
+  }
+  return out;
 }
 
 /* ---------------- rear-biased simplification ---------------------------- */
@@ -416,24 +442,39 @@ async function simplifyRearBiased(tris, b, ratios) {
   const L = b.size[2], z0 = b.mn[2];
   // weld by position+uv+mat (UV seams stay split; attribute error handles them)
   const map = new Map();
-  const pos = [], uvs = [], mats = [], idx = [];
+  const pos = [], uvs = [], nrm = [], aos = [], mats = [], idx = [];
   for (const t of tris)
     for (let e = 0; e < 3; e++) {
-      const p = t.p[e], u = t.uv[e];
-      const key = `${p[0].toFixed(4)},${p[1].toFixed(4)},${p[2].toFixed(4)}|${u[0].toFixed(4)},${u[1].toFixed(4)}|${t.mat}`;
+      const p = t.p[e], u = t.uv[e], nn = t.n[e] || [0, 1, 0];
+      const key =
+        `${p[0].toFixed(4)},${p[1].toFixed(4)},${p[2].toFixed(4)}|${u[0].toFixed(4)},${u[1].toFixed(4)}|` +
+        `${nn[0].toFixed(2)},${nn[1].toFixed(2)},${nn[2].toFixed(2)}|${t.mat}`;
       let ix = map.get(key);
       if (ix === undefined) {
         ix = pos.length / 3;
         map.set(key, ix);
         pos.push(p[0], p[1], p[2]);
         uvs.push(u[0], u[1]);
+        nrm.push(nn[0], nn[1], nn[2]);
+        aos.push(t.ao ?? 1);
         mats.push(t.mat);
       }
       idx.push(ix);
     }
   let indices = Uint32Array.from(idx);
   const positions = Float32Array.from(pos);
-  const attributes = Float32Array.from(uvs);
+  /* UVs AND the authored smooth normals ride as simplification attributes:
+     recomputing normals after decimation is what made the first bake read
+     BLOCKY in-game — the donors' shading is authored, keep it. */
+  const attributes = new Float32Array((pos.length / 3) * 6);
+  for (let i = 0; i < pos.length / 3; i++) {
+    attributes[i * 6] = uvs[i * 2];
+    attributes[i * 6 + 1] = uvs[i * 2 + 1];
+    attributes[i * 6 + 2] = nrm[i * 3];
+    attributes[i * 6 + 3] = nrm[i * 3 + 1];
+    attributes[i * 6 + 4] = nrm[i * 3 + 2];
+    attributes[i * 6 + 5] = aos[i];
+  }
   const nvtx = pos.length / 3;
   const zf = new Float64Array(nvtx);
   for (let i = 0; i < nvtx; i++) zf[i] = (pos[i * 3 + 2] - z0) / L;
@@ -454,7 +495,7 @@ async function simplifyRearBiased(tris, b, ratios) {
   const run = (lock, target) => {
     try {
       const [simplified] = MeshoptSimplifier.simplifyWithAttributes(
-        indices, positions, 3, attributes, 2, [0.9, 0.9], lock,
+        indices, positions, 3, attributes, 6, [0.9, 0.9, 0.55, 0.55, 0.55, 0.3], lock,
         Math.max(300, Math.floor(target / 3) * 3), 0.03, []
       );
       if (simplified.length < indices.length) indices = simplified;
@@ -476,11 +517,15 @@ async function simplifyRearBiased(tris, b, ratios) {
   }
   const out = [];
   for (let k = 0; k < indices.length; k += 3) {
-    const t = { p: [], uv: [], mat: mats[indices[k]] };
+    const t = { p: [], uv: [], n: [], mat: mats[indices[k]] };
     for (let e = 0; e < 3; e++) {
       const ix = indices[k + e];
       t.p.push([positions[ix * 3], positions[ix * 3 + 1], positions[ix * 3 + 2]]);
-      t.uv.push([attributes[ix * 2], attributes[ix * 2 + 1]]);
+      t.uv.push([attributes[ix * 6], attributes[ix * 6 + 1]]);
+      const nx = attributes[ix * 6 + 2], ny = attributes[ix * 6 + 3], nz = attributes[ix * 6 + 4];
+      const l = Math.hypot(nx, ny, nz);
+      t.n.push(l > 1e-6 ? [nx / l, ny / l, nz / l] : null);
+      (t.aoV ??= []).push(Math.min(1, Math.max(0.3, attributes[ix * 6 + 5])));
     }
     out.push(t);
   }
@@ -494,6 +539,37 @@ async function simplifyRearBiased(tris, b, ratios) {
    material (untextured in all four hero donors) becomes a WHITE swatch
    with paintable=1 — per-instance paintCol recolors it directly, which is
    cleaner than the old fleet's texel-hue recolour. */
+/** Extend a tile's edge pixels outward by `m` px on every side — atlas
+    dilation. Without it the gutters hold background colour, and the
+    mipmaps traffic is actually seen through (cars spend their lives 30+ m
+    away) average that background into every panel edge: dark seams up
+    close, rainbow mush at distance. The margins make minified samples
+    blend toward the region's own content instead. */
+async function dilateTile(tile, w, h, m) {
+  const img = sharp(tile);
+  const strip = async (left, top, ew, eh, dw, dh) =>
+    sharp(await img.clone().extract({ left, top, width: ew, height: eh }).png().toBuffer())
+      .resize(dw, dh, { fit: "fill", kernel: "nearest" })
+      .png()
+      .toBuffer();
+  const [T, B, L, R, TL, TR, BL, BR] = await Promise.all([
+    strip(0, 0, w, 1, w, m), strip(0, h - 1, w, 1, w, m),
+    strip(0, 0, 1, h, m, h), strip(w - 1, 0, 1, h, m, h),
+    strip(0, 0, 1, 1, m, m), strip(w - 1, 0, 1, 1, m, m),
+    strip(0, h - 1, 1, 1, m, m), strip(w - 1, h - 1, 1, 1, m, m),
+  ]);
+  return sharp({
+    create: { width: w + 2 * m, height: h + 2 * m, channels: 3, background: { r: 24, g: 26, b: 32 } },
+  })
+    .composite([
+      { input: TL, left: 0, top: 0 }, { input: T, left: m, top: 0 }, { input: TR, left: m + w, top: 0 },
+      { input: L, left: 0, top: m }, { input: tile, left: m, top: m }, { input: R, left: m + w, top: m },
+      { input: BL, left: 0, top: m + h }, { input: B, left: m, top: m + h }, { input: BR, left: m + w, top: m + h },
+    ])
+    .jpeg({ quality: 90 })
+    .toBuffer();
+}
+
 async function bakeAtlas(doc, tris, size) {
   const used = new Map(); // mat -> tri count
   for (const t of tris) used.set(t.mat, (used.get(t.mat) || 0) + 1);
@@ -577,14 +653,18 @@ async function bakeAtlas(doc, tris, size) {
           };
       tile = await sharp({ create: { width: px.width, height: px.height, channels: 3, background: c } }).jpeg().toBuffer();
     }
-    compA.push({ input: tile, left: px.left, top: px.top });
+    {
+      const m = Math.max(3, Math.round(GUT * size));
+      const fat = await dilateTile(tile, px.width, px.height, m);
+      compA.push({ input: fat, left: px.left - m, top: px.top - m });
+    }
     // metallicRoughness at half res: source map or constants (G=rough, B=metal)
     const hpx = { left: px.left >> 1, top: px.top >> 1, width: Math.max(1, px.width >> 1), height: Math.max(1, px.height >> 1) };
     let mtile;
     if (inf.mrImg) mtile = await sharp(inf.mrImg).resize(hpx.width, hpx.height, { fit: "fill" }).jpeg().toBuffer();
     else {
-      const rough = inf.paint ? 0.38 : inf.blend ? 0.1 : Math.min(1, inf.rough);
-      const metal = inf.paint ? 0.55 : inf.blend ? 0 : Math.min(1, inf.metal * 0.6);
+      const rough = inf.paint ? 0.34 : inf.blend ? 0.12 : Math.min(1, inf.rough);
+      const metal = inf.paint ? 0.5 : inf.blend ? 0 : Math.min(1, inf.metal * 0.5);
       mtile = await sharp({
         create: {
           width: hpx.width, height: hpx.height, channels: 3,
@@ -592,9 +672,14 @@ async function bakeAtlas(doc, tris, size) {
         },
       }).jpeg().toBuffer();
     }
-    compM.push({ input: mtile, left: hpx.left, top: hpx.top });
+    {
+      const m = Math.max(2, Math.round((GUT * size) / 2));
+      const fat = await dilateTile(mtile, hpx.width, hpx.height, m);
+      compM.push({ input: fat, left: hpx.left - m, top: hpx.top - m });
+    }
   }
   const albedoJpg = await albedo.composite(compA).jpeg({ quality: 85, chromaSubsampling: "4:4:4" }).toBuffer();
+  const albedoRaw = await sharp(albedoJpg).raw().toBuffer({ resolveWithObject: true });
   const mrJpg = await sharp({
     create: { width: mr.width, height: mr.height, channels: 3, background: { r: 0, g: 180, b: 20 } },
   }).composite(compM).jpeg({ quality: 82 }).toBuffer();
@@ -611,7 +696,7 @@ async function bakeAtlas(doc, tris, size) {
     t.paint = meta.get(t.mat).paint ? 1 : 0;
     t.blend = meta.get(t.mat).blend;
   }
-  return { albedoJpg, mrJpg };
+  return { albedoJpg, mrJpg, albedoRaw };
 }
 
 /* ---------------- normals, lamps, fit, write ---------------------------- */
@@ -659,14 +744,16 @@ function writeGlb(file, m) {
     const key =
       `${m.position[i * 3].toFixed(3)},${m.position[i * 3 + 1].toFixed(3)},${m.position[i * 3 + 2].toFixed(3)}|` +
       `${m.normal[i * 3].toFixed(2)},${m.normal[i * 3 + 1].toFixed(2)},${m.normal[i * 3 + 2].toFixed(2)}|` +
-      `${m.texcoord[i * 2].toFixed(3)},${m.texcoord[i * 2 + 1].toFixed(3)}|${m.paintable[i]}|${m.lampKind[i]}`;
+      `${m.texcoord[i * 2].toFixed(3)},${m.texcoord[i * 2 + 1].toFixed(3)}|${m.paintable[i]}|${m.lampKind[i]}|` +
+      `${(m.color ? m.color[i * 3] : 1).toFixed(2)}`;
     let ix = map.get(key);
     if (ix === undefined) {
       ix = P.length / 3;
       map.set(key, ix);
       P.push(m.position[i * 3], m.position[i * 3 + 1], m.position[i * 3 + 2]);
       N.push(m.normal[i * 3], m.normal[i * 3 + 1], m.normal[i * 3 + 2]);
-      CO.push(1, 1, 1);
+      if (m.color) CO.push(m.color[i * 3], m.color[i * 3 + 1], m.color[i * 3 + 2]);
+      else CO.push(1, 1, 1);
       UV.push(m.texcoord[i * 2], m.texcoord[i * 2 + 1]);
       PA.push(m.paintable[i]);
       LK.push(m.lampKind[i]);
@@ -796,8 +883,10 @@ async function build(style, cfg) {
     const spin = rot + (SPIN[style] || 0);
     if (spin) {
       const c = Math.cos(spin), s = Math.sin(spin);
-      for (const t of tris)
+      for (const t of tris) {
         t.p = t.p.map(([x, y, z]) => [x * c + z * s, y, -x * s + z * c]);
+        t.n = t.n.map((nn) => (nn ? [nn[0] * c + nn[2] * s, nn[1], -nn[0] * s + nn[2] * c] : nn));
+      }
       b = bounds(tris);
     }
   }
@@ -808,13 +897,43 @@ async function build(style, cfg) {
   tris = visibilityCull(tris);
   const afterCull = tris.length;
 
+  if (cfg.kind === "pack") {
+    /* Packs skip the simplifier, so their per-TRI ao would split every
+       shared vertex at the weld (adjacent tris rarely agree to 2dp).
+       Average it per position first — smooth shading, welded verts. */
+    const acc = new Map();
+    const key = (pt) => `${pt[0].toFixed(3)},${pt[1].toFixed(3)},${pt[2].toFixed(3)}`;
+    for (const t of tris)
+      for (const pt of t.p) {
+        const k = key(pt);
+        const a = acc.get(k) || [0, 0];
+        a[0] += t.ao ?? 1;
+        a[1]++;
+        acc.set(k, a);
+      }
+    for (const t of tris) {
+      t.aoV = t.p.map((pt) => {
+        const a = acc.get(key(pt));
+        return a[0] / a[1];
+      });
+      delete t.ao;
+    }
+  }
+
   if (cfg.kind === "hero") {
     /* Heroes arrive nose at +z (verified by render); regions are rear→front. */
-    const ratios = HD ? [0.62, 0.36, 0.22] : [0.2, 0.11, 0.09];
+    const ratios = HD ? [0.85, 0.5, 0.3] : [0.3, 0.14, 0.1];
     tris = await simplifyRearBiased(tris, bounds(tris), ratios);
   }
 
-  const { albedoJpg, mrJpg } = await bakeAtlas(doc, tris, HD ? 1024 : 512);
+  const { albedoJpg, mrJpg, albedoRaw } = await bakeAtlas(doc, tris, HD ? 1024 : 512);
+  const texel = (u, v) => {
+    const { data, info } = albedoRaw;
+    const x = Math.min(info.width - 1, Math.max(0, Math.round(u * info.width)));
+    const y = Math.min(info.height - 1, Math.max(0, Math.round(v * info.height)));
+    const o = (y * info.width + x) * info.channels;
+    return [data[o], data[o + 1], data[o + 2]];
+  };
 
   /* Fit to the game's dims: whole box (mirrors included) lands exactly on
      L/W/H, ground at y=0, +Z nose. Wheels ride through the same transform. */
@@ -822,7 +941,17 @@ async function build(style, cfg) {
   const scale = [cfg.W / b.size[0], cfg.H / b.size[1], cfg.L / b.size[2]];
   const cx = b.mn[0] + b.size[0] / 2, cz = b.mn[2] + b.size[2] / 2;
   const fit = ([x, y, z]) => [(x - cx) * scale[0], (y - b.mn[1]) * scale[1], (z - cz) * scale[2]];
-  for (const t of tris) t.p = t.p.map(fit);
+  for (const t of tris) {
+    t.p = t.p.map(fit);
+    // non-uniform fit → normals transform by the inverse scale, renormalized
+    if (t.n)
+      t.n = t.n.map((nn) => {
+        if (!nn) return nn;
+        const nx = nn[0] / scale[0], ny = nn[1] / scale[1], nz = nn[2] / scale[2];
+        const l = Math.hypot(nx, ny, nz) || 1;
+        return [nx / l, ny / l, nz / l];
+      });
+  }
   const fittedWheels = wheels
     .map((w) => {
       const c = fit([w.x, w.y, w.z]);
@@ -849,8 +978,17 @@ async function build(style, cfg) {
     const inY = c[1] > cfg.H * 0.25 && c[1] < cfg.H * 0.78;
     const outX = Math.abs(c[0]) > cfg.W * 0.12;
     let kind = 0;
-    if (t.blend && inY && outX && c[2] < tailZ) kind = 2;
-    else if (t.blend && inY && outX && c[2] > headZ) kind = 1;
+    if (t.blend && inY && outX && (c[2] < tailZ || c[2] > headZ)) {
+      /* Position puts the triangle at a lamp cluster; the TEXEL decides if
+         it is actually lens. Without this the whole smoked housing glowed
+         and the rears read as one red smear from 20 m out. */
+      const uc = (t.uv[0][0] + t.uv[1][0] + t.uv[2][0]) / 3;
+      const vc = (t.uv[0][1] + t.uv[1][1] + t.uv[2][1]) / 3;
+      const [r, g, bl] = texel(uc, vc);
+      if (c[2] < tailZ) {
+        if (r > 60 && r > g * 1.35 && r > bl * 1.2) kind = 2;
+      } else if (r > 110 && g > 100 && bl > 90) kind = 1;
+    }
     t.lamp = kind;
     if (kind) {
       const side = lampSum[kind === 1 ? "head" : "tail"][c[0] < 0 ? 0 : 1];
@@ -881,16 +1019,24 @@ async function build(style, cfg) {
   const position = new Float32Array(nv * 3);
   const normal = new Float32Array(nv * 3);
   const texcoord = new Float32Array(nv * 2);
+  const color = new Float32Array(nv * 3);
   const paintable = new Float32Array(nv);
   const lampKind = new Float32Array(nv);
-  const normals = faceNormalsSmoothed(tris);
+  const crease = faceNormalsSmoothed(tris);
   tris.forEach((t, i) => {
     for (let e = 0; e < 3; e++) {
       const o = (i * 3 + e) * 3;
       position.set(t.p[e], o);
-      normal.set(normals[i][e], o);
+      normal.set(t.n && t.n[e] ? t.n[e] : crease[i][e], o);
       texcoord[(i * 3 + e) * 2] = t.uv[e][0];
       texcoord[(i * 3 + e) * 2 + 1] = t.uv[e][1]; // already top-down glTF v
+      /* COLOR_0 carries the baked AO (lamps exempt — a lens must not dim
+         its own emissive). The NPC material multiplies vertex colour into
+         the albedo, so this shades wells, grilles and shutlines for free. */
+      const ao = t.lamp ? 1 : t.aoV ? t.aoV[e] : t.ao ?? 1;
+      color[(i * 3 + e) * 3] = ao;
+      color[(i * 3 + e) * 3 + 1] = ao;
+      color[(i * 3 + e) * 3 + 2] = ao;
       paintable[i * 3 + e] = t.paint || 0;
       lampKind[i * 3 + e] = t.lamp || 0;
     }
@@ -905,7 +1051,7 @@ async function build(style, cfg) {
       : "Generic civil service vehicles pack by comrade1280 (CC-BY 4.0)",
   };
   const result = writeGlb(path.join(OUT, `${style}.glb`), {
-    position, normal, texcoord, paintable, lampKind,
+    position, normal, texcoord, color, paintable, lampKind,
     image: albedoJpg, mrImage: mrJpg, extras,
   });
   console.log(
