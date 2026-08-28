@@ -308,7 +308,7 @@ export default function GameApp() {
 
       {screen === "paused" && (
         <div className="menuRoot paused">
-          <h1 className="menuTitle" style={{ fontSize: 34 }}>PAUSED</h1>
+          <h1 className="menuTitle sm">PAUSED</h1>
           <div className="menuBtns">
             <button className="menuBtn primary" onClick={resume}>RESUME</button>
             <button className="menuBtn" onClick={() => setScreen("garage")}>GARAGE</button>
@@ -387,7 +387,7 @@ export default function GameApp() {
               <b>, / .</b><span>previous / next piece</span>
               <b>Esc</b><span>pause menu (music pauses with it)</span>
             </div>
-            <p style={{ color: "#7d8aa8", marginTop: 12, fontSize: 12 }}>
+            <p className="ctrlNote">
               Follow the green EXIT boards on the expressway — each numbered exit has a lit
               off-ramp down into the town on both sides. Crashed cars keep their hazards on,
               smoke, and get towed away shortly.
@@ -430,7 +430,7 @@ function LoadingScreen({
         <div className="loadErr">
           Something went wrong building the town.
           <code>{error}</code>
-          <div className="menuBtns" style={{ minWidth: 0, marginTop: 18 }}>
+          <div className="menuBtns inline">
             <button className="menuBtn primary" onClick={() => location.reload()}>
               RELOAD
             </button>
@@ -542,7 +542,7 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
   };
   return (
     <div className="menuRoot">
-      <div className="panel" style={{ width: "min(760px,95vw)" }}>
+      <div className="panel wide">
         <h2>GARAGE</h2>
         <div className="jp2">車庫 — pick your machine</div>
         <div className="garageCars">
@@ -617,6 +617,12 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="row"><label>{label}</label>{children}</div>
+  );
+}
+
+function Section({ label }: { label: string }) {
+  return (
+    <div className="sectionHead">{label}</div>
   );
 }
 
@@ -803,7 +809,7 @@ function SettingsPanel({
             onChange={(e) => upd((x) => (x.vol = +e.target.value / 100))}
           />
         </Row>
-        <hr />
+        <Section label="World & weather" />
         <Row label={`Time of day — ${fmtTime(game.time)}`}>
           <input
             type="range" min={0} max={24} step={0.25} value={game.time}
@@ -823,7 +829,7 @@ function SettingsPanel({
             }}
           />
         </Row>
-        <hr />
+        <Section label="Session" />
         <Row label={`Town seed — ${game.seed}`}>
           <button onClick={onReseed}>NEW TOWN (reloads)</button>
         </Row>
