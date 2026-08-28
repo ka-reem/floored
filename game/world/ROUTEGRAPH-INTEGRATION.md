@@ -1,5 +1,17 @@
 # Route graph — stage-2 integration contract
 
+> **2026-08-28, mountain-road lane:** the graph has since grown EXIT 4
+> (`corridor.MTN`, the two-way mountain pass). Two junction nodes split the
+> old seam edge, and three edges were appended — `MAIN_PASS_WINDOW_EDGE` (8),
+> `MAIN_RIVER_EDGE` (9), `MOUNTAIN_EDGE` (10, `graph.mtn`) — so ids 0–7 below
+> keep their meaning but `main/seam` now ends at `mtn-diverge` and there is a
+> fourth loop, `mountain`. `surfaceAt`/`newParapetGaps`/`distToNew` walk
+> `graph.attached` (`[bypass, mtn]`); `mergeWindow(edge?)` takes the edge;
+> gap entries carry an `edgeId`; `graph.apronW/apronAt/mtnAprons` are the
+> deck-frame gore runoff aprons (see docs/handoff/reports/mountain-road.md).
+> The stage-2 contract below is otherwise unchanged and remains accurate for
+> the bypass/town wiring it describes.
+
 Stage 1 (this worktree) shipped the graph **core**: `game/world/routegraph.ts`,
 verified standalone by `test/routegraph-check.mjs`. Nothing visual changed and
 no consumer was touched — the main loop is bit-identical (corridor-check runs

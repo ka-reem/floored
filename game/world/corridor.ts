@@ -844,6 +844,59 @@ export const OVERPASSES = [
   { ...OVERPASS, z: -720, clear: 9.6 },
   OVERPASS,
 ];
+/** The mountain road (EXIT 4, 峠 Tōge): a two-lane, two-way riverside pass
+    that leaves the deck through an east-side gore, climbs a rock shelf above
+    the river bank, winds, and merges back through a second east gore. The
+    geometry itself is a routegraph PolyRouteEdge (routegraph.ts buildMountain
+    reads this spec); the numbers live HERE, like BRIDGE and OVERPASS, so the
+    browser-free checks can assert real placement and sections() can keep its
+    lattice fills clear of the gores without importing routegraph.
+
+    WHY THESE Z. The map-overhaul lane proved the no-taper budget inside
+    TAPER_BAND is fully claimed (tunnel hard windows, both town gores,
+    WIDE_PIN, the toll pin — see its report). But the SPLICE BAND is taper-free
+    BY CONSTRUCTION: no lane step may touch z outside TAPER_BAND, the pitch
+    schedule is long since settled, and neither tunnel can reach past its hard
+    window — so [-2000, -1600] is guaranteed straight (first X bend starts at
+    -1500), level (first Y bend at -1550) and BASE_LANES wide on every seed.
+    The price is the splice discipline the bypass avoided by staying inside
+    (Z0+EXT, Z1−EXT): everything of the road below Z0+EXT must ALSO be emitted
+    at z+LOOP so the overrun the player sees across the seam (and the mirrors
+    show behind it) carries the same gores and the same road. Meshes and gap
+    windows are duplicated (scenery.ts copies() rule); colliders and physics
+    stay canonical-only, because a car is wrapped back into [Z0, Z1) before it
+    can ever stand on a copy.
+
+    Siting details the checks pin down: both gores clear the z=-2000/-1500
+    gantries, every hand-placed section, both tunnels' hard windows, and the
+    toll; the road's own extent stays ≥ 8 m inside Z0 so nothing a car can
+    drive triggers spliceDelta; laterally it lives in the flat strip between
+    the deck edge and the river's near bank (scenery.ts RIVER, water from
+    x=652), i.e. centreline lat ≤ ~105. */
+export const MTN = {
+  /** gore noses, east side (+lat) both — the lap's first left exit */
+  divergeZ: -1968,
+  mergeZ: -1644,
+  /** one narrow lane each way; keep-right, oncoming on the river side */
+  lanes: 2,
+  laneW: 3.3,
+  shoulder: 0.55,
+  /** pavement half width when fully open */
+  half: 3.3 + 0.55,
+  /** gore taper length */
+  nose: 14,
+  /** structural skirt depth below the pavement */
+  deckT: 0.9,
+  /** oncoming turnout (lay-by) near the diverge, in edge arclength from the
+      diverge nose: the pocket oncoming traffic pulls into and stops, so the
+      wrong-way lane can never feed the one-way deck. Extra width on +lat. */
+  laybyS0: 52,
+  laybyS1: 96,
+  laybyW: 2.6,
+  /** the river's near-bank riprap starts at x≈622 (scenery.ts) — the road,
+      its skirt included, must stay west of it */
+  xMax: 614,
+};
 
 /** Hand-placed sections. Everything else is `viaduct`, and the `mesh` runs
     come off the PITCH.soundwall lattice (see `sections()`).
@@ -1282,7 +1335,10 @@ export class Corridor {
       out.some((s) => a < s.z1 && b > s.z0) ||
       inTube(a, b) ||
       (a < TOLL.z1 && b > TOLL.z0) ||
-      CONNECT_Z.some((cz) => a < cz + 260 && b > cz - 260);
+      CONNECT_Z.some((cz) => a < cz + 260 && b > cz - 260) ||
+      // the mountain-road gores cut the east parapet the same way the town
+      // gores cut the west one — no screen run may stand over either
+      [MTN.divergeZ, MTN.mergeZ].some((cz) => a < cz + 240 && b > cz - 240);
     for (const z0 of this.lattice(PITCH.soundwall)) {
       // one entry per lap: the overrun's copies are found through wrapZ
       if (z0 < this.Z0 || z0 >= this.Z1) continue;

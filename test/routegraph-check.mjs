@@ -29,8 +29,8 @@ for (const f of ["corridor.js", "ramps.js", "routegraph.js"]) {
 }
 const { getCorridor, TUNNEL, TOLL } = await import(path.join(dir, "corridor.js"));
 const {
-  getRouteGraph, DIVERGE_Z, MERGE_Z, BYPASS,
-  MAIN_SEAM_EDGE, BYPASS_EDGE,
+  getRouteGraph, DIVERGE_Z, MERGE_Z, BYPASS, MTN,
+  MAIN_SEAM_EDGE, BYPASS_EDGE, MOUNTAIN_EDGE,
 } = await import(path.join(dir, "routegraph.js"));
 const { CONNECT_Z } = await import(path.join(dir, "const.js"));
 const { spawnWindow } = await import(path.join(dir, "ramps.js"));
@@ -353,19 +353,196 @@ for (const cr of g.crossings) {
   const nj = g.nextJunctionOnMain(100);
   if (nj.node.name !== "bypass-diverge" || Math.abs(nj.dz - 400) > 1)
     bad(`nextJunctionOnMain(100) → ${nj.node.name} at ${f(nj.dz)} m (want bypass-diverge at 400)`);
-  const nj2 = g.nextJunctionOnMain(1700); // past the merge: wraps to the exit gore
-  if (nj2.node.name !== "exit-gore") bad(`nextJunctionOnMain(1700) → ${nj2.node.name}`);
+  // past the bypass merge the next junction is now the mtn diverge, just
+  // across the seam; the exit gore comes two junctions later
+  const nj2 = g.nextJunctionOnMain(1700);
+  if (nj2.node.name !== "mtn-diverge") bad(`nextJunctionOnMain(1700) → ${nj2.node.name}`);
+  const nj3 = g.nextJunctionOnMain(MTN.mergeZ + 10);
+  if (nj3.node.name !== "exit-gore") bad(`nextJunctionOnMain(past mtn merge) → ${nj3.node.name}`);
   const nx = g.nextEdges(2).map((e) => e.name).sort();
   if (nx.join() !== "bypass,main/tunnel-toll")
     bad(`nextEdges(main/climb) → [${nx}] — the diverge should offer exactly two ways on`);
+  const nxm = g.nextEdges(MAIN_SEAM_EDGE).map((e) => e.name).sort();
+  if (nxm.join() !== "main/pass-window,mountain")
+    bad(`nextEdges(main/seam) → [${nxm}] — the mtn diverge should offer exactly two ways on`);
   const seam = g.edge(MAIN_SEAM_EDGE);
   const zw = seam.zAtS(seam.len - 1);
-  if (Math.abs(c.deltaZ(zw, CONNECT_Z[0])) > 2)
-    bad("the seam edge does not come back around to the exit gore");
+  if (Math.abs(c.deltaZ(zw, MTN.divergeZ)) > 2)
+    bad("the seam edge does not end at the mtn diverge");
+  if (g.edge(MOUNTAIN_EDGE) !== g.mtn) bad("MOUNTAIN_EDGE points at the wrong edge");
   const pl = g.polylines();
   if (pl.length !== g.edges.length || pl.some((p) => p.pts.length < 6))
     bad("polylines() is missing an edge");
   if (g.edge(BYPASS_EDGE) !== by) bad("BYPASS_EDGE points at the wrong edge");
+}
+
+/* ---- 11. the mountain road (corridor.MTN, EXIT 4) ------------------------
+   Same battery the bypass gets — junction continuity, alignment quality,
+   surface attachment — plus the two disciplines this road specifically signed
+   up for: the splice-copy rule (it lives inside the south splice window, so
+   everything of it must fit a z+LOOP copy inside the built extent and never
+   cross Z0), and the two-way fiction (both lane centres on pavement the whole
+   way, a lay-by pocket for the oncoming stream to die in). */
+{
+  const mt = g.mtn;
+  console.log("mountain road:");
+
+  // splice-copy discipline
+  if (mt.zb0 < c.Z0 + 4)
+    bad(`mtn geometry reaches z=${f(mt.zb0)} — a car there would trip spliceDelta`);
+  if (mt.zb1 > c.Z0 + c.EXT)
+    bad(`mtn geometry ends at z=${f(mt.zb1)} — its +LOOP copy would overrun ZB1` +
+      ` (must stay ≤ ${c.Z0 + c.EXT})`);
+  else
+    console.log(`  z-extent [${f(mt.zb0)}, ${f(mt.zb1)}]: never crosses Z0,` +
+      ` +LOOP copy fits the built extent`);
+  let wraps = 0;
+  for (const p of mt.stations) if (c.spliceDelta(p.z) !== 0) wraps++;
+  if (wraps) bad(`${wraps} mtn stations sit outside the canonical band`);
+  // the strip is bounded by the river's near bank (scenery.ts riprap)
+  if (mt.x1 > MTN.xMax)
+    bad(`mtn pavement reaches x=${f(mt.x1)} — into the river bank (max ${MTN.xMax})`);
+  else console.log(`  east reach x=${f(mt.x1)} stays off the river bank (${MTN.xMax})`);
+
+  // junction continuity at both gores
+  for (const [name, uz, s] of [
+    ["diverge", MTN.divergeZ, 0],
+    ["merge", MTN.mergeZ, mt.len - 8],
+  ]) {
+    const p = mt.poseAt(s);
+    const zc = c.zAt(p.x, p.z);
+    const q = c.pose(zc);
+    const dh = Math.abs(p.h - q.h);
+    const dy = Math.abs(p.y - c.centerY(zc));
+    const edgeGap = Math.abs(c.latAt(p.x, p.z)) - c.halfWidth(zc);
+    console.log(`  ${name.padEnd(7)} gore z=${String(uz).padStart(6)}` +
+      `  Δh ${dh.toExponential(1)} rad  Δy ${dy.toExponential(1)} m` +
+      `  nose ${f(edgeGap)} m off the deck edge`);
+    if (dh > 2e-3) bad(`mtn ${name}: heading discontinuity at the gore`);
+    if (dy > 1e-3) bad(`mtn ${name}: height discontinuity at the gore`);
+    if (Math.abs(p.grade - q.grade) > 2e-3) bad(`mtn ${name}: grade discontinuity`);
+    if (edgeGap < 0.3 || edgeGap > 1.2)
+      bad(`mtn ${name}: gore nose is ${f(edgeGap)} m off the deck edge (want ≈ 0.6)`);
+    if (Math.abs(p.bank) > 1e-6) bad(`mtn ${name}: banked cross-section at the gore`);
+    if (Math.abs(zc - uz) > 6) bad(`mtn ${name}: nose landed at z=${f(zc)}, not ${uz}`);
+    if (c.inTunnel(uz, 30)) bad(`mtn ${name} gore is inside a tunnel`);
+    if (c.laneCount(uz) !== 3 || Math.abs(c.slopeX(uz)) > 1e-9)
+      bad(`mtn ${name} gore is not on the straight three-lane splice-band deck`);
+  }
+
+  // alignment quality: this is a pass, so the budgets differ from the
+  // bypass's on purpose — tighter corners and steeper grades are the point,
+  // but they still have to be drivable and kink-free
+  {
+    let maxG = 0, maxGAt = 0, maxBank = 0, minR = 1e9, minRAt = 0, maxTurn = 0;
+    let yMin = 1e9, yMax = -1e9;
+    const st = mt.stations;
+    for (let i = 1; i < st.length; i++) {
+      const p = st[i], a = st[i - 1];
+      if (Math.abs(p.grade) > maxG) {
+        maxG = Math.abs(p.grade);
+        maxGAt = p.z;
+      }
+      maxBank = Math.max(maxBank, Math.abs(p.bank));
+      yMin = Math.min(yMin, p.y);
+      yMax = Math.max(yMax, p.y);
+      let dh = Math.atan2(p.tx, p.tz) - Math.atan2(a.tx, a.tz);
+      while (dh > Math.PI) dh -= 2 * Math.PI;
+      while (dh < -Math.PI) dh += 2 * Math.PI;
+      const ds = Math.max(0.01, p.s - a.s);
+      maxTurn = Math.max(maxTurn, Math.abs(dh));
+      const k = Math.abs(dh) / ds;
+      if (k > 1e-6 && 1 / k < minR) {
+        minR = 1 / k;
+        minRAt = p.z;
+      }
+    }
+    console.log(`  ${f(mt.len)} m of road over ${MTN.mergeZ - MTN.divergeZ} m of deck,` +
+      ` elevation ${f(yMin)}–${f(yMax)} m`);
+    console.log(`  max grade ${f(maxG * 100)}% at z=${f(maxGAt)}, min radius ${f(minR)} m` +
+      ` at z=${f(minRAt)}, max bank ${f(maxBank * 100)}%,` +
+      ` max turn/station ${f((maxTurn * 180) / Math.PI)}°`);
+    // a real detour, not a service road shadowing the deck: ≥ 28% extra road
+    // packed into the same z-window is what the meander exists to buy
+    if (mt.len < (MTN.mergeZ - MTN.divergeZ) * 1.28)
+      bad("the pass is barely longer than the deck it bypasses — not a detour");
+    if (maxG > 0.09) bad(`mtn grade ${f(maxG * 100)}% is steeper than 9%`);
+    if (minR < 13) bad(`mtn corner radius ${f(minR)} m is under 13 m — undrivable`);
+    if (minR > 60) bad(`mtn min radius ${f(minR)} m — nothing here is a mountain corner`);
+    if (maxBank > 0.065) bad("mtn superelevation exceeds 6.5%");
+    if (maxTurn > 0.11) bad("a mtn station-to-station heading step exceeds ~6.3° — kink");
+    if (yMax - 10 < 4) bad("the pass never climbs high enough to read as a climb");
+  }
+
+  // both lane centres stay on pavement wherever the width is fully open,
+  // and the oncoming lane (+lat, river side) dies into the lay-by cleanly
+  {
+    let laybyMax = 0;
+    for (const p of mt.stations) {
+      laybyMax = Math.max(laybyMax, p.hwL - MTN.half);
+      if (p.hwL < MTN.half - 0.01 || p.hwR < MTN.half - 0.01) continue;
+      for (const off of [MTN.laneW / 2, -MTN.laneW / 2]) {
+        if (off > p.hwL - 0.9 || off < -(p.hwR - 0.9))
+          bad(`a mtn lane centre runs off the pavement at s=${f(p.s)}`);
+      }
+    }
+    console.log(`  lay-by pocket: +${f(laybyMax)} m over` +
+      ` s ∈ [${MTN.laybyS0}, ${MTN.laybyS1}]`);
+    if (laybyMax < MTN.laybyW - 0.15) bad("the oncoming lay-by never opens");
+    const mw = g.mergeWindow(mt);
+    console.log(`  merge window: s ∈ [${f(mw.s0)}, ${f(mw.s1)}] (${f(mw.s1 - mw.s0)} m)`);
+    if (mw.s1 - mw.s0 < 25) bad("the mtn merge window is too short");
+    if (mw.s0 < mt.len / 2) bad("the mtn merge window reaches back past mid-route");
+  }
+
+  // surface attachment along both lane centres (the physics path)
+  {
+    let worst = 0, misses = 0;
+    for (let s = 4; s < mt.len - 4; s += 5) {
+      const { hwL, hwR } = mt.halfWidths(s);
+      for (const off of [MTN.laneW / 2, -MTN.laneW / 2]) {
+        if (off > hwL - 1 || off < -(hwR - 1)) continue;
+        const w = mt.worldOf(s, off);
+        const hit = g.surfaceAt(w.x, w.z, 0.5);
+        if (!hit) {
+          misses++;
+          continue;
+        }
+        if (hit.edgeId !== MOUNTAIN_EDGE)
+          bad(`surfaceAt answered edge ${hit.edgeId} on the mtn at s=${f(s)}`);
+        worst = Math.max(worst, Math.abs(hit.y - w.y));
+      }
+    }
+    console.log(`  surfaceAt: lane-centre agreement worst ${worst.toExponential(2)} m,` +
+      ` ${misses} misses`);
+    if (misses) bad(`surfaceAt is null at ${misses} mtn lane-centre samples`);
+    if (worst > 0.15) bad("surfaceAt disagrees with the swept mtn surface");
+    // and the deck near both gores still answers as deck, not as mtn pavement
+    let leaks = 0;
+    for (let z = MTN.divergeZ - 60; z < MTN.mergeZ + 60; z += 3) {
+      const hw = c.halfWidth(z);
+      for (const lat of [-hw + 0.4, 0, hw - 0.4]) {
+        const w = c.worldOf(z, lat);
+        const hit = g.surfaceAt(w.x, w.z, 0.0);
+        if (hit && hit.edgeId === MOUNTAIN_EDGE && Math.abs(hit.y - w.y) < 4) leaks++;
+      }
+    }
+    /* the shared gore wedges legitimately answer right AT the deck edge; a
+       leak is an answer over the deck's own lanes */
+    if (leaks) bad(`surfaceAt answers ${leaks} times over the deck lanes near the mtn gores`);
+    else console.log("  deck lanes near both gores stay the corridor's own surface");
+  }
+
+  // the mtn parapet gaps stay inside the splice window and clear the gantry
+  // lattice (PITCH.gantry = 500 puts masts at -2000 and -1500)
+  for (const gp of g.newParapetGaps().slice(2)) {
+    if (gp.side !== 1) bad("a mtn parapet gap is not on the east side");
+    if (gp.z0 < c.Z0 || gp.z1 > c.Z0 + c.EXT)
+      bad(`mtn parapet gap [${f(gp.z0)}, ${f(gp.z1)}] leaves the splice window`);
+    for (const gz of [-2000, -1500])
+      if (gp.z0 < gz + 3 && gp.z1 > gz - 3)
+        bad(`mtn parapet gap [${f(gp.z0)}, ${f(gp.z1)}] swallows the gantry at ${gz}`);
+  }
 }
 
 console.log(fail ? `\n${fail} FAILURE(S)` : "\nall routegraph checks passed");

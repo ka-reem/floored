@@ -19,7 +19,9 @@ import { buildScenery } from "./world/scenery";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
 import { getCorridor, TUNNEL, PITCH, PHASE } from "./world/corridor";
-import { getRouteGraph, BYPASS_EDGE } from "./world/routegraph";
+import {
+  getRouteGraph, BYPASS_EDGE, MOUNTAIN_EDGE, type PolyRouteEdge,
+} from "./world/routegraph";
 import { spawnZ } from "./world/ramps";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
@@ -1654,6 +1656,26 @@ export class Game {
         this.chasePos.set(p.x - Math.sin(h) * 4.4, p.y + 2.15, p.z - Math.cos(h) * 4.4);
         this.lookPos.set(p.x, p.y + 0.95, p.z);
       },
+      /* Drop the car onto the mountain road at arclength s, in lane (0 =
+         forward/rock side, 1 = oncoming/river side), at speed. */
+      toMountain: (s = 40, kmh = 70, lane = 0) => {
+        const mt = this.world.routes!.mtn;
+        const ss = Math.max(4, Math.min(mt.len - 4, s));
+        const p = mt.worldOf(ss, mt.laneOffset(lane, ss));
+        const h0 = mt.poseAt(ss).h + (lane === 1 ? Math.PI : 0);
+        this.car.x = p.x;
+        this.car.y = p.y;
+        this.car.z = p.z;
+        this.car.h = h0;
+        this.car.u = kmh / 3.6;
+        this.car.v = 0;
+        this.car.r = 0;
+        this.car.rev = false;
+        this.car.wvx = 0;
+        this.car.wvz = 0;
+        this.chasePos.set(p.x - Math.sin(h0) * 4.4, p.y + 2.15, p.z - Math.cos(h0) * 4.4);
+        this.lookPos.set(p.x, p.y + 0.95, p.z);
+      },
       state: () => ({
         x: this.car.x, y: this.car.y, z: this.car.z, h: this.car.h,
         u: this.car.u, kmh: Math.abs(this.car.u) * 3.6,
@@ -1667,7 +1689,11 @@ export class Game {
         camYaw: this.camera.rotation.y, revCam: this.revCam,
         npcs: this.traffic.npcs.filter((n) => n.active).length,
         npcsBypass: this.traffic.npcs.filter((n) => n.active && n.route === BYPASS_EDGE).length,
-        onBypass: !!this.world.routes?.surfaceAt(this.car.x, this.car.z, 2),
+        npcsMtn: this.traffic.npcs.filter((n) => n.active && n.route === MOUNTAIN_EDGE).length,
+        npcsMtnOncoming: this.traffic.npcs.filter(
+          (n) => n.active && n.route === MOUNTAIN_EDGE && n.dir < 0).length,
+        onBypass: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === BYPASS_EDGE,
+        onMountain: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === MOUNTAIN_EDGE,
         wrecks: this.traffic.activeWrecks().length,
         chunksVisible: this.world.chunks.filter((c) => c.group.visible).length,
         chunksTotal: this.world.chunks.length,
@@ -3158,17 +3184,21 @@ export class Game {
     const car = this.car;
     const bySurf = this.world.routes?.surfaceAt(car.x, car.z, 2);
     if (bySurf && Math.abs(bySurf.y - car.y) < 3.4) {
-      /* On the bypass: put the car back on its CURRENT route edge — snapping
-         to the corridor from the viaduct would teleport it sideways and 12 m
-         down. Mid-lane at the same arclength, facing down the edge. */
-      const by = this.world.routes!.bypass;
-      const s = Math.max(4, Math.min(by.len - 4, bySurf.s));
-      const off = by.laneOffset(Math.floor(by.lanes(s) / 2), s);
-      const w = by.worldOf(s, off);
+      /* On the bypass or the mountain road: put the car back on its CURRENT
+         route edge — snapping to the corridor from either would teleport it
+         sideways (and, from the viaduct, 12 m down). Mid-lane... except on
+         the mountain road, whose "middle" is the double yellow: there the
+         car goes back to the FORWARD lane centre (−lat, keep-right). */
+      const e = this.world.routes!.edge(bySurf.edgeId) as PolyRouteEdge;
+      const s = Math.max(4, Math.min(e.len - 4, bySurf.s));
+      const off = bySurf.edgeId === MOUNTAIN_EDGE
+        ? e.laneOffset(0, s)
+        : e.laneOffset(Math.floor(e.lanes(s) / 2), s);
+      const w = e.worldOf(s, off);
       car.x = w.x;
       car.y = w.y;
       car.z = w.z;
-      car.h = by.poseAt(s).h;
+      car.h = e.poseAt(s).h;
     } else if (car.y > 4) {
       /* Back onto the corridor. It is one-way now, so there is no travel
          direction to preserve — the alignment supplies the lane centre, the

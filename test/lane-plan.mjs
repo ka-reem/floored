@@ -28,7 +28,7 @@ const walk = (d) => readdirSync(d).flatMap((f) => {
 for (const p of walk(out))
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 const dir = path.join(out, "game", "world");
-const { getCorridor, setRoadSeed, tunnels, signPlan, TOLL, PITCH } =
+const { getCorridor, setRoadSeed, tunnels, signPlan, TOLL, PITCH, MTN } =
   await import(path.join(dir, "corridor.js"));
 const { buildRamps, parapetGap } = await import(path.join(dir, "ramps.js"));
 
@@ -150,6 +150,20 @@ for (let i = 0; i < N; i++) {
   }
   for (let i = 1; i < tun.length; i++)
     if (tun[i].z0 - tun[i - 1].z1 < 120) say("two tunnels close enough for their blends to meet");
+  /* The mountain road's whole siting argument (corridor.MTN) is that the
+     splice band is taper-free, straight, level and BASE_LANES on EVERY seed.
+     That is a planner guarantee, so it gets checked against every road the
+     planner can make — the routegraph checks only ever see one seed. */
+  for (let z = MTN.divergeZ - 20; z <= MTN.mergeZ + 20; z += 2) {
+    if (c.lanes(z) !== 3 || Math.abs(c.laneCount(z) - 3) > 1e-9) {
+      say(`the deck is not a constant 3 lanes through the mtn window at z=${z}`);
+      break;
+    }
+  }
+  if (Math.abs(c.slopeX(MTN.divergeZ)) > 1e-9 || Math.abs(c.slopeX(MTN.mergeZ)) > 1e-9)
+    say("a mtn gore sits on a bend");
+  if (c.inTunnel(MTN.divergeZ, 30) || c.inTunnel(MTN.mergeZ, 30))
+    say("a tunnel reached a mtn gore");
   // edge treatments: no overlap, none standing inside a tube
   const S = c.sections();
   for (let i = 1; i < S.length; i++) if (S[i].z0 < S[i - 1].z1) say("sections overlap");
