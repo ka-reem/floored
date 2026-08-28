@@ -1378,6 +1378,24 @@ export class Game {
   private wheelVal = 0;
   private tiltVal = 0;
   private tiltHooked = false;
+  /** The pointer currently dragging #swheel, set by GameApp's SteerWheel —
+      lets the watchdog below tell a live drag from a wheelVal that got left
+      behind by a gesture the DOM never told anyone had ended. */
+  private wheelPointerId: number | null = null;
+  /** Every pointer id the window has seen go down and not yet seen go back up,
+      kept independently of which element claims to have captured it. Bound at
+      the window in the capture phase (bindInput) so nothing downstream —
+      stopPropagation on gearBtn, a retarget, a hidden element — can keep an
+      up/cancel from reaching it; that makes it the one source of truth the
+      per-control watchdog below can trust when an element's own release
+      listener never fires. */
+  private livePointers = new Set<number>();
+  /** One entry per held touch puck (bindHold), tracking every pointer id
+      currently pressing it. A second finger's stray pointerup landing on a
+      puck it never pressed must not release the first finger's hold — see
+      bindHold — so release is "the ids we captured minus the one that left,"
+      not "any pointerup that reaches this element." */
+  private touchHolds = new Map<string, { key: string; ids: Set<number> }>();
   private fogC = new THREE.Color();
   private prevBlinkOn = false;
   private crashCooldown = 0;
@@ -1952,22 +1970,72 @@ export class Game {
   };
 
   private onWindowBlur = () => {
-    // don't let held keys latch across alt-tab
-    for (const k in this.keydown) this.keydown[k] = 0;
-    /* The keyup for a held G never arrives if the tab lost focus mid-flash.
-       Clearing hiHeld also disarms the hold timer, so a G held through an
-       alt-tab cannot come back two seconds later having toggled the latch. */
-    this.hiHeld = false;
-    this.hiConsumed = false;
-    this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
+    this.clearLatchedInput();
     /* Same reasoning as hiHeld, and worse consequences: the keyup for a held B
        never arrives either, and lookBack has no timer to fall back on — the
        camera stays reversed for the rest of the session. */
     this.lookBack = false;
+  };
+
+  /** Wipes every input that only a matching release event clears — the
+      keyboard/touch bus, the high-beam hold timer, the analog steer axes —
+      for any moment a release can go missing: alt-tab (onWindowBlur) and
+      pausing (setRunning(false)), which on a phone hides the touch pucks via
+      display:none mid-hold and, on at least iOS Safari, can drop the
+      pointerup a hidden element would otherwise have received. lookBack is
+      deliberately not part of this: it has its own key (B) and blur is the
+      one place it needs clearing, not every pause. */
+  private clearLatchedInput() {
+    // don't let held keys latch across alt-tab or a pause
+    for (const k in this.keydown) this.keydown[k] = 0;
+    /* The keyup for a held G never arrives if the tab lost focus (or the
+       puck vanished) mid-flash. Clearing hiHeld also disarms the hold timer,
+       so a G held through the gap cannot come back later having toggled the
+       latch. */
+    this.hiHeld = false;
+    this.hiConsumed = false;
+    this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
     /* Analog steer state is not a key and so survives the loop above. A phone
        put down mid-corner, or left tilted through a pause, otherwise resumes
        still steering. */
     this.wheelVal = this.tiltVal = 0;
+    this.wheelPointerId = null;
+    for (const hold of this.touchHolds.values()) hold.ids.clear();
+  }
+
+  /* Window-level, capture phase: fires before any element's own listener can
+     stopPropagation() (gearBtn's pointerdown does), so this is the one place
+     that always sees a pointer go down or come back up regardless of which
+     element the browser decided to target. livePointers is the ground truth
+     watchdogTouchInput() checks a held control against — the element-level
+     release listeners (pointerup/pointercancel/lostpointercapture on the
+     puck itself) are the fast path; this is the one that cannot be skipped. */
+  private onLivePointerDown = (e: PointerEvent) => {
+    this.livePointers.add(e.pointerId);
+  };
+  private onLivePointerGone = (e: PointerEvent) => {
+    this.livePointers.delete(e.pointerId);
+  };
+
+  /* touch-action:manipulation (globals.css canvas.game) only rules out
+     double-tap-to-ZOOM; iOS 15+ still runs its double-tap text-selection
+     magnifier off the synthetic click/dblclick pair a fast double tap on the
+     canvas produces, and preventDefault on touchend is the only thing that
+     stops that pair from firing. Canvas only: the menus sit on an opaque,
+     full-screen .menuRoot above it, so a tap there never reaches this
+     listener, and onPointerDown already handles every real canvas tap on
+     pointerdown — nothing here depends on click/dblclick ever firing. */
+  private onCanvasTouchEnd = (e: TouchEvent) => {
+    e.preventDefault();
+  };
+  private onCanvasDblClick = (e: MouseEvent) => {
+    e.preventDefault();
+  };
+  /* iOS-only pinch/rotate gesture events, unprevented by touch-action and
+     ignored by every other browser — nothing in this fixed, non-zooming
+     layout wants them. */
+  private onGestureEvent = (e: Event) => {
+    e.preventDefault();
   };
 
   /* ---------------- rig ---------------- */
@@ -2425,6 +2493,69 @@ export class Game {
     this.ui.toast("HIGH BEAMS " + (this.hiLatch ? "ON" : "OFF"));
   }
 
+  /** Binds a hold-style control (a touch puck) with pointer-id tracking
+      instead of "any pointerup reaching this element releases it": without
+      that, a second finger that never pressed this element — e.g. it came
+      down on the canvas, which never captures — can lift directly over the
+      puck and its pointerup targets the puck by ordinary hit-testing, killing
+      the first finger's still-held press. onDown fires once per press (ids
+      empty -> non-empty), onUp once per full release (ids non-empty ->
+      empty), so a second finger on the SAME puck keeps it held until both
+      lift.
+
+      State is written before setPointerCapture, and capture is wrapped in
+      try/catch: a fast tap can have the pointer already gone by the time
+      capture runs (throws NotFoundError), and with capture first that used to
+      abort the handler before the state write ever ran — a press that looked
+      like it landed but did nothing, for a frame or forever. Capture only
+      matters for what happens if the finger later drifts off the element; it
+      must never be able to veto the press itself. */
+  private bindPointerHold(el: HTMLElement, onDown: () => void, onUp: () => void): Set<number> {
+    const ids = new Set<number>();
+    el.addEventListener("pointerdown", (e) => {
+      const first = ids.size === 0;
+      ids.add(e.pointerId);
+      if (first) onDown();
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {}
+    });
+    const release = (e: PointerEvent) => {
+      if (!ids.delete(e.pointerId)) return; // not a pointer this element is holding — ignore
+      if (ids.size === 0) onUp();
+    };
+    el.addEventListener("pointerup", release);
+    el.addEventListener("pointercancel", release);
+    /* The browser's own "this element no longer owns that pointer" signal —
+       capture stolen by another element, or (confirmed in Chrome, unverified
+       on iOS Safari — see brief risk notes) display:none while captured,
+       which is exactly what gearBtn's pause does mid-hold. Fires whether or
+       not pointerup/pointercancel ever does, so it is the second of three
+       release paths (element release, this, the frame watchdog below). */
+    el.addEventListener("lostpointercapture", release);
+    return ids;
+  }
+
+  /** Runs every frame (readInput). watchdogTouchInput is the third release
+      path, for whatever the first two — the puck's own pointerup/cancel, and
+      lostpointercapture — both miss: an iOS gesture hijack that eats the
+      touch stream outright and never tells the element anything. livePointers
+      is tracked at the window in the capture phase, so it is the one signal
+      that cannot be blocked the same way; a held control whose pointer isn't
+      in there anymore has no finger on it, whatever the element thinks. */
+  private watchdogTouchInput() {
+    if (!this.isTouch) return;
+    for (const hold of this.touchHolds.values()) {
+      if (this.keydown[hold.key] !== 1) continue;
+      for (const id of hold.ids) if (!this.livePointers.has(id)) hold.ids.delete(id);
+      if (hold.ids.size === 0) this.keydown[hold.key] = 0;
+    }
+    if (this.wheelPointerId !== null && !this.livePointers.has(this.wheelPointerId)) {
+      this.wheelVal = 0;
+      this.wheelPointerId = null;
+    }
+  }
+
   private bindInput() {
     addEventListener("keydown", this.onKeyDown);
     this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown);
@@ -2434,16 +2565,25 @@ export class Game {
     this.renderer.domElement.addEventListener("pointermove", this.onPointerMove);
     this.renderer.domElement.addEventListener("pointerleave", this.onPointerLeave);
     addEventListener("keyup", this.onKeyUp);
+    if (this.isTouch) {
+      // capture phase: see onLivePointerDown/onLivePointerGone
+      addEventListener("pointerdown", this.onLivePointerDown, true);
+      addEventListener("pointerup", this.onLivePointerGone, true);
+      addEventListener("pointercancel", this.onLivePointerGone, true);
+      this.renderer.domElement.addEventListener("touchend", this.onCanvasTouchEnd, { passive: false });
+      this.renderer.domElement.addEventListener("dblclick", this.onCanvasDblClick);
+      document.addEventListener("gesturestart", this.onGestureEvent, { passive: false });
+      document.addEventListener("gesturechange", this.onGestureEvent, { passive: false });
+    }
     const bindHold = (id: string, key: string) => {
       const el = document.getElementById(id);
       if (!el) return;
-      el.addEventListener("pointerdown", (e) => {
-        el.setPointerCapture((e as PointerEvent).pointerId);
-        this.keydown[key] = 1;
-      });
-      const off = () => (this.keydown[key] = 0);
-      el.addEventListener("pointerup", off);
-      el.addEventListener("pointercancel", off);
+      const ids = this.bindPointerHold(
+        el,
+        () => (this.keydown[key] = 1),
+        () => (this.keydown[key] = 0),
+      );
+      this.touchHolds.set(id, { key, ids });
     };
     bindHold("tcL", "a");
     bindHold("tcR", "d");
@@ -2453,16 +2593,17 @@ export class Game {
        (see the input block in frame()), so a held button is all it needs. */
     bindHold("tcH", "f");
     /* Flash cannot: see hiBeamDown/hiBeamUp. Same press/release pair as G, so
-       tap = flash and a 2 s hold = latch, identical to the keyboard. */
+       tap = flash and a 2 s hold = latch, identical to the keyboard. Not
+       registered in touchHolds — hiBeamHold() already self-clears hiHeld once
+       HI_HOLD passes, so a missed release heals within that window on its
+       own without the frame watchdog's help. */
     const flashBtn = document.getElementById("tcF");
     if (flashBtn) {
-      flashBtn.addEventListener("pointerdown", (e) => {
-        flashBtn.setPointerCapture((e as PointerEvent).pointerId);
-        this.hiBeamDown();
-      });
-      const up = () => this.hiBeamUp();
-      flashBtn.addEventListener("pointerup", up);
-      flashBtn.addEventListener("pointercancel", up);
+      this.bindPointerHold(
+        flashBtn,
+        () => this.hiBeamDown(),
+        () => this.hiBeamUp(),
+      );
     }
     const camBtn = document.getElementById("tcC");
     if (camBtn)
@@ -2487,6 +2628,12 @@ export class Game {
   }
   setWheelVal(v: number) {
     this.wheelVal = v;
+  }
+  /** Which pointer #swheel considers itself grabbed by, or null when let go —
+      set by GameApp's SteerWheel on pointerdown/end so watchdogTouchInput can
+      tell a live drag from a wheelVal a lost gesture left behind. */
+  setWheelPointer(id: number | null) {
+    this.wheelPointerId = id;
   }
 
   private dom(id: string): HTMLElement | null {
@@ -2527,6 +2674,7 @@ export class Game {
   };
 
   private readInput(dt: number) {
+    this.watchdogTouchInput();
     const kd = this.keydown;
     if (this.debug.override) {
       const o = this.debug.override;
@@ -2759,6 +2907,10 @@ export class Game {
 
   setRunning(run: boolean) {
     this.running = run;
+    /* Pausing hides the touch pucks (display:none) out from under whatever
+       finger is holding one — see clearLatchedInput — so a held throttle or
+       a mid-turn wheel drag cannot resume the instant Drive comes back. */
+    if (!run) this.clearLatchedInput();
     this.audio.setLevels(this.settings.vol, run ? 1 : 0.12);
     if (!run) this.audio.quiesce();
     /* quiesce() zeroes the reverb send directly, so the cached value no longer
@@ -2780,6 +2932,15 @@ export class Game {
     removeEventListener("resize", this.onResize);
     window.removeEventListener("error", this.onWindowError);
     window.removeEventListener("blur", this.onWindowBlur);
+    if (this.isTouch) {
+      removeEventListener("pointerdown", this.onLivePointerDown, true);
+      removeEventListener("pointerup", this.onLivePointerGone, true);
+      removeEventListener("pointercancel", this.onLivePointerGone, true);
+      this.renderer.domElement.removeEventListener("touchend", this.onCanvasTouchEnd);
+      this.renderer.domElement.removeEventListener("dblclick", this.onCanvasDblClick);
+      document.removeEventListener("gesturestart", this.onGestureEvent);
+      document.removeEventListener("gesturechange", this.onGestureEvent);
+    }
     document.body.classList.remove("touch");
     this.audio.dispose();
     this.music.dispose();
