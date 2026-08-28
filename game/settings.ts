@@ -425,6 +425,11 @@ export interface GameSettings {
       cuts through traffic and still signals is a contradiction, and the
       ABSENCE of a blinker is characterisation the player reads immediately. */
   rivalSignals: boolean;
+  /** the No Hesi scoring loop — speed + near misses build a combo, contact
+      resets it (see NOHESI in game/engine.ts). On by default, same pattern
+      as `rival`: it costs nothing while driving clean and reads immediately
+      as this game's version of the reference title's vibe bar. */
+  noHesiScore: boolean;
 }
 
 export interface Profile {
@@ -433,6 +438,9 @@ export interface Profile {
   paintIx: number;
   seed: number;
   camMode: number;
+  /** best-ever No Hesi score, across every drive on this profile — see
+      game/engine.ts's noHesiUpdate. Only ever grows. */
+  noHesiBest: number;
 }
 
 export const defaultSettings = (): GameSettings => ({
@@ -481,6 +489,7 @@ export const defaultSettings = (): GameSettings => ({
   rival: false,
   rivalSignals: false,
   testMode: false,
+  noHesiScore: true,
 });
 
 export const defaultProfile = (): Profile => ({
@@ -495,6 +504,7 @@ export const defaultProfile = (): Profile => ({
      looking for the camera control. Only affects first run: an existing
      profile keeps whatever camera it was last left on. */
   camMode: 3,
+  noHesiBest: 0,
 });
 
 /** Preset side-effects (ported from legacy applyPreset). */
@@ -536,6 +546,7 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
   "autoTime", "rain", "mmap", "rival", "rivalSignals", "testMode",
+  "noHesiScore",
 ] as const;
 
 /** Non-negative integer, or the fallback. For the persisted array indices whose
@@ -653,6 +664,8 @@ export function loadProfile(): Profile {
        player again — someone who picks the KAZE GT after this keeps it. */
     if (migrateCar && prof.carId === "kaze") prof.carId = DEFAULT_CAR_ID;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
+    if (typeof prof.noHesiBest !== "number" || !Number.isFinite(prof.noHesiBest) || prof.noHesiBest < 0)
+      prof.noHesiBest = base.noHesiBest;
     return prof;
   } catch {
     return base;

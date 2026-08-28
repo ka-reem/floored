@@ -58,6 +58,30 @@ export interface UiBridge {
     contention with these and there is nothing to hold back for. */
 const NPC_VOICES = 8;
 
+/** No Hesi scoring loop (see noHesiUpdate/traffic.ts's scoreEvents). SPEED +
+    NEAR MISSES build score; contact resets the multiplier, never the total —
+    this is a running arcade score for the drive, not a life. */
+const NOHESI = {
+  /** minimum speed, m/s, for either scoring or combo decay to apply at all —
+      crawling through a jam should not slowly leak the multiplier */
+  speedFloor: 12,
+  /** points/second at combo x1 and speedFloor+1 m/s, roughly — points ≈
+      speed * combo * this * dt */
+  pointsScale: 9,
+  /** combo growth per near-miss event, scaled by its closeness grade (0..1
+      from traffic.ts) — a graze at the grading floor barely moves it, a
+      genuinely tight one moves it a lot */
+  comboStep: 0.4,
+  comboMax: 8,
+  /** seconds without a near-miss before the combo starts bleeding off, and
+      the rate (combo units/s) once it does */
+  decayAfter: 4, decayRate: 0.35,
+  /** only grades above this trigger the toast pulse — every near-miss counts
+      toward the combo, but not every one is worth a popup */
+  pulseGrade: 0.45,
+  pulseBase: 250, pulseCd: 1.1,
+};
+
 /* The v2 art (procedural canvas textures + hex palettes) was tuned under
    r128's non-color-managed pipeline; keep that exact response and do the
    ACES + sRGB encode ourselves in the composite pass. */
@@ -954,6 +978,11 @@ export class Game {
   get testMode() { return this.settings.testMode; }
   set testMode(v: boolean) { this.settings.testMode = v; }
 
+  /** Read-only: the running total and the best-ever, for GameApp.tsx's
+      persist() to copy into the profile alongside carId/seed/camMode. */
+  get noHesiScore() { return this.noHesi.score; }
+  get noHesiBest() { return this.noHesi.best; }
+
   /* Lens OFFSET for the interior currently on screen, all three axes — see
      povMount(), which this describes. Read live rather than cached because the
      donor cabin arrives ASYNCHRONOUSLY: the rig is on screen before the GLB
@@ -1407,6 +1436,11 @@ export class Game {
   private dropT = 0;
   private hudT = 0;
   private chunkT = 0;
+  /** No Hesi scoring state (see noHesiUpdate). `best` is seeded from the
+      profile at construction and only ever grows; the caller (GameApp.tsx's
+      persist()) reads it back out through the noHesiBest getter alongside
+      carId/seed/camMode. */
+  private noHesi = { score: 0, best: 0, combo: 1, sinceAction: 0, pulseCd: 0 };
   private raf = 0;
   private disposed = false;
   private isTouch: boolean;
@@ -1487,6 +1521,7 @@ export class Game {
     this.paintIx = profile.paintIx;
     this.seed = profile.seed;
     this.camMode = profile.camMode;
+    this.noHesi.best = Number.isFinite(profile.noHesiBest) ? profile.noHesiBest : 0;
     this.isTouch = "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
     if (this.isTouch) document.body.classList.add("touch");
 
@@ -4699,6 +4734,45 @@ export class Game {
     rig.exteriorG.visible = ev;
   }
 
+  /** No Hesi scoring loop — see the NOHESI block. Reads traffic.ts's
+      scoreEvents() (must run after this.traffic.update() this frame) and the
+      contact flag the caller derives from collidePlayer's result, using the
+      SAME relSpeed/wallImpact thresholds the crash sound already gates on:
+      a "hit" for scoring is a hit the player would hear and feel, not every
+      depenetration nudge. Combo dies on contact; the running score does not
+      — this is an arcade total for the drive, not a life. */
+  private noHesiUpdate(dt: number, hadContact: boolean) {
+    const nh = this.noHesi;
+    const on = this.settings.noHesiScore;
+    if (hadContact) {
+      nh.combo = 1;
+      nh.sinceAction = 0;
+    } else {
+      const grades = this.traffic.scoreEvents();
+      if (grades.length) {
+        nh.sinceAction = 0;
+        let best = 0;
+        for (const g of grades) {
+          nh.combo = Math.min(NOHESI.comboMax, nh.combo + NOHESI.comboStep * g);
+          if (g > best) best = g;
+        }
+        if (on && best > NOHESI.pulseGrade && nh.pulseCd <= 0) {
+          const pts = Math.round(NOHESI.pulseBase * (0.5 + 0.5 * best) * nh.combo / 10) * 10;
+          this.ui.toast(`+${pts} CLOSE`);
+          nh.pulseCd = NOHESI.pulseCd;
+        }
+      } else {
+        nh.sinceAction += dt;
+        if (nh.sinceAction > NOHESI.decayAfter)
+          nh.combo = Math.max(1, nh.combo - NOHESI.decayRate * dt);
+      }
+    }
+    nh.pulseCd = Math.max(0, nh.pulseCd - dt);
+    if (on && Math.abs(this.car.u) > NOHESI.speedFloor)
+      nh.score += Math.abs(this.car.u) * nh.combo * NOHESI.pointsScale * dt;
+    if (nh.score > nh.best) nh.best = nh.score;
+  }
+
   private hud(now: number, dt: number) {
     this.hudT += dt;
     const car = this.car;
@@ -4728,6 +4802,15 @@ export class Game {
           ew.dataset.wx = wx;
           ew.innerHTML = WX_ICONS[wx];
         }
+      }
+      /* No Hesi score + combo — see NOHESI/noHesiUpdate. Semantic ids/classes
+         only, no layout here; ui-redesign owns the actual styling pass. */
+      const enh = this.dom("noHesi");
+      if (enh) {
+        if (this.settings.noHesiScore) {
+          enh.textContent = `${Math.round(this.noHesi.score)} ×${this.noHesi.combo.toFixed(1)}`;
+          enh.classList.toggle("combo-hot", this.noHesi.combo > 3);
+        } else enh.textContent = "";
       }
       /* exit navigation hint */
       if (car.y > 4 && Math.abs(car.u) > 1) {
@@ -4814,6 +4897,10 @@ export class Game {
       const preCX = this.car.x, preCZ = this.car.z;
       const res = collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
       this.scrapeUpdate(dt, res.hit, this.car.x - preCX, this.car.z - preCZ);
+      // No Hesi: a hit worth the crash sound is a hit that kills the combo —
+      // same relSpeed/wallImpact thresholds as the audio/damage below, so
+      // "contact" means the same thing everywhere it's judged this frame.
+      let noHesiHit = res.wallImpact > 4;
       for (const hitInfo of res.npcHits) {
         this.traffic.applyImpact(hitInfo);
         if (hitInfo.relSpeed > 2.5 && this.crashCooldown <= 0) {
@@ -4825,6 +4912,7 @@ export class Game {
           // the moment the player later switches into POV
           if (this.camMode === CAM_POV) this.post.dashcamHit(hitInfo.relSpeed);
         }
+        if (hitInfo.relSpeed > 2.5) noHesiHit = true;
       }
       if (res.wallImpact > 4 && this.crashCooldown <= 0) {
         this.crashCooldown = 0.4;
@@ -4838,6 +4926,8 @@ export class Game {
         this.hiFlashPulse
       );
       this.hiFlashPulse = false; // one press, one gesture — consumed here
+      // after traffic.update() — scoreEvents() reads this frame's feed
+      this.noHesiUpdate(dt, noHesiHit);
       /* Per SECOND, not per rendered frame. This gate was a flat 0.35 chance
          every frame, so a 120 Hz display made four times the smoke a 30 Hz one
          did — everything inside fx.ts is dt-scaled and this was the last term
