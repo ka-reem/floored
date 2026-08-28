@@ -14,6 +14,7 @@ import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
 import { worldTierCaps } from "../settings";
 import { buildRoadDecals } from "./decals";
+import { buildWheelTracks, buildDeckDressing } from "./deckdetail";
 
 const EXIT_NAMES = ["中野 Nakano", "本町 Honchō"];
 const LAYER_NOREF = 1;
@@ -67,6 +68,10 @@ export const FX_LAMP_POOLS = true;
 /** the cross-street overpass at OVERPASS.z (corridor.ts) — box girder + two
     outboard piers, a handful of draw calls */
 export const FX_OVERPASS = true;
+/** lane-following tyre-polish ribbons on the deck (one blended overlay) */
+export const FX_WHEEL_TRACKS = true;
+/** procedural deck dressing: patch slabs, skid arcs, gutter grates */
+export const FX_DECK_DRESSING = true;
 
 /** Load a photoscan prop and hand back its meshes (geometry still in the
     file's local space). Failure-tolerant like the PBR sets: a missing file
@@ -482,15 +487,24 @@ export function buildHighway(
 
   /* ---- lane markings ---- */
   {
+    /* markMat carries a wear map whose v axis runs down the road. Tiling v by
+       wrapped z rather than 0..1 per quad is what makes no two dashes wear
+       alike; 12.5 divides LOOP_LEN, so the copy of a dash on the far side of
+       the splice samples the identical stretch of the map (same rule as the
+       furniture lattices). 12.5 against the 16 m dash pitch also means the
+       sampling phase only recurs every 200 m — a 12-dash cycle nobody counts
+       at speed. */
+    const PAINT_TILE_V = 12.5;
     const stripe = (z0: number, z1: number, lat0: number, lat1: number, w: number) => {
       const M = soup(marks, chunkOf(z0));
       const p0 = cor.worldOf(z0, lat0 - w / 2), p1 = cor.worldOf(z0, lat0 + w / 2);
       const p2 = cor.worldOf(z1, lat1 + w / 2), p3 = cor.worldOf(z1, lat1 - w / 2);
       const Y = 0.022;
+      const v0 = cor.wrapZ(z0) / PAINT_TILE_V, v1 = v0 + (z1 - z0) / PAINT_TILE_V;
       M.quadUv(
         [p0.x, p0.y + Y, p0.z], [p3.x, p3.y + Y, p3.z],
         [p2.x, p2.y + Y, p2.z], [p1.x, p1.y + Y, p1.z],
-        [0, 0], [0, 1], [1, 1], [1, 0]
+        [0, v0], [0, v1], [1, v1], [1, v0]
       );
     };
     // solid edge lines down both shoulders
@@ -1622,6 +1636,11 @@ export function buildHighway(
 
   /* ---------------- road-realism decals ---------------- */
   if (FX_ROAD_DECALS && caps.roadDecals !== false) buildRoadDecals(scene);
+
+  /* ---------------- procedural deck detail (deckdetail.ts) ---------------- */
+  if (FX_WHEEL_TRACKS && caps.wheelTracks !== false) buildWheelTracks(scene);
+  const dressK = caps.deckDressing ?? 1;
+  if (FX_DECK_DRESSING && dressK > 0) buildDeckDressing(scene, dressK);
 
   return { deckLightPts: lightPts };
 }
@@ -3348,14 +3367,17 @@ function buildBypassViaduct(
   }
 
   /* ---- markings: centre dash on the 16 m lattice, edge lines ---- */
+  // v tiled by arclength for markMat's wear map, as the main deck's stripe()
+  // does; the bypass never wraps, so plain s is safe here
   const bstripe = (s0: number, s1: number, lat0: number, lat1: number, wd: number) => {
     const p0 = by.worldOf(s0, lat0 - wd / 2), p1 = by.worldOf(s0, lat0 + wd / 2);
     const p2 = by.worldOf(s1, lat1 + wd / 2), p3 = by.worldOf(s1, lat1 - wd / 2);
     const Y = 0.022;
+    const v0 = s0 / 12.5, v1 = s1 / 12.5;
     bMark.quadUv(
       [p0.x, p0.y + Y, p0.z], [p3.x, p3.y + Y, p3.z],
       [p2.x, p2.y + Y, p2.z], [p1.x, p1.y + Y, p1.z],
-      [0, 0], [0, 1], [1, 1], [1, 0]
+      [0, v0], [0, v1], [1, v1], [1, v0]
     );
   };
   for (const s of by.sLattice(16)) {

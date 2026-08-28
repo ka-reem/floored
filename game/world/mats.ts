@@ -2,6 +2,7 @@ import * as THREE from "three";
 import {
   roadTex, hwyTexF, rampTexF, windowsTexF, storefrontTexF, vendingTexF, glowTexF,
   streakTexF, smokeTexF, envFaceCanvas, chevTexF, goreTexF, xingTexF, studTexF,
+  paintWearTexF,
   fenceTexF, grimeTexF, loadPbrSet, makeTex, type PbrSet,
 } from "../textures";
 import { worldTierCaps } from "../settings";
@@ -1724,9 +1725,13 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
   };
   /* Lane paint. polygonOffset and depthWrite:false are load-bearing — with the
      marking geometry sitting only ~22 mm above the deck, they are what keep it
-     off the z-fighting knife-edge at distance. Do not drop them. */
+     off the z-fighting knife-edge at distance. Do not drop them.
+     The wear map is OPAQUE (dark chips, not holes) so the paint stays out of
+     the transparent pass; stripe() in highway.ts tiles its v by arclength so
+     no two dashes wear alike. Mean stays near white — the beam retro-multiply
+     runs after it, and the goal is holes in the paint, not dimmer paint. */
   const markMat = new THREE.MeshBasicMaterial({
-    color: 0xe9edf6, fog: true, depthWrite: false,
+    color: 0xe9edf6, map: paintWearTexF(), fog: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
   const studMat = new THREE.PointsMaterial(studParams);

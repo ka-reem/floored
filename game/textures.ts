@@ -327,6 +327,84 @@ export const rampTexF = () =>
     true
   );
 
+/**
+ * Wear map for the expressway's GEOMETRY lane markings (highway.ts stripe()).
+ *
+ * The town streets get their wear from wornPaint() because their paint lives
+ * inside the road texture; the expressway lays its markings down as quads over
+ * bare asphalt, so at HEAD they were the one paint in the game still reading
+ * as crisp vector lines. This map multiplies markMat's colour instead:
+ * opaque by design — a chip "through" 22 mm of air is indistinguishable from
+ * a chip painted in asphalt tone at any distance past arm's length, and
+ * opacity would buy that nothing for a transparent-pass sort headache.
+ *
+ * Axes: u is ACROSS the stripe (0..1 over ~0.2 m — the frayed columns live at
+ * the u edges), v runs down the road and tiles every PAINT_TILE_V metres
+ * (see highway.ts). Wear features are therefore drawn elongated in v, the way
+ * tyres actually scrub a line at highway crossing angles. Everything is
+ * emitted at ±h offsets so the pattern wraps seamlessly in v.
+ *
+ * The mean stays near white on purpose: the stripe's retroreflective response
+ * (addBeam) multiplies AFTER this map, so a dark mean would dim every marking
+ * everywhere — the aim is holes in the paint, not dimmer paint.
+ */
+export const paintWearTexF = () =>
+  makeTex(
+    128,
+    1024,
+    (ctx, w, h) => {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+      const wrapV = (fn: (oy: number) => void) => {
+        for (const oy of [-h, 0, h]) fn(oy);
+      };
+      // broad thinned patches: tyre-polished stretches where the paint has
+      // gone grey — soft, elongated, never a hard rim
+      for (let i = 0; i < 16; i++) {
+        const gx = rand(0, w), gy = rand(0, h);
+        const rx = rand(w * 0.18, w * 0.5), ry = rand(60, 220);
+        const v = randi(150, 205);
+        wrapV((oy) => {
+          const y = gy + oy;
+          if (y + ry < 0 || y - ry > h) return;
+          const g = ctx.createRadialGradient(gx, y, 0, gx, y, 1);
+          g.addColorStop(0, `rgba(${v},${v},${v + 3},${rand(0.25, 0.5)})`);
+          g.addColorStop(1, `rgba(${v},${v},${v + 3},0)`);
+          ctx.fillStyle = g;
+          ctx.save();
+          ctx.translate(gx, y);
+          ctx.scale(rx, ry);
+          ctx.translate(-gx, -y);
+          ctx.beginPath();
+          ctx.arc(gx, y, 1, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        });
+      }
+      // fine chipping: flakes lost to the asphalt, elongated down the road
+      for (let i = 0; i < 340; i++) {
+        const gx = rand(2, w - 2), gy = rand(0, h);
+        const cw = rand(1.5, 5), ch = rand(2, 12);
+        const v = randi(55, 130);
+        ctx.fillStyle = `rgba(${v},${v},${v + 4},${rand(0.35, 0.85)})`;
+        wrapV((oy) => ctx.fillRect(gx, gy + oy, cw, ch));
+      }
+      // frayed edges: the stripe's border loses paint first. Ragged runs in
+      // from both u edges, dense at the edge and dying out by ~10 px — the
+      // taper is what keeps the line from reading as a narrower crisp line.
+      for (let y = 0; y < h; y += 3) {
+        for (const left of [true, false]) {
+          const run = Math.max(0, rand(-3, 9));
+          if (run < 0.5) continue;
+          const v = randi(60, 120);
+          ctx.fillStyle = `rgba(${v},${v},${v + 4},${rand(0.3, 0.7)})`;
+          ctx.fillRect(left ? 0 : w - run, y, run, rand(2, 4));
+        }
+      }
+    },
+    true
+  );
+
 export const xingTexF = () =>
   makeTex(128, 128, (ctx, w, h) => {
     ctx.clearRect(0, 0, w, h);
