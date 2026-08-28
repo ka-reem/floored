@@ -7,7 +7,7 @@ import { parapetGap } from "./ramps";
 import { BYPASS, DIVERGE_Z, MERGE_Z, type RouteGraph } from "./routegraph";
 import {
   getCorridor, assertPitches, signPlan, PITCH, PHASE, SIGN, TUNNEL, TOLL, TOLL_PLAZA,
-  BRIDGE, type SectionKind, type Station,
+  BRIDGE, BRIDGES, OVERPASS, type SectionKind, type Station,
 } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
@@ -64,6 +64,9 @@ export const FX_TOLL_GLOW = true;
 export const FX_ROAD_DECALS = true;
 /** per-lamp sodium ground pools on the deck under the cobra heads */
 export const FX_LAMP_POOLS = true;
+/** the cross-street overpass at OVERPASS.z (corridor.ts) — box girder + two
+    outboard piers, a handful of draw calls */
+export const FX_OVERPASS = true;
 
 /** Load a photoscan prop and hand back its meshes (geometry still in the
     file's local space). Failure-tolerant like the PBR sets: a missing file
@@ -284,9 +287,12 @@ export function buildHighway(
   const RAIL_BANDS: readonly (readonly [number, number])[] = [
     [0.10, 0.09], [0.36, 0.08], [0.60, 0.10],
   ];
-  /** structural depth of the deck girder — deepened over the bridge span,
+  /** structural depth of the deck girder — deepened over a bridge span,
       where the girder is the arch's tie and has to look like it */
-  const deckTh = (z: number) => (cor.sectionAt(z) === "bridge" ? BRIDGE.girder : DECK_TH);
+  const deckTh = (z: number) => {
+    const b = BRIDGES.find((b) => z >= b.z0 && z <= b.z1);
+    return b ? b.girder : DECK_TH;
+  };
   /** z windows where a mast comes up through the deck edge, and which side.
       A 5.65 m screen wall built straight through a gantry leg swallows it,
       and the leg is the thing that tells you the sign overhead is bolted to
@@ -793,12 +799,12 @@ export function buildHighway(
       E = new THREE.Euler(), S = new THREE.Vector3();
     let k = 0;
     for (const z of zs) {
-      /* The bridge's whole argument is the hole under it: the arch carries
+      /* Each bridge's whole argument is the hole under it: the arch carries
          the deck from abutment to abutment, so the piers that would otherwise
-         stand at 352/384/416 are not there. The two abutments are on the
+         stand inside its span are not there. The abutments are on the
          lattice as well and get their own splayed blocks (buildBridge), so
          they come out here too rather than being drawn twice. */
-      if (z >= BRIDGE.z0 && z <= BRIDGE.z1) continue;
+      if (BRIDGES.some((b) => z >= b.z0 && z <= b.z1)) continue;
       const p = cor.pose(z);
       const gy = terrain.h(p.x, z);
       const hgt = Math.max(1.5, p.y - 1.4 - gy);
@@ -822,8 +828,11 @@ export function buildHighway(
     scene.add(pier, beams);
   }
 
-  /* ---------------- the tied-arch bridge ---------------- */
-  buildBridge(scene, mats, world, terrain, cor);
+  /* ---------------- the tied-arch bridges ---------------- */
+  for (const spec of BRIDGES) buildBridge(scene, mats, world, terrain, cor, spec);
+
+  /* ---------------- the crossing overpass ---------------- */
+  if (FX_OVERPASS) buildOverpass(scene, mats, world, terrain, cor);
 
   /* ---------------- tunnel ---------------- */
   buildTunnel(scene, mats, world, cor, pt);
@@ -1629,9 +1638,9 @@ export function takeDeckPoolGeometry(): THREE.BufferGeometry | null {
   return g;
 }
 
-/* ============================ tied-arch bridge ========================== */
+/* ============================ tied-arch bridges ========================== */
 
-/** The span at BRIDGE.z0..z1.
+/** One tied-arch span, built from `spec` (BRIDGE or BRIDGE2 — see corridor.ts).
 
     The hard part of putting a bridge on this road is that the road is already
     a viaduct: it is ten metres up on piers from one end of the lap to the
@@ -1655,9 +1664,10 @@ function buildBridge(
   mats: Mats,
   world: WorldData,
   terrain: Terrain,
-  cor: ReturnType<typeof getCorridor>
+  cor: ReturnType<typeof getCorridor>,
+  spec: typeof BRIDGE
 ) {
-  const { z0, z1, rise, ribOut, ribW, ribD, hangers, girder, braceAt } = BRIDGE;
+  const { z0, z1, rise, ribOut, ribW, ribD, hangers, girder, braceAt } = spec;
   const span = z1 - z0;
   const ribLat = cor.halfWidth((z0 + z1) / 2) + ribOut;
   /** arch height above the deck line at fraction t — a plain parabola, which
@@ -1821,6 +1831,108 @@ function buildBridge(
     };
     cloud(amber, 0xffb055, 2.4, 0.85);
     cloud(red, 0xff5638, 3.0, 0.9);
+  }
+}
+
+/* ============================ crossing overpass ========================= */
+
+/** A city road passing OVER the expressway at OVERPASS.z, on its own piers
+    outboard of the deck — a landmark that costs the width-and-taper rules
+    BRIDGE lives under nothing, because it never touches the pavement edge:
+    the girder is dressing above the car, not part of the deck it drives on.
+    Reading it in the dashcam: a dark deck slides overhead well before the
+    piers reach the parapet line, tail-light-red obstruction lights along its
+    underside, gone in under a second at speed — exactly the "something
+    happens here" beat a long straight otherwise lacks. Cost: one merged
+    girder + fascia, two piers, one point cloud — 3 draw calls. */
+function buildOverpass(
+  scene: THREE.Scene,
+  mats: Mats,
+  world: WorldData,
+  terrain: Terrain,
+  cor: ReturnType<typeof getCorridor>
+) {
+  const caps = worldTierCaps();
+  const { z, clear, girderD, girderW, outSet } = OVERPASS;
+  const p = cor.pose(z);
+  const hw = cor.halfWidth(z);
+  const soffitY = p.y + clear;
+  const topY = soffitY + girderD;
+  const pierLat = hw + outSet;
+  const halfLen = pierLat + 6;
+
+  const concrete = mats.concDark;
+
+  /* box girder, spanning the lateral (normal) direction — local X after a
+     pose.h rotation is the normal, exactly like the bridge's cross-braces */
+  const centre = cor.worldOf(z, 0);
+  const girder = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), concrete);
+  girder.position.set(centre.x, topY - girderD / 2, centre.z);
+  girder.rotation.y = p.h;
+  girder.scale.set(halfLen * 2, girderD, girderW);
+  girder.castShadow = true;
+  girder.receiveShadow = true;
+  scene.add(girder);
+  // fascia lip along both faces — the thin dark edge a real box girder shows
+  for (const s of [-1, 1]) {
+    const lip = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), concrete);
+    lip.position.set(
+      centre.x + p.tx * s * girderW * 0.5, topY - girderD - 0.15,
+      centre.z + p.tz * s * girderW * 0.5
+    );
+    lip.rotation.y = p.h;
+    lip.scale.set(halfLen * 2 + 0.4, 0.3, 0.12);
+    scene.add(lip);
+  }
+
+  /* two piers, outboard of the deck edge — clear of every lane count the
+     seed can roll at this z, since pierLat is halfWidth(z) + outSet */
+  const pierR = 1.05;
+  const pierGeo = new THREE.CylinderGeometry(pierR, pierR * 1.2, 1, 10);
+  for (const side of [-1, 1]) {
+    const w = cor.worldOf(z, side * pierLat);
+    const gy = terrain.h(w.x, w.z);
+    const h = Math.max(2, soffitY - gy);
+    const pier = new THREE.Mesh(pierGeo, concrete);
+    pier.position.set(w.x, gy + h / 2, w.z);
+    pier.scale.set(1, h, 1);
+    pier.castShadow = true;
+    scene.add(pier);
+    // cap beam under the girder, the same idiom as the deck's own piers
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), concrete);
+    cap.position.set(w.x, soffitY - 0.55, w.z);
+    cap.rotation.y = p.h;
+    cap.scale.set(3.4, 1.1, girderW + 0.6);
+    scene.add(cap);
+    world.colliders.addAabb({
+      x0: w.x - pierR * 1.3, x1: w.x + pierR * 1.3,
+      z0: w.z - pierR * 1.3, z1: w.z + pierR * 1.3,
+      y0: gy, y1: gy + h,
+    });
+  }
+
+  /* obstruction lights along the soffit edge — the only thing that reads at
+     night before the geometry itself does. Faded points into neonMats, never
+     a hard-edged emissive strip (see the realistic-light note elsewhere in
+     this file). Gated: the girder/piers stay on every tier, only this
+     overdraw is capped. */
+  if (caps.overpassLights !== false) {
+    const pts: number[] = [];
+    for (let l = -halfLen + 3; l <= halfLen - 3; l += 5) {
+      const w = cor.worldOf(z, l);
+      pts.push(w.x, topY - girderD - 0.05, w.z);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+    const pm = new THREE.PointsMaterial({
+      size: 2.6, sizeAttenuation: false, color: 0xff5638, map: mats.glowTex,
+      transparent: true, opacity: 0.8, fog: false, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const o = new THREE.Points(g, pm);
+    o.frustumCulled = false;
+    scene.add(o);
+    world.neonMats.push(pm);
   }
 }
 

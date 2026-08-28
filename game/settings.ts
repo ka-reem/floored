@@ -73,6 +73,11 @@ export interface TierCaps {
   roadDecals?: boolean;
   /** sodium ground pool under every Nth deck streetlight (1 = all) */
   lampPoolEvery?: number;
+  /** obstruction-light glow points on the crossing overpass (highway.ts
+      buildOverpass) — the box-girder/pier geometry itself stays on every
+      tier (three draw calls total, not worth gating), only the additive
+      points are capped, same as lampCones */
+  overpassLights?: boolean;
 
   /** Procedural concrete decimetre detail on parapets, deck fascia and the
       tunnel crown — the grit atlas fetch plus the surface-gradient normal
@@ -138,6 +143,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: false, lampConeEvery: 2, jetFans: false, catwalks: false,
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
+    overpassLights: false,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -147,6 +153,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: true, lampConeEvery: 2, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
+    overpassLights: true,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -156,6 +163,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: true, lampConeEvery: 1, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
+    overpassLights: true,
   },
 };
 

@@ -793,6 +793,38 @@ export const BRIDGE = {
   braceAt: [0.25, 0.5, 0.75],
 };
 
+/** Every arch span on the lap, in z order — the generic list every
+    multi-bridge consumer (deck thickness, pier suppression, the builder
+    itself) walks instead of naming BRIDGE directly. A second deck-integrated
+    arch was tried (z 480-608, the only unclaimed stretch of WIDE_PIN) and
+    dropped: routegraph-check's own printed numbers put the bypass diverge
+    gore's parapet gap at z ∈ [500, 580] — dead centre of that span — so a
+    second abutment there would stand in the gap the bypass pavement opens
+    through. See OVERPASS below for the second structure instead: a crossing
+    that does not touch the deck edge or its width has no such constraint. */
+export const BRIDGES = [BRIDGE];
+
+/** A city road crossing OVER the expressway on its own piers, outboard of
+    the deck edge — the brief's cheaper alternative to a second arch: it
+    never touches cor.sectionAt/deckTh/lane width, so none of BRIDGE's siting
+    rules (WIDE_PIN, pier-lattice alignment) apply to it. What it still has to
+    respect: z=160 sits in the one long stretch that is simultaneously clear
+    of both tunnels' hard windows (west tube ends by z≈-930, east tube starts
+    at z≈845 — rollRoad above), clear of the bypass's own z-extent
+    (DIVERGE_Z=500 onward), and clear of both gore NO_TAPER windows
+    ([-210,70] and [300,620]). Piers stand `outSet` beyond halfWidth, which is
+    read per-build rather than baked in because the lane count at z=160 is
+    seeded (3-5 lanes). */
+export const OVERPASS = {
+  z: 160,
+  /** deck → soffit, matching the bypass flyover's own clearance precedent */
+  clear: 9.0,
+  girderD: 2.2,
+  girderW: 9.5,
+  /** pier centre, this far beyond halfWidth(z) — clear of every lane count */
+  outSet: 4.5,
+};
+
 /** Hand-placed sections. Everything else is `viaduct`, and the `mesh` runs
     come off the PITCH.soundwall lattice (see `sections()`).
 
