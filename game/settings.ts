@@ -98,6 +98,14 @@ export interface TierCaps {
       fetch, so mobile-base keeps a thin scatter instead of a bare deck. */
   deckDressing?: number;
 
+  /** Density level (0..1) for the second-pass roadside districts (scenery.ts
+      FX_DISTRICTS: near wharf, eastside skyline, foreground industry, neon
+      canyon). A LEVEL like deckDressing: the geometry is merged/instanced so
+      the cost is mostly overdraw from the extra lit windows and glow points,
+      and mobile-base keeps a thinned version of the same lap rather than the
+      bare parapet the BEFORE contact sheet diagnosed. 0 disables. */
+  districts?: number;
+
   /** Procedural concrete decimetre detail on parapets, deck fascia and the
       tunnel crown — the grit atlas fetch plus the surface-gradient normal
       perturbation it and the contraction joints drive (mats.weatherSurface).
@@ -163,7 +171,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
     lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
-    wheelTracks: false, deckDressing: 0.35,
+    wheelTracks: false, deckDressing: 0.35, districts: 0.55,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -174,7 +182,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
-    wheelTracks: true, deckDressing: 0.7,
+    wheelTracks: true, deckDressing: 0.7, districts: 0.8,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -185,7 +193,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
-    wheelTracks: true, deckDressing: 1,
+    wheelTracks: true, deckDressing: 1, districts: 1,
   },
 };
 

@@ -825,6 +825,26 @@ export const OVERPASS = {
   outSet: 4.5,
 };
 
+/** Every crossing overpass on the lap, in z order — the generic list the
+    builder walks, the same shape BRIDGES gives the arches. The three new
+    crossings sit in the grove stretch, whose whole width is provably free of
+    everything a crossing must dodge: the west tube's structure can never end
+    past z = −950 (planTunnel hardZ1 −930 − PORTAL_PAD), the bypass's own
+    z-extent starts at DIVERGE_Z = 500, and the exit gore's NO_TAPER window
+    opens at −580. The two cantilever exit-count masts at z −900/−700 top out
+    at ~8.4 m (SIGN.CLEAR + panel + arm), under every soffit here by half a
+    metre — and signPlan() can never move them into a tube on any seed, since
+    no tube reaches past −950. Spacing is ~96 m so at speed they strobe
+    overhead one-two-three, which is the point: one crossing is a landmark,
+    a rhythm of them is a district boundary — the road visibly passing under
+    the city grid on its way into town. */
+export const OVERPASSES = [
+  { ...OVERPASS, z: -912 },
+  { ...OVERPASS, z: -816, girderW: 12.5 },
+  { ...OVERPASS, z: -720, clear: 9.6 },
+  OVERPASS,
+];
+
 /** Hand-placed sections. Everything else is `viaduct`, and the `mesh` runs
     come off the PITCH.soundwall lattice (see `sections()`).
 
@@ -834,6 +854,16 @@ export const OVERPASS = {
     glitch. Boundaries are PITCH.pier multiples so a section changes at a pier
     and an expansion joint, the way a real structure changes. */
 const SECTION_PLAN: readonly Section[] = [
+  /* Harbor overlook: the wharf district (scenery.ts) stands on the near
+     bank at x ≈ 566–650 through this stretch, and behind a solid parapet —
+     or the soundwall-lattice mesh run this window used to collect at
+     z −1600 — none of it reads from the seat. An open railing is the whole
+     point of `rail`: the container stacks, the yard masts' sodium pools and
+     the water's light streaks swing past below the bands. Both ends are
+     PITCH.pier multiples; the west tube (whose seeded window can reach
+     z −1600) simply trims this run when it lands on top — sections() already
+     does that for every hand-placed run. */
+  { z0: -1888, z1: -1440, kind: "rail" },
   // second sweeper, at its narrowest (two lanes): open railing on a curve,
   // so the drop and the town swing past outside the car
   { z0: -1408, z1: -1248, kind: "rail" },

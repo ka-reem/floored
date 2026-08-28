@@ -7,7 +7,7 @@ import { parapetGap } from "./ramps";
 import { BYPASS, DIVERGE_Z, MERGE_Z, type RouteGraph } from "./routegraph";
 import {
   getCorridor, assertPitches, signPlan, PITCH, PHASE, SIGN, TUNNEL, TOLL, TOLL_PLAZA,
-  BRIDGE, BRIDGES, OVERPASS, type SectionKind, type Station,
+  BRIDGE, BRIDGES, OVERPASSES, type SectionKind, type Station,
 } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
@@ -65,9 +65,11 @@ export const FX_TOLL_GLOW = true;
 export const FX_ROAD_DECALS = true;
 /** per-lamp sodium ground pools on the deck under the cobra heads */
 export const FX_LAMP_POOLS = true;
-/** the cross-street overpass at OVERPASS.z (corridor.ts) — box girder + two
-    outboard piers, a handful of draw calls */
+/** the cross-street overpasses (corridor.OVERPASSES) — instanced girders,
+    piers and street lamps, 4 draw calls for the whole list */
 export const FX_OVERPASS = true;
+/** interchange high-mast lighting clusters (2 instanced meshes + points) */
+export const FX_HIGH_MASTS = true;
 /** lane-following tyre-polish ribbons on the deck (one blended overlay) */
 export const FX_WHEEL_TRACKS = true;
 /** procedural deck dressing: patch slabs, skid arcs, gutter grates */
@@ -845,8 +847,9 @@ export function buildHighway(
   /* ---------------- the tied-arch bridges ---------------- */
   for (const spec of BRIDGES) buildBridge(scene, mats, world, terrain, cor, spec);
 
-  /* ---------------- the crossing overpass ---------------- */
-  if (FX_OVERPASS) buildOverpass(scene, mats, world, terrain, cor);
+  /* ---------------- the crossing overpasses + interchange masts -------- */
+  if (FX_OVERPASS) buildOverpasses(scene, mats, world, terrain, cor);
+  if (FX_HIGH_MASTS) buildHighMasts(scene, mats, world, terrain, cor);
 
   /* ---------------- tunnel ---------------- */
   buildTunnel(scene, mats, world, cor, pt);
@@ -1824,11 +1827,22 @@ function buildBridge(
      into neonMats, because a marker light by night is a dead lens by day. */
   {
     const amber: number[] = [], red: number[] = [];
+    /* 17 per rib, not the 9 the first pass hung: at the 300 m approach the
+       BEFORE contact sheet shows the arch as an unreadable black hump — the
+       string was too sparse to draw the parabola before the headlights
+       arrive. Denser points on the same two clouds cost nothing. */
     for (const sgn of [-1, 1])
-      for (let k = 0; k <= 8; k++) {
-        const t = k / 8;
+      for (let k = 0; k <= 16; k++) {
+        const t = k / 16;
         const q = ribPt(t, sgn);
         (Math.abs(t - 0.5) < 0.01 ? red : amber).push(q.x, q.y + 0.55, q.z);
+      }
+    // hanger-foot delineators at deck level, the way a real span marks its
+    // kerb line — they also draw the road's own line through the arch
+    for (const sgn of [-1, 1])
+      for (let k = 1; k <= hangers; k++) {
+        const q = deckPt(k / (hangers + 1), sgn);
+        amber.push(q.x, q.y + 1.25, q.z);
       }
     for (const sgn of [-1, 1]) {
       const q = ribPt(0.5, sgn);
@@ -1853,18 +1867,28 @@ function buildBridge(
   }
 }
 
-/* ============================ crossing overpass ========================= */
+/* ============================ crossing overpasses ======================= */
 
-/** A city road passing OVER the expressway at OVERPASS.z, on its own piers
-    outboard of the deck — a landmark that costs the width-and-taper rules
-    BRIDGE lives under nothing, because it never touches the pavement edge:
-    the girder is dressing above the car, not part of the deck it drives on.
-    Reading it in the dashcam: a dark deck slides overhead well before the
-    piers reach the parapet line, tail-light-red obstruction lights along its
-    underside, gone in under a second at speed — exactly the "something
-    happens here" beat a long straight otherwise lacks. Cost: one merged
-    girder + fascia, two piers, one point cloud — 3 draw calls. */
-function buildOverpass(
+/** The city roads passing OVER the expressway (corridor.OVERPASSES), on
+    their own piers outboard of the deck — landmarks that cost the
+    width-and-taper rules BRIDGE lives under nothing, because they never
+    touch the pavement edge: the girder is dressing above the car, not part
+    of the deck it drives on. Reading one in the dashcam: a dark deck slides
+    overhead well before the piers reach the parapet line, tail-light-red
+    obstruction lights along its underside, gone in under a second at speed.
+    The grove's three form a rhythm — under the city grid, one-two-three —
+    where a single crossing was only a beat.
+
+    Everything here is INSTANCED across the whole list (a girder is a scaled
+    unit box like a pier is a scaled unit cylinder), so four crossings cost
+    what one used to: one box mesh (girders + lips + cap beams), one pier
+    mesh, one lamp-post mesh, one point cloud — 4 draw calls total.
+
+    Each crossing also carries its own street furniture: two or three lamp
+    posts on the girder with warm sodium heads. At night that is what sells
+    "a street crosses here" rather than "a slab floats here" — the lit posts
+    read from 400 m where the concrete reads from 60. */
+function buildOverpasses(
   scene: THREE.Scene,
   mats: Mats,
   world: WorldData,
@@ -1872,87 +1896,257 @@ function buildOverpass(
   cor: ReturnType<typeof getCorridor>
 ) {
   const caps = worldTierCaps();
-  const { z, clear, girderD, girderW, outSet } = OVERPASS;
-  const p = cor.pose(z);
-  const hw = cor.halfWidth(z);
-  const soffitY = p.y + clear;
-  const topY = soffitY + girderD;
-  const pierLat = hw + outSet;
-  const halfLen = pierLat + 6;
-
   const concrete = mats.concDark;
+  const boxG = new THREE.BoxGeometry(1, 1, 1);
+  const pierR = 1.05;
+  const pierG = new THREE.CylinderGeometry(pierR, pierR * 1.2, 1, 10);
+  const postG = new THREE.CylinderGeometry(0.07, 0.1, 1, 6);
 
-  /* box girder, spanning the lateral (normal) direction — local X after a
-     pose.h rotation is the normal, exactly like the bridge's cross-braces */
-  const centre = cor.worldOf(z, 0);
-  const girder = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), concrete);
-  girder.position.set(centre.x, topY - girderD / 2, centre.z);
-  girder.rotation.y = p.h;
-  girder.scale.set(halfLen * 2, girderD, girderW);
-  girder.castShadow = true;
-  girder.receiveShadow = true;
-  scene.add(girder);
-  // fascia lip along both faces — the thin dark edge a real box girder shows
-  for (const s of [-1, 1]) {
-    const lip = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), concrete);
-    lip.position.set(
-      centre.x + p.tx * s * girderW * 0.5, topY - girderD - 0.15,
-      centre.z + p.tz * s * girderW * 0.5
-    );
-    lip.rotation.y = p.h;
-    lip.scale.set(halfLen * 2 + 0.4, 0.3, 0.12);
-    scene.add(lip);
+  const boxes: THREE.Matrix4[] = [];
+  const piers: THREE.Matrix4[] = [];
+  const posts: THREE.Matrix4[] = [];
+  /** [x, y, z, r, g, b] — brightness baked into colour, ≤ ~0.6, so the
+      additive points can never blow white through the grade */
+  const pts: number[] = [];
+  /** wide soft companions behind the sodium heads — widening, not
+      brightening, per the realistic-light rules (a lone 4 px dot dies in
+      the POV black crush; the same light spread wider survives it) */
+  const haloPts: number[] = [];
+  const C = new THREE.Color();
+  const lampPt = (x: number, y: number, z: number, hex: number, k: number, halo = false) => {
+    C.set(hex).multiplyScalar(k);
+    pts.push(x, y, z, C.r, C.g, C.b);
+    if (halo) haloPts.push(x, y, z, C.r * 0.38, C.g * 0.38, C.b * 0.38);
+  };
+  const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
+    E = new THREE.Euler(), SC = new THREE.Vector3();
+  const put = (
+    into: THREE.Matrix4[], x: number, y: number, z: number,
+    sx: number, sy: number, sz: number, ry: number
+  ) => {
+    E.set(0, ry, 0);
+    Q.setFromEuler(E);
+    V.set(x, y, z);
+    SC.set(sx, sy, sz);
+    M.compose(V, Q, SC);
+    into.push(M.clone());
+  };
+
+  for (const spec of OVERPASSES) {
+    const { z, clear, girderD, girderW, outSet } = spec;
+    const p = cor.pose(z);
+    const hw = cor.halfWidth(z);
+    const soffitY = p.y + clear;
+    const topY = soffitY + girderD;
+    const pierLat = hw + outSet;
+    const halfLen = pierLat + 6;
+    const centre = cor.worldOf(z, 0);
+
+    /* box girder, spanning the lateral (normal) direction — local X after a
+       pose.h rotation is the normal, exactly like the bridge's cross-braces */
+    put(boxes, centre.x, topY - girderD / 2, centre.z, halfLen * 2, girderD, girderW, p.h);
+    // fascia lip along both faces — the thin dark edge a real box girder shows
+    for (const s of [-1, 1])
+      put(
+        boxes,
+        centre.x + p.tx * s * girderW * 0.5, topY - girderD - 0.15,
+        centre.z + p.tz * s * girderW * 0.5,
+        halfLen * 2 + 0.4, 0.3, 0.12, p.h
+      );
+
+    /* two piers, outboard of the deck edge — clear of every lane count the
+       seed can roll at this z, since pierLat is halfWidth(z) + outSet */
+    for (const side of [-1, 1]) {
+      const w = cor.worldOf(z, side * pierLat);
+      const gy = terrain.h(w.x, w.z);
+      const h = Math.max(2, soffitY - gy);
+      put(piers, w.x, gy + h / 2, w.z, 1, h, 1, 0);
+      // cap beam under the girder, the same idiom as the deck's own piers
+      put(boxes, w.x, soffitY - 0.55, w.z, 3.4, 1.1, girderW + 0.6, p.h);
+      world.colliders.addAabb({
+        x0: w.x - pierR * 1.3, x1: w.x + pierR * 1.3,
+        z0: w.z - pierR * 1.3, z1: w.z + pierR * 1.3,
+        y0: gy, y1: gy + h,
+      });
+    }
+
+    /* the crossing street's own lamps: posts on the girder's leading edge,
+       alternating sides, sodium heads. The folded lattice isn't needed — a
+       crossing exists once (all of OVERPASSES sit inside ±(HZ − DECK_EXT),
+       so no splice copy of one is ever built). */
+    const postH = 5.2;
+    for (const lf of [-0.62, 0.06, 0.68]) {
+      const l = lf * halfLen;
+      const edge = lf < 0.5 ? -1 : 1;
+      const w = cor.worldOf(z, l);
+      const px = w.x + p.tx * edge * (girderW / 2 - 0.5);
+      const pz = w.z + p.tz * edge * (girderW / 2 - 0.5);
+      put(posts, px, topY + postH / 2, pz, 1, postH, 1, p.h);
+      lampPt(px, topY + postH + 0.15, pz, 0xffa04d, 0.55, true);
+    }
+
+    /* obstruction lights along the soffit edge — what reads at night before
+       the geometry itself does. Faded points, never a hard-edged emissive
+       strip (see the realistic-light notes). */
+    for (let l = -halfLen + 3; l <= halfLen - 3; l += 5) {
+      const w = cor.worldOf(z, l);
+      lampPt(w.x, soffitY - 0.05, w.z, 0xff5638, 0.5);
+    }
   }
 
-  /* two piers, outboard of the deck edge — clear of every lane count the
-     seed can roll at this z, since pierLat is halfWidth(z) + outSet */
-  const pierR = 1.05;
-  const pierGeo = new THREE.CylinderGeometry(pierR, pierR * 1.2, 1, 10);
-  for (const side of [-1, 1]) {
-    const w = cor.worldOf(z, side * pierLat);
+  const inst = (geo: THREE.BufferGeometry, mat: THREE.Material, list: THREE.Matrix4[]) => {
+    const im = new THREE.InstancedMesh(geo, mat, list.length);
+    list.forEach((m, i) => im.setMatrixAt(i, m));
+    im.castShadow = true;
+    im.computeBoundingSphere();
+    scene.add(im);
+  };
+  inst(boxG, concrete, boxes);
+  inst(pierG, concrete, piers);
+  inst(postG, mats.pole, posts);
+
+  /* One vertex-coloured cloud for the lot — sodium heads and red soffit
+     strings together. Fog ON: it is what sinks the far crossings into the
+     haze so the rhythm emerges one at a time instead of stacking three
+     bright strings on the horizon (fade, never stop). Gated: the concrete
+     stays on every tier, only this additive overdraw is capped. */
+  if (caps.overpassLights !== false && pts.length) {
+    const cloud = (arr: number[], size: number) => {
+      if (!arr.length) return;
+      const n = arr.length / 6;
+      const pp = new Float32Array(n * 3), cc = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        pp[i * 3] = arr[i * 6];
+        pp[i * 3 + 1] = arr[i * 6 + 1];
+        pp[i * 3 + 2] = arr[i * 6 + 2];
+        cc[i * 3] = arr[i * 6 + 3];
+        cc[i * 3 + 1] = arr[i * 6 + 4];
+        cc[i * 3 + 2] = arr[i * 6 + 5];
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(pp, 3));
+      g.setAttribute("color", new THREE.BufferAttribute(cc, 3));
+      const pm = new THREE.PointsMaterial({
+        size, sizeAttenuation: false, vertexColors: true, map: mats.glowTex,
+        transparent: true, opacity: 0.9, fog: true, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const o = new THREE.Points(g, pm);
+      o.frustumCulled = false;
+      scene.add(o);
+      world.neonMats.push(pm);
+    };
+    cloud(pts, 4.4);
+    cloud(haloPts, 14);
+  }
+}
+
+/* ============================ high-mast lighting ======================== */
+
+/** Interchange high-masts: the 28 m poles with a ring of four floodlight
+    heads that mark every real expressway junction. Sited around the bypass
+    diverge, the flyover crossing and the merge-side straight, on whichever
+    side the bypass viaduct is NOT (its pavement swaps sides at the z≈812–844
+    crossing, and a 28 m mast under the flyover would spear it — clearance
+    over the deck there is 9.17 m). Verticality the corridor otherwise only
+    gets from 7.6 m lamp posts, for 2 instanced meshes + a point cloud.
+
+    The heads are cool white against the deck lamps' sodium — the colour
+    change alone says "junction" from a kilometre out, the way real
+    interchange lighting does. Brightness lives in the vertex colour, well
+    under the blowout ceiling; fog fades the cluster in and out. */
+function buildHighMasts(
+  scene: THREE.Scene,
+  mats: Mats,
+  world: WorldData,
+  terrain: Terrain,
+  cor: ReturnType<typeof getCorridor>
+) {
+  /* side +1 = east (driver's left). z chosen against fixed geometry only:
+     clear of WIDE_PIN's gore gap (west 500–580), the arch (320–448), the
+     flyover's own crossing window, the toll (1280–1560) and every gantry
+     lattice z; the seeded east tube can reach z 845 on some seeds, so the
+     two masts near the flyover are checked against it at build time. */
+  const SITES: readonly (readonly [number, number])[] = [
+    [462, 1], [780, 1], [880, -1], [1700, -1],
+  ];
+  const MAST_H = 28;
+  const poleG = new THREE.CylinderGeometry(0.22, 0.4, 1, 8);
+  const armG = new THREE.BoxGeometry(1, 0.16, 0.16);
+  const poles: THREE.Matrix4[] = [];
+  const arms: THREE.Matrix4[] = [];
+  const pts: number[] = [];
+  const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
+    E = new THREE.Euler(), SC = new THREE.Vector3();
+  for (const [z, side] of SITES) {
+    if (cor.inTunnel(z, 24) || cor.inToll(z)) continue;
+    const p = cor.pose(z);
+    const lat = side * (cor.halfWidth(z) + 6.0);
+    const w = cor.worldOf(z, lat);
     const gy = terrain.h(w.x, w.z);
-    const h = Math.max(2, soffitY - gy);
-    const pier = new THREE.Mesh(pierGeo, concrete);
-    pier.position.set(w.x, gy + h / 2, w.z);
-    pier.scale.set(1, h, 1);
-    pier.castShadow = true;
-    scene.add(pier);
-    // cap beam under the girder, the same idiom as the deck's own piers
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), concrete);
-    cap.position.set(w.x, soffitY - 0.55, w.z);
-    cap.rotation.y = p.h;
-    cap.scale.set(3.4, 1.1, girderW + 0.6);
-    scene.add(cap);
+    const h = p.y + MAST_H - gy;
+    E.set(0, p.h, 0);
+    Q.setFromEuler(E);
+    V.set(w.x, gy + h / 2, w.z);
+    SC.set(1, h, 1);
+    M.compose(V, Q, SC);
+    poles.push(M.clone());
+    // two crossed head arms carrying the four-lamp ring
+    for (const ry of [p.h, p.h + Math.PI / 2]) {
+      E.set(0, ry, 0);
+      Q.setFromEuler(E);
+      V.set(w.x, gy + h - 0.7, w.z);
+      SC.set(3.4, 1, 1);
+      M.compose(V, Q, SC);
+      arms.push(M.clone());
+    }
+    const top = gy + h - 0.55;
+    for (const [ax, az] of [[1.45, 0], [-1.45, 0], [0, 1.45], [0, -1.45]] as const) {
+      const hx = w.x + p.nx * ax + p.tx * az, hz = w.z + p.nz * ax + p.tz * az;
+      pts.push(hx, top, hz);
+    }
     world.colliders.addAabb({
-      x0: w.x - pierR * 1.3, x1: w.x + pierR * 1.3,
-      z0: w.z - pierR * 1.3, z1: w.z + pierR * 1.3,
+      x0: w.x - 0.6, x1: w.x + 0.6, z0: w.z - 0.6, z1: w.z + 0.6,
       y0: gy, y1: gy + h,
     });
   }
-
-  /* obstruction lights along the soffit edge — the only thing that reads at
-     night before the geometry itself does. Faded points into neonMats, never
-     a hard-edged emissive strip (see the realistic-light note elsewhere in
-     this file). Gated: the girder/piers stay on every tier, only this
-     overdraw is capped. */
-  if (caps.overpassLights !== false) {
-    const pts: number[] = [];
-    for (let l = -halfLen + 3; l <= halfLen - 3; l += 5) {
-      const w = cor.worldOf(z, l);
-      pts.push(w.x, topY - girderD - 0.05, w.z);
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
-    const pm = new THREE.PointsMaterial({
-      size: 2.6, sizeAttenuation: false, color: 0xff5638, map: mats.glowTex,
-      transparent: true, opacity: 0.8, fog: false, depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    const o = new THREE.Points(g, pm);
-    o.frustumCulled = false;
-    scene.add(o);
-    world.neonMats.push(pm);
-  }
+  if (!poles.length) return;
+  const inst = (geo: THREE.BufferGeometry, list: THREE.Matrix4[]) => {
+    const im = new THREE.InstancedMesh(geo, mats.pole, list.length);
+    list.forEach((m, i) => im.setMatrixAt(i, m));
+    im.castShadow = true;
+    im.computeBoundingSphere();
+    scene.add(im);
+  };
+  inst(poleG, poles);
+  inst(armG, arms);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+  /* Level lives in the COLOUR, not in opacity: the engine's day/night pass
+     writes every neonMats opacity outright (1 at full night), so an
+     opacity-tuned level would be stomped on the first frame. */
+  const pm = new THREE.PointsMaterial({
+    size: 5.4, sizeAttenuation: false, map: mats.glowTex,
+    color: new THREE.Color(0xdfeaff).multiplyScalar(0.62),
+    transparent: true, fog: true, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const o = new THREE.Points(g, pm);
+  o.frustumCulled = false;
+  scene.add(o);
+  world.neonMats.push(pm);
+  // the wide soft companion — same positions, a third the level, three
+  // times the footprint, so the cluster survives the POV crush as a glow
+  const pmh = new THREE.PointsMaterial({
+    size: 16, sizeAttenuation: false, map: mats.glowTex,
+    color: new THREE.Color(0xdfeaff).multiplyScalar(0.22),
+    transparent: true, fog: true, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const oh = new THREE.Points(g, pmh);
+  oh.frustumCulled = false;
+  scene.add(oh);
+  world.neonMats.push(pmh);
 }
 
 /* ============================ tunnel ==================================== */
