@@ -9,6 +9,7 @@ import type { Terrain } from "./terrain";
 import type { REdge, EdgePose } from "./roadnet";
 import { takeDeckPoolGeometry } from "./highway";
 import { poolGradientTex } from "./decaltex";
+import { worldTierCaps } from "../settings";
 
 /* Town geometry: curved road ribbons that follow the terrain, raised
    sidewalks, intersection patches, dense buildings placed along each street
@@ -30,6 +31,7 @@ export function buildTown(
 ) {
   const net = world.net;
   const pose: EdgePose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
+  const caps = worldTierCaps();
 
   /* ---------- road ribbons (one merged mesh) ---------- */
   {
@@ -184,12 +186,31 @@ export function buildTown(
     neon: { x: number; z: number; y: number; ry: number; w: number; h: number }[];
   };
   const chunkMap = new Map<string, ChunkAcc>();
+  const chunkKeyOf = (x: number, z: number) => Math.floor(x / CHUNK) + "_" + Math.floor(z / CHUNK);
   const chunkOf = (x: number, z: number) => {
-    const cx = Math.floor(x / CHUNK), cz = Math.floor(z / CHUNK);
-    const k = cx + "_" + cz;
+    const k = chunkKeyOf(x, z);
     let c = chunkMap.get(k);
     if (!c) chunkMap.set(k, (c = { win: [[], [], []], sf: [], clutter: [], neon: [] }));
     return c;
+  };
+  /* Every chunk GROUP that has reached the scene, keyed the same way as
+     chunkMap — the light layers below (streetlamp glow points, ground pools)
+     bucket into these SAME groups so their visibility rides the existing
+     distance cull in Game.chunksUpdate() (c.group.visible) with no new
+     per-frame work. A cell with a street but no building (e.g. inside a ramp
+     clearance zone) still needs a group for its lamps, so chunkGroupFor()
+     below creates one lazily. */
+  const groupByKey = new Map<string, THREE.Group>();
+  const chunkGroupFor = (key: string): THREE.Group => {
+    let g = groupByKey.get(key);
+    if (!g) {
+      g = new THREE.Group();
+      scene.add(g);
+      const [kx, kz] = key.split("_").map(Number);
+      world.chunks.push({ group: g, cx: kx * CHUNK + CHUNK / 2, cz: kz * CHUNK + CHUNK / 2 });
+      groupByKey.set(key, g);
+    }
+    return g;
   };
   const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
     SC = new THREE.Vector3(1, 1, 1), E = new THREE.Euler();
@@ -300,7 +321,10 @@ export function buildTown(
       if (!list.length) continue;
       const im = new THREE.InstancedMesh(winGeo, mats.winMats[ti], list.length);
       list.forEach((m, i) => im.setMatrixAt(i, m));
-      im.castShadow = true;
+      // town shadows fall from a ~170 m shadow box the dashcam never sees
+      // past (engine.ts) — the two mobile tiers buy back the shader
+      // recompile + shadow-pass cost instead of paying for an invisible box
+      im.castShadow = caps.townCastShadow !== false;
       im.receiveShadow = true;
       im.computeBoundingSphere();
       group.add(im);
@@ -338,12 +362,16 @@ export function buildTown(
     });
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(p, 3));
+    // real per-camera frustum culling instead of always-submit: rooftop
+    // beacons only sit on tall central towers (sparse), but this still keeps
+    // the mirror pass from drawing every one of them behind the car
+    if (tallTops.length) g.computeBoundingSphere();
     const beaconMat = new THREE.PointsMaterial({
       size: 2.6, map: mats.glowTex, color: 0xff3040, transparent: true,
       opacity: 0.8, sizeAttenuation: false, depthWrite: false,
     });
     world.beaconPts = new THREE.Points(g, beaconMat);
-    world.beaconPts.frustumCulled = false;
+    world.beaconPts.frustumCulled = true;
     scene.add(world.beaconPts);
   }
 
@@ -353,6 +381,13 @@ export function buildTown(
     const poleG = new THREE.CylinderGeometry(0.09, 0.12, 7.6, 6);
     const armG = new THREE.BoxGeometry(1.7, 0.09, 0.09);
     const items: { x: number; y: number; z: number; armX: number; armZ: number }[] = [];
+    // Every Nth town streetlamp's glow point + pool is skipped on the tier
+    // that lags most (spacing 42 -> 84 m on mobile-base) — the pole/arm
+    // fixture above is unaffected, only the light it feeds. No rng() call
+    // happens per lamp in this loop, so thinning never shifts the seeded
+    // stream the rest of the town depends on.
+    const lampGlowEvery = Math.max(1, caps.lampGlowEvery ?? 1);
+    let lampI = 0;
     for (const e of net.edges) {
       let flip = rng() < 0.5 ? 1 : -1;
       for (let s = 16; s < e.len - 10; s += 42) {
@@ -363,7 +398,8 @@ export function buildTown(
           x: pose.x + rx * o, y: pose.y, z: pose.z + rz * o,
           armX: -rx * 0.8, armZ: -rz * 0.8,
         });
-        lightPts.push([pose.x + rx * o - rx * 1.55, pose.y + 7.45, pose.z + rz * o - rz * 1.55, pose.y]);
+        if (lampI++ % lampGlowEvery === 0)
+          lightPts.push([pose.x + rx * o - rx * 1.55, pose.y + 7.45, pose.z + rz * o - rz * 1.55, pose.y]);
         flip = -flip;
       }
     }
@@ -391,83 +427,130 @@ export function buildTown(
   for (let i = 0; i < deckLightPts.length; i += 3)
     lightPts.push([deckLightPts[i], deckLightPts[i + 1], deckLightPts[i + 2], deckLightPts[i + 1] - 7.42]);
   {
-    const p = new Float32Array(lightPts.length * 3);
-    lightPts.forEach((l, i) => {
-      p[i * 3] = l[0];
-      p[i * 3 + 1] = l[1];
-      p[i * 3 + 2] = l[2];
+    /* Colour, size, blending and (via tintLampsSodium's onBeforeCompile
+       patch) the distance fade + clamped point size are all set once, at
+       startup, by Game.tintLampsSodium() in engine.ts, which owns the night
+       look — edit them there, not here. EVERY Points object below, chunked
+       or not, shares this ONE material instance so that one call reaches
+       all of them. */
+    const glowMat = new THREE.PointsMaterial({
+      size: 7, map: mats.glowTex, color: 0xffd9a0, transparent: true,
+      opacity: 1, sizeAttenuation: false, depthWrite: false,
     });
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(p, 3));
-    world.glowPts = new THREE.Points(
-      g,
-      /* Colour, size and blending here are overridden at startup by
-         Game.tintLampsSodium() in engine.ts, which owns the night look — edit
-         them there, not here, or the change will appear to do nothing. */
-      new THREE.PointsMaterial({
-        size: 7, map: mats.glowTex, color: 0xffd9a0, transparent: true,
-        opacity: 1, sizeAttenuation: false, depthWrite: false,
-      })
-    );
-    world.glowPts.frustumCulled = false;
+    /* Town lamps bucket into the SAME 96 m chunk groups the buildings use,
+       so their glow rides chunksUpdate()'s existing distance toggle instead
+       of rendering un-culled out to the 3400 m far plane in both the main
+       and mirror passes — see brief-world-lights.json. */
+    const byChunk = new Map<string, number[]>();
+    for (let i = 0; i < nTownLamps; i++) {
+      const k = chunkKeyOf(lightPts[i][0], lightPts[i][2]);
+      let arr = byChunk.get(k);
+      if (!arr) byChunk.set(k, (arr = []));
+      arr.push(i);
+    }
+    for (const [key, idxs] of byChunk) {
+      const p = new Float32Array(idxs.length * 3);
+      idxs.forEach((li, i) => {
+        p[i * 3] = lightPts[li][0];
+        p[i * 3 + 1] = lightPts[li][1];
+        p[i * 3 + 2] = lightPts[li][2];
+      });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(p, 3));
+      g.computeBoundingSphere();
+      chunkGroupFor(key).add(new THREE.Points(g, glowMat));
+    }
+    /* Deck lamps stay ONE always-on cloud: real frustum culling (so the
+       mirror pass and whatever is behind camera skip it for free) but NEVER
+       a distance toggle — the lamp run receding to the horizon is the deck's
+       signature shot, and per the fade-never-stop rule it may only dim via
+       tintLampsSodium's shader patch, not disappear. */
+    const deckPts = lightPts.slice(nTownLamps);
+    const dpos = new Float32Array(deckPts.length * 3);
+    deckPts.forEach((l, i) => {
+      dpos[i * 3] = l[0];
+      dpos[i * 3 + 1] = l[1];
+      dpos[i * 3 + 2] = l[2];
+    });
+    const dg = new THREE.BufferGeometry();
+    dg.setAttribute("position", new THREE.BufferAttribute(dpos, 3));
+    if (deckPts.length) dg.computeBoundingSphere();
+    world.glowPts = new THREE.Points(dg, glowMat);
+    world.glowPts.frustumCulled = true;
     scene.add(world.glowPts);
+
     /* warm light pools on the ground under each lamp.
 
        The deck lamps get purpose-built pools from highway.ts — elliptical,
        yaw+grade aligned, elongated down the road — so when that geometry
        exists the axis-aligned squares here cover the TOWN lamps only (a flat
-       grid town is the one place an unrotated square is actually fine). */
-    const deckGeo = takeDeckPoolGeometry();
-    const poolLamps = deckGeo ? lightPts.slice(0, nTownLamps) : lightPts;
-    const pool = new Float32Array(poolLamps.length * 18);
-    const uv = new Float32Array(poolLamps.length * 12);
+       grid town is the one place an unrotated square is actually fine). Town
+       pools are already invisible past ~150 m via their own gradient falloff
+       (poolGradientTex), so bucketing them per chunk like the glow points —
+       one small Mesh per chunk instead of one giant always-on quad batch —
+       costs nothing visually while giving them the same distance cull. */
     const half = 5.4;
-    poolLamps.forEach((l, i) => {
-      const o = i * 18;
-      const y = l[3] + 0.06;
-      const vs = [
-        [-half, -half], [half, -half], [half, half],
-        [-half, -half], [half, half], [-half, half],
-      ];
-      vs.forEach((v, k) => {
-        pool[o + k * 3] = l[0] + v[0];
-        pool[o + k * 3 + 1] = y + 0.04;
-        pool[o + k * 3 + 2] = l[2] + v[1];
+    const poolGeoFor = (idxs: number[]): THREE.BufferGeometry => {
+      const pos = new Float32Array(idxs.length * 18);
+      const uv = new Float32Array(idxs.length * 12);
+      idxs.forEach((li, i) => {
+        const l = lightPts[li];
+        const o = i * 18;
+        const y = l[3] + 0.06;
+        const vs = [
+          [-half, -half], [half, -half], [half, half],
+          [-half, -half], [half, half], [-half, half],
+        ];
+        vs.forEach((v, k) => {
+          pos[o + k * 3] = l[0] + v[0];
+          pos[o + k * 3 + 1] = y + 0.04;
+          pos[o + k * 3 + 2] = l[2] + v[1];
+        });
+        const us = [[0, 0], [1, 0], [1, 1], [0, 0], [1, 1], [0, 1]];
+        us.forEach((u, k) => {
+          uv[i * 12 + k * 2] = u[0];
+          uv[i * 12 + k * 2 + 1] = u[1];
+        });
       });
-      const us = [[0, 0], [1, 0], [1, 1], [0, 0], [1, 1], [0, 1]];
-      us.forEach((u, k) => {
-        uv[i * 12 + k * 2] = u[0];
-        uv[i * 12 + k * 2 + 1] = u[1];
-      });
-    });
-    const pg = new THREE.BufferGeometry();
-    pg.setAttribute("position", new THREE.BufferAttribute(pool, 3));
-    pg.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+      const pg = new THREE.BufferGeometry();
+      pg.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      pg.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+      if (idxs.length) pg.computeBoundingSphere();
+      return pg;
+    };
     // two-knee sodium gradient shared with the deck pools (decaltex.ts) —
     // brighter core, wider soft skirt than the old single-stop fade
     const poolTex = poolGradientTex();
-    world.pools = new THREE.Mesh(
-      pg,
-      // colour likewise comes from tintLampsSodium(), and the opacity is
-      // rewritten every frame by the day/night pass in engine.ts
-      new THREE.MeshBasicMaterial({
-        map: poolTex, transparent: true, depthWrite: false,
-        blending: THREE.AdditiveBlending, opacity: 0.3, side: THREE.DoubleSide,
-      })
-    );
-    world.pools.layers.set(1);
-    world.pools.frustumCulled = false;
-    scene.add(world.pools);
-    /* Deck lamp pools ride the SAME material instance: engine.ts drives
-       world.pools.material's opacity every frame (day/night/rain) and
-       tintLampsSodium() sets its colour, so parenting the highway geometry to
-       that material keeps all of it in sync with zero engine changes. */
-    if (deckGeo) {
-      const dp = new THREE.Mesh(deckGeo, world.pools.material);
-      dp.layers.set(1);
-      dp.frustumCulled = false;
-      scene.add(dp);
+    const poolMat = new THREE.MeshBasicMaterial({
+      // colour comes from tintLampsSodium(), and the opacity is rewritten
+      // every frame by the day/night pass in engine.ts — every mesh below
+      // shares this ONE material instance so both reach all of them
+      map: poolTex, transparent: true, depthWrite: false,
+      blending: THREE.AdditiveBlending, opacity: 0.3, side: THREE.DoubleSide,
+    });
+    for (const [key, idxs] of byChunk) {
+      const m = new THREE.Mesh(poolGeoFor(idxs), poolMat);
+      m.layers.set(1);
+      chunkGroupFor(key).add(m);
     }
+    /* Deck lamp pools ride the SAME material instance and are NEVER
+       distance-culled, same reasoning as the deck glow cloud above. */
+    const deckGeo = takeDeckPoolGeometry();
+    let dp: THREE.Mesh;
+    if (deckGeo) {
+      dp = new THREE.Mesh(deckGeo, poolMat);
+      dp.geometry.computeBoundingSphere();
+    } else {
+      // highway.ts didn't hand over purpose-built deck pool geometry (e.g.
+      // lampPoolEvery: 0) — fall back to the flat quad batch for deck lamps
+      // too, rather than leaving them with no pool at all
+      const deckIdx = deckPts.map((_, i) => nTownLamps + i);
+      dp = new THREE.Mesh(poolGeoFor(deckIdx), poolMat);
+    }
+    dp.layers.set(1);
+    dp.frustumCulled = true;
+    scene.add(dp);
+    world.pools = dp;
   }
 
   /* ---------- utility poles + wires ---------- */
@@ -591,6 +674,7 @@ export function buildTown(
       });
       const g = new THREE.BufferGeometry();
       g.setAttribute("position", new THREE.BufferAttribute(p, 3));
+      if (list.length) g.computeBoundingSphere();
       const pts = new THREE.Points(
         g,
         new THREE.PointsMaterial({
@@ -598,7 +682,9 @@ export function buildTown(
           sizeAttenuation: false, depthWrite: false,
         })
       );
-      pts.frustumCulled = false;
+      // real per-camera frustum culling — signal clouds sit at intersections
+      // only, so most are out of frame at any given moment
+      pts.frustumCulled = true;
       scene.add(pts);
       return pts;
     }
