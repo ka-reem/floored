@@ -437,19 +437,25 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
             changed, because lampWash already carries it to sodium under every
             lamp and the between-lamps hue is a taste call for the user's eyes.
 
-   `on` mirrors the I key so the console can force either state, and because
-   `on * dome` is the effective level it also buys a residual: set on = 1 and
-   dome = 0.15 for "not off, just very low" without touching the key.
+   `on` mirrors the I key so the console can force any state, and because
+   `DOME_LEVELS[on] * dome` is the effective level it also buys a residual:
+   set on = 2 and dome = 0.15 for "not off, just very low" without touching
+   the key.
 
-     window.__cabinLight.on = 1          // as if I were pressed
+   It is a THREE-WAY CYCLE, not a flip: off -> dim -> full -> off, both from
+   the key and from the console click, so the two can never disagree about
+   which of the three the cabin is in. Reported as wanting a dimmer option
+   between pitch-black and full CABIN_DOME rather than only the two ends.
+
+     window.__cabinLight.on = 2          // full, as two presses from off
      window.__cabinLight.dome = 0.3      // a dimmer ON state
      window.__cabinLight.glass = 1.6     // more crest sheen, cabin still dark
      window.__cabinLight.glassHex = 0xffd0a0   // warm it toward the reference
 
    `hover` is the discoverability term, and it is the dome light being used as
    its own affordance. Resting the cursor on the overhead console eases the
-   lamp this fraction of the way toward the state a CLICK would produce —
-   0.22 up out of dark, or 0.22 down out of lit — then eases back when the
+   lamp this fraction of the way toward the level a CLICK would produce —
+   the next stop around the off/dim/full cycle — then eases back when the
    cursor leaves. Reported as "idk where to click", and this is the answer that
    suits the geometry: the console is the donor's own moulded ceiling panel and
    its material is shared with the floor and the mirror holder, so there is
@@ -470,6 +476,10 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
      window.__cabinLight.hover = 0.35    // a stronger tell while hunting for it
      window.__cabinLight.hover = 0       // off; the I key still works */
 const CABIN_LIGHT = { on: 0, dome: 1, glass: 1, glassHex: GLASS_REST.color, hover: 0.22 };
+/** Brightness fraction of CABIN_DOME/DONOR_FILL at each stop of the `on`
+    cycle — off, dim, full. Indexed by `on` directly, so DOME_LEVELS[k.on] is
+    the level a click would leave the lamp at from wherever it rests now. */
+const DOME_LEVELS = [0, 0.4, 1];
 /* Rate the hover preview eases at, per second, as an exponential time constant
    — about 0.2 s to settle either way. It is a fade rather than a step because
    every other light in this file is: a cabin that snaps between two levels as
@@ -1002,15 +1012,15 @@ export class Game {
     return window.__chase;
   }
 
-  /** Flip the dome light. One place, because there are two ways to ask for it
-      — the I key and clicking the overhead console (onPointerDown) — and a
-      state this cheap to duplicate is a state that eventually disagrees with
-      itself. Only the knob is written; cabinLightUpdate() below is what carries
-      it into both interiors. */
+  /** Step the dome light around its off/dim/full cycle. One place, because
+      there are two ways to ask for it — the I key and clicking the overhead
+      console (onPointerDown) — and a state this cheap to duplicate is a state
+      that eventually disagrees with itself. Only the knob is written;
+      cabinLightUpdate() below is what carries it into both interiors. */
   private toggleCabinLight() {
     const c = this.cabinKnob();
-    c.on = c.on ? 0 : 1;
-    this.ui.toast("INTERIOR LIGHT " + (c.on ? "ON" : "OFF"));
+    c.on = ((c.on + 1) % DOME_LEVELS.length) as typeof c.on;
+    this.ui.toast("INTERIOR LIGHT " + (c.on === 0 ? "OFF" : c.on === 1 ? "DIM" : "ON"));
   }
 
   /** Push the cabin-light level into both interiors, every frame.
