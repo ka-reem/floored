@@ -228,8 +228,15 @@ const WEIGHTS = [
    WEIGHTS above still catches everything these two miss (fog lights, wing
    mirrors) at its old, even-handed weight. */
 const REAR_WEIGHTS = [
+  /* The one exception to "front low": the hood. player.ts lifts its connected
+     component out of this asset and draws it in the DASHCAM view — the view
+     that ships (AGENTS.md) — as the silhouette band along the bottom of the
+     frame. Weight 8 lands it near the old build's ~1,500 tris instead of the
+     ~450 the front demotion would leave, so the bonnet's crown line does not
+     go polygonal in the one place this asset reaches the shipping camera. */
+  [/^Hood[ _]/i, 8.0, true],
   [/Taillight|TrunkTaillight|ReverseLight|Bumper[ _]?Rear|^Trunk[ _]|Lettering[ _]?Rear|Quarter|Exhaust/i, 8.0, true],
-  [/Grille|Headlight|Bumper[ _]?Front|Fender[ _]?Front|Emblem[ _]?Front|Runninglight|Turnsignal|Wiper/i, 0.6, true],
+  [/Grille|Headlight|Bumper[ _]?Front|Fender[ _]?Front|Emblem[ _]?Front|Runninglight|Turnsignal|Wiper/i, 0.8, true],
 ];
 /* An interior asset inverts the exterior's priorities completely. The WEIGHTS
    above put the cabin at 0.5 because from outside it is a blur behind tinted
@@ -282,9 +289,15 @@ for (const node of root.getDefaultScene().listChildren()) {
   if (REAR_BIAS) {
     const z = meshWorldZCenter(mesh, node.getMatrix());
     if (z < -1.5) weight *= 3;
-    else if (z > 1.0) weight *= 0.5;
+    /* Demote the front by ratio only, gently: 0.5 was enough to push the
+       nose's paint and lamp shells into the escalating-error regime below,
+       which TEARS the silhouette (holes in the bumper, a collapsed fender)
+       rather than merely coarsening it — "front low" must mean fewer
+       triangles, not brake-disc treatment; the garage card still frames the
+       front 3/4. */
+    else if (z > 1.0) weight *= 0.7;
   }
-  const info = meshInfo.get(mesh) ?? { weight, lock, instances: 0, tris: meshTris(mesh) };
+  const info = meshInfo.get(mesh) ?? { weight, ruleWeight, lock, instances: 0, tris: meshTris(mesh) };
   info.instances++;
   meshInfo.set(mesh, info);
 }
@@ -332,8 +345,12 @@ for (let pass = 0; pass < 6; pass++) {
        full resolution, not eventually give way to it. Without this gate the
        tail-lamp stack's many boundary-locked shells — the exact geometry
        --rear-bias exists to protect — get progressively unlocked by
-       Math.pow(3, pass) across six passes and end up as crushed as before. */
-    const err = (ERROR / info.weight) * (info.weight >= 3 ? 1 : Math.pow(3, pass));
+       Math.pow(3, pass) across six passes and end up as crushed as before.
+       The gate reads the NAME-RULE weight, not the spatially-biased one:
+       --rear-bias halving a front panel's budget must not also strip the
+       hood — a paint panel, weight 3.0 by rule — of this exemption, or the
+       nose's boundary-locked skin gets progressively unlocked and torn. */
+    const err = (ERROR / info.weight) * (Math.max(info.weight, info.ruleWeight ?? 0) >= 3 ? 1 : Math.pow(3, pass));
     for (const prim of mesh.listPrimitives())
       simplifyPrimitive(prim, { simplifier: MeshoptSimplifier, ratio: info.target / now, error: err, lockBorder: info.lock });
   }

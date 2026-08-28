@@ -5,7 +5,33 @@ obtained under. Most assets are CC0 / public domain; assets requiring credit
 are identified explicitly below so the provenance of every shipped asset is
 auditable.
 
-## NPC vehicle bodyshells — `public/models/cars/*.glb`
+## NPC vehicle bodyshells — `public/models/cars/*.glb` + `public/models/cars-hd/*.glb`
+
+The 2026-08-28 hi-fi fleet. Eight of the nine styles are baked by
+`tools/build-hifi-models.mjs` from five CC-BY Sketchfab donors (the ninth,
+`truck`, still ships from the Orchids pack below). Each donor's interiors
+and occluded geometry are removed by a multi-view visibility pass, hero
+wheels are removed as connected components (the shared instanced wheels
+take over; the civil-pack styles keep their authored wheels, welded to the
+shell), the remainder is rear-bias simplified, and every style is packed
+onto a single 512px (BASE) or 1024px (HD, desktop-only lazy upgrade)
+JPEG atlas with quantized vertex attributes.
+
+| Style | Donor | Author | Licence | Source |
+|---|---|---|---|---|
+| sedan | Toyota Camry 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/236a5a6e2fa6420fbdf641f4800cd544 |
+| hybrid | Toyota Prius 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/ad0d925cb51040798d96f166db8c7f80 |
+| compact | Volkswagen Golf GTI 2021 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/82a55610817646539ce699a6aaa5dda0 |
+| suv | Toyota Highlander 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/ff144d062f244a3ebfae71bc2a41564b |
+| taxi, police, van, bus | Generic civil service vehicles pack | comrade1280 | **CC BY 4.0** | https://sketchfab.com/3d-models/8ff2a13f30914932a70c7950cfa58465 |
+
+Rebuild (donor .gltf exports unzipped one-per-directory, not in the repo):
+
+    node tools/build-hifi-models.mjs --dl <donor-dir>          # BASE fleet
+    node tools/build-hifi-models.mjs --dl <donor-dir> --hd \
+        sedan hybrid compact suv                               # HD upgrade
+
+## Previous NPC bodyshells (truck still ships) — `public/models/cars/truck.glb`
 
 | | |
 |---|---|
@@ -232,12 +258,19 @@ section for the source URL. This is the other half of the car: the exterior
 shell the chase cameras see, which `tools/build-cockpit.mjs` throws away.
 
 Built by `tools/build-car-body.mjs` (meshoptimizer edge-collapse simplification
-under a per-part budget, textures down to 128 px webp), then cut down further:
-the donor's wheels, tyres, brake discs, calipers and hubs are stripped
-entirely, because the game keeps its own — they steer and spin, and the donor's
-would not. That is 119k of its 207k triangles gone for nothing lost. Re-encoded
-from Draco to plain meshopt so no decoder file has to be served: 87,962
-triangles, 0.48 MB on disk.
+under a per-part budget) in REAR-BIASED form: this asset is only ever seen by
+cameras that frame the car from behind or at a rear 3/4 — the chase cam, the
+live mirror, the garage card — so `--rear-bias` pins the tail-lamp stack,
+trunk, rear bumper and rear badges near donor resolution (the rear cluster
+holds ~74k of the file's triangles, against ~14k of 88k in the previous even
+cut) while the front and sides take the decimation. Rear-lamp textures stay at
+256 px webp, everything else at 128 px. `--strip` drops the donor's wheels,
+tyres, brake discs, calipers and hubs at selection time, because the game keeps
+its own — they steer and spin, and the donor's would not (the old ad-hoc
+post-build strip left one stray brake-disc mesh; this one leaves none). The
+hood is the one front part pinned high (weight 8): `game/player.ts` lifts its
+connected component into the shipping DASHCAM view. Encoded straight to
+meshopt: 131,376 triangles, 23 draw calls, 9 textures, 0.78 MB on disk.
 
 Loaded by `game/bodymodel.ts`. It and the donor dash are two cuts of the same
 car and now belong to the same garage entry: the **VOLVO S90**, which is the
@@ -251,32 +284,18 @@ runtime — very nearly an identity scale, since that shell is the real car's
 4.96 x 1.88 x 1.44 — and lined up on the axles so the game's own wheels sit in
 its arches.
 
-Rebuild the pre-strip source with:
+Rebuilt 2026-08-28 from the donor's Sketchfab glTF export (`scene.gltf` +
+`scene.bin` + `textures/`, 379 MB on disk — `NodeIO` reads the .gltf form
+directly, no .glb repack needed) in one command, no post-steps:
 
-    node --max-old-space-size=12288 tools/build-car-body.mjs <source.glb> \
-      --out volvo-s90-body-lite --tris 300000 --tex 128 --compress draco
-
-**Not yet rebuilt — rear-biased.** The shipped file above spends its budget
-evenly across the car; the owner wants the rear (tailgate, lamps, bumper,
-rear glass — what a chase camera and the mirror actually frame) kept near
-donor quality while the front and sides stay hard-decimated. `--rear-bias`
-now exists for exactly that (weights named rear parts at 8.0, spatial-biases
-anything the name regexes miss by world-space Z, exempts high-weight parts
-from the per-pass error relaxation so the tail-lamp shells don't get
-unlocked pass over pass) and `--strip` folds the wheel/tyre/disc/caliper
-removal into the same command instead of the ad-hoc post-step above (which
-left one stray brake-disc mesh in the shipped file). Rebuild with:
-
-    node --max-old-space-size=12288 tools/build-car-body.mjs <source.glb> \
+    node --max-old-space-size=12288 tools/build-car-body.mjs <scene.gltf> \
       --out volvo-s90-body-lite --exterior --strip --rear-bias \
-      --tris 300000 --tex 128 --tex-rear 512 --compress meshopt
+      --tris 120000 --tex 128 --tex-rear 256 --compress meshopt
 
-This has not been run: the 386 MB donor is not committed (gitignored, see
-above) and downloading it from the Sketchfab API
-(`api.sketchfab.com`) was blocked by this sandbox's network egress policy
-(403 on CONNECT) when attempted 2026-08-28. Whoever runs this next needs a
-network path to Sketchfab and the donor's download token; see
-`docs/handoff/reports/volvo-body.md` for the full account.
+The donor download is not committed (gitignored); the source URL and licence
+are above. Full before/after numbers and renders:
+`docs/handoff/reports/volvo-body-local.md` and
+`docs/gallery/img/volvo-rear-{before,after}.webp`.
 
 ## Sourcing notes / other candidates evaluated but not shipped
 

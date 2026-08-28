@@ -50,8 +50,9 @@ function acc(i) {
   for (let k = 0; k < a.count; k++)
     for (let c = 0; c < width; c++)
       out[k * width + c] = buf[get](start + k * stride + c * bytes);
-  if (a.normalized && (a.componentType === 5121 || a.componentType === 5123))
-    for (let k = 0; k < out.length; k++) out[k] /= a.componentType === 5121 ? 255 : 65535;
+  if (a.normalized)
+    for (let k = 0; k < out.length; k++)
+      out[k] /= { 5120: 127, 5121: 255, 5122: 32767, 5123: 65535 }[a.componentType] ?? 1;
   return { arr: out, n: a.count, w: width };
 }
 

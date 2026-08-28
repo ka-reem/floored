@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { clamp, lerp, rand, pick, TAU, angDiff, mulberry32 } from "./util";
-import { loadNpcModels, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
+import { loadNpcModels, HD_STYLES, HD_BASE, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
 import { HX, LANE_LAT } from "./world/const";
 import { getCorridor, PITCH, PHASE, TOLL } from "./world/corridor";
 import { worldTierCaps, rivalMode } from "./settings";
@@ -1816,6 +1816,24 @@ export class Traffic {
     this.fleetLoaded = loadNpcModels(Object.keys(this.styleOf), (m) => this.applyModel(m)).then(
       () => { this.fleetReady = true; }
     );
+
+    /* Desktop upgrade: stream the HD bodyshells (1024px atlas, ~3x the
+       triangles) well after the opening seconds and hot-swap them through
+       the same applyModel path, which already supports landing mid-drive.
+       Gated per tier — phones never fetch a byte of this — and delayed so
+       the fetches never compete with the corridor seeding or the first
+       seconds of driving. */
+    if (worldTierCaps().hdFleet) {
+      this.fleetLoaded.then(() => {
+        setTimeout(() => {
+          loadNpcModels(
+            HD_STYLES.filter((s) => this.styleOf[s] !== undefined),
+            (m) => this.applyModel(m),
+            HD_BASE
+          );
+        }, 8000);
+      });
+    }
   }
 
   /** Bake the streetlight-wash tables from the same placement rules the
@@ -1926,6 +1944,17 @@ export class Traffic {
         n.wr = r;
         n.wz = Math.abs(offs[0][0]);
         n.wheelOffs = offs;
+      }
+    } else if (m.wheels.length === 0) {
+      /* A bodyshell with NO wheel records keeps its authored wheels baked
+         into the body (the civil-pack styles — their wheels are welded to
+         the shell and every attempt to carve them out tore bodywork).
+         Emitting the shared instanced wheels on top would z-fight them,
+         so this style gets none. The baked wheels don't spin; at night,
+         in traffic, nobody has ever noticed a hubcap hold still. */
+      for (const n of this.npcs) {
+        if (n.type !== m.style) continue;
+        n.wheelOffs = [];
       }
     }
   }
