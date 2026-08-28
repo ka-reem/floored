@@ -188,6 +188,59 @@ export default function GameApp() {
 
   const g = gameRef.current;
   const playing = screen === "playing";
+  /* Touch overflow drawer (the ⋯ button). Session state only, deliberately:
+     a drawer that re-opens on the next run is chrome the player has to clear
+     before driving, which is the opposite of what an overflow is for. */
+  const [drawer, setDrawer] = useState(false);
+  const [moreDim, setMoreDim] = useState(false);
+  /* Leaving the driving screen for any reason — pause, help, a crash into
+     the main menu — closes the drawer, so it can never sit over a menu or
+     greet the player already open on resume. */
+  useEffect(() => {
+    if (!playing && drawer) setDrawer(false);
+  }, [playing, drawer]);
+  /* Close on ANY pointerdown outside the drawer — which is also close-on-
+     drive-input, because a tap on the wheel, a pedal or the canvas IS a tap
+     outside the drawer. Capture phase so no stopPropagation downstream can
+     keep the drawer from seeing it, and never preventDefault/stopPropagation
+     here: the same press must still steer/brake/fire whatever it landed on.
+     The drawer closing must only ever be a side effect of input, never a
+     consumer of it. */
+  useEffect(() => {
+    if (!drawer) return;
+    const close = (e: PointerEvent) => {
+      const t = e.target instanceof Element ? e.target : null;
+      if (t && (t.closest("#tcDrawer") || t.closest("#tcMore"))) return;
+      setDrawer(false);
+    };
+    window.addEventListener("pointerdown", close, true);
+    return () => window.removeEventListener("pointerdown", close, true);
+  }, [drawer]);
+  /* Auto-dim the ⋯ button while driving, same idea as the idle-hidden mouse
+     cursor above: after a few seconds without a touch it fades to quarter
+     presence (CSS .dim) and any touch anywhere brings it back. Dimmed, not
+     hidden — a control that vanishes has to be rediscovered mid-drive. Touch
+     devices only; desktop never shows the button at all. */
+  useEffect(() => {
+    if (!playing || typeof window === "undefined" || !("ontouchstart" in window)) return;
+    const IDLE_MS = 3500;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const arm = () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => setMoreDim(true), IDLE_MS);
+    };
+    const wake = () => {
+      setMoreDim(false);
+      arm();
+    };
+    window.addEventListener("pointerdown", wake, true);
+    arm();
+    return () => {
+      window.removeEventListener("pointerdown", wake, true);
+      if (t) clearTimeout(t);
+      setMoreDim(false);
+    };
+  }, [playing]);
   useEffect(() => {
     if (!playing) return;
     const IDLE_MS = 2000;
@@ -217,10 +270,16 @@ export default function GameApp() {
       <div ref={hostRef} />
       {/* HUD */}
       <div id="topbar" style={{ display: playing ? "flex" : "none" }}>
-        <span id="indL" className="ind">◀</span>
+        {/* On touch the indicator glyphs are also the signal switches: the
+            control IS its own telltale, so signals cost no extra chrome at
+            all. CSS opts the two spans back into pointer events (with a
+            bled-out hit area) under body.touch only — #topbar itself stays
+            pointer-events:none, and on desktop the handlers are unreachable.
+            Routed through uiKeyTap so a tap is exactly a Q/E press. */}
+        <span id="indL" className="ind" onPointerDown={() => gameRef.current?.uiKeyTap("q")}>◀</span>
         <span id="clock">21:30</span>
         <span id="wx"></span>
-        <span id="indR" className="ind">▶</span>
+        <span id="indR" className="ind" onPointerDown={() => gameRef.current?.uiKeyTap("e")}>▶</span>
       </div>
       <div id="hud" style={{ display: playing ? "block" : "none" }}>
         <div className="spd" id="spd">0<small>{unitLabel(g ? g.settings.units : "mph")}</small></div>
@@ -248,6 +307,27 @@ export default function GameApp() {
           </svg>
         </div>
       )}
+      {/* ⋯ — the touch overflow. One unobtrusive button beside the pause
+          gear; everything a keyboard has that the pucks don't fits behind it
+          (see QuickDrawer). Toggling on pointerdown keeps it as immediate as
+          the gear button next door; the stopPropagation is only so the
+          drawer's own outside-tap closer (capture phase, unaffected) is the
+          single authority on closing — without it this press would toggle
+          and bubble into nothing anyway, but the intent reads clearer. */}
+      {playing && (
+        <div
+          id="tcMore"
+          className={moreDim && !drawer ? "dim" : undefined}
+          aria-label="More controls"
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            setDrawer((d) => !d);
+          }}
+        >
+          ⋯
+        </div>
+      )}
+      {playing && g && <QuickDrawer game={g} open={drawer} onClose={() => setDrawer(false)} />}
       {/* Touch controls. These stay mounted on every screen — bindInput()
           grabs them by id once, in the Game constructor — so the menus hide
           them with an inline display instead of unmounting them. */}
@@ -536,6 +616,81 @@ function SteerWheel({ game }: { game: Game }) {
     >
       <div id="swheelInner" style={{ transform: `rotate(${rot}deg)` }}>
         ◠<br />│
+      </div>
+    </div>
+  );
+}
+
+/* ================= touch overflow drawer ================= */
+
+/* The second level of the touch control scheme: driving keeps the pucks and
+   nothing else, and every remaining keyboard feature lives one tap away
+   behind the ⋯ button. The game does NOT pause under it — it is a glovebox,
+   not a menu — so the sheet stays narrow, hugs the top-right corner clear of
+   every steering/pedal hit area, and dims nothing.
+
+   Always mounted while playing; `open` only flips a class. Closed, the CSS
+   holds it at opacity 0 with pointer-events:none, so mid-transition in
+   EITHER direction it can never swallow a touch meant for the road — a
+   drawer that is not fully open is already inert. Rows fire on pointerdown
+   (same immediacy as the pucks) through Game.uiKeyTap, so each row is
+   literally its keyboard key: same toggle body, same toast, same
+   settings/persistence write.
+
+   Not here, on purpose: camera (the CAM puck has it), high beams and horn
+   (pucks), signals (the topbar telltales), music (MusicPlayer is
+   desktop-only by design — no phone headroom), interior light (owner ruled
+   out a touch button; the roof-band tap covers it), look-back (dead in the
+   shipped dashcam view). */
+function QuickDrawer({
+  game, open, onClose,
+}: {
+  game: Game;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [, force] = useState(0);
+  const tap = (k: string) => {
+    game.uiKeyTap(k);
+    force((n) => n + 1);
+  };
+  // playing implies loaded, but a guard against a not-yet-built car is free
+  if (!game.car) return null;
+  const rows: { k: string; en: string; jp: string; state: string; on: boolean }[] = [
+    { k: "l", en: "HEADLIGHTS", jp: "ライト", state: game.car.lightsUser ? "ON" : "AUTO", on: game.car.lightsUser },
+    { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
+    { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
+    { k: "r", en: "RAIN", jp: "雨", state: game.rain ? "ON" : "OFF", on: game.rain },
+    { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
+    { k: "v", en: "DASHCAM FX", jp: "映像", state: game.grade ? "ON" : "OFF", on: game.grade },
+    { k: "k", en: "TEST MODE", jp: "テスト", state: game.testMode ? "ON" : "OFF", on: game.testMode },
+  ];
+  return (
+    <div id="tcDrawer" className={open ? "open" : undefined}>
+      <div className="qdHead">
+        QUICK CONTROLS <span>クイック操作</span>
+      </div>
+      {rows.map((r) => (
+        <div key={r.k} className="qdRow" onPointerDown={() => tap(r.k)}>
+          <span className="qdLabel">
+            {r.en} <i>{r.jp}</i>
+          </span>
+          <span className={"qdState" + (r.on ? " on" : "")}>{r.state}</span>
+        </div>
+      ))}
+      {/* One-shot, so it also closes the drawer: the whole point of a reset
+          is to look at the road it put you back on. */}
+      <div
+        className="qdRow"
+        onPointerDown={() => {
+          tap("n");
+          onClose();
+        }}
+      >
+        <span className="qdLabel">
+          RESET CAR <i>リセット</i>
+        </span>
+        <span className="qdState">↺</span>
       </div>
     </div>
   );

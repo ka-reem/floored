@@ -2605,6 +2605,17 @@ export class Game {
       });
     } catch {}
   }
+  /** The touch overflow drawer's one route into the game: press and release a
+      key, exactly as the keyboard would. Going through onKeyDown/onKeyUp
+      rather than a parallel switch keeps a drawer row and the key it stands
+      for from ever drifting apart — same toggle body, same toast, same
+      settings write, same started/running guards. The immediate release
+      leaves keydown[] at 0, so nothing here can latch; a synthesized event
+      has e.repeat false, so the once-per-press logic sees a clean press. */
+  uiKeyTap(k: string) {
+    this.onKeyDown(new KeyboardEvent("keydown", { key: k }));
+    this.onKeyUp(new KeyboardEvent("keyup", { key: k }));
+  }
   setWheelVal(v: number) {
     this.wheelVal = v;
   }
