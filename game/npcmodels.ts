@@ -141,13 +141,21 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
   };
 }
 
+/** The styles a desktop-only HD variant is baked for (1024px atlas, gentler
+    decimation) — tools/build-hifi-models.mjs --hd writes exactly these. */
+export const HD_STYLES = ["sedan", "hybrid", "compact", "suv"];
+export const HD_BASE = "/models/cars-hd/";
+
 /** Load a bodyshell per style, calling `onModel` as each one lands. Never
     rejects and never throws: a style whose file is missing or malformed is
     simply skipped, and its caller keeps the procedural shell it started with.
-    The returned promise settles when every style has been tried. */
+    The returned promise settles when every style has been tried. `base`
+    selects the fleet directory — the default ships to everyone, HD_BASE is
+    the desktop upgrade streamed in after the drive has started. */
 export function loadNpcModels(
   styles: string[],
-  onModel: (m: NpcModel) => void
+  onModel: (m: NpcModel) => void,
+  base: string = BASE
 ): Promise<void> {
   const loader = new GLTFLoader();
   return Promise.all(
@@ -156,7 +164,7 @@ export function loadNpcModels(
         new Promise<void>((resolve) => {
           try {
             loader.load(
-              `${BASE}${style}.glb`,
+              `${base}${style}.glb`,
               (gltf) => {
                 try {
                   const m = extract(style, gltf as unknown as { scene: THREE.Object3D });

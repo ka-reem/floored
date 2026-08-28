@@ -164,6 +164,13 @@ export interface TierCaps {
       Read once, when the donor lands (player.ts). Nothing re-reads it, so a
       tier bumped mid-session applies on the next rig build. */
   cabinPbrMaps?: boolean;
+
+  /** Stream the 1024px-atlas HD NPC bodyshells (public/models/cars-hd/)
+      after the first drivable frame and hot-swap them into the fleet.
+      Desktop-only: the BASE fleet everyone loads is already the same
+      donors at 512px, and phones keep their memory and radio for the
+      drive itself. Read by traffic.ts once the base fleet has landed. */
+  hdFleet?: boolean;
 }
 
 export const TIER_CAPS: Record<RenderTier, TierCaps> = {
@@ -178,7 +185,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
     lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
-    wheelTracks: false, deckDressing: 0.35, districts: 0.55, mtnDetail: 0.5,
+    wheelTracks: false, deckDressing: 0.35, districts: 0.55, mtnDetail: 0.5, hdFleet: false,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -189,7 +196,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
-    wheelTracks: true, deckDressing: 0.7, districts: 0.8, mtnDetail: 0.75,
+    wheelTracks: true, deckDressing: 0.7, districts: 0.8, mtnDetail: 0.75, hdFleet: false,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -200,7 +207,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
-    wheelTracks: true, deckDressing: 1, districts: 1, mtnDetail: 1,
+    wheelTracks: true, deckDressing: 1, districts: 1, mtnDetail: 1, hdFleet: true,
   },
 };
 

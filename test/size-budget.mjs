@@ -22,10 +22,17 @@ const CRITICAL_DIRS = ['public/assets', 'public/models'];
 // assets/audio decodes on the first user gesture; assets/lens fetches only
 // when the desktop film-look enables — neither blocks the first drivable
 // frame, so they count against the total budget, not the critical one.
-const LAZY_DIRS = ['public/hdri', 'public/assets/audio', 'public/assets/lens'];
+const LAZY_DIRS = [
+  'public/hdri', 'public/assets/audio', 'public/assets/lens',
+  // HD NPC bodyshells stream in ~8s after the first drivable frame, desktop
+  // tier only (traffic.ts hdFleet gate) — never on the critical path.
+  'public/models/cars-hd',
+];
 // Subtrees of CRITICAL_DIRS that are actually lazy (listed above) — skipped
 // while summing the critical walk so they are not double-counted.
-const CRITICAL_SKIP = new Set(['public/assets/audio', 'public/assets/lens']);
+const CRITICAL_SKIP = new Set([
+  'public/assets/audio', 'public/assets/lens', 'public/models/cars-hd',
+]);
 // -----------------------------------------------------------------------------
 
 const MB = 1024 * 1024;
