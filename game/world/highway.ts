@@ -3868,7 +3868,11 @@ function buildMountainRoad(
     }
 
     /* chevron boards on the outside of the three tightest corners, doubled
-       back-to-back so both streams read them */
+       back-to-back so both streams read them. Dimmed well below the texture's
+       full level — an unlit basic material at night is effectively emissive,
+       and at full brightness the board read as a floodlit sign filling the
+       windshield (realistic-light: a bright thing must still be under the
+       blowout ceiling) — and mounted on a real post, not floating. */
     for (const cs of corners) {
       const p = mt.poseAt(cs);
       // outside of the corner: opposite the smoothed turn direction
@@ -3879,14 +3883,18 @@ function buildMountainRoad(
       while (dh < -Math.PI) dh += 2 * Math.PI;
       const out = dh > 0 ? -1 : 1; // turning toward +lat ⇒ outside is −lat
       const { hwL, hwR } = mt.halfWidths(cs);
-      const latB = out > 0 ? hwL + 0.75 : -(hwR + 0.6);
+      const latB = out > 0 ? hwL + 1.1 : -(hwR + 0.95);
       const w = mt.worldOf(cs, latB);
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05, 0.06, 1.1, 5), mats.concDark);
+      post.position.set(w.x, w.y + 0.55, w.z + dz);
+      scene.add(post);
       for (const flip of [0, Math.PI]) {
         const bd = new THREE.Mesh(
-          new THREE.PlaneGeometry(1.35, 0.85),
-          new THREE.MeshBasicMaterial({ map: mats.chevTex, fog: true })
+          new THREE.PlaneGeometry(1.15, 0.72),
+          new THREE.MeshBasicMaterial({ map: mats.chevTex, fog: true, color: 0x6f6f6f })
         );
-        bd.position.set(w.x, w.y + 1.05, w.z + dz);
+        bd.position.set(w.x, w.y + 1.5, w.z + dz);
         bd.rotation.y = p.h + flip;
         scene.add(bd);
       }
