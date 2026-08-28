@@ -393,10 +393,13 @@ const CHASE_SHAKE = 0;
      for the 67-degree default and ~105 for the dashcam, so it is the widest
      lens in the car, which is the point. It is a BASELINE, not a fixed lens:
      consoleFov() reads it as the framing this camera has when the Field of
-     view slider is at its default and scales it with the slider from there.
-     Its own number so an experimental view can sit wider than the shipping
-     one; still on the slider, because the slider is the user's setting and a
-     camera the setting cannot move is a setting that does not work.
+     view slider is at its default and shifts it BY the slider's degrees from
+     there — additive, not scaled, so its constant +11-degree-wider-than-the-
+     dashcam feel holds across the whole range instead of running away at the
+     top of it. Its own number so an experimental view can sit wider than the
+     shipping one; still on the slider, because the slider is the user's
+     setting and a camera the setting cannot move is a setting that does not
+     work.
    - tilt 0.02 rad of nose-down, nominal. The dashcam needs 0.227 because it has
      to rake the cluster into frame from above it; this one sits behind and
      level with the dash and does not.
@@ -605,6 +608,15 @@ const CAR_ENV = { night: 5 };
    says within about half a second, and pinning them to it would drag the menu
    framing around with a gameplay setting. */
 const CHASE_CAM = { dist: 3, height: 2.15 };
+/* How fast the chase camera's terrain floor (updateCamera, chasePos.y) eases
+   up when the ground rises under it, in 1/s. The floor used to be a hard
+   Math.max — an instant teleport onto the rising terrain height the moment it
+   overtook the trailing camera, a one-frame pop on every ramp that read as
+   "shake" even with CHASE_SHAKE and CHASE_FX both at 0. This is the time
+   constant of the lerp that replaced it: ~0.1 s to close the gap, fast enough
+   that the camera does not linger visibly under the road surface on a normal
+   ramp, but no longer an instant snap. */
+const CHASE_FLOOR_EASE = 10;
 
 /* ------------------------------------------------------------ roof tap ----
 
@@ -827,7 +839,7 @@ const POV_TILT = 0.227;
    which meant the only view that ships was the one view the slider could not
    touch. It reads the slider now, through the four constants below.
 
-   The slider (58..80, default 67, GameApp.tsx) is taken as a VERTICAL angle at
+   The slider (58..100, default 67, GameApp.tsx) is taken as a VERTICAL angle at
    16:9 and converted once into the horizontal the lens then holds constant on
    every other aspect. That hybrid is deliberate, because neither pure reading
    works on its own:
@@ -1226,10 +1238,19 @@ export class Game {
       to it.
 
       So the knob's `fov` is re-read as the baseline AT THE SLIDER'S DEFAULT
-      and scaled from there: 78 at 67, 70 at 60, 93 at 80. Whatever
-      window.__consoleCam.fov is set to keeps meaning "what this camera looks
-      like with the slider where it shipped", so a tuning session is not undone
-      by someone else's setting.
+      and SHIFTED by the slider's degrees from there: 78 at 67, 71 at 60, 91
+      at 80. Whatever window.__consoleCam.fov is set to keeps meaning "what
+      this camera looks like with the slider where it shipped", so a tuning
+      session is not undone by someone else's setting.
+
+      This used to be multiplicative (`fov * (slider / FOV_SLIDER_REF)`), which
+      reads fine at the reference point but runs away either side of it because
+      degrees near 180 are tangent-nonlinear: at the slider's max of 100 that
+      scaled the 78-degree baseline to 116.4 vertical, ~141.8 horizontal at
+      16:9 through lensFov, well past the ~100 vertical / ~129.5 horizontal
+      every other camera tops out at — the "stretched at max FOV" report.
+      Additive keeps the console a constant amount wider than the dashcam
+      across the whole range instead of diverging from it at the top.
 
       Then through the SAME aspect machinery as the dashcam (lensFov), and
       that part is not optional. Assigning a base straight to camera.fov is
@@ -1249,7 +1270,7 @@ export class Game {
       degenerate projection. */
   private consoleFov(aspect: number): number {
     const base = clamp(
-      this.consoleCam().fov * (clamp(this.settings.fovBase, 58, POV_FOV_MAX) / FOV_SLIDER_REF),
+      this.consoleCam().fov + (clamp(this.settings.fovBase, 58, POV_FOV_MAX) - FOV_SLIDER_REF),
       40, CONSOLE_FOV_MAX
     );
     return this.lensFov(base, aspect);
@@ -4080,10 +4101,16 @@ export class Game {
         this.chasePos.x = car.x + (dxC / hd) * minD;
         this.chasePos.z = car.z + (dzC / hd) * minD;
       }
-      this.chasePos.y = Math.max(
-        this.chasePos.y,
-        this.terrain.heightAt(this.chasePos.x, this.chasePos.z, car.y) + 1.2
-      );
+      // a rising ramp raises this floor smoothly, but Math.max used to snap
+      // chasePos.y onto it the instant it overtook the trailing camera — a
+      // one-frame pop that read as third-person "shake" even with
+      // CHASE_SHAKE/CHASE_FX both 0. Ease up to it instead (CHASE_FLOOR_EASE);
+      // still instant on a fresh entry, which already snaps the whole
+      // chasePos above rather than easing into a stale one.
+      const chaseFloorY = this.terrain.heightAt(this.chasePos.x, this.chasePos.z, car.y) + 1.2;
+      if (freshEntry) this.chasePos.y = Math.max(this.chasePos.y, chaseFloorY);
+      else if (this.chasePos.y < chaseFloorY)
+        this.chasePos.y = lerp(this.chasePos.y, chaseFloorY, 1 - Math.exp(-CHASE_FLOOR_EASE * dt));
       /* THE LATERAL LAG WAS THE SHAKE, and it is off (fx.lag 0).
 
          "For the third-person view, remove the shakiness and camera effects
@@ -4297,9 +4324,22 @@ export class Game {
         -this.rig.bodyG.rotation.z +
         (clamp(car.u * car.r * 0.0035, -0.06, 0.06) + this.head.roll) * this.chaseShake();
     }
+    /* The speed FOV kick is a raw add onto fovBase with no lensFov and no cap,
+       so at a high slider setting it can walk the projection past what every
+       clamped mode allows — COCKPIT (kickM 1) transiently hit 119 vertical at
+       the slider's max of 100 (100 + the full 19-degree kick), against the
+       ~100 every other mode tops out at. Fading the kick out as fovBase nears
+       POV_FOV_MAX keeps the total under that ceiling without touching the
+       kick's feel at the slider's own default, where it still lands at full
+       strength: 1 at FOV_SLIDER_REF (67) and below, sliding to 0 at
+       POV_FOV_MAX (100). */
+    const kickFade = clamp(
+      (POV_FOV_MAX - this.settings.fovBase) / (POV_FOV_MAX - FOV_SLIDER_REF), 0, 1
+    );
     const kickM =
       (this.camMode === CAM_CHASE ? 0.18 : this.camMode === CAM_HOOD ? 0.6 : 1) *
-      (this.camMode === CAM_CHASE ? this.chaseShake() : 1);
+      (this.camMode === CAM_CHASE ? this.chaseShake() : 1) *
+      kickFade;
     /* The dashcam still runs a FIXED lens in the sense that matters: no speed
        FOV kick, because a bracket-mounted camera has no zoom and the kick is a
        driver-sensation cue rather than an optical one. What it no longer
