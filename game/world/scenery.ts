@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { rrand, rrandi, type Rng } from "../util";
 import { makeTex } from "../textures";
-import { getCorridor } from "./corridor";
+import { getCorridor, PITCH, PHASE } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
@@ -23,6 +23,10 @@ import { worldTierCaps } from "../settings";
                           with a tree line on top
      [   60,   880]       INDUSTRY: warehouses, tank     —
                           farm, chimneys, yard lights
+     [  900,  1580]       FRONTAGE TREES: loose tree line either shoulder —
+                          the long bare run between the industrial yard and
+                          the billboard run, otherwise the emptiest kilometre
+                          on the lap
      [ 1620,  2000]       BILLBOARD RUN: lit ad boards either side of the deck
 
    Splice discipline: everything is *defined* at a wrapped z (all rng rolls
@@ -43,6 +47,7 @@ import { worldTierCaps } from "../settings";
 const RIVER = { z0: -1950, z1: -1300 };
 const GROVE = { z0: -1240, z1: -620 };
 const INDUSTRY = { z0: 60, z1: 880 };
+const FRONTAGE = { z0: 900, z1: 1580 };
 
 /** Merge helper: bakes transformed template geometries (and per-part colour)
     into one non-indexed soup, one draw call per material. Templates must be
@@ -268,6 +273,30 @@ export function buildScenery(
     scene.add(m);
   };
 
+  /** True within a few metres of the streetlight lattice (PITCH.light,
+      phased — see corridor.ts) — where a canopy is close enough to a sodium
+      head to plausibly catch its rim rather than sit flat black. */
+  const nearLamp = (z: number) => {
+    const ph = PHASE.light ?? 0;
+    let d = ((z - ph) % PITCH.light + PITCH.light) % PITCH.light;
+    if (d > PITCH.light / 2) d = PITCH.light - d;
+    return d < 9;
+  };
+  const canopyC = new THREE.Color();
+  /** Instanced-by-merge tree: a cone-ish trunk plus one or two canopy blobs.
+      `warm` washes the canopy toward sodium instead of the flat night green —
+      cheap stand-in for a rim light: no extra draw call, still fades with the
+      zone's own fog like everything else here (never a hard-lit cutout). */
+  const addTree = (x: number, z: number, big: boolean, warm = false) => {
+    const gy = terrain.h(x, z);
+    const r = big ? rrand(rng, 3.0, 4.6) : rrand(rng, 2.0, 3.2);
+    const hgt = r * rrand(rng, 1.5, 1.9);
+    place(trunk, trees, x, gy + hgt / 2, z, 1, hgt, 1, 0, canopyC.set(0x241a12));
+    canopyC.set(warm ? 0x3a2c14 : 0x101a12).multiplyScalar(rrand(rng, 0.7, 1.15));
+    place(blob, trees, x + rrand(rng, -0.4, 0.4), gy + hgt, z,
+      r, r * rrand(rng, 0.75, 0.95), r, rrand(rng, 0, Math.PI), canopyC);
+  };
+
   /* ================================ RIVER ================================ */
   /* Black water east of the deck with the far bank's quay lights dragging
      long reflection streaks across it. The corridor's first sweeper bends
@@ -357,16 +386,6 @@ export function buildScenery(
      the correct thing, a serrated black edge eating the city glow. The zone
      sits deep inside the canonical extent, so no splice copies arise. */
   {
-    const canopyC = new THREE.Color();
-    const addTree = (x: number, z: number, big: boolean) => {
-      const gy = terrain.h(x, z);
-      const r = big ? rrand(rng, 3.0, 4.6) : rrand(rng, 2.0, 3.2);
-      const hgt = r * rrand(rng, 1.5, 1.9);
-      place(trunk, trees, x, gy + hgt / 2, z, 1, hgt, 1, 0, canopyC.set(0x241a12));
-      canopyC.set(0x101a12).multiplyScalar(rrand(rng, 0.7, 1.15));
-      place(blob, trees, x + rrand(rng, -0.4, 0.4), gy + hgt, z,
-        r, r * rrand(rng, 0.75, 0.95), r, rrand(rng, 0, Math.PI), canopyC);
-    };
     const [a, b] = [GROVE.z0, GROVE.z1];
     // east embankment: a ribbon swept along the corridor so it tracks the
     // sweeper's exit instead of drifting away from the deck edge
@@ -387,7 +406,7 @@ export function buildScenery(
       const hw = cor.halfWidth(z);
       const lat = hw + (rng() < 0.6 ? rrand(rng, 12, 18) : rrand(rng, 24, 44));
       const p = cor.worldOf(z, lat);
-      addTree(p.x, p.z, rng() < 0.4);
+      addTree(p.x, p.z, rng() < 0.4, nearLamp(z));
     }
     // west tree line, denser and nearer — it strobes past the right window
     const nW = Math.round(((b - a) / 11) * density);
@@ -396,7 +415,7 @@ export function buildScenery(
       const hw = cor.halfWidth(z);
       const lat = -(hw + rrand(rng, 8, 34));
       const p = cor.worldOf(z, lat);
-      addTree(p.x, p.z, rng() < 0.55);
+      addTree(p.x, p.z, rng() < 0.55, nearLamp(z));
     }
   }
 
@@ -453,6 +472,53 @@ export function buildScenery(
       const x = 648, gy = terrain.h(x, yz);
       place(cyl, struct, x, gy + 6.5, yz, 0.16, 13, 0.16);
       lamp(x, gy + 13.2, yz, 0xffab55, 0.5);
+    }
+  }
+
+  /* ============================= FRONTAGE TREES =========================== */
+  /* The gap between the industrial yard and the billboard run used to be the
+     bare kilometre of the lap — nothing at the edge for 680 m past the toll
+     gates. A looser, unribboned tree line either shoulder (no berm — the
+     ground here is already close to grade) keeps the "trees at speed" cue
+     going without inventing a whole new district. Skips anywhere the seeded
+     tunnel or toll plaza actually lands (the east tube's hard window can
+     reach into this z-range on some seeds — see rollRoad in corridor.ts) the
+     way decals.ts skips scattered props over the same hazards. Deep inside
+     the canonical extent — no splice copies. */
+  {
+    const [a, b] = [FRONTAGE.z0, FRONTAGE.z1];
+    const n = Math.round(((b - a) / 14) * density);
+    for (let i = 0; i < n; i++) {
+      const z = rrand(rng, a + 4, b - 4);
+      if (cor.inTunnel(z, 20) || cor.inToll(z)) continue;
+      const hw = cor.halfWidth(z);
+      const side = rng() < 0.5 ? 1 : -1;
+      const lat = side * (hw + rrand(rng, 9, 30));
+      const p = cor.worldOf(z, lat);
+      addTree(p.x, p.z, rng() < 0.35, nearLamp(z));
+    }
+    /* glow pockets: a handful of small, distant light clusters out past the
+       tree line — the suggestion of a facility the road never actually
+       reaches. Zero geometry, zero colliders: three more points pushed into
+       the same merged cloud the whole file already shares, so the cost is
+       nothing (see the file-level budget note at the top). Brightness capped
+       the same way every other light here is — fades with fog, never a
+       blown-white dot. */
+    const nGlow = Math.round(((b - a) / 220) * density);
+    for (let i = 0; i < nGlow; i++) {
+      const z = rrand(rng, a + 20, b - 20);
+      if (cor.inTunnel(z, 20) || cor.inToll(z)) continue;
+      const hw = cor.halfWidth(z);
+      const side = rng() < 0.5 ? 1 : -1;
+      const lat = side * (hw + rrand(rng, 45, 90));
+      const p = cor.worldOf(z, lat);
+      const gy = terrain.h(p.x, p.z);
+      const n = rrandi(rng, 3, 6);
+      for (let k = 0; k < n; k++)
+        lamp(
+          p.x + rrand(rng, -14, 14), gy + rrand(rng, 2, 9), p.z + rrand(rng, -14, 14),
+          rng() < 0.6 ? 0xffab55 : 0x9fc4e8, rrand(rng, 0.3, 0.45)
+        );
     }
   }
 

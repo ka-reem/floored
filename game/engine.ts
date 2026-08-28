@@ -1852,6 +1852,10 @@ export class Game {
         weight: W.town,
         run: () => {
           buildTown(this.scene, this.mats, this.world, this.terrain, rng, deckLightPts);
+          /* last rng consumer in the build order — see the comment above
+             buildStages(): scenery must stay after town so earlier stages'
+             draws are unchanged for a given seed. */
+          buildScenery(this.scene, this.mats, this.world, this.terrain, rng);
           this.tintLampsSodium();
         },
       },
