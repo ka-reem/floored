@@ -825,6 +825,26 @@ export const OVERPASS = {
   outSet: 4.5,
 };
 
+/** Every crossing overpass on the lap, in z order — the generic list the
+    builder walks, the same shape BRIDGES gives the arches. The three new
+    crossings sit in the grove stretch, whose whole width is provably free of
+    everything a crossing must dodge: the west tube's structure can never end
+    past z = −950 (planTunnel hardZ1 −930 − PORTAL_PAD), the bypass's own
+    z-extent starts at DIVERGE_Z = 500, and the exit gore's NO_TAPER window
+    opens at −580. The two cantilever exit-count masts at z −900/−700 top out
+    at ~8.4 m (SIGN.CLEAR + panel + arm), under every soffit here by half a
+    metre — and signPlan() can never move them into a tube on any seed, since
+    no tube reaches past −950. Spacing is ~96 m so at speed they strobe
+    overhead one-two-three, which is the point: one crossing is a landmark,
+    a rhythm of them is a district boundary — the road visibly passing under
+    the city grid on its way into town. */
+export const OVERPASSES = [
+  { ...OVERPASS, z: -912 },
+  { ...OVERPASS, z: -816, girderW: 12.5 },
+  { ...OVERPASS, z: -720, clear: 9.6 },
+  OVERPASS,
+];
+
 /** Hand-placed sections. Everything else is `viaduct`, and the `mesh` runs
     come off the PITCH.soundwall lattice (see `sections()`).
 

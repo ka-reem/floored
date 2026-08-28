@@ -1,7 +1,7 @@
 import * as THREE from "three";
-import { rrand, rrandi, type Rng } from "../util";
-import { makeTex } from "../textures";
-import { getCorridor, PITCH, PHASE } from "./corridor";
+import { mulberry32, rrand, rrandi, type Rng } from "../util";
+import { makeTex, neonTexF } from "../textures";
+import { getCorridor, roadSeed, PITCH, PHASE } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
@@ -48,6 +48,37 @@ const RIVER = { z0: -1950, z1: -1300 };
 const GROVE = { z0: -1240, z1: -620 };
 const INDUSTRY = { z0: 60, z1: 880 };
 const FRONTAGE = { z0: 900, z1: 1580 };
+
+/* ---- second-pass districts (the map-transform lane) ----------------------
+   The zones above were the first pass, and the BEFORE contact sheet (40
+   dashcam stations, night) says exactly what they missed: everything lives
+   150–500 m out, where fog + the POV black crush erase unlit geometry, so
+   from the deck the lap still reads as bare parapet against blackness. The
+   districts below all sit INSIDE ~120 m of the pavement edge — the band the
+   dashcam can actually see — and each one leads with its lights.
+
+     wrapped z            what stands there (east strip unless noted)
+     [-1950, -1300]       WHARF: container yard + straddle cranes + sodium
+                          yard masts on the NEAR bank, in front of the water
+     [ -560,    40]       EASTSIDE: mid-rise lit-window district on the east
+                          frontage strip — the town stretch becomes a canyon
+                          with city on BOTH sides
+     [   60,   830]       FOREGROUND INDUSTRY: wall-packed warehouses, pipe
+                          racks and a lit flare stack at the fence line
+                          (clipped at 830: the bypass viaduct owns the east
+                          side from its z≈844 crossing to the 1580 merge)
+     [ 1580,  2000]       NEON CANYON: densified board run + dark mid-rise
+                          shells with lit windows, neon and roof clutter on
+                          both sides; straddles the splice via copies()
+
+   Master switch FX_DISTRICTS; density rides TierCaps.districts. All of it
+   draws from a FORKED rng stream (mulberry32 of the road seed), never from
+   the shared world stream — same-seed worlds keep every existing roll. */
+const FX_DISTRICTS = true;
+const WHARF = { z0: -1950, z1: -1300 };
+const EASTSIDE = { z0: -560, z1: 40 };
+const FOREYARD = { z0: 60, z1: 830 };
+const CANYON = { z0: 1580, z1: 2000 };
 
 /** Merge helper: bakes transformed template geometries (and per-part colour)
     into one non-indexed soup, one draw call per material. Templates must be
@@ -591,6 +622,430 @@ export function buildScenery(
     });
     panelG.dispose();
     if (!panelM.empty) scene.add(new THREE.Mesh(panelM.geom(), panelMat));
+  }
+
+  /* ========================= TRANSFORM DISTRICTS ========================= */
+  /* Second pass — see the FX_DISTRICTS note at the top of the file. All rng
+     here comes from a stream FORKED off the road seed: the shared world
+     stream above is already spent in a fixed order, and one extra draw
+     inserted mid-file would reshuffle every district after it on every seed.
+     A fork keeps the first-pass world byte-identical and is still one world
+     per seed. */
+  const dLevel = Math.max(0, Math.min(1, caps.districts ?? 1));
+  if (FX_DISTRICTS && dLevel > 0) {
+    const rng2 = mulberry32((roadSeed() ^ 0x9d2c5681) >>> 0);
+    /** unit cylinder whose length axis is local Z — for horizontal pipes
+        (place() only yaws, so a lying pipe has to lie in its template) */
+    const pipe = new THREE.CylinderGeometry(1, 1, 1, 6);
+    pipe.rotateX(Math.PI / 2);
+    /** shared vertex-coloured bucket: containers, tarps, coloured shells */
+    const colored = new Merge();
+    const colC = new THREE.Color();
+    /** tower instances, one list per window-material variant */
+    const towers: THREE.Matrix4[][] = [[], [], []];
+    const TM = new THREE.Matrix4(), TQ = new THREE.Quaternion(), TE = new THREE.Euler(),
+      TV = new THREE.Vector3(), TS = new THREE.Vector3();
+    /** One lit-window building shell, town-mesh idiom (unit box scaled; the
+        window map stretches with the box exactly the way the town's does).
+        Returns its top, for beacons/clutter. */
+    const tower = (
+      x: number, z: number, w: number, d: number, hgt: number, ry: number
+    ) => {
+      const gy = terrain.h(x, z);
+      TE.set(0, ry, 0);
+      TQ.setFromEuler(TE);
+      TV.set(x, gy + hgt / 2 - 0.6, z);
+      TS.set(w, hgt + 0.6, d);
+      TM.compose(TV, TQ, TS);
+      towers[rrandi(rng2, 0, 2)].push(TM.clone());
+      world.colliders.addAabb({
+        x0: x - w / 2 - 0.3, x1: x + w / 2 + 0.3,
+        z0: z - d / 2 - 0.3, z1: z + d / 2 + 0.3,
+        y0: gy - 1, y1: gy + hgt,
+      });
+      return gy + hgt;
+    };
+    /** rooftop dressing: tank, AC hut, a parapet lip — the clutter that
+        stops a roofline reading as an extruded rectangle */
+    const roofStuff = (x: number, z: number, top: number, w: number, d: number) => {
+      if (rng2() < 0.55)
+        place(cyl, struct, x + rrand(rng2, -w / 4, w / 4), top + 1.1,
+          z + rrand(rng2, -d / 4, d / 4), 1.3, 2.2, 1.3);
+      if (rng2() < 0.5)
+        place(box, struct, x + rrand(rng2, -w / 4, w / 4), top + 0.8,
+          z + rrand(rng2, -d / 4, d / 4), rrand(rng2, 1.6, 3), 1.6, rrand(rng2, 1.6, 2.6));
+    };
+    /** merged neon boards, one bucket per material so the whole canyon's
+        signage is 4 draw calls however many boards hang */
+    const NEON: readonly (readonly [string, number])[] = [
+      ["居酒屋", 8], ["カラオケ", 315], ["ホテル", 195], ["パチンコ", 268],
+      ["湾岸", 178], // the canyon gate's own board — picked explicitly, below
+    ];
+    const neonBuckets = NEON.map(() => new Merge());
+    const neonPlane = new THREE.PlaneGeometry(1, 1);
+    const neonBoard = (
+      x: number, y: number, z: number, wd: number, ht: number, ry: number,
+      pick?: number
+    ) => {
+      const k = pick ?? rrandi(rng2, 0, NEON.length - 2);
+      TE.set(0, ry, 0);
+      TQ.setFromEuler(TE);
+      TV.set(x, y, z);
+      TS.set(wd, ht, 1);
+      TM.compose(TV, TQ, TS);
+      neonBuckets[k].add(neonPlane.clone(), TM);
+    };
+
+    /* ------------------------------ WHARF ------------------------------ */
+    /* The near bank: the first pass put the whole port 400+ m out on the far
+       quay, which the night fog erases. This yard sits on the strip between
+       the east frontage line and the water (x ≈ 566–648), so the container
+       silhouettes and the sodium yard masts stand in the windshield band.
+       The zone's head crosses the splice overrun — every roll happens once
+       in wrapped space, emitted at each built copy. */
+    {
+      const CONT: readonly number[] = [0x30424a, 0x4a3a2c, 0x35452f, 0x413138, 0x2c3644];
+      // container blocks every ~34 m, rolled in wrapped space
+      for (let wz = WHARF.z0 + 16; wz < WHARF.z1 - 12; wz += rrand(rng2, 26, 44)) {
+        if (rng2() > 0.85 * dLevel + 0.1) continue;
+        const x = rrand(rng2, 574, 620);
+        const rows = rrandi(rng2, 1, 2), high = rrandi(rng2, 1, 3);
+        const len = rrand(rng2, 9, 13), ry = rrand(rng2, -0.08, 0.08);
+        const stack: [number, number, number][] = [];
+        for (let r = 0; r < rows; r++)
+          for (let hh = 0; hh < (r === 0 ? high : Math.max(1, high - 1)); hh++)
+            stack.push([x + r * 3.1, hh, wz]);
+        for (const z of copies(wz)) {
+          const gy = terrain.h(x, z);
+          for (const [sx, hh] of stack) {
+            colC.set(CONT[rrandi(rng2, 0, CONT.length - 1)]).multiplyScalar(rrand(rng2, 0.8, 1.1));
+            place(box, colored, sx, gy + 1.3 + hh * 2.6, z, 2.9, 2.55, len, ry, colC);
+          }
+          world.colliders.addAabb({
+            x0: x - 1.6, x1: x + rows * 3.1 + 1.6, z0: z - len / 2 - 0.4,
+            z1: z + len / 2 + 0.4, y0: gy - 1, y1: gy + high * 2.6,
+          });
+        }
+      }
+      // straddle carriers over the stacks: two portal legs + a machine head,
+      // a working silhouette between the road and the water
+      for (let wz = WHARF.z0 + 120; wz < WHARF.z1 - 90; wz += rrand(rng2, 240, 330)) {
+        const x = rrand(rng2, 586, 616), ch = rrand(rng2, 13, 16);
+        for (const z of copies(wz)) {
+          const gy = terrain.h(x, z);
+          for (const dz of [-4.4, 4.4]) {
+            place(box, struct, x - 4.6, gy + ch / 2, z + dz, 0.9, ch, 0.9);
+            place(box, struct, x + 4.6, gy + ch / 2, z + dz, 0.9, ch, 0.9);
+          }
+          place(box, struct, x, gy + ch + 0.8, z, 11.4, 1.7, 10.4);
+          place(box, struct, x, gy + ch - 1.6, z, 3.4, 2.6, 3.2);
+          lamp(x, gy + ch + 2.1, z, 0xff3040, 0.5);
+          for (const dz of [-4.2, 4.2])
+            lamp(x, gy + ch - 0.4, z + dz, 0xffab55, 0.4);
+          world.colliders.addAabb({
+            x0: x - 5.3, x1: x + 5.3, z0: z - 5.2, z1: z + 5.2,
+            y0: gy - 1, y1: gy + ch + 2,
+          });
+        }
+      }
+      // sodium yard masts on the frontage line — the light rhythm that says
+      // "working port" from the deck; jittered off the streetlight lattice
+      for (let wz = WHARF.z0 + 40; wz < WHARF.z1 - 20; wz += 105) {
+        const x = 568, jz = rrand(rng2, -8, 8);
+        for (const z of copies(wz)) {
+          const gy = terrain.h(x, z + jz);
+          place(cyl, struct, x, gy + 8, z + jz, 0.17, 16, 0.17);
+          place(box, struct, x, gy + 15.6, z + jz, 2.6, 0.24, 0.24);
+          for (const dx of [-1.1, 1.1])
+            lamp(x + dx, gy + 15.4, z + jz, 0xffab55, 0.48);
+        }
+      }
+      // near-bank quay string + its own reflection streaks running east into
+      // the water (the far bank's run west; both fade with fog)
+      const streak2 = new Merge();
+      const s2c = new THREE.Color();
+      for (let wz = WHARF.z0 + 30; wz < WHARF.z1 - 16; wz += 52) {
+        const jz = rrand(rng2, -6, 6);
+        const bright = rrand(rng2, 0.42, 0.58);
+        const sw = rrand(rng2, 1.6, 2.8), sl = rrand(rng2, 60, 130);
+        for (const z of copies(wz)) {
+          lamp(650, 4.6, z + jz, 0xffc270, bright);
+          const sg = new THREE.PlaneGeometry(sw, sl);
+          sg.rotateX(-Math.PI / 2);
+          sg.rotateY(Math.PI / 2);
+          TV.set(656 + sl / 2, 0.09, z + jz);
+          TS.set(1, 1, 1);
+          TQ.identity();
+          TM.compose(TV, TQ, TS);
+          s2c.set(0xff9a44).multiplyScalar(bright * 0.75);
+          streak2.add(sg, TM, s2c);
+          sg.dispose();
+        }
+      }
+      if (!streak2.empty) {
+        const sm = new THREE.Mesh(
+          streak2.geom(),
+          new THREE.MeshBasicMaterial({
+            map: mats.streakTex, vertexColors: true, transparent: true,
+            blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+            opacity: 0.8,
+          })
+        );
+        sm.renderOrder = 2;
+        world.neonMats.push(sm.material as THREE.Material);
+        scene.add(sm);
+      }
+    }
+
+    /* ----------------------------- EASTSIDE ---------------------------- */
+    /* The town stretch is the one place the lap already lives — but only to
+       the west, 200 m out. This district stands a mid-rise rank on the east
+       frontage strip, 50–140 m from the pavement edge, so through the town
+       window the road runs between TWO lit skylines. Near row sits low
+       (roofs riding just over the parapet line — rooftop clutter reading
+       across it is the mission's own ask), far row goes to 48 m. */
+    {
+      /* The east frontage road (roadnet.ts, x = EFRONT_X = 565, ±5.5 m plus
+         sidewalk) runs through this strip for z ∈ [−408, 408] — the near
+         rank stands between it and the deck (x 545–556), the far rank past
+         it (x 585–645), and neither footprint may clip the carriageway. */
+      const n = Math.round(30 * dLevel);
+      for (let i = 0; i < n; i++) {
+        const z = rrand(rng2, EASTSIDE.z0 + 8, EASTSIDE.z1 - 8);
+        const near = rng2() < 0.45;
+        const w = near ? rrand(rng2, 8, 13) : rrand(rng2, 10, 20);
+        const d = rrand(rng2, 9, 16);
+        const x = near ? rrand(rng2, 545, 556 - w / 2) : rrand(rng2, 573 + w / 2, 645);
+        const hgt = near ? rrand(rng2, 13, 26) : rrand(rng2, 18, 48);
+        // the near rank stays axis-true so its road-facing neon can hang
+        // flush on the facade; jitter is for the far rank only
+        const ry = near ? 0 : rrand(rng2, -0.1, 0.1);
+        const top = tower(x, z, w, d, hgt, ry);
+        roofStuff(x, z, top, w, d);
+        if (hgt > 34) lamp(x, top + 1.2, z, 0xff3040, 0.5);
+        if (near && rng2() < 0.5)
+          neonBoard(x - w / 2 - 0.25, top - rrand(rng2, 3, Math.max(4, hgt - 6)), z,
+            rrand(rng2, 5, 8), rrand(rng2, 1.9, 2.6), -Math.PI / 2);
+      }
+    }
+
+    /* ------------------------ FOREGROUND INDUSTRY ---------------------- */
+    /* Pulls the first-pass yard's identity (which lives at x 690–940, out of
+       night range) up to the fence line the dashcam can see. Clipped at
+       z 830 — the bypass viaduct owns the east side from its crossing to the
+       merge. The high-mast pair highway.ts plants at z 462/780 stands in the
+       same strip; these lamps are all sodium so the masts' cool white stays
+       the junction cue. */
+    {
+      let wz = FOREYARD.z0 + rrand(rng2, 10, 40);
+      while (wz < FOREYARD.z1 - 40) {
+        if (cor.inTunnel(wz, 20)) { wz += 60; continue; }
+        const kind = rng2();
+        // 586+: east of the frontage carriageway's sidewalk for z ≤ 408
+        const x = rrand(rng2, 586, 640);
+        const gy = terrain.h(x, wz);
+        if (kind < 0.5) {
+          // low warehouse with sodium wall-packs facing the road
+          const len = rrand(rng2, 22, 40), dep = rrand(rng2, 14, 22),
+            hgt = rrand(rng2, 6.5, 9.5);
+          place(box, shed, x, gy + hgt / 2, wz + len / 2, dep, hgt, len);
+          place(box, shed, x, gy + hgt + 0.6, wz + len / 2, dep * 0.4, 1.2, len * 0.7);
+          for (let lz = wz + 6; lz < wz + len - 4; lz += 12)
+            lamp(x - dep / 2 - 0.4, gy + hgt - 1.1, lz, 0xff9e42, rrand(rng2, 0.36, 0.48));
+          world.colliders.addAabb({
+            x0: x - dep / 2, x1: x + dep / 2, z0: wz, z1: wz + len,
+            y0: gy - 1, y1: gy + hgt,
+          });
+          wz += len + rrand(rng2, 30, 70);
+        } else if (kind < 0.8) {
+          // pipe rack: two rails of pipes on portal frames, running with the
+          // road — industrial texture with almost no faces to light
+          const len = rrand(rng2, 40, 70);
+          for (let pz = wz; pz < wz + len; pz += 10)
+            for (const dx of [-1.5, 1.5])
+              place(box, struct, x + dx, gy + 2.6, pz, 0.3, 5.2, 0.3);
+          for (const py of [4.1, 5.1])
+            for (const dx of [-0.9, 0, 0.9])
+              place(pipe, struct, x + dx, gy + py, wz + len / 2, 0.18, 0.18, len);
+          lamp(x, gy + 5.9, wz + rrand(rng2, 8, len - 8), 0xffab55, 0.4);
+          world.colliders.addAabb({
+            x0: x - 2, x1: x + 2, z0: wz, z1: wz + len, y0: gy - 1, y1: gy + 5.8,
+          });
+          wz += len + rrand(rng2, 26, 60);
+        } else {
+          // flare stack: the yard's night landmark — tall taper, a warm glow
+          // cluster at the tip (steady, fog-faded, never a hard flame card)
+          const ch = rrand(rng2, 26, 34);
+          place(taperCyl, struct, x, gy + ch / 2, wz, 1.4, ch, 1.4);
+          place(cyl, struct, x, gy + ch + 0.6, wz, 0.5, 1.2, 0.5);
+          lamp(x, gy + ch + 1.6, wz, 0xffa040, 0.58);
+          lamp(x + 0.8, gy + ch + 2.4, wz + 0.4, 0xff7a28, 0.4);
+          lamp(x - 0.6, gy + ch + 3.0, wz - 0.3, 0xff8a30, 0.3);
+          lamp(x, gy + ch * 0.55, wz, 0xff3040, 0.34);
+          world.colliders.addAabb({
+            x0: x - 1.6, x1: x + 1.6, z0: wz - 1.6, z1: wz + 1.6,
+            y0: gy - 1, y1: gy + ch,
+          });
+          wz += rrand(rng2, 60, 110);
+        }
+      }
+    }
+
+    /* --------------------------- NEON CANYON --------------------------- */
+    /* The post-toll straight, both sides, straddling the seam: the lap's
+       colour burst. Yard-spaced ad boards (a second atlas from the forked
+       stream), dark mid-rise shells whose lit windows and merged neon carry
+       the district, roof beacons on the tall ones. Everything rolled in
+       wrapped space and emitted at every built copy so the splice shows the
+       identical canyon on both sides. */
+    {
+      // extra boards between the first pass's four (those sit at 1655/1748/
+      // 1862/1956); keep 30 m clear of each and alternate sides
+      const HAVE = [1655, 1748, 1862, 1956];
+      const atlas2 = adAtlasTex(rng2);
+      const panelMat2 = new THREE.MeshStandardMaterial({
+        map: atlas2, emissive: 0xffffff, emissiveMap: atlas2, emissiveIntensity: 0.8,
+        roughness: 0.85, metalness: 0,
+      });
+      const panelM2 = new Merge();
+      const panelG2 = new THREE.PlaneGeometry(1, 1);
+      let bi = 0;
+      for (let wz = CANYON.z0 + 14; wz < CANYON.z1 - 10; wz += rrand(rng2, 55, 85)) {
+        if (HAVE.some((h) => Math.abs(wz - h) < 30)) continue;
+        if (rng2() > 0.9 * dLevel + 0.1) continue;
+        const side = bi++ % 2 ? -1 : 1;
+        const design = rrandi(rng2, 0, 3);
+        const W = rrand(rng2, 9, 12), H = W * 0.49;
+        for (const z of copies(wz)) {
+          const hw = cor.halfWidth(z);
+          const p = cor.worldOf(z, side * (hw + rrand(rng2, 7, 10)));
+          const pose = cor.pose(z);
+          const gy = terrain.h(p.x, p.z);
+          const cy = p.y + rrand(rng2, 5.6, 7.4);
+          const ry = pose.h + Math.PI - side * 0.18;
+          TE.set(0, ry, 0);
+          TQ.setFromEuler(TE);
+          TV.set(p.x, cy, p.z);
+          TS.set(W, H, 1);
+          TM.compose(TV, TQ, TS);
+          const pg = panelG2.clone();
+          const u = pg.attributes.uv as THREE.BufferAttribute;
+          for (let i = 0; i < u.count; i++)
+            u.setXY(
+              i,
+              (design % 2) * 0.5 + u.getX(i) * 0.5,
+              design < 2 ? 0.5 + u.getY(i) * 0.5 : u.getY(i) * 0.5
+            );
+          panelM2.add(pg, TM);
+          pg.dispose();
+          const bk = new THREE.PlaneGeometry(1, 1);
+          bk.rotateY(Math.PI);
+          TM.compose(TV, TQ, TS);
+          struct.add(bk, TM);
+          bk.dispose();
+          place(cyl, struct, p.x, gy + (cy - H / 2 - gy) / 2, p.z,
+            0.4, cy - H / 2 - gy, 0.4);
+          world.colliders.addAabb({
+            x0: p.x - 0.8, x1: p.x + 0.8, z0: p.z - 0.8, z1: p.z + 0.8,
+            y0: gy - 1, y1: cy + H / 2,
+          });
+        }
+      }
+      panelG2.dispose();
+      if (!panelM2.empty) scene.add(new THREE.Mesh(panelM2.geom(), panelMat2));
+
+      /* The canyon gate: a truss portal over the road with a cyan 湾岸
+         board — the district announces itself as the toll run ends. Legs
+         stand on the deck edge at hw + 0.35 like the sign gantries' legs
+         (outboard of the parapet clamp, so never something the car
+         threads); the board bottom clears SIGN-level 5.15 m. z = 1730,
+         chosen against fixed geometry: past the merge gore's parapet gap
+         (ends 1588), past the soundwall-lattice mesh run at 1600–1720
+         (whose screens would otherwise stand through the east leg), off the
+         gantry lattice (1500/2000), 18 m clear of the west board at 1748,
+         and before the rail section opens at 1760. */
+      for (const z of copies(1730)) {
+        const p = cor.pose(z);
+        const hw = cor.halfWidth(z);
+        const legLat = hw + 0.35;
+        for (const s of [-1, 1]) {
+          const w = cor.worldOf(z, s * legLat);
+          place(box, struct, w.x, p.y + 4.1, w.z, 0.55, 8.2, 0.55, p.h);
+          lamp(w.x, p.y + 8.45, w.z, 0xff3040, 0.42);
+        }
+        const c = cor.worldOf(z, 0);
+        place(box, struct, c.x, p.y + 7.7, c.z, legLat * 2 + 0.9, 1.1, 0.6, p.h);
+        place(box, struct, c.x, p.y + 5.05, c.z, legLat * 2 + 0.6, 0.22, 0.22, p.h);
+        neonBoard(c.x, p.y + 6.3, c.z, 7.2, 2.2, p.h + Math.PI, NEON.length - 1);
+        for (let l = -legLat + 1.2; l <= legLat - 1.2; l += 3.6) {
+          const w = cor.worldOf(z, l);
+          lamp(w.x, p.y + 8.35, w.z, 0xffab55, 0.4);
+        }
+      }
+
+      // the canyon's building shells, both sides, rolled in wrapped space
+      const n = Math.round(44 * dLevel);
+      for (let i = 0; i < n; i++) {
+        const wz = rrand(rng2, CANYON.z0 + 6, CANYON.z1 - 6);
+        const side = rng2() < 0.5 ? 1 : -1;
+        const near = rng2() < 0.4;
+        const latOff = near ? rrand(rng2, 16, 34) : rrand(rng2, 40, 78);
+        const w = rrand(rng2, 9, 18), d = rrand(rng2, 8, 15);
+        const hgt = near ? rrand(rng2, 10, 22) : rrand(rng2, 16, 44);
+        // near shells stay square to the corridor so facade neon sits flush
+        const ryJ = near ? 0 : rrand(rng2, -0.12, 0.12);
+        for (const z of copies(wz)) {
+          const hw = cor.halfWidth(z);
+          const p = cor.worldOf(z, side * (hw + latOff));
+          const pose = cor.pose(z);
+          const top = tower(p.x, p.z, w, d, hgt, pose.h + ryJ);
+          roofStuff(p.x, p.z, top, w, d);
+          if (hgt > 32) lamp(p.x, top + 1.2, p.z, 0xff3040, 0.5);
+          if (near && rng2() < 0.45)
+            neonBoard(
+              p.x - side * pose.nx * (0.25 + w / 2),
+              top - rrand(rng2, 2.5, Math.max(3.5, hgt * 0.5)),
+              p.z - side * pose.nz * (0.25 + w / 2),
+              rrand(rng2, 4.5, 7.5), rrand(rng2, 1.7, 2.4),
+              pose.h + (side > 0 ? -Math.PI / 2 : Math.PI / 2)
+            );
+        }
+      }
+    }
+
+    /* ---- materialise the district buckets ---- */
+    if (!colored.empty) {
+      const m = new THREE.Mesh(
+        colored.geom(),
+        new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.85 })
+      );
+      m.castShadow = true;
+      m.receiveShadow = true;
+      scene.add(m);
+    }
+    const winGeo = new THREE.BoxGeometry(1, 1, 1);
+    towers.forEach((list, ti) => {
+      if (!list.length) return;
+      const im = new THREE.InstancedMesh(winGeo, mats.winMats[ti], list.length);
+      list.forEach((m, i) => im.setMatrixAt(i, m));
+      im.castShadow = false; // nothing near these ever reads a 100 m shadow
+      im.computeBoundingSphere();
+      scene.add(im);
+    });
+    neonBuckets.forEach((bkt, k) => {
+      if (bkt.empty) return;
+      const nm = new THREE.MeshBasicMaterial({
+        map: neonTexF(NEON[k][0], NEON[k][1]), transparent: true, depthWrite: false,
+        side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
+      });
+      world.neonMats.push(nm);
+      const mesh = new THREE.Mesh(bkt.geom(), nm);
+      mesh.renderOrder = 2;
+      scene.add(mesh);
+    });
+    neonPlane.dispose();
+    pipe.dispose();
+    // winGeo stays live — the tower InstancedMeshes render from it
   }
 
   /* ---- materialise the shared buckets ---- */
