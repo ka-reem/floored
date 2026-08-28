@@ -19,6 +19,12 @@ const nextConfig = {
      — if the phone starts hanging on the loading screen again, re-check with
      `ipconfig getifaddr en0` and update this list. */
   allowedDevOrigins: ["192.168.4.34", "192.168.4.*"],
+  /* The dev-tools "N" route indicator defaults to bottom-left — directly on
+     top of the HUD's speed/gear/score corner (rival-whiteline's screenshot
+     mistook it for a game element). Top-left is the one corner the in-game
+     chrome leaves empty: HUD bottom-left, minimap bottom-right, gear/⋯
+     top-right. DEV ONLY: production builds never render the indicator. */
+  devIndicators: { position: "top-left" },
 };
 
 export default nextConfig;

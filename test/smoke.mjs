@@ -225,20 +225,24 @@ async function main() {
       Math.abs(wrap.deckBefore - wrap.deckAfter) > 0.01)
     errors.push("z-only wrap does not land the car in the same place on the road");
 
-  /* Ramp runs. SwiftShader renders ~4 fps and physics substeps are frame-capped,
-     so sim time runs far slower than wall clock — poll for the condition instead
-     of sleeping a fixed interval. The ramps are curved (see game/world/ramps.ts),
-     so a fixed heading drives straight off the pavement: drop the car on a ramp
-     centreline sample and steer toward a lookahead sample each poll. `way` +1
-     runs from the gore toward the frontage road, -1 climbs back up to the deck.
-     `off` is how far the car has strayed from the centreline — the ramp is
-     10.5 m wide, so anything past ~6 m means it has left the road. */
-  const driveRamp = async (zr, way, cond, timeoutMs, label) => {
+  /* Ramp runs. The engine advances car physics at most 0.05 s per rendered
+     frame, and headless SwiftShader can take seconds per frame on a loaded
+     machine — so the old wall-clock timeouts here measured the sandbox, not
+     the game (a run needing ~15 s of sim time got 1–2 s on a slow box and
+     "timed out" with the geometry entirely healthy). Drive by SIM time
+     instead: each poll steers toward a lookahead sample, then advances the
+     simulation directly with __neonx.simStep, no renders needed. Failure is
+     a lack of arclength progress (stalled against something) or leaving the
+     pavement — the ramps are curved (see game/world/ramps.ts), so a fixed
+     heading drives straight off; `off` is distance from the centreline, and
+     the ramp is 10.5 m wide, so past ~6 m it has left the road. `way` +1
+     runs from the gore toward the frontage road, -1 climbs back up. */
+  const driveRamp = async (zr, way, cond, simBudget, label) => {
     await page.evaluate(
       ({ zr, way }) => {
         const t = window.__neonx.game.terrain;
         const r = t.ramps.find((q) => q.zr === zr);
-        // start partway along so the run fits the timeout at SwiftShader speed
+        // start partway along so the run stays a run, not a full route drive
         const top = r.pts[0].y;
         const i = Math.max(0, r.pts.findIndex(
           (p) => (way > 0 ? p.y < top - 1.5 : p.y < 2.5)));
@@ -249,17 +253,21 @@ async function main() {
       },
       { zr, way }
     );
-    const t0 = Date.now();
-    let st, offMax = 0;
+    const STEP = 0.35; // sim seconds per poll — steering reacts at ~3 Hz
+    let st, offMax = 0, sim = 0, lastS = null, sinceProgress = 0;
     for (;;) {
-      st = await page.evaluate(() => {
+      st = await page.evaluate((STEP) => {
         const s = window.__neonx.state();
         const { r, way } = window.__neonx.__ramp;
-        let bi = 0, bd = 1e9;
-        for (let k = 0; k < r.pts.length; k++) {
-          const d = Math.hypot(r.pts[k].x - s.x, r.pts[k].z - s.z);
-          if (d < bd) { bd = d; bi = k; }
-        }
+        const nearest = (x, z) => {
+          let bi = 0, bd = 1e9;
+          for (let k = 0; k < r.pts.length; k++) {
+            const d = Math.hypot(r.pts[k].x - x, r.pts[k].z - z);
+            if (d < bd) { bd = d; bi = k; }
+          }
+          return { bi, bd };
+        };
+        const { bi } = nearest(s.x, s.z);
         const la = r.pts[Math.max(0, Math.min(r.pts.length - 1, bi + way * 6))];
         let dh = Math.atan2(la.x - s.x, la.z - s.z) - s.h;
         while (dh > Math.PI) dh -= 2 * Math.PI;
@@ -268,15 +276,27 @@ async function main() {
           th: s.kmh < 42 ? 0.85 : 0.1,
           st: Math.max(-1, Math.min(1, dh * 2.4)),
         });
-        return { ...s, off: bd };
-      });
+        window.__neonx.simStep(STEP);
+        const s2 = window.__neonx.state();
+        const n2 = nearest(s2.x, s2.z);
+        return { ...s2, off: n2.bd, s: r.pts[n2.bi].s };
+      }, STEP);
+      sim += STEP;
       offMax = Math.max(offMax, st.off);
       if (cond(st)) break;
-      if (Date.now() - t0 > timeoutMs) {
-        errors.push(`${label} timed out: x=${st.x.toFixed(1)} y=${st.y.toFixed(2)} off=${st.off.toFixed(1)}`);
+      // progress along the centreline, either direction — a car pinned by a
+      // collider or spinning in place fails here, fast, with a real cause
+      if (lastS === null || Math.abs(st.s - lastS) > 0.4) {
+        lastS = st.s;
+        sinceProgress = 0;
+      } else if ((sinceProgress += STEP) > 8) {
+        errors.push(`${label} stalled at s=${st.s.toFixed(1)}: x=${st.x.toFixed(1)} y=${st.y.toFixed(2)} off=${st.off.toFixed(1)}`);
         break;
       }
-      await sleep(300);
+      if (sim > simBudget) {
+        errors.push(`${label} timed out (${sim.toFixed(0)} sim s): x=${st.x.toFixed(1)} y=${st.y.toFixed(2)} off=${st.off.toFixed(1)}`);
+        break;
+      }
     }
     if (offMax > 6)
       errors.push(`${label} left the ramp: max offset ${offMax.toFixed(1)} m`);
@@ -284,13 +304,13 @@ async function main() {
   };
 
   // off-ramp descent: roll down the exit ramp into town
-  const stRamp = await driveRamp(-500, 1, (s) => s.y < 2.5, 45000, "ramp descent");
+  const stRamp = await driveRamp(-500, 1, (s) => s.y < 2.5, 60, "ramp descent");
   console.log("  after descent: y =", stRamp.y.toFixed(2), " x =", stRamp.x.toFixed(1),
     " maxOff =", stRamp.offMax.toFixed(1));
   await shot(page, "04b-ramp-descent");
 
   // on-ramp climb: from the foot of the entrance ramp back up to the deck
-  const stClimb = await driveRamp(20, -1, (s) => s.y > 9.2, 60000, "on-ramp climb");
+  const stClimb = await driveRamp(20, -1, (s) => s.y > 9.2, 75, "on-ramp climb");
   console.log("  after climb: y =", stClimb.y.toFixed(2), " x =", stClimb.x.toFixed(1),
     " maxOff =", stClimb.offMax.toFixed(1));
   await shot(page, "04c-ramp-climb");

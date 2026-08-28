@@ -200,6 +200,26 @@ html.cursor-idle * {
   opacity: 0.85;
   margin-top: 3px;
 }
+/* No Hesi score/combo (engine.ts noHesiUpdate writes the text and toggles
+   .combo-hot; empty text when the setting is off). Styled here instead of the
+   inline placeholder rival-whiteline shipped, on the same display face and
+   tabular numerals as the speedo so the corner reads as one instrument. */
+#hud .noHesi {
+  font-family: var(--font-display);
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+  margin-top: var(--sp-1);
+  letter-spacing: 0.04em;
+  transition: color 0.3s var(--ease), text-shadow 0.3s var(--ease);
+}
+/* Combo above x3 warms the readout toward the accent rather than popping a
+   new element in — same restraint rule as the world's lights: fade, never
+   snap. */
+#hud .noHesi.combo-hot {
+  color: var(--accent-2);
+  text-shadow: 0 0 12px var(--accent-glow);
+}
 #topbar {
   position: fixed;
   top: 14px;

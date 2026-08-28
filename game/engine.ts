@@ -1680,6 +1680,30 @@ export class Game {
         this.traffic.spawnObstacleAhead(this.car);
         this.car.u = 22;
       },
+      /* Advance the car simulation without waiting on renders. Headless
+         SwiftShader can take SECONDS per frame in a loaded sandbox, and the
+         loop advances car physics at most 6 substeps (0.05 s) per rendered
+         frame before dropping the backlog — so any test that needs real
+         driving distance (the smoke test's ramp runs) starves on wall-clock
+         budgets. This runs the same readInput → stepPhysics → splice →
+         collide pipeline the loop runs, at the same 120 Hz substep, with
+         rendering and traffic left out. Capped per call so a runaway caller
+         cannot hang the tab. */
+      simStep: (secs: number) => {
+        if (!this.loaded) return;
+        const n = Math.min(Math.round(secs * 120), 120 * 30);
+        for (let i = 0; i < n; i++) {
+          this.readInput(1 / 120);
+          stepPhysics(this.car, this.input, this.phys, 1 / 120, {
+            mu: this.rain ? 0.84 : 1.26,
+            tcEnabled: this.settings.tc,
+            heightAt: this.terrain.heightAt,
+            arcade: this.testMode,
+          });
+          this.loopSplice();
+          collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
+        }
+      },
       setRain: (on: boolean) => this.setRain(on),
       setTime: (t: number) => (this.time = t),
       collidersNear: (x: number, z: number) => {
