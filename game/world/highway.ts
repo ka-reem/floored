@@ -1,13 +1,13 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { type Rng } from "../util";
+import { mulberry32, sstep, type Rng } from "../util";
 import { makeTex, asphalt, signTexF, exitSignTexF, warnTexF, roadWordTexF } from "../textures";
-import { RAMP_W, CONNECT_Z } from "./const";
+import { RAMP_W, CONNECT_Z, LOOP_LEN } from "./const";
 import { parapetGap } from "./ramps";
-import { BYPASS, DIVERGE_Z, MERGE_Z, type RouteGraph } from "./routegraph";
+import { BYPASS, DIVERGE_Z, MERGE_Z, MOUNTAIN_EDGE, type RouteGraph } from "./routegraph";
 import {
-  getCorridor, assertPitches, signPlan, PITCH, PHASE, SIGN, TUNNEL, TOLL, TOLL_PLAZA,
-  BRIDGE, BRIDGES, OVERPASS, type SectionKind, type Station,
+  getCorridor, assertPitches, signPlan, roadSeed, PITCH, PHASE, SIGN, TUNNEL, TOLL,
+  TOLL_PLAZA, BRIDGE, BRIDGES, OVERPASS, MTN, type SectionKind, type Station,
 } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
@@ -70,6 +70,11 @@ export const FX_LAMP_POOLS = true;
 export const FX_OVERPASS = true;
 /** lane-following tyre-polish ribbons on the deck (one blended overlay) */
 export const FX_WHEEL_TRACKS = true;
+/** the mountain road (corridor.MTN / routegraph): pavement, rock faces,
+    parapet, markings, delineators, gore kit, boards. Physics/route-graph
+    attachment is NOT gated by this — killing it leaves an invisible but
+    drivable road, which is exactly what a debug bisect wants. */
+export const FX_MOUNTAIN = true;
 /** procedural deck dressing: patch slabs, skid arcs, gutter grates */
 export const FX_DECK_DRESSING = true;
 
@@ -309,12 +314,28 @@ export function buildHighway(
   // corridor edge from its own gores
   for (const z of [DIVERGE_Z - 400, DIVERGE_Z - 200, DIVERGE_Z - 40, MERGE_Z - 80])
     mastGaps.push({ z0: z - 1.5, z1: z + 1.5, side: -1 });
+  /* …and the mountain road's (buildMountainRoad). Its approach runs into the
+     seam, so the boards sit at wrapped z back inside the canonical band. */
+  for (const z of MTN_BOARD_Z())
+    mastGaps.push({ z0: z - 1.5, z1: z + 1.5, side: -1 });
   for (const z of cor.lattice(PITCH.gantry)) mastGaps.push({ z0: z - 1.2, z1: z + 1.2, side: 0 });
   /** stations where a parapet must not be drawn (the ramp divergence zones) */
   const gapZ = terrain.ramps.map(parapetGap);
-  /** the bypass gores cut the parapet too — west at the diverge, and the
-      east wall's first-ever gap at the merge (routegraph.ts computes both) */
-  const newGaps = world.routes ? world.routes.newParapetGaps() : [];
+  /** The bypass and mountain-road gores cut the parapet too (routegraph.ts
+      computes all four windows, in canonical z). The deck is BUILT over
+      [ZB0, ZB1] though, and the mountain gores sit inside the south splice
+      window — so their windows must also cut the overrun copy of that deck
+      stretch past Z1, or the copied road (emitted at z + LOOP by
+      buildMountainRoad) would dive through an intact copied parapet.
+      Fold every window to each raw-z copy that intersects the built extent;
+      mid-band windows (the bypass's) come through unchanged. */
+  const canonGaps = world.routes ? world.routes.newParapetGaps() : [];
+  const newGaps: { z0: number; z1: number; side: 1 | -1 }[] = [];
+  for (const g of canonGaps)
+    for (const off of [-LOOP_LEN, 0, LOOP_LEN]) {
+      const z0 = g.z0 + off, z1 = g.z1 + off;
+      if (z1 > cor.ZB0 && z0 < cor.ZB1) newGaps.push({ z0, z1, side: g.side });
+    }
   /** [z0, z1] minus this side's gap windows (ramps only ever leave on the
       west side; the bypass cuts both). The old whole-segment test — keep the
       segment iff its *start* z was outside every gap — quantised every gap to
@@ -358,10 +379,11 @@ export function buildHighway(
     }
     return spans.filter(([a2, b2]) => b2 - a2 > 0.3);
   };
-  /** z's the bypass gores keep clear of long deck furniture */
+  /** z's the bypass/mountain gores keep clear of long deck furniture */
   const nearNewGore = (z: number, r: number) =>
     world.routes !== undefined &&
-    (Math.abs(z - DIVERGE_Z) < r || Math.abs(z - MERGE_Z) < r);
+    (Math.abs(z - DIVERGE_Z) < r || Math.abs(z - MERGE_Z) < r ||
+      Math.abs(z - MTN.divergeZ) < r || Math.abs(z - MTN.mergeZ) < r);
   /** the tunnel supplies its own walls, so skip the parapet through it */
   const inTube = (z: number) => cor.inTunnel(z, 3);
   /* corridor.ts resolves the section plan, but it cannot see the bypass gores
@@ -948,6 +970,18 @@ export function buildHighway(
     add, board, decal, word, wordMat, arrowMat, goreMat,
   });
 
+  /* ---------------- the mountain road (route graph, EXIT 4) ----------------
+     Swept from routegraph.ts's mtn stations: a two-way rock-shelf pass above
+     the river bank. Rock faces both sides (the cut face west, the drop to the
+     bank east), a low stone parapet on the river edge, double-yellow centre
+     line, retroreflective delineators, sparse warm lamps, the gore kit, and
+     EXIT 4 boards. Everything visible is emitted at z AND z + LOOP — the road
+     lives inside the south splice window, so the overrun past Z1 must carry
+     its copy (see corridor.MTN); colliders and the exit entry stay canonical. */
+  if (world.routes && FX_MOUNTAIN) buildMountainRoad(scene, mats, world, terrain, {
+    add, board, decal, word, wordMat, arrowMat, goreMat,
+  });
+
   /* ---------------- deck dressing ---------------- */
   /* Edge reflectors, on top of the parapet rather than 40 cm inside the
      pavement edge — where they were, they were below the barrier's top and so
@@ -957,8 +991,19 @@ export function buildHighway(
     for (const z of cor.lattice(PITCH.reflector)) {
       if (cor.inTunnel(z)) continue;
       const hw = cor.halfWidth(z) + 0.23;
-      const a = cor.worldOf(z, -hw), b = cor.worldOf(z, hw);
-      pts.push(a.x, a.y + 1.02, a.z, b.x, b.y + 1.02, b.z);
+      /* not in a parapet gap: a delineator rides the coping, and where a gore
+         has cut the barrier away it would float in mid-air over the mouth */
+      const inGap = (side: 1 | -1) =>
+        newGaps.some((g) => g.side === side && z > g.z0 && z < g.z1) ||
+        (side < 0 && gapZ.some((g) => z > g.z0 && z < g.z1));
+      if (!inGap(-1)) {
+        const a = cor.worldOf(z, -hw);
+        pts.push(a.x, a.y + 1.02, a.z);
+      }
+      if (!inGap(1)) {
+        const b = cor.worldOf(z, hw);
+        pts.push(b.x, b.y + 1.02, b.z);
+      }
     }
     const rg = new THREE.BufferGeometry();
     rg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
@@ -3509,6 +3554,499 @@ function buildBypassViaduct(
   for (const d of [400, 200]) board(DIVERGE_Z - d, 7.4, 2.8, exitSignTexF(3, d + " m", "湾岸"));
   board(DIVERGE_Z - 40, 7.4, 2.8, exitSignTexF(3, "出口", "湾岸"));
   board(MERGE_Z - 80, 6.6, 2.5, warnTexF("合流注意", "MERGING TRAFFIC"));
+}
+
+/* ============================ mountain road ============================= */
+
+/** The mountain exit's cantilever boards, at canonical (wrapped) z — the
+    approach to the diverge runs through the seam, so "400 m before the gore"
+    lands back at the top of the band. Shared with buildHighway's mastGaps so
+    the soundwall lattice steps around the masts. The 10 m nudges keep each
+    mast off the SOS-cabinet lattice (pitch 200, phase 30 ⇒ cabinets at 1630
+    and 1830, exactly where divergeZ − 400/200 would land). */
+function MTN_BOARD_Z(): number[] {
+  const L = LOOP_LEN;
+  const w = (z: number) => (z < -L / 2 ? z + L : z);
+  return [
+    w(MTN.divergeZ - 390), // "400 m" board
+    w(MTN.divergeZ - 190), // "200 m" board
+    w(MTN.divergeZ - 24), // gore board
+    MTN.mergeZ - 90, // merge warning, mid-band already
+  ];
+}
+
+function buildMountainRoad(
+  scene: THREE.Scene,
+  mats: Mats,
+  world: WorldData,
+  terrain: Terrain,
+  kit: {
+    add: (b: { x0: number; x1: number; z0: number; z1: number; y0: number; y1: number }) => void;
+    board: (z: number, w: number, h: number, tex: THREE.Texture) => THREE.Group | null;
+    decal: (z: number, lat: number, w: number, l: number, mat: THREE.Material) => THREE.Mesh;
+    word: (z: number, lat: number, mat: THREE.Material, chars: number) => THREE.Mesh;
+    wordMat: (word: string) => THREE.Material;
+    arrowMat: THREE.Material;
+    goreMat: THREE.Material;
+  }
+) {
+  const routes: RouteGraph = world.routes!;
+  const cor = getCorridor();
+  const mt = routes.mtn;
+  const st = mt.stations;
+  const { add, board, decal, word, wordMat, arrowMat, goreMat } = kit;
+  const caps = worldTierCaps();
+  const detail = caps.mtnDetail ?? 1;
+  /* Forked rng stream, seeded from the road seed: the rock jitter must not
+     consume from the world build's shared stream (which would re-roll every
+     later draw for a given seed), and it must be identical for the canonical
+     road and its splice copy — so it is rolled ONCE into tables first. */
+  const rk = mulberry32((roadSeed() ^ 0x70b6e5) >>> 0);
+  const N = st.length;
+  /** per-station rock jitter, [latJit, yJit, latJit2, yJit2] */
+  const jag = new Float32Array(N * 4);
+  for (let i = 0; i < N * 4; i++) jag[i] = rk();
+
+  const WALL_T = 0.3, WALL_H = 0.85, TILE = 7;
+  const FULL = MTN.half - 0.02;
+  /** rock height envelope: nothing towering at the gores, full mid-route */
+  const rockK = (s: number) =>
+    sstep((s - 18) / 50) * sstep((mt.len - 22 - s) / 50);
+  /** rock-face sampling step, stations (1 m apart on this edge) */
+  const step = detail >= 0.95 ? 3 : detail >= 0.65 ? 4 : 6;
+
+  /* the three tightest corners, for chevron boards: local curvature maxima
+     at least 60 m apart, tightest first */
+  const corners: number[] = [];
+  {
+    const cand: { s: number; k: number; sgn: number }[] = [];
+    for (let i = 6; i < N - 6; i += 3) {
+      const a = st[i - 3], b = st[i + 3];
+      let dh = Math.atan2(b.tx, b.tz) - Math.atan2(a.tx, a.tz);
+      while (dh > Math.PI) dh -= 2 * Math.PI;
+      while (dh < -Math.PI) dh += 2 * Math.PI;
+      const k = dh / Math.max(0.01, b.s - a.s);
+      cand.push({ s: st[i].s, k: Math.abs(k), sgn: Math.sign(k) });
+    }
+    cand.sort((a, b) => b.k - a.k);
+    for (const c of cand) {
+      if (corners.length >= 3) break;
+      if (c.s < 40 || c.s > mt.len - 45) continue;
+      if (corners.some((s) => Math.abs(s - c.s) < 60)) continue;
+      corners.push(c.s);
+    }
+  }
+
+  const lampPts: number[] = []; // [x, y, z, r, g, b]
+  const lampCol = new THREE.Color();
+  const lamp = (x: number, y: number, z: number, hex: number, bright: number) => {
+    lampCol.set(hex).multiplyScalar(bright);
+    lampPts.push(x, y, z, lampCol.r, lampCol.g, lampCol.b);
+  };
+
+  /* rock: its own dark, rough material — vertex colour carries the per-facet
+     variation so the whole hillside is still one draw call per copy */
+  const rockMat = new THREE.MeshStandardMaterial({
+    color: 0x35322e, roughness: 1.0, vertexColors: true,
+  });
+  const yellowMat = new THREE.MeshBasicMaterial({
+    // against the grade: a centre line at night is paint under headlights,
+    // not a light source — sits well below the blowout ceiling and the beam
+    // retro-multiply (addBeam) is what actually lights it up
+    color: 0x9a7526, fog: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  mats.addBeam(yellowMat, { near: 18, far: 62, spread: 0.95 });
+  const mtnRailMat = new THREE.MeshStandardMaterial({
+    color: 0x4a5262, roughness: 0.5, metalness: 0.7, side: THREE.DoubleSide,
+  });
+
+  const delinPosts: { x: number; y: number; z: number; h: number }[] = [];
+  const delinPts: number[] = [];
+
+  /* ---- the sweep, once per splice copy. Separate meshes per copy (rather
+     than one Soup spanning both) so each copy keeps its own bounding sphere
+     and frustum culling works: a single mesh would span 4 km and never cull. */
+  for (const dz of [0, cor.LOOP]) {
+    const pav = new Soup(), rock = new Soup(), wall = new Soup(), mark = new Soup(),
+      rail = new Soup();
+    const rockColored: { col: number[] } = { col: [] };
+
+    /** station point at lateral `lat` (bank folded in), plus dy, shifted dz */
+    const mpt = (i: number, lat: number, dy = 0): Vec3 => {
+      const p = st[i];
+      return [p.x + p.nx * lat, p.y + lat * p.bank + dy, p.z + p.nz * lat + dz];
+    };
+    /** absolute-height variant, for faces that reach the ground */
+    const apt = (i: number, lat: number, yAbs: number): Vec3 => {
+      const p = st[i];
+      return [p.x + p.nx * lat, yAbs, p.z + p.nz * lat + dz];
+    };
+    /** rock quad with a per-facet gray pushed into the colour attribute */
+    const rquad = (a: Vec3, b: Vec3, c: Vec3, d: Vec3, shade: number) => {
+      rock.quad(a, b, c, d);
+      for (let k = 0; k < 6; k++) rockColored.col.push(shade, shade * 0.97, shade * 0.9);
+    };
+
+    for (let i = 0; i < N - 1; i++) {
+      const a = st[i], b = st[i + 1];
+      if (a.hwL + a.hwR < 0.5 && b.hwL + b.hwR < 0.5) continue;
+      // pavement
+      pav.quadUv(
+        mpt(i, -a.hwR), mpt(i + 1, -b.hwR), mpt(i + 1, b.hwL), mpt(i, a.hwL),
+        [0, a.s / TILE], [0, b.s / TILE],
+        [(b.hwL + b.hwR) / TILE, b.s / TILE], [(a.hwL + a.hwR) / TILE, a.s / TILE]
+      );
+    }
+
+    /* rock faces, coarser than the pavement */
+    for (let i = 0; i + step < N; i += step) {
+      const a = st[i], e = st[i + step];
+      const sh = mt.sharedSides((a.s + e.s) / 2);
+      const K = rockK(a.s), K2 = rockK(e.s);
+      const j = (ix: number, k: number) => jag[(ix % N) * 4 + k];
+      if (!sh.shR && K > 0.02) {
+        /* west: the cut face the road hugs, rising to a crest, then the
+           hill's own flank falling to the bank behind it. The face leans
+           BACK as it rises (a real cut face batters away from the road). */
+        const f0a = mpt(i, -(a.hwR + 0.22), -0.35);
+        const f0b = mpt(i + step, -(e.hwR + 0.22), -0.35);
+        const f1a = mpt(i, -(a.hwR + 0.9 + j(i, 0) * 0.9), (1.7 + j(i, 1) * 0.8) * K);
+        const f1b = mpt(i + step, -(e.hwR + 0.9 + j(i + step, 0) * 0.9), (1.7 + j(i + step, 1) * 0.8) * K2);
+        const f2a = mpt(i, -(a.hwR + 2.4 + j(i, 2) * 1.4), (3.9 + j(i, 3) * 1.2) * K);
+        const f2b = mpt(i + step, -(e.hwR + 2.4 + j(i + step, 2) * 1.4), (3.9 + j(i + step, 3) * 1.2) * K2);
+        const c3a = mpt(i, -(a.hwR + 4.6 + j(i, 1) * 1.6), (5.0 + j(i, 0) * 1.4) * K);
+        const c3b = mpt(i + step, -(e.hwR + 4.6 + j(i + step, 1) * 1.6), (5.0 + j(i + step, 0) * 1.4) * K2);
+        const g4a = apt(i, -(a.hwR + 12), 0.02);
+        const g4b = apt(i + step, -(e.hwR + 12), 0.02);
+        rquad(f0a, f0b, f1b, f1a, 0.95 + j(i, 3) * 0.25);
+        rquad(f1a, f1b, f2b, f2a, 0.8 + j(i, 2) * 0.3);
+        rquad(f2a, f2b, c3b, c3a, 0.7 + j(i, 1) * 0.3);
+        // the back flank, seen from the expressway: crest straight down to
+        // the flat bank, one dark facet
+        rquad(c3b, c3a, g4a, g4b, 0.5 + j(i, 0) * 0.2);
+      }
+      if (!sh.shL && a.hwL > 0.55 && e.hwL > 0.55) {
+        /* east: the drop to the river bank the road is cut over */
+        const c0a = mpt(i, a.hwL + 0.12, -0.08);
+        const c0b = mpt(i + step, e.hwL + 0.12, -0.08);
+        const midYa = Math.max(0.4, st[i].y * (0.42 + j(i, 2) * 0.2));
+        const midYb = Math.max(0.4, st[i + step].y * (0.42 + j(i + step, 2) * 0.2));
+        const c1a = apt(i, a.hwL + 1.5 + j(i, 0), midYa);
+        const c1b = apt(i + step, e.hwL + 1.5 + j(i + step, 0), midYb);
+        const c2a = apt(i, a.hwL + 3.6 + j(i, 1) * 1.5, 0.03);
+        const c2b = apt(i + step, e.hwL + 3.6 + j(i + step, 1) * 1.5, 0.03);
+        rquad(c0a, c1a, c1b, c0b, 0.75 + j(i, 3) * 0.25);
+        rquad(c1a, c2a, c2b, c1b, 0.55 + j(i, 2) * 0.25);
+      }
+    }
+
+    /* the river-side stone parapet, on free hwL edges outside the noses */
+    for (let i = 0; i + 2 < N; i += 2) {
+      const a = st[i], e = st[i + 2];
+      const sh = mt.sharedSides((a.s + e.s) / 2);
+      if (sh.shL || a.hwL < 0.55 || e.hwL < 0.55) continue;
+      const lo = a.hwL + WALL_T / 2 + 0.06, hi = e.hwL + WALL_T / 2 + 0.06;
+      const a0 = mpt(i, lo - WALL_T / 2), a1 = mpt(i, lo + WALL_T / 2);
+      const b0 = mpt(i + 2, hi - WALL_T / 2), b1 = mpt(i + 2, hi + WALL_T / 2);
+      const up = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
+      const dn = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
+      wall.quad(dn(a0), dn(b0), up(b0), up(a0));
+      wall.quad(dn(a1), dn(b1), up(b1), up(a1));
+      wall.quad(up(a0), up(b0), up(b1), up(a1));
+    }
+
+    /* The gore runoff aprons (routegraph.mtnAprons): the paved pocket the
+       deck's widened east clamp encloses, swept in the DECK's frame, plus a
+       three-band steel rail along the outer edge wherever that edge is a
+       real barrier — i.e. wherever the mountain road's own pavement is NOT
+       directly adjacent (through the mouth the "edge" is just the seam
+       between apron and road, and a rail there would fence the exit shut).
+       The rail is the visible body of the analytic wall in collide.ts: same
+       table, so they cannot drift apart. */
+    {
+      const RAIL_B: readonly (readonly [number, number])[] = [
+        [0.16, 0.1], [0.44, 0.09], [0.72, 0.11],
+      ];
+      for (const ap of routes.mtnAprons) {
+        for (let k = 0; k + 1 < ap.w.length; k++) {
+          const w0 = ap.w[k], w1 = ap.w[k + 1];
+          if (w0 <= 0.03 && w1 <= 0.03) continue;
+          const zA = ap.z0 + k * ap.step, zB = zA + ap.step;
+          const hwA = cor.halfWidth(zA), hwB = cor.halfWidth(zB);
+          const pA0 = cor.worldOf(zA, hwA - 0.3), pA1 = cor.worldOf(zA, hwA + w0);
+          const pB0 = cor.worldOf(zB, hwB - 0.3), pB1 = cor.worldOf(zB, hwB + w1);
+          pav.quadUv(
+            [pA0.x, pA0.y + 0.012, pA0.z + dz], [pB0.x, pB0.y + 0.012, pB0.z + dz],
+            [pB1.x, pB1.y + 0.012, pB1.z + dz], [pA1.x, pA1.y + 0.012, pA1.z + dz],
+            [0, zA / TILE], [0, zB / TILE],
+            [(w1 + 0.3) / TILE, zB / TILE], [(w0 + 0.3) / TILE, zA / TILE]
+          );
+          // rail only where the outer edge is not the road seam
+          const hitA = mt.project(pA1.x, pA1.z, 8);
+          const adjA = hitA && (() => {
+            const h = mt.halfWidths(hitA.s);
+            return hitA.lat < h.hwL + 1 && hitA.lat > -(h.hwR + 1);
+          })();
+          if (adjA || w0 <= 0.03 || w1 <= 0.03) continue;
+          for (const [y0, t] of RAIL_B) {
+            rail.quad(
+              [pA1.x, pA1.y + y0, pA1.z + dz], [pB1.x, pB1.y + y0, pB1.z + dz],
+              [pB1.x, pB1.y + y0 + t, pB1.z + dz], [pA1.x, pA1.y + y0 + t, pA1.z + dz]
+            );
+          }
+        }
+      }
+    }
+
+    /* markings. Centre line: solid double yellow, the two-way tell — absent
+       through the gore wedges like a real junction throat. Edge lines: white
+       where the width is fully open (the lay-by inherits its own outline). */
+    const mstripe = (
+      into: Soup, s0: number, s1: number, lat0: number, lat1: number, wd: number
+    ) => {
+      const p0 = mt.worldOf(s0, lat0 - wd / 2), p1 = mt.worldOf(s0, lat0 + wd / 2);
+      const p2 = mt.worldOf(s1, lat1 + wd / 2), p3 = mt.worldOf(s1, lat1 - wd / 2);
+      const Y = 0.022;
+      const v0 = s0 / 12.5, v1 = s1 / 12.5;
+      into.quadUv(
+        [p0.x, p0.y + Y, p0.z + dz], [p3.x, p3.y + Y, p3.z + dz],
+        [p2.x, p2.y + Y, p2.z + dz], [p1.x, p1.y + Y, p1.z + dz],
+        [0, v0], [0, v1], [1, v1], [1, v0]
+      );
+    };
+    const yMark = new Soup();
+    for (const s of mt.sLattice(6, 26)) {
+      if (s + 6 > mt.len - 28) continue;
+      mstripe(yMark, s, s + 6, -0.16, -0.16, 0.11);
+      mstripe(yMark, s, s + 6, 0.16, 0.16, 0.11);
+    }
+    for (const s of mt.sLattice(8)) {
+      if (s + 8 > mt.len) continue;
+      const h0 = mt.halfWidths(s), h1 = mt.halfWidths(s + 8);
+      for (const sgn of [1, -1] as const) {
+        const e0 = sgn > 0 ? h0.hwL : h0.hwR, e1 = sgn > 0 ? h1.hwL : h1.hwR;
+        if (e0 < FULL || e1 < FULL) continue;
+        mstripe(mark, s, s + 8, sgn * (e0 - 0.38), sgn * (e1 - 0.38), 0.15);
+      }
+    }
+
+    for (const [S2, m, uv, shadow] of [
+      [pav, mats.ramp, true, false],
+      [wall, mats.barrierDouble, false, true],
+      [rail, mtnRailMat, false, false],
+      [mark, mats.markMat, true, false],
+      [yMark, yellowMat, true, false],
+    ] as const) {
+      if (S2.empty) continue;
+      const mesh = new THREE.Mesh(S2.geom(uv), m as THREE.Material);
+      mesh.castShadow = shadow;
+      mesh.receiveShadow = true;
+      if (!shadow) mesh.layers.set(LAYER_NOREF);
+      scene.add(mesh);
+    }
+    if (!rock.empty) {
+      const g = rock.geom(false);
+      g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(rockColored.col), 3));
+      const mesh = new THREE.Mesh(g, rockMat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+    }
+
+    /* delineators down the river edge — retroreflective, not lit: the posts
+       are unlit geometry and the heads are studTex points that only come up
+       in the player's beams (addBeam), which is what a real delineator does */
+    for (const s of mt.sLattice(Math.round(13 / Math.max(0.4, detail)), 8)) {
+      if (s > mt.len - 10) continue;
+      const { hwL } = mt.halfWidths(s);
+      const sh = mt.sharedSides(s);
+      if (sh.shL || hwL < FULL) continue;
+      const w = mt.worldOf(s, hwL + 0.55);
+      delinPosts.push({ x: w.x, y: w.y, z: w.z + dz, h: mt.poseAt(s).h });
+      delinPts.push(w.x, w.y + 1.02, w.z + dz);
+    }
+
+    /* chevron boards on the outside of the three tightest corners, doubled
+       back-to-back so both streams read them */
+    for (const cs of corners) {
+      const p = mt.poseAt(cs);
+      // outside of the corner: opposite the smoothed turn direction
+      const i0 = Math.max(3, Math.min(N - 4, Math.round(cs)));
+      const aT = st[i0 - 3], bT = st[i0 + 3];
+      let dh = Math.atan2(bT.tx, bT.tz) - Math.atan2(aT.tx, aT.tz);
+      while (dh > Math.PI) dh -= 2 * Math.PI;
+      while (dh < -Math.PI) dh += 2 * Math.PI;
+      const out = dh > 0 ? -1 : 1; // turning toward +lat ⇒ outside is −lat
+      const { hwL, hwR } = mt.halfWidths(cs);
+      const latB = out > 0 ? hwL + 0.75 : -(hwR + 0.6);
+      const w = mt.worldOf(cs, latB);
+      for (const flip of [0, Math.PI]) {
+        const bd = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.35, 0.85),
+          new THREE.MeshBasicMaterial({ map: mats.chevTex, fog: true })
+        );
+        bd.position.set(w.x, w.y + 1.05, w.z + dz);
+        bd.rotation.y = p.h + flip;
+        scene.add(bd);
+      }
+    }
+
+    /* sparse, warm lamps: one at each gore mouth, one over each of the two
+       far corners — a pass is DARK, that is its identity; these four glows
+       are waypoints, not street lighting. Fog-faded points with brightness
+       baked ≤ 0.55 into the colour (realistic-light: fade, never stop). */
+    const lampSs = [
+      14,
+      mt.len - 16,
+      ...corners.slice(0, 2),
+    ];
+    for (const ls of lampSs) {
+      if (ls < 0 || ls > mt.len) continue;
+      const { hwR } = mt.halfWidths(ls);
+      const w = mt.worldOf(ls, -(hwR + 0.55));
+      lamp(w.x, w.y + 5.6, w.z + dz, 0xffab55, 0.55);
+      const p = mt.poseAt(ls);
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.07, 0.1, 5.7, 6), mats.concDark
+      );
+      pole.position.set(w.x, w.y + 2.85, w.z + dz);
+      scene.add(pole);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.16, 0.28), mats.concDark);
+      head.position.set(w.x, w.y + 5.62, w.z + dz);
+      head.rotation.y = p.h;
+      scene.add(head);
+    }
+
+    /* gore treatment on the deck: chevron paint + amber beacon at both noses
+       (the ramps'/bypass's own kit), in both copies so the pre-seam view
+       carries the full exit picture */
+    const gore = (z: number, lat: number, flipRot: boolean) => {
+      const gp = cor.worldOf(z + (flipRot ? -4 : 4), lat);
+      const m = new THREE.Mesh(flatQuad(3.2, 6.4), goreMat);
+      m.rotation.y = cor.pose(z).h + (flipRot ? Math.PI : 0);
+      m.position.set(gp.x, gp.y + 0.03, gp.z + dz);
+      m.layers.set(LAYER_NOREF);
+      scene.add(m);
+      const bp = cor.worldOf(z, Math.sign(lat) * (cor.halfWidth(z) - 0.5));
+      const bea = new THREE.Sprite(world.goreBeaconMat!);
+      bea.scale.set(1.9, 1.9, 1);
+      bea.position.set(bp.x, bp.y + 1.9, bp.z + dz);
+      scene.add(bea);
+    };
+    const latD = cor.halfWidth(MTN.divergeZ) - 1.9;
+    gore(MTN.divergeZ, latD, false);
+    gore(MTN.mergeZ, cor.halfWidth(MTN.mergeZ) - 1.9, true);
+
+    /* wedge-tip noses: chevron board over a low block. Diverge: at the first
+       station whose deck side has fully separated. Merge: cap the deck's east
+       parapet where its gap opens. Colliders canonical-copy only. */
+    const nose = (x: number, y: number, z: number, h: number) => {
+      const blk = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.8, 1.3), mats.concDark);
+      blk.position.set(x, y + 0.4, z + dz);
+      blk.rotation.y = h;
+      blk.castShadow = true;
+      scene.add(blk);
+      const bd = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.9),
+        new THREE.MeshBasicMaterial({ map: mats.chevTex }));
+      bd.position.set(x, y + 1.35, z + dz);
+      bd.rotation.y = h + Math.PI;
+      scene.add(bd);
+      if (dz === 0)
+        add({ x0: x - 0.6, x1: x + 0.6, z0: z - 0.8, z1: z + 0.8, y0: y - 0.5, y1: y + 1.1 });
+    };
+    {
+      const iDiv = st.findIndex((p) => p.hwR >= FULL && p.s > 8);
+      if (iDiv > 0) {
+        const tp = mpt(iDiv, -(st[iDiv].hwR + 0.55));
+        nose(tp[0], tp[1], tp[2] - dz, mt.poseAt(st[iDiv].s).h);
+      }
+      const mtnGaps = routes.newParapetGaps().slice(2);
+      const mrgGap = mtnGaps[1];
+      if (mrgGap) {
+        const w = cor.worldOf(mrgGap.z0 - 1, cor.halfWidth(mrgGap.z0 - 1) + 0.23);
+        nose(w.x, w.y, w.z, cor.pose(mrgGap.z0 - 1).h);
+      }
+    }
+  }
+
+  /* instanced delineator posts (both copies in one mesh: ~60 slim cylinders) */
+  if (delinPosts.length) {
+    const postM = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.045, 0.05, 1.04, 5),
+      new THREE.MeshStandardMaterial({ color: 0xd8d4c8, roughness: 0.7 }),
+      delinPosts.length
+    );
+    const M = new THREE.Matrix4(), V = new THREE.Vector3(),
+      Q = new THREE.Quaternion(), E = new THREE.Euler(), S = new THREE.Vector3(1, 1, 1);
+    delinPosts.forEach((p, i) => {
+      E.set(0, p.h, 0);
+      Q.setFromEuler(E);
+      V.set(p.x, p.y + 0.52, p.z);
+      M.compose(V, Q, S);
+      postM.setMatrixAt(i, M);
+    });
+    postM.computeBoundingSphere();
+    scene.add(postM);
+    const rg = new THREE.BufferGeometry();
+    rg.setAttribute("position", new THREE.BufferAttribute(new Float32Array(delinPts), 3));
+    const rm = new THREE.PointsMaterial({
+      size: 2.0, sizeAttenuation: false, color: 0xffb055, map: mats.studTex,
+      transparent: true, opacity: 0.85, fog: true, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    mats.addBeam(rm, { near: 40, far: 190, spread: 0.5 });
+    const rp = new THREE.Points(rg, rm);
+    rp.frustumCulled = false;
+    scene.add(rp);
+  }
+
+  /* the lamp glows: one fog-faded additive cloud, day/night driven */
+  if (lampPts.length) {
+    const n = lampPts.length / 6;
+    const p = new Float32Array(n * 3), c = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      p[i * 3] = lampPts[i * 6];
+      p[i * 3 + 1] = lampPts[i * 6 + 1];
+      p[i * 3 + 2] = lampPts[i * 6 + 2];
+      c[i * 3] = lampPts[i * 6 + 3];
+      c[i * 3 + 1] = lampPts[i * 6 + 4];
+      c[i * 3 + 2] = lampPts[i * 6 + 5];
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(p, 3));
+    g.setAttribute("color", new THREE.BufferAttribute(c, 3));
+    const pm = new THREE.PointsMaterial({
+      size: 4.2, sizeAttenuation: false, map: mats.glowTex, vertexColors: true,
+      transparent: true, opacity: 1, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    world.neonMats.push(pm);
+    scene.add(new THREE.Points(g, pm));
+  }
+
+  /* ---- HUD exit + deck-side guidance (canonical band only) ---- */
+  world.exits.push({ z: MTN.divergeZ, no: 4, name: "峠 Tōge" });
+
+  // fast-lane guidance on the approach: this is the lap's one LEFT exit, so
+  // the arrows and the 分岐 text ride the fast lane, not the kerb lane
+  const wz = (z: number) => (z < cor.Z0 ? z + cor.LOOP : z);
+  const latA = (z: number) =>
+    cor.laneOffset(Math.round(cor.laneCount(z)) - 1, z) - 0.5;
+  for (let k = 0; k < 3; k++) {
+    const z = wz(MTN.divergeZ - 34 - k * 26);
+    decal(z, latA(z), 1.6, 3.4, arrowMat);
+  }
+  {
+    const z = wz(MTN.divergeZ - 122);
+    word(z, latA(z), wordMat("分岐"), 2);
+  }
+
+  const [b400, b200, bGore, bMerge] = MTN_BOARD_Z();
+  board(b400, 7.4, 2.8, exitSignTexF(4, "400 m", "峠"));
+  board(b200, 7.4, 2.8, exitSignTexF(4, "200 m", "峠"));
+  board(bGore, 7.4, 2.8, exitSignTexF(4, "出口", "峠"));
+  board(bMerge, 6.6, 2.5, warnTexF("合流注意", "MERGING TRAFFIC"));
 }
 
 /** Exit HUD helper: the nearest exit ahead, measured along the one-way

@@ -254,6 +254,32 @@ export function drawMiniMap(
         g.fill();
       }
     }
+
+    /* ---- the mountain road (EXIT 4): same station-swept ribbon, in earth
+       tones so the two detours read apart at a glance. It lives against the
+       south end of the band, so the lap shifts are what keep it on the map
+       while the player is coming up on the seam. */
+    const mst = world.routes?.mtn.stations;
+    if (mst && mst.length > 2 &&
+      mst[0].z + dz < car.z + R && mst[mst.length - 1].z + dz > car.z - R) {
+      g.beginPath();
+      for (let i = 0; i < mst.length; i += SKIP * 2) {
+        const p = mst[i];
+        const X = tx(p.x + p.nx * p.hwL), Z = tz(p.z + p.nz * p.hwL + dz);
+        if (i === 0) g.moveTo(X, Z);
+        else g.lineTo(X, Z);
+      }
+      for (let i = mst.length - 1; i >= 0; i -= SKIP * 2) {
+        const p = mst[i];
+        g.lineTo(tx(p.x - p.nx * p.hwR), tz(p.z - p.nz * p.hwR + dz));
+      }
+      g.closePath();
+      g.fillStyle = "rgba(110,84,52,.85)";
+      g.fill();
+      g.strokeStyle = "rgba(232,186,120,.9)";
+      g.lineWidth = 1.4;
+      g.stroke();
+    }
   }
 
   // ---- ramps: the real curved centrelines ----

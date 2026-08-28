@@ -2,7 +2,7 @@ import type { CarState } from "./physics";
 import type { WorldData } from "./world/data";
 import { SURFACE_TOL } from "./world/const";
 import { parapetGap, type Ramp } from "./world/ramps";
-import { BYPASS, type RouteGraph, type RoutePose } from "./world/routegraph";
+import { MOUNTAIN_EDGE, type RouteGraph, type RoutePose } from "./world/routegraph";
 
 /* Player collision: the corridor's parapets (analytic, from the same
    half-width the walls are swept from), static AABBs (piers, toll islands,
@@ -21,7 +21,7 @@ const tmpN = { x: 0, z: 0 };
 /* newParapetGaps() walks every bypass station, so resolve it once per graph
    rather than once per frame. */
 let _gapsFor: RouteGraph | null = null;
-let _newGaps: { z0: number; z1: number; side: 1 | -1 }[] = [];
+let _newGaps: { z0: number; z1: number; side: 1 | -1; edgeId: number }[] = [];
 function newGaps(routes: RouteGraph) {
   if (_gapsFor !== routes) {
     _gapsFor = routes;
@@ -203,7 +203,15 @@ export function collidePlayer(
   if (Math.abs(car.y - cor.centerY(car.z)) < SURFACE_TOL && car.z > cor.ZB0 && car.z < cor.ZB1) {
     const zc = cor.zAt(car.x, car.z);
     const lat = cor.latAt(car.x, car.z);
-    const lim = cor.halfWidth(zc) + 0.06 - halfW;
+    /* The east wall line BULGES outward through the mountain gores by the
+       runoff-apron width (routegraph.apronW): through the gore mouth that
+       opens the exit, and past it the taper is the angled barrier that walls
+       a car that missed the exit back onto the deck. The clamp stays ARMED
+       the whole way — this is a moving wall, not an exemption — which is
+       what contains a flat-out wall-hugger that the mountain road's own
+       (route-frame) clamps could never catch. */
+    const apron = world.routes && lat > 0 ? world.routes.apronW(zc) : 0;
+    const lim = cor.halfWidth(zc) + apron + 0.06 - halfW;
     const side = lat >= 0 ? 1 : -1;
     let guarded = true;
     if (side < 0) {
@@ -216,13 +224,20 @@ export function collidePlayer(
     }
     /* the bypass gores cut the parapet too — west at the diverge, and the
        east wall's first-ever gap at the merge — and a car on bypass pavement
-       at deck height (the shared gore wedges) is likewise exempt */
+       at deck height (the shared gore wedges) is likewise exempt. The
+       MOUNTAIN gaps are deliberately NOT in this exemption: their windows
+       are covered by the apron bulge above, which keeps a wall armed. */
     if (world.routes) {
       for (const gp of newGaps(world.routes))
-        if (car.z > gp.z0 && car.z < gp.z1 && side === gp.side) guarded = false;
+        if (gp.edgeId !== MOUNTAIN_EDGE && car.z > gp.z0 && car.z < gp.z1 && side === gp.side)
+          guarded = false;
       if (guarded) {
+        // …but a hit on MOUNTAIN pavement must not un-guard: through the
+        // gore wedges that pavement lies inside the apron bulge, and turning
+        // the moving wall off there is exactly the hugger hole again
         const sf = world.routes.surfaceAt(car.x, car.z, 1.0);
-        if (sf !== null && Math.abs(sf.y - car.y) < SURFACE_TOL) guarded = false;
+        if (sf !== null && sf.edgeId !== MOUNTAIN_EDGE &&
+          Math.abs(sf.y - car.y) < SURFACE_TOL) guarded = false;
       }
     }
     if (guarded && Math.abs(lat) > lim) {
@@ -262,14 +277,17 @@ export function collidePlayer(
      is on the deck however far out it has got. The bypass is a narrow ribbon
      whose frame means nothing a lane away from it. */
   if (world.routes) {
-    const by = world.routes.bypass;
-    const bHit = by.project(car.x, car.z, BYPASS.half + 6);
-    if (bHit) {
-      const p = by.poseAt(bHit.s, _byPose);
+    /* both new pavements: the bypass's concrete parapets and the mountain
+       road's rock face / stone parapet share one contract — an analytic wall
+       at each FREE edge, none through the shared gore wedges */
+    for (const e of world.routes.attached) {
+      const bHit = e.project(car.x, car.z, e.maxHalf + 6);
+      if (!bHit) continue;
+      const p = e.poseAt(bHit.s, _byPose);
       const surfY = p.y + bHit.lat * p.bank;
       if (Math.abs(car.y - surfY) < SURFACE_TOL) {
-        const { hwL, hwR } = by.halfWidths(bHit.s);
-        const { shL, shR } = by.sharedSides(bHit.s);
+        const { hwL, hwR } = e.halfWidths(bHit.s);
+        const { shL, shR } = e.sharedSides(bHit.s);
         const sgn = bHit.lat >= 0 ? 1 : -1;
         const hwSide = sgn > 0 ? hwL : hwR;
         const lim = hwSide + 0.06 - halfW;

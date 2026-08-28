@@ -84,12 +84,20 @@ export function makeTerrain(rng: Rng): Terrain {
     // curved ramps
     const r = rampAt(ramps, x, z, 1.0);
     if (r && Math.abs(r.y - refY) < SURFACE_TOL) take(r.y);
-    /* the bypass viaduct (routegraph.ts), with the same refY gating as the
-       ramps: a car on the street or frontage under it is never yanked up —
-       the graph's own tests guarantee it runs ≥ 6 m above any live street
-       mid-route and never answers near deck height over the main pavement */
-    const g = getRouteGraph().surfaceAt(x, z, 1.0);
+    /* the bypass viaduct and the mountain road (routegraph.ts), with the
+       same refY gating as the ramps: a car on the street or frontage under
+       them is never yanked up — the graph's own tests guarantee the bypass
+       runs ≥ 6 m above any live street mid-route and neither answers near
+       deck height over the main pavement */
+    const routes = getRouteGraph();
+    const g = routes.surfaceAt(x, z, 1.0);
     if (g && Math.abs(g.y - refY) < SURFACE_TOL) take(g.y);
+    /* the mountain gores' runoff aprons: deck-height pavement just outside
+       the deck edge, same refY gate as the deck itself */
+    if (refY > corridor.centerY(z) - SURFACE_TOL) {
+      const ay = routes.apronAt(x, z, 1.0);
+      if (ay !== null) take(ay);
+    }
     return best;
   }
 

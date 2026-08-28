@@ -115,6 +115,13 @@ export interface TierCaps {
       from it; `window.__wall.detail` overrides both live, no reload. */
   wallDetail?: number;
 
+  /** Density scalar for the mountain road's dressing (highway.ts
+      buildMountainRoad): rock-face tessellation step, delineator pitch. The
+      road itself, its physics and its traffic are never gated — this only
+      thins the trim the pass is dressed with, the same trade deckDressing
+      makes for the deck scatter. */
+  mtnDetail?: number;
+
   /** Edge length of the procedural expressway-deck asphalt canvas
       (highway.ts). Its own cap rather than a rider on wallDetail, because it
       buys back a different resource: wallDetail is ALU on the parapets, this
@@ -163,7 +170,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
     lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
-    wheelTracks: false, deckDressing: 0.35,
+    wheelTracks: false, deckDressing: 0.35, mtnDetail: 0.5,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -174,7 +181,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
-    wheelTracks: true, deckDressing: 0.7,
+    wheelTracks: true, deckDressing: 0.7, mtnDetail: 0.75,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -185,7 +192,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
-    wheelTracks: true, deckDressing: 1,
+    wheelTracks: true, deckDressing: 1, mtnDetail: 1,
   },
 };
 
