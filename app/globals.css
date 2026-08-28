@@ -1077,31 +1077,14 @@ body.touch #gearBtn {
   outline-offset: 2px;
 }
 
-/* ---------- Touch quick controls: signals + the ⋯ overflow drawer ----------
+/* ---------- Touch quick controls: the ⋯ overflow drawer ----------
 
    The two-level touch scheme (see QuickDrawer in GameApp.tsx): while driving
-   the screen carries only the pucks plus two quiet additions — the topbar
-   telltales double as signal switches, and one ⋯ chip beside the pause gear
-   opens a narrow drawer holding every remaining keyboard feature. All of it
+   the screen carries only the pucks plus one quiet addition — a ⋯ chip
+   beside the pause gear opening a narrow drawer with every remaining
+   keyboard feature. (The tap-to-signal telltales were removed at the
+   owner's request; the topbar is fully passive again.) All of it
    body.touch-gated; desktop is untouched. */
-
-/* On touch the indicator telltales are also the signal switches (GameApp
-   routes ◀/▶ through uiKeyTap, i.e. a literal Q/E press). The bar itself
-   stays pointer-events:none; only the two glyphs opt back in, and a ::after
-   bleed carries the 44px hit area the 19px glyph doesn't have — same trick
-   as the garage paint dots. Top-centre is deliberate: nowhere near the
-   steering or pedal zones, so a mid-turn thumb cannot signal by accident,
-   and the lit arrow is its own confirmation. */
-body.touch #topbar .ind {
-  pointer-events: auto;
-  position: relative;
-  touch-action: manipulation;
-}
-body.touch #topbar .ind::after {
-  content: "";
-  position: absolute;
-  inset: -13px;
-}
 
 /* The ⋯ chip. Same size, surface and radius as #gearBtn next door, so the
    top-right corner reads as one small cluster of meta controls, clear of

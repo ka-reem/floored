@@ -271,16 +271,14 @@ export default function GameApp() {
       <div ref={hostRef} />
       {/* HUD */}
       <div id="topbar" style={{ display: playing ? "flex" : "none" }}>
-        {/* On touch the indicator glyphs are also the signal switches: the
-            control IS its own telltale, so signals cost no extra chrome at
-            all. CSS opts the two spans back into pointer events (with a
-            bled-out hit area) under body.touch only — #topbar itself stays
-            pointer-events:none, and on desktop the handlers are unreachable.
-            Routed through uiKeyTap so a tap is exactly a Q/E press. */}
-        <span id="indL" className="ind" onPointerDown={() => gameRef.current?.uiKeyTap("q")}>◀</span>
+        {/* Passive telltales only: the tap-to-signal behavior these glyphs
+            briefly carried was removed at the owner's request — signals are
+            keyboard-only (Q/E). #topbar stays pointer-events:none, so the
+            bar can never intercept a driving touch. */}
+        <span id="indL" className="ind">◀</span>
         <span id="clock">21:30</span>
         <span id="wx"></span>
-        <span id="indR" className="ind" onPointerDown={() => gameRef.current?.uiKeyTap("e")}>▶</span>
+        <span id="indR" className="ind">▶</span>
       </div>
       <div id="hud" style={{ display: playing ? "block" : "none" }}>
         <div className="spd" id="spd">0<small>{unitLabel(g ? g.settings.units : "mph")}</small></div>
