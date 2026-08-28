@@ -1464,6 +1464,9 @@ export class Game {
     x: 0, z: 0, vx: 0, vz: 0, heavy: false,
   }));
   private npcFeed: { x: number; z: number; vx: number; vz: number; heavy: boolean }[] = [];
+  /** last relative-longitudinal position per tracked npc, for the pass-by
+      whoosh's sign-flip detection — see npcAudioFeed() */
+  private passbyPrev = new WeakMap<object, number>();
   /** last state pushed to mats.setPbrDetail; the call recompiles materials, so
       it must only ever fire on a real transition */
   private pbrDetail = true;
@@ -3405,6 +3408,26 @@ export class Game {
       feed.push(e);
     }
     this.audio.updateNpcs(feed, car.x, car.z, car.wvx, car.wvz, car.h);
+    /* Pass-by whoosh: fire the one-shot at the exact frame an NPC's
+       longitudinal position relative to the player's heading changes sign —
+       the moment it crosses the player's ears, in either direction (the
+       unpassable rival re-passing the player is the loud case). Keyed on the
+       Npc object itself (WeakMap — dead cars just fall out), with a jump
+       guard so a spawn, despawn-reuse or seam splice teleporting a car
+       across the plane cannot read as a pass. */
+    const sh = Math.sin(car.h), ch = Math.cos(car.h);
+    for (const s of samples) {
+      if (!s.npc) continue;
+      const dx = s.x - car.x, dz = s.z - car.z;
+      const relLong = dx * sh + dz * ch;
+      const prev = this.passbyPrev.get(s.npc);
+      this.passbyPrev.set(s.npc, relLong);
+      if (prev === undefined) continue;
+      if ((prev > 0) === (relLong > 0)) continue;
+      if (Math.abs(relLong - prev) > 15) continue; // teleport, not a pass
+      const closing = Math.abs((s.vx - car.wvx) * sh + (s.vz - car.wvz) * ch);
+      this.audio.npcPassby(closing, dx * ch - dz * sh);
+    }
     for (const n of this.traffic.closeCalls()) {
       if (n.ccKind === "chirp") this.audio.npcChirp(n.x, n.z);
       else this.audio.npcHorn(n.x, n.z, n.type === "truck" || n.type === "bus");

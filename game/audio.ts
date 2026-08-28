@@ -3816,6 +3816,70 @@ export class GameAudio {
     src.stop(t + decay * 3 + 0.02);
   }
 
+  /** Rate limit + counter for npcPassby() — engine.ts fires one per actual
+      geometric pass, this is only the pile-up guard for two cars crossing in
+      the same instant. Counter is for the headless check. */
+  private lastPassby = -1;
+  private passbyCount = 0;
+  getPassbyCount() {
+    return this.passbyCount;
+  }
+
+  /** Pass-by whoosh: the air-displacement transient of a car crossing the
+      player's ears, fired by engine.ts at the moment an NPC's relative
+      longitudinal position changes sign with real closing speed. This is an
+      EVENT one-shot like npcHorn/npcChirp — the sustained doppler drone pool
+      stays disabled per the user's 2026-08-17 decision (docs/DISABLED.md
+      §3d); a half-second whoosh as a car passes is the part of that sound a
+      real cabin actually hears, and with the unpassable rival sitting on the
+      player's tail it is the moment that sells the speed differential.
+
+      Shape: broadband noise through a bandpass that SWEEPS DOWN through the
+      event — the doppler brightness fall of a source going from approaching
+      to receding — with a fast swell into a longer tail, panned to the side
+      the car passes on with a small motion sweep outward. `closing` (m/s,
+      positive) scales level and how far the sweep falls; `lateral` (m,
+      signed, +right) sets pan and attenuates a far-lane pass. Routed via
+      sfxBus, so a pass inside the tunnel gets thrown back off the walls. */
+  npcPassby(closing: number, lateral: number) {
+    if (!this.ok) return;
+    const c = this.ctx, t = c.currentTime;
+    if (t - this.lastPassby < 0.15) return;
+    const absLat = Math.abs(lateral);
+    // inaudible passes: crawling alongside, or a whole deck away
+    if (closing < 6 || absLat > 12) return;
+    this.lastPassby = t;
+    this.passbyCount++;
+    const u = smoothstep(6, 40, closing);
+    // a pass one lane over (~3.5m) is full level; the fade to 12m matches
+    // the npcSpatial() attenuation family rather than inventing a new curve
+    const near = 1 - smoothstep(4.5, 12, absLat);
+    const gain = PASSBY_LEVEL * (0.35 + 0.65 * u) * near;
+    if (gain < 0.01) return;
+    const dur = 0.28 + 0.25 * (1 - u); // faster pass = shorter whoosh
+    const src = c.createBufferSource();
+    src.buffer = this.noiseBuf;
+    src.loop = true;
+    const f = c.createBiquadFilter();
+    f.type = "bandpass";
+    f.Q.value = 0.8;
+    // brightness falls through the pass — approach bright, recede dark
+    f.frequency.setValueAtTime(700 + 900 * u, t);
+    f.frequency.exponentialRampToValueAtTime(260, t + dur);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.07);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    const pn = c.createStereoPanner();
+    const side = clampRange(lateral / 6, -1, 1);
+    // small outward sweep: the car is beside you, then past your shoulder
+    pn.pan.setValueAtTime(side * 0.45, t);
+    pn.pan.linearRampToValueAtTime(side * 0.9, t + dur);
+    src.connect(f).connect(g).connect(pn).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + dur + 0.05);
+  }
+
   /**
    * Sustained metallic scrape/grind — call every frame while the player is
    * in contact with a wall/guardrail/NPC flank; `intensity` 0 means no
