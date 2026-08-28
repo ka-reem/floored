@@ -2223,13 +2223,19 @@ export class Game {
       this.car.lightsUser = !this.car.lightsUser;
       this.ui.toast("LIGHTS " + (this.car.lightsUser ? "ON" : "AUTO"));
     }
+    /* Stalk click on the toggle edge, both engage and cancel — the click
+       volumes that used to give the signals their mechanical clunk are gone
+       (keyboard-only now, owner's call), but the stalk itself still moves.
+       The blink-rate tick in hud() is separate and untouched. */
     if (k === "q") {
       this.car.sigL = !this.car.sigL;
       this.car.sigR = false;
+      this.audio.stalkClick();
     }
     if (k === "e") {
       this.car.sigR = !this.car.sigR;
       this.car.sigL = false;
+      this.audio.stalkClick();
     }
     if (k === "r") this.setRain(!this.rain);
     if (k === "t") {
