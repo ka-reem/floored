@@ -85,7 +85,10 @@ const NAV_MS = 90;
    and music.ts is out of the geometry business. */
 const ART = { x: 14, y: 34, s: 96 };   // album art square
 const COL_X = 124, COL_R = 244;        // the right-hand column: text + controls
-const BAR = { x: COL_X, y: 96, w: COL_R - COL_X, h: 4 };
+/* Narrowed 20 px each side from the full column width, to leave the VOL_MINUS
+   / VOL_PLUS buttons (below) a slot either end without crowding them against
+   the progress fill. */
+const BAR = { x: COL_X + 20, y: 96, w: COL_R - COL_X - 40, h: 4 };
 /* Transport buttons: three 34 px squares on an 8 px gutter, filling the
    column exactly (124 + 3*34 + 2*8 = 242). 34 px of a 256 px panel is a
    generous target for a cursor and, more to the point, big enough to carry a
@@ -95,17 +98,33 @@ const BTN_S = 34, BTN_Y = 118;
 const BTN_X = [COL_X, COL_X + 42, COL_X + 84];
 /* Back to the map. Top-left, where the eye lands first, and the only way out
    of this view: dead space deliberately does NOTHING here, so a click that
-   misses a button cannot silently throw the view away. */
+   misses a button cannot silently throw the view away. Shared by every
+   non-map view (music, trip) — one exit, in the same place, however you got
+   there. */
 const BACK = { x: 8, y: 7, w: 54, h: 18 };
 /* And the way IN, on the map view: a pill in the top-right corner, clear of
    the status strip (x 5..93) and the route banner (bottom). The whole panel
    is the button — see hitScreen — and this is what says so. */
 const PILL = { x: W - 34, y: 6, w: 26, h: 16 };
+/* A second way in, right next to it, to the trip computer — the same size
+   and row as PILL so the two read as a pair rather than one afterthought
+   bolted beside the other. Left of PILL (music), not right of it: the eye
+   already lands top-left first (see BACK above) and this keeps both pills
+   in the same sweep. */
+const PILL2 = { x: PILL.x - 32, y: PILL.y, w: PILL.w, h: PILL.h };
+/* In-cabin volume +/- either side of the progress bar. Same row, so the
+   knob reads as part of the transport rather than a second control bolted
+   above it; BAR itself is narrowed (see below) to make room without
+   crowding the album art column. */
+const VOL_S = 16, VOL_Y = 90;
+const VOL_MINUS = { x: COL_X, y: VOL_Y, w: VOL_S, h: VOL_S };
+const VOL_PLUS = { x: COL_R - VOL_S, y: VOL_Y, w: VOL_S, h: VOL_S };
 
 /** Which pane the head unit is showing. */
-export type ScreenView = "map" | "music";
+export type ScreenView = "map" | "music" | "trip";
 /** What a click on the panel does, and equally what the cursor is over. */
-export type ScreenAction = "prev" | "toggle" | "next" | "music" | "map";
+export type ScreenAction =
+  | "prev" | "toggle" | "next" | "music" | "map" | "trip" | "volDown" | "volUp";
 
 /** Map a UV hit on the head-unit plane to what a click there does, or null if
     it landed on dead space. `v` is flipped because UV origin is bottom-left
@@ -116,13 +135,22 @@ export type ScreenAction = "prev" | "toggle" | "next" | "music" | "map";
 export function hitScreen(u: number, v: number, view: ScreenView): ScreenAction | null {
   const x = u * W, y = (1 - v) * H;
   if (x < 0 || x > W || y < 0 || y > H) return null;
-  if (view === "map") return "music";  // the whole map panel opens the player
+  if (view === "map") {
+    if (x >= PILL2.x && x <= PILL2.x + PILL2.w && y >= PILL2.y && y <= PILL2.y + PILL2.h)
+      return "trip";
+    return "music"; // everywhere else on the map panel opens the player
+  }
   if (x >= BACK.x && x <= BACK.x + BACK.w && y >= BACK.y && y <= BACK.y + BACK.h) return "map";
+  if (view === "trip") return null; // nothing else on this pane responds
   if (y >= BTN_Y && y <= BTN_Y + BTN_S) {
     const ids: ScreenAction[] = ["prev", "toggle", "next"];
     for (let i = 0; i < 3; i++)
       if (x >= BTN_X[i] && x <= BTN_X[i] + BTN_S) return ids[i];
   }
+  if (x >= VOL_MINUS.x && x <= VOL_MINUS.x + VOL_MINUS.w && y >= VOL_MINUS.y && y <= VOL_MINUS.y + VOL_MINUS.h)
+    return "volDown";
+  if (x >= VOL_PLUS.x && x <= VOL_PLUS.x + VOL_PLUS.w && y >= VOL_PLUS.y && y <= VOL_PLUS.y + VOL_PLUS.h)
+    return "volUp";
   return null;
 }
 
@@ -357,6 +385,24 @@ function paintMusic(
     mg.fill();
   }
 
+  /* --- in-cabin volume, either side of the bar --------------------------- */
+  for (const [rect, glyph, id] of [
+    [VOL_MINUS, "-", "volDown"], [VOL_PLUS, "+", "volUp"],
+  ] as const) {
+    const on = hover === id;
+    rr(mg, rect.x, rect.y, rect.w, rect.h, 5);
+    mg.fillStyle = on ? "rgba(111,178,255,.26)" : "rgba(255,255,255,.055)";
+    mg.fill();
+    mg.strokeStyle = on ? "rgba(160,205,255,.85)" : "rgba(255,255,255,.10)";
+    mg.lineWidth = 1;
+    mg.stroke();
+    mg.fillStyle = on ? "#ffffff" : "#c8d0de";
+    mg.font = "700 11px sans-serif";
+    mg.textAlign = "center";
+    mg.fillText(glyph, rect.x + rect.w / 2, rect.y + rect.h / 2 + 4);
+  }
+  mg.textAlign = "left";
+
   /* --- transport -------------------------------------------------------- */
   /* Three states per button and all three are visible on a dark screen at a
      steep angle: rest is a faint plate that says "this is a control", hover
@@ -513,6 +559,22 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
     g.beginPath(); g.arc(nx, ny, 2.4, 0, TAU); g.fill();
     g.fillRect(nx + 1.6, ny - 8.6, 1.4, 8.6);
     g.fillRect(nx + 1.6, ny - 8.6, 5.4, 2);
+
+    // its pair: the way in to the trip computer, same row, same style, a
+    // text glyph rather than an icon — "TRIP" reads at this size and nothing
+    // in the existing glyph set (note, GPS arrow, signal bars) says "trip".
+    const tripOn = hover === "trip";
+    rr(g, PILL2.x, PILL2.y, PILL2.w, PILL2.h, 8);
+    g.fillStyle = tripOn ? "rgba(111,178,255,.30)" : "rgba(8,11,18,.78)";
+    g.fill();
+    g.strokeStyle = tripOn ? "rgba(160,205,255,.85)" : "rgba(255,255,255,.10)";
+    g.lineWidth = 1;
+    g.stroke();
+    g.fillStyle = tripOn ? "#ffffff" : "#9aa6bc";
+    g.font = "700 7px sans-serif";
+    g.textAlign = "center";
+    g.fillText("TRIP", PILL2.x + PILL2.w / 2, PILL2.y + PILL2.h / 2 + 2.5);
+    g.textAlign = "left";
   }
 
   // route banner along the bottom
@@ -536,6 +598,60 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
     onBy ? "湾岸 Bypass ルート" : onDeck ? "首都高 C1 環状線" : "一般道 Surface Rd",
     23, H - 9,
   );
+}
+
+/* ------------------------------------------------------------ trip pane -- */
+
+/** Trip computer: drawn straight into `g` every repaint, same as the nav
+    marker — there is nothing here worth caching to an offscreen canvas, it
+    is three text draws and a readout that changes every frame anyway. Reads
+    car.odo directly rather than the dashboard's "31842 + odo" fiction
+    (dashboard.ts): that base mileage is the CAR's, this pane is what its name
+    says, the distance covered since this drive began. */
+function drawTrip(g: CanvasRenderingContext2D, car: CarState, hover: ScreenAction | null) {
+  g.fillStyle = "#070910";
+  g.fillRect(0, 0, W, H);
+
+  const back = hover === "map";
+  rr(g, BACK.x, BACK.y, BACK.w, BACK.h, 9);
+  g.fillStyle = back ? "rgba(111,178,255,.22)" : "rgba(255,255,255,.05)";
+  g.fill();
+  g.strokeStyle = back ? "rgba(150,200,255,.75)" : "rgba(255,255,255,.14)";
+  g.lineWidth = 1;
+  g.stroke();
+  g.fillStyle = back ? "#eaf3ff" : "#9aa6bc";
+  g.font = "700 8px sans-serif";
+  g.textAlign = "left";
+  g.fillText("‹  MAP", BACK.x + 9, BACK.y + 12.5);
+
+  g.fillStyle = "#8f98ab";
+  g.font = "600 8px sans-serif";
+  g.textAlign = "right";
+  g.fillText("TRIP COMPUTER", W - 10, BACK.y + 13);
+  g.textAlign = "left";
+
+  const kmh = Math.abs(car.u) * 3.6;
+  g.textAlign = "center";
+  g.fillStyle = "#eef1f7";
+  g.font = "700 40px sans-serif";
+  g.fillText(kmh.toFixed(0), W / 2, 84);
+  g.fillStyle = "#8f98ab";
+  g.font = "600 10px sans-serif";
+  g.fillText("KM/H", W / 2, 100);
+
+  rr(g, 40, 118, W - 80, 30, 10);
+  g.fillStyle = "rgba(255,255,255,.05)";
+  g.fill();
+  g.strokeStyle = "rgba(255,255,255,.10)";
+  g.lineWidth = 1;
+  g.stroke();
+  g.fillStyle = "#9aa6bc";
+  g.font = "600 8px sans-serif";
+  g.fillText("TRIP DISTANCE", W / 2, 130);
+  g.fillStyle = "#eef1f7";
+  g.font = "700 13px sans-serif";
+  g.fillText(car.odo.toFixed(1) + " km", W / 2, 144);
+  g.textAlign = "left";
 }
 
 /* ---------------------------------------------------------- entry point -- */
@@ -617,6 +733,8 @@ export function drawCarScreen(
       st.paintedPlaying = playing;
     }
     g.drawImage(st.music, 0, 0, W, H);
+  } else if (ui.view === "trip") {
+    drawTrip(g, car, ui.hover);
   } else {
     /* Map view: the whole panel. Nothing of the player is drawn or even
        advanced here — the mock rotation's timer picks up from wherever it left
