@@ -12,7 +12,9 @@ const GameApp = dynamic(() => import("@/components/GameApp"), {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        color: "#93a3cc",
+        background: "#05060c",
+        color: "#a6b3d6",
+        fontFamily: "var(--font-display), \"Segoe UI\", system-ui, sans-serif",
         letterSpacing: "0.2em",
         fontSize: 14,
       }}
