@@ -73,6 +73,15 @@ export interface TierCaps {
   roadDecals?: boolean;
   /** sodium ground pool under every Nth deck streetlight (1 = all) */
   lampPoolEvery?: number;
+  /** lane-following tyre-polish ribbons on the deck (deckdetail.ts). One
+      draw call, but roughly a third of the deck's pixels gain one blended
+      overlay layer — a fill cost, priced like the decal overlays above. */
+  wheelTracks?: boolean;
+  /** density scalar for the procedural deck-dressing scatter (patch slabs,
+      skid arcs, gutter grates — deckdetail.ts); 0 disables the families.
+      A LEVEL rather than a boolean: unlike the JPG decals these cost no
+      fetch, so mobile-base keeps a thin scatter instead of a bare deck. */
+  deckDressing?: number;
 
   /** Procedural concrete decimetre detail on parapets, deck fascia and the
       tunnel crown — the grit atlas fetch plus the surface-gradient normal
@@ -138,6 +147,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: false, lampConeEvery: 2, jetFans: false, catwalks: false,
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
+    wheelTracks: false, deckDressing: 0.35,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -147,6 +157,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: true, lampConeEvery: 2, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
+    wheelTracks: true, deckDressing: 0.7,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -156,6 +167,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: true, lampConeEvery: 1, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
+    wheelTracks: true, deckDressing: 1,
   },
 };
 

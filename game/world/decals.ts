@@ -37,21 +37,22 @@ const P_OIL = 80;
 const P_MANHOLE = 125;
 const P_PARA = 200;
 
-interface Slot {
+export interface Slot {
   pos: THREE.Vector3;
   quat: THREE.Quaternion;
   scale: THREE.Vector3;
 }
 
 /** Deterministic per-slot dice: same lattice index ⇒ same rolls, either side
-    of the loop splice. */
-const rngFor = (index: number, salt: number) =>
+    of the loop splice. (Shared with deckdetail.ts, which scatters by the same
+    rules.) */
+export const rngFor = (index: number, salt: number) =>
   mulberry32((Math.imul(index + 1, 0x9e3779b1) ^ salt) >>> 0);
 
 /** Quaternion laying a flat quad on the deck: yaw to the corridor heading,
     then pitch to the grade so neither end of the quad buries or floats on a
     climb (5% grade over a 5 m quad is a 25 cm gap — very visible). */
-function deckQuat(h: number, grade: number) {
+export function deckQuat(h: number, grade: number) {
   return new THREE.Quaternion().setFromEuler(
     new THREE.Euler(-Math.asin(grade), h, 0, "YXZ")
   );
@@ -59,14 +60,14 @@ function deckQuat(h: number, grade: number) {
 
 /** Unit quad lying flat, texture-up pointing down the road (same frame as
     highway.ts's flatQuad — see the mirroring note there). */
-function flatUnit() {
+export function flatUnit() {
   const g = new THREE.PlaneGeometry(1, 1);
   g.rotateX(-Math.PI / 2);
   g.rotateY(Math.PI);
   return g;
 }
 
-function addInstanced(
+export function addInstanced(
   scene: THREE.Scene,
   geo: THREE.BufferGeometry,
   mat: THREE.Material,
