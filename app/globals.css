@@ -1056,3 +1056,174 @@ body.touch #gearBtn {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* ---------- Touch quick controls: signals + the ⋯ overflow drawer ----------
+
+   The two-level touch scheme (see QuickDrawer in GameApp.tsx): while driving
+   the screen carries only the pucks plus two quiet additions — the topbar
+   telltales double as signal switches, and one ⋯ chip beside the pause gear
+   opens a narrow drawer holding every remaining keyboard feature. All of it
+   body.touch-gated; desktop is untouched. */
+
+/* On touch the indicator telltales are also the signal switches (GameApp
+   routes ◀/▶ through uiKeyTap, i.e. a literal Q/E press). The bar itself
+   stays pointer-events:none; only the two glyphs opt back in, and a ::after
+   bleed carries the 44px hit area the 19px glyph doesn't have — same trick
+   as the garage paint dots. Top-centre is deliberate: nowhere near the
+   steering or pedal zones, so a mid-turn thumb cannot signal by accident,
+   and the lit arrow is its own confirmation. */
+body.touch #topbar .ind {
+  pointer-events: auto;
+  position: relative;
+  touch-action: manipulation;
+}
+body.touch #topbar .ind::after {
+  content: "";
+  position: absolute;
+  inset: -13px;
+}
+
+/* The ⋯ chip. Same size, surface and radius as #gearBtn next door, so the
+   top-right corner reads as one small cluster of meta controls, clear of
+   every driving hit area. GameApp fades it (.dim) after a few idle seconds
+   while driving and any touch wakes it — dimmed, never hidden. */
+#tcMore {
+  position: fixed;
+  top: 10px;
+  right: 64px;
+  z-index: var(--z-gear);
+  width: 44px;
+  height: 44px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: #cfd6e6;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  backdrop-filter: blur(var(--blur-sm));
+  transition: opacity 0.45s var(--ease), border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+body.touch #tcMore {
+  display: flex;
+}
+#tcMore.dim {
+  opacity: 0.4;
+}
+#tcMore:active {
+  border-color: var(--accent-line);
+  background: rgba(30, 40, 75, 0.35);
+}
+
+/* The drawer. It never pauses the game and never owns the screen: no scrim,
+   a narrow sheet anchored under the ⋯ chip — and, the load-bearing part,
+   pointer events only while fully open. Closed (the default) it sits at
+   opacity 0 and inert, so mid-transition in EITHER direction a touch aimed
+   at the road, wheel or pedals lands on them, never on a fading sheet. Both
+   moving properties are compositor-only. Always display:block on touch so
+   the open/close transition actually runs (a display flip would snap it);
+   desktop never shows it at all. max-height keeps it clear of the
+   pedal/steer strip along the bottom — a short landscape viewport gets a
+   scrolling sheet instead of an overlapping one — and overscroll-behavior
+   keeps that scroll from chaining into browser navigation. */
+#tcDrawer {
+  position: fixed;
+  top: 64px;
+  right: 12px;
+  z-index: var(--z-gear);
+  width: min(248px, 66vw);
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-2);
+  background: rgba(10, 14, 26, 0.78);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  backdrop-filter: blur(var(--blur-md));
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.45);
+  display: none;
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+  touch-action: pan-y;
+  transition: opacity 0.16s var(--ease), transform 0.16s var(--ease);
+}
+body.touch #tcDrawer {
+  display: block;
+}
+#tcDrawer.open {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+#tcDrawer .qdHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 6px 10px 8px;
+  color: var(--ink-faint);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  /* one line even at the 360px-phone width the sheet is narrowest at — a
+     wrapped header reads as a broken sheet, and both halves fit at this size */
+  white-space: nowrap;
+}
+#tcDrawer .qdHead span {
+  color: var(--jp);
+  font-weight: 400;
+  letter-spacing: 0.2em;
+}
+.qdRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: 44px; /* tap-target floor, same as #gearBtn/paintDot */
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: var(--ink);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background 0.12s var(--ease);
+}
+.qdRow:active {
+  background: var(--accent-soft);
+}
+.qdLabel {
+  font-family: var(--font-display);
+  font-weight: 500;
+}
+.qdLabel i {
+  font-style: normal;
+  color: var(--ink-faint);
+  font-size: 10px;
+  margin-left: 4px;
+  letter-spacing: 0.12em;
+}
+.qdState {
+  flex: none;
+  min-width: 44px;
+  text-align: center;
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-3);
+  color: var(--ink-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+}
+.qdState.on {
+  color: var(--accent-2);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
