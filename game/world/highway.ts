@@ -1908,10 +1908,15 @@ function buildOverpasses(
   /** [x, y, z, r, g, b] — brightness baked into colour, ≤ ~0.6, so the
       additive points can never blow white through the grade */
   const pts: number[] = [];
+  /** wide soft companions behind the sodium heads — widening, not
+      brightening, per the realistic-light rules (a lone 4 px dot dies in
+      the POV black crush; the same light spread wider survives it) */
+  const haloPts: number[] = [];
   const C = new THREE.Color();
-  const lampPt = (x: number, y: number, z: number, hex: number, k: number) => {
+  const lampPt = (x: number, y: number, z: number, hex: number, k: number, halo = false) => {
     C.set(hex).multiplyScalar(k);
     pts.push(x, y, z, C.r, C.g, C.b);
+    if (halo) haloPts.push(x, y, z, C.r * 0.38, C.g * 0.38, C.b * 0.38);
   };
   const M = new THREE.Matrix4(), V = new THREE.Vector3(), Q = new THREE.Quaternion(),
     E = new THREE.Euler(), SC = new THREE.Vector3();
@@ -1977,7 +1982,7 @@ function buildOverpasses(
       const px = w.x + p.tx * edge * (girderW / 2 - 0.5);
       const pz = w.z + p.tz * edge * (girderW / 2 - 0.5);
       put(posts, px, topY + postH / 2, pz, 1, postH, 1, p.h);
-      lampPt(px, topY + postH + 0.15, pz, 0xffa04d, 0.5);
+      lampPt(px, topY + postH + 0.15, pz, 0xffa04d, 0.55, true);
     }
 
     /* obstruction lights along the soffit edge — what reads at night before
@@ -2006,28 +2011,33 @@ function buildOverpasses(
      bright strings on the horizon (fade, never stop). Gated: the concrete
      stays on every tier, only this additive overdraw is capped. */
   if (caps.overpassLights !== false && pts.length) {
-    const n = pts.length / 6;
-    const pp = new Float32Array(n * 3), cc = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      pp[i * 3] = pts[i * 6];
-      pp[i * 3 + 1] = pts[i * 6 + 1];
-      pp[i * 3 + 2] = pts[i * 6 + 2];
-      cc[i * 3] = pts[i * 6 + 3];
-      cc[i * 3 + 1] = pts[i * 6 + 4];
-      cc[i * 3 + 2] = pts[i * 6 + 5];
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.BufferAttribute(pp, 3));
-    g.setAttribute("color", new THREE.BufferAttribute(cc, 3));
-    const pm = new THREE.PointsMaterial({
-      size: 3.2, sizeAttenuation: false, vertexColors: true, map: mats.glowTex,
-      transparent: true, opacity: 0.9, fog: true, depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    const o = new THREE.Points(g, pm);
-    o.frustumCulled = false;
-    scene.add(o);
-    world.neonMats.push(pm);
+    const cloud = (arr: number[], size: number) => {
+      if (!arr.length) return;
+      const n = arr.length / 6;
+      const pp = new Float32Array(n * 3), cc = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        pp[i * 3] = arr[i * 6];
+        pp[i * 3 + 1] = arr[i * 6 + 1];
+        pp[i * 3 + 2] = arr[i * 6 + 2];
+        cc[i * 3] = arr[i * 6 + 3];
+        cc[i * 3 + 1] = arr[i * 6 + 4];
+        cc[i * 3 + 2] = arr[i * 6 + 5];
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(pp, 3));
+      g.setAttribute("color", new THREE.BufferAttribute(cc, 3));
+      const pm = new THREE.PointsMaterial({
+        size, sizeAttenuation: false, vertexColors: true, map: mats.glowTex,
+        transparent: true, opacity: 0.9, fog: true, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const o = new THREE.Points(g, pm);
+      o.frustumCulled = false;
+      scene.add(o);
+      world.neonMats.push(pm);
+    };
+    cloud(pts, 4.4);
+    cloud(haloPts, 14);
   }
 }
 
@@ -2112,15 +2122,31 @@ function buildHighMasts(
   inst(armG, arms);
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pts), 3));
+  /* Level lives in the COLOUR, not in opacity: the engine's day/night pass
+     writes every neonMats opacity outright (1 at full night), so an
+     opacity-tuned level would be stomped on the first frame. */
   const pm = new THREE.PointsMaterial({
-    size: 4.2, sizeAttenuation: false, color: 0xdfeaff, map: mats.glowTex,
-    transparent: true, opacity: 0.55, fog: true, depthWrite: false,
+    size: 5.4, sizeAttenuation: false, map: mats.glowTex,
+    color: new THREE.Color(0xdfeaff).multiplyScalar(0.62),
+    transparent: true, fog: true, depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
   const o = new THREE.Points(g, pm);
   o.frustumCulled = false;
   scene.add(o);
   world.neonMats.push(pm);
+  // the wide soft companion — same positions, a third the level, three
+  // times the footprint, so the cluster survives the POV crush as a glow
+  const pmh = new THREE.PointsMaterial({
+    size: 16, sizeAttenuation: false, map: mats.glowTex,
+    color: new THREE.Color(0xdfeaff).multiplyScalar(0.22),
+    transparent: true, fog: true, depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const oh = new THREE.Points(g, pmh);
+  oh.frustumCulled = false;
+  scene.add(oh);
+  world.neonMats.push(pmh);
 }
 
 /* ============================ tunnel ==================================== */

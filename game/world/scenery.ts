@@ -256,9 +256,20 @@ export function buildScenery(
       ≤ ~0.6 so an additive point can never blow white through the grade); the
       material's opacity stays the day/night handle the engine drives. */
   const lights: number[] = [];
-  const lamp = (x: number, y: number, z: number, hex: number, bright: number) => {
+  /** Wide soft halos behind the key fixtures — a SECOND cloud at ~3x the
+      point size and a third of the level, so a yard mast or wall-pack reads
+      as a glow with a core rather than a lone crushed dot. Widening, not
+      brightening: the POV chain's black floor eats a small dim dot whole,
+      while the same energy spread over more pixels survives it (the
+      realistic-light rule). One extra draw call for the lot. */
+  const halos: number[] = [];
+  const lamp = (x: number, y: number, z: number, hex: number, bright: number, halo = false) => {
     const c = new THREE.Color(hex).multiplyScalar(bright);
     lights.push(x, y, z, c.r, c.g, c.b);
+    if (halo) {
+      c.multiplyScalar(0.38);
+      halos.push(x, y, z, c.r, c.g, c.b);
+    }
   };
 
   const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(),
@@ -365,7 +376,7 @@ export function buildScenery(
       const sw = rrand(rng, 1.8, 3.2), sl = rrand(rng, 90, 190);
       const sb = rrand(rng, 0.3, 0.5);
       for (const z of copies(wz)) {
-        lamp(FAR_X + 2, 7.4, z + jz, warm ? 0xffab55 : 0x9fc4e8, bright);
+        lamp(FAR_X + 2, 7.4, z + jz, warm ? 0xffab55 : 0x9fc4e8, bright, true);
         const sg = new THREE.PlaneGeometry(sw, sl);
         sg.rotateX(-Math.PI / 2);
         V.set(FAR_X - sl / 2 - 4, 0.09, z + jz);
@@ -473,7 +484,7 @@ export function buildScenery(
       });
       // sodium wall-packs down the road-facing wall
       for (let wz = z + 8; wz < z + len - 6; wz += 16)
-        lamp(x - dep / 2 - 0.4, gy + hgt - 1.6, wz, 0xff9e42, rrand(rng, 0.34, 0.46));
+        lamp(x - dep / 2 - 0.4, gy + hgt - 1.6, wz, 0xff9e42, rrand(rng, 0.34, 0.46), true);
       z += len + rrand(rng, 26, 70);
     }
     // tank farm in the back half of the zone
@@ -502,7 +513,7 @@ export function buildScenery(
     for (let yz = a + 30; yz < b - 20; yz += 120) {
       const x = 648, gy = terrain.h(x, yz);
       place(cyl, struct, x, gy + 6.5, yz, 0.16, 13, 0.16);
-      lamp(x, gy + 13.2, yz, 0xffab55, 0.5);
+      lamp(x, gy + 13.2, yz, 0xffab55, 0.5, true);
     }
   }
 
@@ -638,6 +649,23 @@ export function buildScenery(
         (place() only yaws, so a lying pipe has to lie in its template) */
     const pipe = new THREE.CylinderGeometry(1, 1, 1, 6);
     pipe.rotateX(Math.PI / 2);
+    /** Pooled ground light under the yard fixtures — merged flat quads of
+        the radial glow map, additive, level baked into vertex colour. Dots
+        alone do not read as a WORKING yard from 100 m out through the POV
+        crush; an area of sodium on the ground does. One draw call for every
+        pool in the pass; fog fades them like everything else here. */
+    const glowPools = new Merge();
+    const poolG = new THREE.PlaneGeometry(1, 1);
+    poolG.rotateX(-Math.PI / 2);
+    const poolC = new THREE.Color();
+    const pool = (x: number, y: number, z: number, w: number, l: number, hex: number, k: number) => {
+      TV.set(x, y, z);
+      TS.set(w, 1, l);
+      TQ.identity();
+      TM.compose(TV, TQ, TS);
+      poolC.set(hex).multiplyScalar(k);
+      glowPools.add(poolG.clone(), TM, poolC);
+    };
     /** shared vertex-coloured bucket: containers, tarps, coloured shells */
     const colored = new Merge();
     const colC = new THREE.Color();
@@ -741,7 +769,7 @@ export function buildScenery(
           place(box, struct, x, gy + ch - 1.6, z, 3.4, 2.6, 3.2);
           lamp(x, gy + ch + 2.1, z, 0xff3040, 0.5);
           for (const dz of [-4.2, 4.2])
-            lamp(x, gy + ch - 0.4, z + dz, 0xffab55, 0.4);
+            lamp(x, gy + ch - 0.4, z + dz, 0xffab55, 0.4, true);
           world.colliders.addAabb({
             x0: x - 5.3, x1: x + 5.3, z0: z - 5.2, z1: z + 5.2,
             y0: gy - 1, y1: gy + ch + 2,
@@ -757,7 +785,9 @@ export function buildScenery(
           place(cyl, struct, x, gy + 8, z + jz, 0.17, 16, 0.17);
           place(box, struct, x, gy + 15.6, z + jz, 2.6, 0.24, 0.24);
           for (const dx of [-1.1, 1.1])
-            lamp(x + dx, gy + 15.4, z + jz, 0xffab55, 0.48);
+            lamp(x + dx, gy + 15.4, z + jz, 0xffab55, 0.55, true);
+          // the pooled throw across the yard, biased toward the stacks
+          pool(x + 9, gy + 0.14, z + jz, 34, 24, 0xff9a44, 0.34);
         }
       }
       // near-bank quay string + its own reflection streaks running east into
@@ -769,7 +799,7 @@ export function buildScenery(
         const bright = rrand(rng2, 0.42, 0.58);
         const sw = rrand(rng2, 1.6, 2.8), sl = rrand(rng2, 60, 130);
         for (const z of copies(wz)) {
-          lamp(650, 4.6, z + jz, 0xffc270, bright);
+          lamp(650, 4.6, z + jz, 0xffc270, bright, true);
           const sg = new THREE.PlaneGeometry(sw, sl);
           sg.rotateX(-Math.PI / 2);
           sg.rotateY(Math.PI / 2);
@@ -807,16 +837,24 @@ export function buildScenery(
     {
       /* The east frontage road (roadnet.ts, x = EFRONT_X = 565, ±5.5 m plus
          sidewalk) runs through this strip for z ∈ [−408, 408] — the near
-         rank stands between it and the deck (x 545–556), the far rank past
-         it (x 585–645), and neither footprint may clip the carriageway. */
-      const n = Math.round(30 * dLevel);
+         rank stands between it and the deck, the far rank past it
+         (x 585–645), and neither footprint may clip the carriageway
+         (west road edge ≈ 557). The near rank hugs the expressway the way
+         the canyon's shells do — facades from ~8 m outside the parapet —
+         because the canyon is the proof: at 45 m+ a lit window grid reads
+         as speckle, at 20–40 m it reads as a building. */
+      const n = Math.round(38 * dLevel);
       for (let i = 0; i < n; i++) {
         const z = rrand(rng2, EASTSIDE.z0 + 8, EASTSIDE.z1 - 8);
-        const near = rng2() < 0.45;
+        const near = rng2() < 0.5;
         const w = near ? rrand(rng2, 8, 13) : rrand(rng2, 10, 20);
         const d = rrand(rng2, 9, 16);
-        const x = near ? rrand(rng2, 545, 556 - w / 2) : rrand(rng2, 573 + w / 2, 645);
-        const hgt = near ? rrand(rng2, 13, 26) : rrand(rng2, 18, 48);
+        const x = near ? rrand(rng2, 526, 542 - w / 2) : rrand(rng2, 573 + w / 2, 645);
+        /* near rank 16 m up minimum: from the deck (camera ≈ y 11) the
+           parapet hides everything under ~10 m at this range, so a 13 m
+           shell showed three metres of itself — the windows have to START
+           above the parapet sightline to read at all */
+        const hgt = near ? rrand(rng2, 16, 30) : rrand(rng2, 18, 48);
         // the near rank stays axis-true so its road-facing neon can hang
         // flush on the facade; jitter is for the far rank only
         const ry = near ? 0 : rrand(rng2, -0.1, 0.1);
@@ -850,8 +888,10 @@ export function buildScenery(
             hgt = rrand(rng2, 6.5, 9.5);
           place(box, shed, x, gy + hgt / 2, wz + len / 2, dep, hgt, len);
           place(box, shed, x, gy + hgt + 0.6, wz + len / 2, dep * 0.4, 1.2, len * 0.7);
-          for (let lz = wz + 6; lz < wz + len - 4; lz += 12)
-            lamp(x - dep / 2 - 0.4, gy + hgt - 1.1, lz, 0xff9e42, rrand(rng2, 0.36, 0.48));
+          for (let lz = wz + 6; lz < wz + len - 4; lz += 12) {
+            lamp(x - dep / 2 - 0.4, gy + hgt - 1.1, lz, 0xff9e42, rrand(rng2, 0.4, 0.52), true);
+            pool(x - dep / 2 - 3.4, gy + 0.14, lz, 11, 8, 0xff9a44, 0.3);
+          }
           world.colliders.addAabb({
             x0: x - dep / 2, x1: x + dep / 2, z0: wz, z1: wz + len,
             y0: gy - 1, y1: gy + hgt,
@@ -867,7 +907,7 @@ export function buildScenery(
           for (const py of [4.1, 5.1])
             for (const dx of [-0.9, 0, 0.9])
               place(pipe, struct, x + dx, gy + py, wz + len / 2, 0.18, 0.18, len);
-          lamp(x, gy + 5.9, wz + rrand(rng2, 8, len - 8), 0xffab55, 0.4);
+          lamp(x, gy + 5.9, wz + rrand(rng2, 8, len - 8), 0xffab55, 0.45, true);
           world.colliders.addAabb({
             x0: x - 2, x1: x + 2, z0: wz, z1: wz + len, y0: gy - 1, y1: gy + 5.8,
           });
@@ -878,7 +918,7 @@ export function buildScenery(
           const ch = rrand(rng2, 26, 34);
           place(taperCyl, struct, x, gy + ch / 2, wz, 1.4, ch, 1.4);
           place(cyl, struct, x, gy + ch + 0.6, wz, 0.5, 1.2, 0.5);
-          lamp(x, gy + ch + 1.6, wz, 0xffa040, 0.58);
+          lamp(x, gy + ch + 1.6, wz, 0xffa040, 0.58, true);
           lamp(x + 0.8, gy + ch + 2.4, wz + 0.4, 0xff7a28, 0.4);
           lamp(x - 0.6, gy + ch + 3.0, wz - 0.3, 0xff8a30, 0.3);
           lamp(x, gy + ch * 0.55, wz, 0xff3040, 0.34);
@@ -1043,7 +1083,20 @@ export function buildScenery(
       mesh.renderOrder = 2;
       scene.add(mesh);
     });
+    if (!glowPools.empty) {
+      const gm = new THREE.Mesh(
+        glowPools.geom(),
+        new THREE.MeshBasicMaterial({
+          map: mats.glowTex, vertexColors: true, transparent: true,
+          blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
+        })
+      );
+      gm.renderOrder = 2;
+      world.neonMats.push(gm.material as THREE.Material);
+      scene.add(gm);
+    }
     neonPlane.dispose();
+    poolG.dispose();
     pipe.dispose();
     // winGeo stays live — the tower InstancedMeshes render from it
   }
@@ -1074,22 +1127,23 @@ export function buildScenery(
     m.castShadow = true;
     scene.add(m);
   }
-  if (lights.length) {
-    const n = lights.length / 6;
+  const pointCloud = (arr: number[], size: number) => {
+    if (!arr.length) return;
+    const n = arr.length / 6;
     const p = new Float32Array(n * 3), c = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
-      p[i * 3] = lights[i * 6];
-      p[i * 3 + 1] = lights[i * 6 + 1];
-      p[i * 3 + 2] = lights[i * 6 + 2];
-      c[i * 3] = lights[i * 6 + 3];
-      c[i * 3 + 1] = lights[i * 6 + 4];
-      c[i * 3 + 2] = lights[i * 6 + 5];
+      p[i * 3] = arr[i * 6];
+      p[i * 3 + 1] = arr[i * 6 + 1];
+      p[i * 3 + 2] = arr[i * 6 + 2];
+      c[i * 3] = arr[i * 6 + 3];
+      c[i * 3 + 1] = arr[i * 6 + 4];
+      c[i * 3 + 2] = arr[i * 6 + 5];
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.BufferAttribute(p, 3));
     g.setAttribute("color", new THREE.BufferAttribute(c, 3));
     const pm = new THREE.PointsMaterial({
-      size: 4.5, sizeAttenuation: false, map: mats.glowTex, vertexColors: true,
+      size, sizeAttenuation: false, map: mats.glowTex, vertexColors: true,
       transparent: true, opacity: 1, depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
@@ -1099,7 +1153,9 @@ export function buildScenery(
        toward the horizon instead of hanging as a hard dot (fade, not stop). */
     world.neonMats.push(pm);
     scene.add(new THREE.Points(g, pm));
-  }
+  };
+  pointCloud(lights, 5.5);
+  pointCloud(halos, 15);
 
   box.dispose();
   cyl.dispose();

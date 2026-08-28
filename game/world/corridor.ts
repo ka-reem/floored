@@ -854,6 +854,16 @@ export const OVERPASSES = [
     glitch. Boundaries are PITCH.pier multiples so a section changes at a pier
     and an expansion joint, the way a real structure changes. */
 const SECTION_PLAN: readonly Section[] = [
+  /* Harbor overlook: the wharf district (scenery.ts) stands on the near
+     bank at x ≈ 566–650 through this stretch, and behind a solid parapet —
+     or the soundwall-lattice mesh run this window used to collect at
+     z −1600 — none of it reads from the seat. An open railing is the whole
+     point of `rail`: the container stacks, the yard masts' sodium pools and
+     the water's light streaks swing past below the bands. Both ends are
+     PITCH.pier multiples; the west tube (whose seeded window can reach
+     z −1600) simply trims this run when it lands on top — sections() already
+     does that for every hand-placed run. */
+  { z0: -1888, z1: -1440, kind: "rail" },
   // second sweeper, at its narrowest (two lanes): open railing on a curve,
   // so the drop and the town swing past outside the car
   { z0: -1408, z1: -1248, kind: "rail" },
