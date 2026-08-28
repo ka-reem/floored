@@ -3095,18 +3095,64 @@ export class Game {
     }
   }
 
+  /** Live refs into glowPts' shader, written by tintLampsSodium()'s
+      onBeforeCompile patch below — chunksUpdate() updates these every frame
+      with the SAME scaled draw distance it uses for the town chunks, so the
+      shader's per-fragment lamp fade always tracks the chunk cull. */
+  private lampFade?: { uFadeNear: { value: number }; uFadeFar: { value: number } };
+
   /** Street and deck lamps are built as one pooled sprite cloud plus one
       ground-quad batch. Both come out of the town builder as a generic warm
       white; retint them once, here, to low-pressure sodium — the orange is
       most of what says "road at night" in the reference, and a wider sprite
       with additive blending gives each head the halation a real lamp has in
-      damp air instead of a flat dot. */
+      damp air instead of a flat dot.
+
+      This is also the fix for the far-city lights blinding the player
+      (brief-world-lights.json): PointsMaterial's built-in fog mixes each
+      fragment toward the fog COLOUR, which under additive blending means a
+      lamp can never fade to black — hundreds of them compress into a few
+      hundred pixels at the horizon, sum past 1.0 luma and trip the bloom
+      threshold. `fog:false` plus an onBeforeCompile patch that fades alpha
+      explicitly by distance (and clamps a distance-attenuated point size in
+      place of the old flat 9.8 px) fixes it at the root — a FADE, never a
+      hard stop, using the same distance chunksUpdate() already culls the
+      town chunks at. */
   private tintLampsSodium() {
     const g = this.world.glowPts?.material as THREE.PointsMaterial | undefined;
     if (g) {
       g.color.setHex(0xffa235);
       g.size = 9.8;
       g.blending = THREE.AdditiveBlending;
+      g.fog = false;
+      g.onBeforeCompile = (sh) => {
+        sh.uniforms.uFadeNear = { value: 300 };
+        sh.uniforms.uFadeFar = { value: 700 };
+        this.lampFade = { uFadeNear: sh.uniforms.uFadeNear, uFadeFar: sh.uniforms.uFadeFar };
+        sh.vertexShader = sh.vertexShader
+          .replace(
+            "uniform float size;",
+            "uniform float size;\nuniform float uFadeNear;\nuniform float uFadeFar;\nvarying float vLampFade;"
+          )
+          .replace(
+            "gl_PointSize = size;",
+            /* lampDist is view-space depth — the same quantity the built-in
+               sizeAttenuation branch below would have divided by — so size
+               and fade move on one curve instead of clipping at different
+               points and printing a ring. Clamped to [2, size] px: a lamp
+               at 60 m still reads its old flat 9.8 px, one past the fade
+               distance is a 2 px dot at ~0 alpha rather than vanishing. */
+            "float lampDist = -mvPosition.z;\n" +
+              "gl_PointSize = clamp( size * 55.0 / max( lampDist, 1.0 ), 2.0, size );\n" +
+              "vLampFade = 1.0 - smoothstep( uFadeNear, uFadeFar, lampDist );"
+          );
+        sh.fragmentShader = sh.fragmentShader
+          .replace("#include <common>", "#include <common>\nvarying float vLampFade;")
+          .replace(
+            "#include <map_particle_fragment>",
+            "#include <map_particle_fragment>\ndiffuseColor.a *= vLampFade;"
+          );
+      };
       g.needsUpdate = true;
     }
     const p = this.world.pools?.material as THREE.MeshBasicMaterial | undefined;
@@ -3726,6 +3772,13 @@ export class Game {
     for (const c of this.world.chunks) {
       const d = Math.hypot(c.cx - this.camera.position.x, c.cz - this.camera.position.z);
       c.group.visible = d < dd;
+    }
+    // the town lamp/pool shader fade (tintLampsSodium) tracks the SAME
+    // distance the chunks just culled at, so a chunk's lamps finish fading
+    // out by the time the chunk itself disappears rather than popping
+    if (this.lampFade) {
+      this.lampFade.uFadeFar.value = dd;
+      this.lampFade.uFadeNear.value = dd * 0.55;
     }
   }
 
