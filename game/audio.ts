@@ -322,6 +322,56 @@ const LADDER_STRETCH = 1.9;
     changing blind in the same edit that replaced the samples. */
 const SYNTH_FLOOR = 0.2;
 
+/** Source-level makeup for the escortmarius ladder, applied to the per-loop
+    crossfade gains. MEASURED, not taste: the domasx2 loops this set replaced
+    were mastered at RMS 0.397 (peaks ~0.71), the new cuts are normalized to
+    RMS 0.160 (peaks 0.29-0.49) — a straight swap would drop the recorded
+    voice 7.9dB inside an engine mix the user tuned by ear across four level
+    passes (see ENGINE_TUNE_DEFAULT.level's history). 2.4x restores the old
+    RMS within a dB, so every downstream number keeps meaning what it meant.
+    Worst-case source peak after trim is 0.49 * 2.4 = 1.18, which is fine at
+    this point in the graph: the crossfade gains cap at 1, sampBus sits at
+    <= ~0.35, and engLim bounds the whole engine bus after that. If the
+    ladder ever changes again, re-measure and reset this to
+    oldRMS/newRMS — it is a property of the FILES, not a mix knob. */
+const LADDER_TRIM = 2.4;
+
+/* ---- The mix map: where every continuous layer sits ---------------------
+   The level BALANCE between the sound families, gathered from four rounds
+   of by-ear feedback ("engine too loud" x4, "wind drowns the mix", "more
+   road presence"). These are the CEILINGS each layer can reach at full
+   drive — the per-frame formulas in update() shape how each one gets there.
+   Approximate full-song picture at high speed, dB vs the wind ceiling:
+
+     wind roar         0.30   0dB     dominant flat out, by design
+     tyre screech      0.15   -6dB    only while genuinely sliding
+     engine bus        —      see ENGINE_TUNE_DEFAULT (level 0.42 + limiter);
+                              deliberately behind wind at top speed
+     tyre hum          0.085  -11dB   the road presence under everything
+     road rumble       0.07   -13dB   low-band half of the same job
+     music             0.16   ~-14dB vs engine peaks — see music.ts
+                              MUSIC_LEVEL (its own context and master)
+     NPC pass-by       0.16   transient only, scales with closing speed
+     UI tick/stalk     0.05   in-cabin one-shots, dry, never ducked
+     toasts            —      visual only, no sound by design
+
+   Wind saturates at 75 m/s (see the windRise curve) — above it, including
+   test mode's 82 m/s clamp, the mix holds its top-speed balance rather than
+   growing further; tyre hum and road rumble saturate near 45 and 40 m/s,
+   which is why the last stretch to top speed reads as pure wind. Change the
+   BALANCE here; change the SHAPE (what opens when) in update(). */
+const WIND_CEIL = 0.30;
+const TIRE_HUM_CEIL = 0.085;
+const ROAD_RUMBLE_CEIL = 0.07;
+const SCREECH_CEIL = 0.15;
+/** Recorded skid loop's ceiling in sampled mode (the synth screech drops to
+    a quarter of SCREECH_CEIL underneath it — see the tire block). */
+const SKID_CEIL = 0.3;
+/** Peak of an NPC pass-by whoosh at full closing speed, before distance/pan.
+    Sits with the event one-shots (npcHorn 0.10-0.13): clearly audible over
+    the beds for the half-second it lasts, nowhere near crash levels. */
+const PASSBY_LEVEL = 0.16;
+
 /** One crash() invocation, as recorded into the debug log (see
     getCrashLog()) — lets the headless test assert which layers/variants a
     given severity actually produced without decoding any audio output. */
@@ -2813,7 +2863,9 @@ export class GameAudio {
          always in unison and the crossfade morphs texture only. */
       for (let i = 0; i < LOOP_F0.length; i++) {
         const g = !sampled ? 0 : i === band ? g0 : i === band + 1 ? g1 : 0;
-        this.sp(this.loopGains[i].gain, g, 0.045);
+        // LADDER_TRIM here, at the loops alone — the idle bed is a different
+        // recording at its own (hotter) master level and must not ride it.
+        this.sp(this.loopGains[i].gain, g * LADDER_TRIM, 0.045);
         this.sp(
           this.loopSrcs[i].playbackRate,
           clampRange(base2 / LOOP_F0[i], RATE_MIN, RATE_MAX),
@@ -3078,7 +3130,7 @@ export class GameAudio {
     this.sp(this.tireRoadF.frequency, 150 + Math.min(1, speed / 50) * 220, 0.06);
     this.sp(
       this.tireRoadG.gain,
-      Math.min(1, speed / 45) * 0.085 * (1 - this.slipEnv * 0.45) + (raining ? 0.015 : 0),
+      Math.min(1, speed / 45) * TIRE_HUM_CEIL * (1 - this.slipEnv * 0.45) + (raining ? 0.015 : 0),
       0.06
     );
 
@@ -3103,10 +3155,10 @@ export class GameAudio {
     // rest, and the same speed/wet scaling applies.
     const skidSampled = sampled && this.skidG !== null;
     const screechMix = smoothstep(0.55, 0.92, this.demandEnv);
-    const screechBase = screechMix * (skidSampled ? 0.04 : 0.15) * speedGate * wetLevel;
+    const screechBase = screechMix * (skidSampled ? 0.04 : SCREECH_CEIL) * speedGate * wetLevel;
     if (this.skidG && this.skidSrc) {
       const skidMix = skidSampled ? smoothstep(0.5, 0.88, this.demandEnv) : 0;
-      this.sp(this.skidG.gain, skidMix * 0.3 * speedGate * wetLevel, 0.05);
+      this.sp(this.skidG.gain, skidMix * SKID_CEIL * speedGate * wetLevel, 0.05);
       // slight pitch rise with slip + a wet-road brightening nudge, so the
       // loop tracks the slide instead of droning at one pitch
       this.sp(
@@ -3184,7 +3236,7 @@ export class GameAudio {
        tuned. */
     const roadRise = Math.min(1, speed / 40);
     this.sp(this.roadRumbleF.frequency, 55 + roadRise * 70, 0.1);
-    this.sp(this.roadRumbleG.gain, roadRise * 0.07 * (1 - screechMix * 0.55), 0.1);
+    this.sp(this.roadRumbleG.gain, roadRise * ROAD_RUMBLE_CEIL * (1 - screechMix * 0.55), 0.1);
 
     /* ---- environment ----
        Wind roar opens (cutoff + level) with speed and is deliberately mixed
@@ -3216,7 +3268,7 @@ export class GameAudio {
        of the top-speed total than before (0.30 of 0.455 summed vs 0.27 of
        0.365) because road/tyre came up in the same pass. */
     const windRise = Math.pow(smoothstep(15, 75, speed), 1.3);
-    const windLevel = windRise * 0.30 + (raining ? 0.02 : 0);
+    const windLevel = windRise * WIND_CEIL + (raining ? 0.02 : 0);
     this.sp(this.wF.frequency, Math.min(1400, 300 + speed * 26), 0.15);
     this.sp(this.wG.gain, windLevel, 0.12);
     this.sp(this.windFlutterDepth.gain, windRise * 0.04, 0.15);
