@@ -1453,11 +1453,20 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   const sigRProc = sigHitProc([-0.15, 1.0, 0.72]);
   const hazardHitProc = domeHit(0.16, 0.16, 0.16, [0.075, 1.15, 0.72]);
   interiorG.add(sigLProc, sigRProc, hazardHitProc);
+  /* A SEPARATE counter-scale group from the console's donorSpace, not a
+     shared one — hitCabinSwitch's raycast against the console volume is
+     recursive, so a sibling hit box under the SAME group would register as
+     "the console was clicked" on every signal/hazard click and the dome
+     would answer instead of the signal. Reported by a headless click-through
+     that logged which handler actually fired: toggleCabinLight ran, not
+     clickSignal, even though the ray demonstrably hit the signal box first. */
+  const donorWheelSpace = new THREE.Group();
   const sigHitDonor = (at: P3) => domeHit(0.16, 0.18, 0.16, at);
   const sigLDonor = sigHitDonor([0.594, 0.99, 0.61]);
   const sigRDonor = sigHitDonor([0.177, 0.99, 0.61]);
   const hazardHitDonor = domeHit(0.16, 0.16, 0.16, [0.385, 1.05, 0.61]);
-  donorSpace.add(sigLDonor, sigRDonor, hazardHitDonor);
+  donorWheelSpace.add(sigLDonor, sigRDonor, hazardHitDonor);
+  interiorG.add(donorWheelSpace);
 
   /* And its counterpart: a faint cool wash from the base of the windscreen
      raking BACK across the pad toward the seat — the "city light through the
@@ -2078,15 +2087,15 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
       return imported ? donorSpace : domeHitProc;
     },
     signalSwitch(side, imported) {
-      // same lazy counter-scale as cabinSwitch — donorSpace is one group
-      // shared by every donor hit volume, so this is a no-op the second and
-      // every later call in a click makes.
-      donorSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
+      // same lazy counter-scale as cabinSwitch — donorWheelSpace is one group
+      // shared by the three wheel-area volumes, so this is a no-op the
+      // second and every later call in a click makes.
+      donorWheelSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
       if (imported) return side === "l" ? sigLDonor : sigRDonor;
       return side === "l" ? sigLProc : sigRProc;
     },
     hazardSwitch(imported) {
-      donorSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
+      donorWheelSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
       return imported ? hazardHitDonor : hazardHitProc;
     },
     setMirrorVis: (v) => {
