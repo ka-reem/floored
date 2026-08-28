@@ -16,6 +16,10 @@ const arg = (k, d) => {
 const URL = arg("--url", "http://localhost:3000");
 const OUT = arg("--out", "shots");
 const STEP = Number(arg("--step", "100"));
+/* --clear empties the NPC pool at each station before shooting: with the
+   car parked, traffic otherwise stacks up around it and blocks the very
+   roadside the sheet exists to judge. */
+const CLEAR = process.argv.includes("--clear");
 mkdirSync(OUT, { recursive: true });
 
 const VW = Number(process.env.SHOT_W || 1280), VH = Number(process.env.SHOT_H || 800);
@@ -56,7 +60,13 @@ for (let z = -2000; z < 2000; z += STEP) {
     nx.setInput({ th: 0, br: 1 });
     return { lanes: nx.game.terrain.corridor.lanes(z) };
   }, z);
-  await sleep(1600);
+  await sleep(1400);
+  if (CLEAR) {
+    await page.evaluate(() => {
+      for (const n of window.__neonx.game.traffic.npcs) n.active = false;
+    });
+    await sleep(900); // a rendered frame or two, so the pool write lands
+  }
   const st = await page.evaluate(() => {
     const nx = window.__neonx;
     const r = nx.game.renderer.info.render;

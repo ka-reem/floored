@@ -746,7 +746,17 @@ export function buildScenery(
         for (const z of copies(wz)) {
           const gy = terrain.h(x, z);
           for (const [sx, hh] of stack) {
-            colC.set(CONT[rrandi(rng2, 0, CONT.length - 1)]).multiplyScalar(rrand(rng2, 0.8, 1.1));
+            /* baked warm floodlight: the bucket renders unlit (see the
+               material note at the bucket's mesh), so the colour IS the
+               night read — sodium-washed, sitting near 0.3 luma, the level
+               a yard under high-mast flood actually shows */
+            colC.set(CONT[rrandi(rng2, 0, CONT.length - 1)]);
+            const k = rrand(rng2, 0.9, 1.25);
+            colC.setRGB(
+              Math.min(1, colC.r * 1.75 * k),
+              Math.min(1, colC.g * 1.35 * k),
+              colC.b * 0.85 * k
+            );
             place(box, colored, sx, gy + 1.3 + hh * 2.6, z, 2.9, 2.55, len, ry, colC);
           }
           world.colliders.addAabb({
@@ -787,7 +797,7 @@ export function buildScenery(
           for (const dx of [-1.1, 1.1])
             lamp(x + dx, gy + 15.4, z + jz, 0xffab55, 0.55, true);
           // the pooled throw across the yard, biased toward the stacks
-          pool(x + 9, gy + 0.14, z + jz, 34, 24, 0xff9a44, 0.34);
+          pool(x + 10, gy + 0.14, z + jz, 42, 28, 0xff9a44, 0.44);
         }
       }
       // near-bank quay string + its own reflection streaks running east into
@@ -1055,12 +1065,16 @@ export function buildScenery(
 
     /* ---- materialise the district buckets ---- */
     if (!colored.empty) {
+      /* UNLIT on purpose: at night a standard material out here renders
+         near-black (nothing lights the yard), and a black container field
+         is the empty parapet the BEFORE sheet diagnosed. Basic + fog with
+         the flood level baked into the vertex colour is the same trick the
+         emissive boards use — the yard reads as floodlit, and the fog still
+         sinks it with distance. */
       const m = new THREE.Mesh(
         colored.geom(),
-        new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.85 })
+        new THREE.MeshBasicMaterial({ vertexColors: true, fog: true })
       );
-      m.castShadow = true;
-      m.receiveShadow = true;
       scene.add(m);
     }
     const winGeo = new THREE.BoxGeometry(1, 1, 1);
