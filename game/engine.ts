@@ -18,7 +18,7 @@ import { buildTown } from "./world/townmesh";
 import { buildScenery } from "./world/scenery";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
-import { getCorridor, TUNNEL, PITCH, PHASE } from "./world/corridor";
+import { getCorridor, TUNNEL, PITCH, PHASE, OVERPASSES } from "./world/corridor";
 import {
   getRouteGraph, BYPASS_EDGE, MOUNTAIN_EDGE, type PolyRouteEdge,
 } from "./world/routegraph";
@@ -3289,8 +3289,54 @@ export class Game {
       whole town would be badly wrong. */
   private tunnelAmount() {
     const car = this.car;
-    if (this.cor.heightAt(car.x, car.z, 14) === null) return 0;
-    return clamp(this.cor.tunnelBlend(this.cor.zAt(car.x, car.z)), 0, 1);
+    if (this.cor.heightAt(car.x, car.z, 14) === null) {
+      /* Off the deck. The mountain pass climbs through a rock cut (uphill
+         face west, jittered rock both sides mid-route) — a one-sided canyon,
+         so it gets a PARTIAL enclosure, never a tunnel's. The fade envelope
+         is the same sstep window highway.ts's rockK() uses for the rock
+         HEIGHT, so what you hear closing in is exactly what is drawn closing
+         in, and both ends fade over ~50m — no hard cuts, the audio fade rule
+         is the light fade rule. 0.32 peak stays under the tunnel thump/
+         shimmer gates (0.5+), so the pass can never fire portal effects. */
+      const hit = this.world.routes?.surfaceAt(car.x, car.z, 2);
+      if (hit && hit.edgeId === MOUNTAIN_EDGE && this.world.routes) {
+        const len = this.world.routes.mtn.len;
+        const ss = (v: number) => {
+          const x = clamp(v, 0, 1);
+          return x * x * (3 - 2 * x);
+        };
+        return 0.32 * ss((hit.s - 18) / 50) * ss((len - 22 - hit.s) / 50);
+      }
+      return 0; // bypass viaduct and anywhere else off-deck: open air
+    }
+    const zc = this.cor.zAt(car.x, car.z);
+    let v = clamp(this.cor.tunnelBlend(zc), 0, 1);
+    /* Crossings overhead get a brief reverb kiss, faded in and out — the
+       girder overpasses (corridor.OVERPASSES) and the bypass deck where it
+       crosses the main route (routes.crossings). A slab 9m up does add a
+       real early reflection for the ~25m you are under it; 0.2-0.22 peak is
+       an audible flick of the tail, nowhere near the growl/thump territory
+       (those gate at 0.5+), and the 14m shoulder fade at 30m/s is ~half a
+       second each side — a swell, not a switch. */
+    for (const o of OVERPASSES) {
+      const half = o.girderW / 2, fade = 14;
+      const d = Math.abs(zc - o.z);
+      if (d < half + fade) {
+        const x = clamp(1 - (d - half) / fade, 0, 1);
+        v = Math.max(v, 0.22 * x * x * (3 - 2 * x));
+      }
+    }
+    const crossings = this.world.routes?.crossings;
+    if (crossings)
+      for (const cr of crossings) {
+        const mid = (cr.z0 + cr.z1) / 2, half = (cr.z1 - cr.z0) / 2, fade = 14;
+        const d = Math.abs(zc - mid);
+        if (d < half + fade) {
+          const x = clamp(1 - (d - half) / fade, 0, 1);
+          v = Math.max(v, 0.2 * x * x * (3 - 2 * x));
+        }
+      }
+    return v;
   }
 
   private tunnelUpdate(dt: number, now: number) {
