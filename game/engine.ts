@@ -440,19 +440,25 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
             changed, because lampWash already carries it to sodium under every
             lamp and the between-lamps hue is a taste call for the user's eyes.
 
-   `on` mirrors the I key so the console can force either state, and because
-   `on * dome` is the effective level it also buys a residual: set on = 1 and
-   dome = 0.15 for "not off, just very low" without touching the key.
+   `on` mirrors the I key so the console can force any state, and because
+   `DOME_LEVELS[on] * dome` is the effective level it also buys a residual:
+   set on = 2 and dome = 0.15 for "not off, just very low" without touching
+   the key.
 
-     window.__cabinLight.on = 1          // as if I were pressed
+   It is a THREE-WAY CYCLE, not a flip: off -> dim -> full -> off, both from
+   the key and from the console click, so the two can never disagree about
+   which of the three the cabin is in. Reported as wanting a dimmer option
+   between pitch-black and full CABIN_DOME rather than only the two ends.
+
+     window.__cabinLight.on = 2          // full, as two presses from off
      window.__cabinLight.dome = 0.3      // a dimmer ON state
      window.__cabinLight.glass = 1.6     // more crest sheen, cabin still dark
      window.__cabinLight.glassHex = 0xffd0a0   // warm it toward the reference
 
    `hover` is the discoverability term, and it is the dome light being used as
    its own affordance. Resting the cursor on the overhead console eases the
-   lamp this fraction of the way toward the state a CLICK would produce —
-   0.22 up out of dark, or 0.22 down out of lit — then eases back when the
+   lamp this fraction of the way toward the level a CLICK would produce —
+   the next stop around the off/dim/full cycle — then eases back when the
    cursor leaves. Reported as "idk where to click", and this is the answer that
    suits the geometry: the console is the donor's own moulded ceiling panel and
    its material is shared with the floor and the mirror holder, so there is
@@ -473,6 +479,10 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
      window.__cabinLight.hover = 0.35    // a stronger tell while hunting for it
      window.__cabinLight.hover = 0       // off; the I key still works */
 const CABIN_LIGHT = { on: 0, dome: 1, glass: 1, glassHex: GLASS_REST.color, hover: 0.22 };
+/** Brightness fraction of CABIN_DOME/DONOR_FILL at each stop of the `on`
+    cycle — off, dim, full. Indexed by `on` directly, so DOME_LEVELS[k.on] is
+    the level a click would leave the lamp at from wherever it rests now. */
+const DOME_LEVELS = [0, 0.4, 1];
 /* Rate the hover preview eases at, per second, as an exponential time constant
    — about 0.2 s to settle either way. It is a fade rather than a step because
    every other light in this file is: a cabin that snaps between two levels as
@@ -1014,15 +1024,40 @@ export class Game {
     return window.__chase;
   }
 
-  /** Flip the dome light. One place, because there are two ways to ask for it
-      — the I key and clicking the overhead console (onPointerDown) — and a
-      state this cheap to duplicate is a state that eventually disagrees with
-      itself. Only the knob is written; cabinLightUpdate() below is what carries
-      it into both interiors. */
+  /** Step the dome light around its off/dim/full cycle. One place, because
+      there are two ways to ask for it — the I key and clicking the overhead
+      console (onPointerDown) — and a state this cheap to duplicate is a state
+      that eventually disagrees with itself. Only the knob is written;
+      cabinLightUpdate() below is what carries it into both interiors. */
   private toggleCabinLight() {
     const c = this.cabinKnob();
-    c.on = c.on ? 0 : 1;
-    this.ui.toast("INTERIOR LIGHT " + (c.on ? "ON" : "OFF"));
+    c.on = ((c.on + 1) % DOME_LEVELS.length) as typeof c.on;
+    this.ui.toast("INTERIOR LIGHT " + (c.on === 0 ? "OFF" : c.on === 1 ? "DIM" : "ON"));
+  }
+
+  /** A click on the turn-signal hit volume near the wheel. Same state the Q/E
+      keys write (car.sigL/sigR), so the mouse and the keyboard can never
+      disagree about which side is signalling — and the same stalk-click
+      sound the high-beam flash uses (audio.ts), which is otherwise unused on
+      this gesture. */
+  private clickSignal(side: "l" | "r") {
+    const car = this.car;
+    if (side === "l") { car.sigL = !car.sigL; car.sigR = false; }
+    else { car.sigR = !car.sigR; car.sigL = false; }
+    this.audio.stalkClick();
+    const on = side === "l" ? car.sigL : car.sigR;
+    this.ui.toast("SIGNAL " + (side === "l" ? "LEFT" : "RIGHT") + (on ? " ON" : " OFF"));
+  }
+
+  /** A click on the hazard hit volume. Both signals together, same reading as
+      traffic.ts gives a wrecked or stopped NPC's blinkers — there is no
+      separate hazard flag on CarState, just sigL and sigR lit in lockstep. */
+  private clickHazard() {
+    const car = this.car;
+    const on = !(car.sigL && car.sigR);
+    car.sigL = car.sigR = on;
+    this.audio.stalkClick();
+    this.ui.toast("HAZARDS " + (on ? "ON" : "OFF"));
   }
 
   /** Push the cabin-light level into both interiors, every frame.
@@ -1052,12 +1087,16 @@ export class Game {
       // the head unit's hover is the same kind of state and goes out the same
       // door, or a button left lit at the pause menu stays lit behind it
       this.screenHover = null;
+      this.wheelHover = null;
+      this.renderer.domElement.style.cursor = "";
     }
     this.cabinHoverE = lerp(
       this.cabinHoverE, this.cabinHover, 1 - Math.exp(-CABIN_HOVER_EASE * dt)
     );
-    // the state a click would leave it in; the preview travels `hover` of the way
-    const eff = lerp(k.on, k.on ? 0 : 1, this.cabinHoverE * k.hover);
+    // the level a click would leave it at — the next stop around the cycle —
+    // the preview travels `hover` of the way there
+    const next = DOME_LEVELS[(k.on + 1) % DOME_LEVELS.length];
+    const eff = lerp(DOME_LEVELS[k.on], next, this.cabinHoverE * k.hover);
     const level = eff * k.dome;
     this.rig.cockpit.setCabinLight(level);
     this.rig.cockpitModel?.setFillLight(level);
@@ -2303,6 +2342,19 @@ export class Game {
     return ck.cabinSwitch(!!this.rig.cockpitModel);
   }
 
+  /** A turn-signal or hazard hit volume, or null when the pointer cannot be
+      over it at all. Desktop only, unconditionally — unlike the console
+      there is no touch fallback here (see the call site), so this gates
+      isTouch out for hover AND click alike rather than hover only. */
+  private wheelTarget(kind: "l" | "r" | "hazard"): THREE.Object3D | null {
+    if (this.isTouch) return null;
+    if (!this.running || !this.loaded || !this.inCar()) return null;
+    const ck = this.rig?.cockpit;
+    if (!ck) return null;
+    const imported = !!this.rig.cockpitModel;
+    return kind === "hazard" ? ck.hazardSwitch(imported) : ck.signalSwitch(kind, imported);
+  }
+
   /** The head-unit panel, when a pointer on it can do anything — or null.
 
       Desktop only, via `music.enabled` (false on touch): the panel's second
@@ -2325,6 +2377,10 @@ export class Game {
       it eased, and is what the light actually rides. See CABIN_LIGHT.hover. */
   private cabinHover = 0;
   private cabinHoverE = 0;
+  /** Which wheel-mounted control (if any) the cursor is over — signal stalk
+      zones and the hazard volume have no light of their own to preview like
+      the dome switch, so this drives the cursor swap only (see onPointerMove). */
+  private wheelHover: "l" | "r" | "hazard" | null = null;
   private hoverX = 0;
   private hoverY = 0;
   /* Hover test for the overhead console. Cheap by construction — one ray
@@ -2345,12 +2401,17 @@ export class Game {
     this.hoverY = e.clientY;
     const sw = this.cabinTarget(true);
     const panel = this.screenTarget();
-    if (!sw && !panel) {
+    const wl = this.wheelTarget("l");
+    const wr = wl && this.wheelTarget("r"); // same gate as wl; skip re-asking it
+    const wz = wl && this.wheelTarget("hazard");
+    if (!sw && !panel && !wl) {
       this.cabinHover = 0;
       this.screenHover = null;
+      this.wheelHover = null;
+      this.renderer.domElement.style.cursor = "";
       return;
     }
-    /* ONE aim for both targets, the same one onPointerDown uses. Two rays
+    /* ONE aim for every target, the same one onPointerDown uses. Two rays
        would be two answers to "what is the cursor over", and the highlight
        could then point at something the click would miss. */
     this.aimRay(e);
@@ -2362,6 +2423,16 @@ export class Game {
     const hit = panel ? this.clickRay.intersectObject(panel, false)[0] : undefined;
     this.screenHover =
       hit && hit.uv ? hitScreen(hit.uv.x, hit.uv.y, this.screenView) : null;
+    this.wheelHover =
+      wl && this.clickRay.intersectObject(wl, true).length ? "l"
+      : wr && this.clickRay.intersectObject(wr, true).length ? "r"
+      : wz && this.clickRay.intersectObject(wz, true).length ? "hazard"
+      : null;
+    /* One cursor for every cabin target, new and old alike — none of them had
+       one before this lane; a control that only reveals itself once you have
+       already clicked it is not discoverable. */
+    this.renderer.domElement.style.cursor =
+      this.cabinHover || this.screenHover || this.wheelHover ? "pointer" : "";
   };
   /* Leaving the canvas is a real event and gets a real listener: the last
      pointermove inside the window can easily be one that was still over the
@@ -2370,6 +2441,8 @@ export class Game {
   private onPointerLeave = () => {
     this.cabinHover = 0;
     this.screenHover = null;
+    this.wheelHover = null;
+    this.renderer.domElement.style.cursor = "";
   };
   private onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0) return;
@@ -2387,6 +2460,26 @@ export class Game {
     const sw = this.cabinTarget(false);
     if (sw && this.hitCabinSwitch(e, sw)) {
       this.toggleCabinLight();
+      return;
+    }
+    /* Turn signals and hazards, reached the same way as the dome switch
+       above: one ray, tested against a volume near the wheel rim rather than
+       the real stalk/dash-triangle position, because the dashcam frame does
+       not reach as low as either — see signalSwitch/hazardSwitch in
+       cockpit.ts for the measurement. Desktop only (wheelTarget already
+       excludes touch): a fingertip aiming at something this small, this
+       close to the steering input, is the interference the brief asked to
+       avoid, not a feature to add. */
+    for (const side of ["l", "r"] as const) {
+      const t = this.wheelTarget(side);
+      if (t && this.clickRay.intersectObject(t, true).length) {
+        this.clickSignal(side);
+        return;
+      }
+    }
+    const hz = this.wheelTarget("hazard");
+    if (hz && this.clickRay.intersectObject(hz, true).length) {
+      this.clickHazard();
       return;
     }
     /* Touch's way to the same switch, and the reason it needs one: the roof
@@ -2417,11 +2510,16 @@ export class Game {
     if (!hit || !hit.uv) return;
     const action = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
     if (!action) return;
-    if (action === "music" || action === "map") {
-      this.screenView = action === "music" ? "music" : "map";
+    if (action === "music" || action === "map" || action === "trip") {
+      this.screenView = action;
       /* The hover is stale the instant the view flips — the cursor has not
          moved, but what is under it has. Re-ask with the ray already aimed. */
       this.screenHover = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
+      return;
+    }
+    if (action === "volDown" || action === "volUp") {
+      const msg = this.music.stepVolume(action === "volUp" ? 1 : -1);
+      if (msg) this.ui.toast(msg);
       return;
     }
     const msg = this.music.click(action);
