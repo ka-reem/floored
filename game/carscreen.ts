@@ -119,12 +119,21 @@ const PILL2 = { x: PILL.x - 32, y: PILL.y, w: PILL.w, h: PILL.h };
 const VOL_S = 16, VOL_Y = 90;
 const VOL_MINUS = { x: COL_X, y: VOL_Y, w: VOL_S, h: VOL_S };
 const VOL_PLUS = { x: COL_R - VOL_S, y: VOL_Y, w: VOL_S, h: VOL_S };
+/* Third of the pill row: the display's night-dim toggle. Same size, same
+   row, next leftward slot — the row grows toward the clock strip (which ends
+   at x 93; PILL3 starts at 158, so there is a full pill of clearance left). */
+const PILL3 = { x: PILL.x - 64, y: PILL.y, w: PILL.w, h: PILL.h };
+/* The trip pane's distance readout box — shared by the painter and
+   hitScreen, because the box IS the reset button (the classic trip-computer
+   gesture: poke the readout to zero it). */
+const TRIP_BOX = { x: 40, y: 118, w: W - 80, h: 30 };
 
 /** Which pane the head unit is showing. */
 export type ScreenView = "map" | "music" | "trip";
 /** What a click on the panel does, and equally what the cursor is over. */
 export type ScreenAction =
-  | "prev" | "toggle" | "next" | "music" | "map" | "trip" | "volDown" | "volUp";
+  | "prev" | "toggle" | "next" | "music" | "map" | "trip" | "volDown" | "volUp"
+  | "tripReset" | "dimScr";
 
 /** Map a UV hit on the head-unit plane to what a click there does, or null if
     it landed on dead space. `v` is flipped because UV origin is bottom-left
@@ -138,10 +147,17 @@ export function hitScreen(u: number, v: number, view: ScreenView): ScreenAction 
   if (view === "map") {
     if (x >= PILL2.x && x <= PILL2.x + PILL2.w && y >= PILL2.y && y <= PILL2.y + PILL2.h)
       return "trip";
+    if (x >= PILL3.x && x <= PILL3.x + PILL3.w && y >= PILL3.y && y <= PILL3.y + PILL3.h)
+      return "dimScr";
     return "music"; // everywhere else on the map panel opens the player
   }
   if (x >= BACK.x && x <= BACK.x + BACK.w && y >= BACK.y && y <= BACK.y + BACK.h) return "map";
-  if (view === "trip") return null; // nothing else on this pane responds
+  if (view === "trip") {
+    if (x >= TRIP_BOX.x && x <= TRIP_BOX.x + TRIP_BOX.w &&
+        y >= TRIP_BOX.y && y <= TRIP_BOX.y + TRIP_BOX.h)
+      return "tripReset";
+    return null; // nothing else on this pane responds
+  }
   if (y >= BTN_Y && y <= BTN_Y + BTN_S) {
     const ids: ScreenAction[] = ["prev", "toggle", "next"];
     for (let i = 0; i < 3; i++)
@@ -461,7 +477,7 @@ function bakeMap(st: ScreenState, world: WorldData, car: CarState, npcs: Npc[], 
 
 function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
   car: CarState, npcs: Npc[], timeH: number, now: number, ms: number,
-  clickable: boolean, hover: ScreenAction | null) {
+  clickable: boolean, hover: ScreenAction | null, dim: boolean) {
   if (ms - st.navAt >= NAV_MS) {
     st.navAt = ms;
     bakeMap(st, world, car, npcs, now);
@@ -575,6 +591,27 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
     g.textAlign = "center";
     g.fillText("TRIP", PILL2.x + PILL2.w / 2, PILL2.y + PILL2.h / 2 + 2.5);
     g.textAlign = "left";
+
+    /* Third of the row: display night-dim. A crescent rather than text —
+       "DIM" reads as an instruction, and the moon is what every real head
+       unit puts on this button. The glyph, not the pill, carries the ON
+       state (filled vs outline): the pill's fill is the hover channel on
+       this row and doubling meanings on it would make hover look like ON. */
+    const dimOn = hover === "dimScr";
+    rr(g, PILL3.x, PILL3.y, PILL3.w, PILL3.h, 8);
+    g.fillStyle = dimOn ? "rgba(111,178,255,.30)" : "rgba(8,11,18,.78)";
+    g.fill();
+    g.strokeStyle = dimOn ? "rgba(160,205,255,.85)" : "rgba(255,255,255,.10)";
+    g.lineWidth = 1;
+    g.stroke();
+    const cx = PILL3.x + PILL3.w / 2, cy = PILL3.y + PILL3.h / 2;
+    g.fillStyle = g.strokeStyle = dimOn ? "#ffffff" : dim ? "#cfe2ff" : "#9aa6bc";
+    g.beginPath();
+    g.arc(cx - 0.5, cy, 4.6, 0.6, TAU - 0.6, false);
+    g.arc(cx + 2.4, cy, 3.4, TAU - 0.85, 0.85, true);
+    g.closePath();
+    if (dim) g.fill();
+    else { g.lineWidth = 1.2; g.stroke(); }
   }
 
   // route banner along the bottom
@@ -608,7 +645,9 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
     car.odo directly rather than the dashboard's "31842 + odo" fiction
     (dashboard.ts): that base mileage is the CAR's, this pane is what its name
     says, the distance covered since this drive began. */
-function drawTrip(g: CanvasRenderingContext2D, car: CarState, hover: ScreenAction | null) {
+function drawTrip(
+  g: CanvasRenderingContext2D, car: CarState, hover: ScreenAction | null, tripBase: number
+) {
   g.fillStyle = "#070910";
   g.fillRect(0, 0, W, H);
 
@@ -639,18 +678,23 @@ function drawTrip(g: CanvasRenderingContext2D, car: CarState, hover: ScreenActio
   g.font = "600 10px sans-serif";
   g.fillText("KM/H", W / 2, 100);
 
-  rr(g, 40, 118, W - 80, 30, 10);
-  g.fillStyle = "rgba(255,255,255,.05)";
+  /* The readout box is also the reset button (see TRIP_BOX), so it carries
+     the same hover treatment every other button on this unit gets — and the
+     label says what a click does while the cursor is on it, because a box
+     that silently zeroes a reading it never offered to is a trap. */
+  const rst = hover === "tripReset";
+  rr(g, TRIP_BOX.x, TRIP_BOX.y, TRIP_BOX.w, TRIP_BOX.h, 10);
+  g.fillStyle = rst ? "rgba(111,178,255,.22)" : "rgba(255,255,255,.05)";
   g.fill();
-  g.strokeStyle = "rgba(255,255,255,.10)";
+  g.strokeStyle = rst ? "rgba(150,200,255,.75)" : "rgba(255,255,255,.10)";
   g.lineWidth = 1;
   g.stroke();
-  g.fillStyle = "#9aa6bc";
+  g.fillStyle = rst ? "#cfe2ff" : "#9aa6bc";
   g.font = "600 8px sans-serif";
-  g.fillText("TRIP DISTANCE", W / 2, 130);
+  g.fillText(rst ? "TRIP DISTANCE — CLICK TO RESET" : "TRIP DISTANCE", W / 2, 130);
   g.fillStyle = "#eef1f7";
   g.font = "700 13px sans-serif";
-  g.fillText(car.odo.toFixed(1) + " km", W / 2, 144);
+  g.fillText(Math.max(0, car.odo - tripBase).toFixed(1) + " km", W / 2, 144);
   g.textAlign = "left";
 }
 
@@ -679,6 +723,13 @@ export interface ScreenUI {
       whenever the stereo is off; it is what suppresses the map view's music
       pill, and with it any suggestion that there is a player to reach. */
   clickable: boolean;
+  /** display night-dim (the ☾ pill): drawn as a shade over the whole panel,
+      whatever pane is up. Optional so older callers keep painting full
+      brightness. */
+  dim?: boolean;
+  /** odometer reading the trip pane subtracts — engine.ts sets it to car.odo
+      when the readout is clicked, which is all a trip reset is. */
+  tripBase?: number;
 }
 
 const UI_MAP: ScreenUI = { view: "map", hover: null, clickable: false };
@@ -734,13 +785,13 @@ export function drawCarScreen(
     }
     g.drawImage(st.music, 0, 0, W, H);
   } else if (ui.view === "trip") {
-    drawTrip(g, car, ui.hover);
+    drawTrip(g, car, ui.hover, ui.tripBase ?? 0);
   } else {
     /* Map view: the whole panel. Nothing of the player is drawn or even
        advanced here — the mock rotation's timer picks up from wherever it left
        off the next time the view is asked for, and the live player keeps its
        own clock regardless. */
-    drawNav(g, st, world, car, npcs, timeH, now, ms, ui.clickable, ui.hover);
+    drawNav(g, st, world, car, npcs, timeH, now, ms, ui.clickable, ui.hover, !!ui.dim);
   }
 
   // ---- glass: bezel, reflection sweep, vignette ---------------------------
@@ -754,4 +805,15 @@ export function drawCarScreen(
   g.strokeStyle = "rgba(160,190,240,.10)";
   g.lineWidth = 1;
   g.strokeRect(3.5, 3.5, W - 7, H - 7);
+
+  /* Night-dim: a flat shade over everything, glass included — it is the
+     backlight coming down, not a UI theme, so every pane and even the bezel
+     sheen dims with it. Flat and uniform on purpose (no gradient): a shade
+     with a falloff would print an edge on a panel this small. .42 leaves the
+     map clearly readable while pulling the panel out of the dashcam's
+     highlight range. */
+  if (ui.dim) {
+    g.fillStyle = "rgba(2,4,10,.42)";
+    g.fillRect(0, 0, W, H);
+  }
 }

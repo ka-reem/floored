@@ -710,6 +710,27 @@ const HOOD = { on: 1, dy: 0, dz: 0 };
 /* How fast the wipers lay down once the rain stops, as an exponential time
    constant per second — about 0.5 s to arrive. See the park block in frame(). */
 const WIPER_PARK_EASE = 6;
+/* Wiper drive. The mode cycles OFF → INT → LO → HI, and three ways in step
+   it — the U key, the stalk click zone beside the head unit, and the touch
+   drawer's WIPERS row (uiKeyTap "u") — all through cycleWipers(), so they
+   can never disagree.
+
+   RATE is sweep travel per second for a half-stroke (park→raised or back),
+   so a full LO wipe takes 2/1.15 ≈ 1.74 s — deliberately the period of the
+   old always-on rain wiper (sin at 3.6 rad/s), which is the pace the whole
+   droplet overlay was tuned against. HI is roughly double. INT sweeps at LO
+   pace and then sits parked for PAUSE seconds: the classic intermittent
+   rhythm, one confident stroke and a wait just long enough to make the next
+   one read as an event. Indexed by mode; index 0 is unused (OFF animates in
+   the park branch, not here). */
+export const WIPER_MODE_NAMES = ["OFF", "INT", "LO", "HI"] as const;
+const WIPER_RATE = [0, 1.15, 1.15, 2.2];
+const WIPER_INT_PAUSE = 2.6;
+/* How fast the rear-view's electrochromic dim arrives, same exponential form
+   as the park ease — a real auto-dim cell takes a second or two, and an
+   instant step on a surface that bright reads as the render target
+   glitching, not as a control answering. */
+const MIRROR_DIM_EASE = 2.2;
 /* How the loading bar creeps through a wait it cannot measure — see
    Game.creepAwait. CREEP_CAP is deliberately short of 1: the stage's own
    completion is what finishes it, and a bar that reaches the end of a stage
@@ -950,6 +971,12 @@ export class Game {
   started = false;
   running = false; // simulation advancing (menus closed)
   rain = false;
+  /** Wiper mode, an index into WIPER_MODE_NAMES (OFF/INT/LO/HI). Public
+      because the touch drawer's WIPERS row shows it, same as `rain` beside
+      it; stepped only through cycleWipers(). Session-only on purpose — rain
+      itself decides the default (see setRain), so persisting the mode would
+      just let a profile come back with dry-weather wipers running. */
+  wiperMode = 0;
   grade = false; // set from settings.dashcam in the constructor
   /* THERE IS NO `dashImported` ANY MORE, and its absence is the point.
 
@@ -1064,6 +1091,36 @@ export class Game {
     const c = this.cabinKnob();
     c.on = ((c.on + 1) % DOME_LEVELS.length) as typeof c.on;
     this.ui.toast("INTERIOR LIGHT " + (c.on === 0 ? "OFF" : c.on === 1 ? "DIM" : "ON"));
+  }
+
+  /** Step the wiper mode around OFF → INT → LO → HI. One body for the U key,
+      the stalk click zone (onPointerDown) and the drawer's WIPERS row
+      (uiKeyTap "u"), same policy as toggleCabinLight above. The stalk click
+      sound is the feedback the stalk itself would give; the arms crossing
+      the windscreen are the real confirmation. */
+  private cycleWipers() {
+    this.wiperMode = (this.wiperMode + 1) % WIPER_MODE_NAMES.length;
+    if (this.wiperMode === 0) this.wipeDir = 0; // let the park ease take it home
+    else if (this.wipeDir === 0) this.wipeWait = 0; // sweep NOW, not after a stale INT pause
+    this.audio.stalkClick();
+    this.ui.toast("WIPERS " + WIPER_MODE_NAMES[this.wiperMode]);
+  }
+
+  /** Toggle the rear-view's electrochromic dim (clicking the glass itself).
+      Only the flag flips here — mirrorDimUpdate() eases the glass toward it
+      on the frame clock, same shape as the dome light's hover ease. */
+  private toggleMirrorDim() {
+    this.mirrorDim = !this.mirrorDim;
+    this.audio.stalkClick();
+    this.ui.toast("MIRROR DIM " + (this.mirrorDim ? "ON" : "OFF"));
+  }
+
+  private mirrorDimUpdate(dt: number) {
+    const t = this.mirrorDim ? 1 : 0;
+    this.mirrorDimE = lerp(this.mirrorDimE, t, 1 - Math.exp(-MIRROR_DIM_EASE * dt));
+    // snap the last fraction so the material write settles on exact endpoints
+    if (Math.abs(this.mirrorDimE - t) < 0.002) this.mirrorDimE = t;
+    this.rig.cockpit.setMirrorDim(this.mirrorDimE);
   }
 
   /** Push the cabin-light level into both interiors, every frame.
@@ -1410,6 +1467,25 @@ export class Game {
   private slowT = 0;
   private gaugeT = 0;
   private dropT = 0;
+  /* Wiper sweep state: travel (0 parked .. 1 raised), stroke direction
+     (0 = at rest between INT strokes / parked), and the INT pause timer.
+     The park branch of updateCarVisual mirrors the eased arm back into
+     wipeT, so a mode turned on mid-park resumes from where the arm really
+     is instead of teleporting it. */
+  private wipeT = 0;
+  private wipeDir: -1 | 0 | 1 = 0;
+  private wipeWait = 0;
+  /** Rear-view electrochromic dim: the toggle, and its eased level (what the
+      glass actually shows — see MIRROR_DIM_EASE). Session-only, like the
+      dome light: the clear mirror is the shipped look. */
+  private mirrorDim = false;
+  private mirrorDimE = 0;
+  /** Head-unit night-dim (the map view's ☾ pill) — a shade drawn over the
+      panel canvas by carscreen.ts. Session-only, same reasoning. */
+  private screenDim = false;
+  /** Odometer reading at the last trip reset; the trip pane shows
+      car.odo - tripBase. 0 = never reset, i.e. the whole session. */
+  private tripBase = 0;
   private hudT = 0;
   private chunkT = 0;
   /** No Hesi scoring state (see noHesiUpdate). `best` is seeded from the
@@ -1491,6 +1567,11 @@ export class Game {
        load() runs, and setRain toasts — a restored profile must not fire a
        "RAIN — grip down" popup at startup. */
     this.rain = profile.settings.rain;
+    /* A profile restored WITH rain gets its wipers running the same way a
+       live rain toggle would bring them on (see setRain) — before modes
+       existed, rain always wiped, and a wet load must not regress into a
+       blinded windscreen. */
+    this.wiperMode = this.rain ? 2 : 0;
     this.time = profile.settings.time;
     this.mmap = profile.settings.mmap;
     this.carId = profile.carId;
@@ -2246,6 +2327,11 @@ export class Game {
       this.rig.cockpit.setMirrorVis(this.mirror);
       this.ui.toast("MIRROR " + (this.mirror ? "ON" : "OFF"));
     }
+    /* Wipers. U because it is free (the handler below spends I, and the
+       retired J stays retired), and because the drawer's WIPERS row goes
+       through uiKeyTap with this same letter — the row IS this key. Works on
+       touch for exactly that reason: no isTouch gate, unlike I below. */
+    if (k === "u") this.cycleWipers();
     /* J IS RETIRED — deliberately, and it is not coming back as a debug key.
 
        It A/B'd the donor Volvo (interior and exterior body, off one flag)
@@ -2420,6 +2506,33 @@ export class Game {
     return this.rig?.cockpit?.navPanel() ?? null;
   }
 
+  /** The wiper stalk zone (console side of the head unit), or null. Desktop
+      only, for the click as well as the hover: the drawer's WIPERS row is
+      the touch way in — a fat finger hunting an invisible box beside the
+      screen is not a control, and the roof band already spends the one
+      screen-space tap region worth having. Same inCar gate as cabinTarget:
+      the raycast ignores `visible`. */
+  private wiperStalkTarget(): THREE.Object3D | null {
+    if (this.isTouch) return null;
+    if (!this.running || !this.loaded || !this.inCar()) return null;
+    const ck = this.rig?.cockpit;
+    if (!ck) return null;
+    return ck.wiperSwitch(!!this.rig.cockpitModel);
+  }
+
+  /** The rear-view glass, when clicking it can toggle the dim — or null.
+      A real visible mesh, not a proxy volume: the glass hangs in the
+      dashcam frame's top rows by design (cockpit.ts MIR), so it is its own
+      target in both cabins (a donor keeps the procedural glass — its own
+      mirror is paint). Gated on the mirror being on show at all (M hides
+      it), or the dim would answer from an empty patch of headliner. */
+  private mirrorTarget(): THREE.Object3D | null {
+    if (this.isTouch) return null;
+    if (!this.running || !this.loaded || !this.inCar()) return null;
+    if (!this.mirror) return null;
+    return this.rig?.cockpit?.mirrorGlass ?? null;
+  }
+
   /** Which pane the head unit is showing, and what the cursor is over on it.
       Session state, deliberately not persisted: the map is what the panel is
       FOR, so every session opens on it however the last one was left. */
@@ -2450,7 +2563,9 @@ export class Game {
     this.hoverY = e.clientY;
     const sw = this.cabinTarget(true);
     const panel = this.screenTarget();
-    if (!sw && !panel) {
+    const stalk = this.wiperStalkTarget();
+    const mir = this.mirrorTarget();
+    if (!sw && !panel && !stalk && !mir) {
       this.cabinHover = 0;
       this.screenHover = null;
       this.renderer.domElement.style.cursor = "";
@@ -2468,11 +2583,16 @@ export class Game {
     const hit = panel ? this.clickRay.intersectObject(panel, false)[0] : undefined;
     this.screenHover =
       hit && hit.uv ? hitScreen(hit.uv.x, hit.uv.y, this.screenView) : null;
+    /* The stalk zone and the mirror glass have no state to preview — the
+       cursor change is their hover channel (round 1's precedent for targets
+       with no lamp to ease toward), so a boolean each is all this needs. */
+    const overStalk = !!stalk && this.clickRay.intersectObject(stalk, false).length > 0;
+    const overMir = !overStalk && !!mir && this.clickRay.intersectObject(mir, false).length > 0;
     /* One cursor for every cabin target, new and old alike — none of them had
        one before this lane; a control that only reveals itself once you have
        already clicked it is not discoverable. */
     this.renderer.domElement.style.cursor =
-      this.cabinHover || this.screenHover ? "pointer" : "";
+      this.cabinHover || this.screenHover || overStalk || overMir ? "pointer" : "";
   };
   /* Leaving the canvas is a real event and gets a real listener: the last
      pointermove inside the window can easily be one that was still over the
@@ -2519,6 +2639,23 @@ export class Game {
       return;
     }
 
+    /* The wiper stalk zone and the rear-view glass — both desktop-mouse
+       (their targets are null on touch; wipers reach a phone through the
+       drawer row instead). Tested before the head unit so the ORDER between
+       the two 3D targets and the panel is fixed here rather than by
+       accident of depth; none of the three volumes overlap in space, so the
+       order is only about who reads first. */
+    const stalk = this.wiperStalkTarget();
+    if (stalk && this.clickRay.intersectObject(stalk, false).length) {
+      this.cycleWipers();
+      return;
+    }
+    const mir = this.mirrorTarget();
+    if (mir && this.clickRay.intersectObject(mir, false).length) {
+      this.toggleMirrorDim();
+      return;
+    }
+
     /* The head unit is a CanvasTexture on a plane, so this hands the hit UV to
        carscreen.ts, which owns the layout and therefore the button rects.
        Desktop only, via screenTarget()/music.enabled, which is false on touch:
@@ -2539,6 +2676,21 @@ export class Game {
     if (action === "volDown" || action === "volUp") {
       const msg = this.music.stepVolume(action === "volUp" ? 1 : -1);
       if (msg) this.ui.toast(msg);
+      return;
+    }
+    /* Trip reset: all a reset ever is — remember where the odometer stood.
+       The pane subtracts (carscreen.ts drawTrip), so the readout zeroes on
+       the very next repaint. */
+    if (action === "tripReset") {
+      this.tripBase = this.car.odo;
+      this.audio.stalkClick();
+      this.ui.toast("TRIP RESET");
+      return;
+    }
+    if (action === "dimScr") {
+      this.screenDim = !this.screenDim;
+      this.audio.stalkClick();
+      this.ui.toast("SCREEN DIM " + (this.screenDim ? "ON" : "OFF"));
       return;
     }
     const msg = this.music.click(action);
@@ -2996,6 +3148,18 @@ export class Game {
   setRain(on: boolean) {
     this.rain = on;
     this.settings.rain = on;
+    /* The wipers follow the weather so an untouched game behaves exactly as
+       it did before modes existed: rain arriving with the wipers OFF brings
+       them on at LO, rain leaving parks them whatever mode was running. The
+       driver can still cycle to OFF *in* the rain — that is the whole
+       droplet-accumulation feature — and rain stays the reset switch either
+       way. No toast and no stalk click for these: they are the weather
+       moving the stalk, not the driver. */
+    if (on && this.wiperMode === 0) this.wiperMode = 2;
+    if (!on && this.wiperMode !== 0) {
+      this.wiperMode = 0;
+      this.wipeDir = 0;
+    }
     // settable from the pre-Drive settings panel: `rain` is read back by the
     // load's applySettings pass, so the world comes up wet either way
     if (this.loaded) {
@@ -4132,6 +4296,7 @@ export class Game {
     this.hoodUpdate();
     this.lampWash(inside);
     this.cabinLightUpdate(dt);
+    this.mirrorDimUpdate(dt);
     /* Both in-car views now carry their own nav screen (drawScreen above), so
        the external HUD minimap is redundant in either — hide it. POV is the
        view the game is played in, and the head unit reads clearly there, so
@@ -4166,12 +4331,48 @@ export class Game {
     rig.sigMatL.emissiveIntensity = car.sigL && bOn ? 3 : 0;
     rig.sigMatR.emissiveIntensity = car.sigR && bOn ? 3 : 0;
     let wiping = false;
-    if (this.rain) {
-      const ph = Math.sin(now * 3.6) * 0.5 + 0.5;
-      const z = WIPER.rest - ph * WIPER.sweep;
+    if (this.wiperMode > 0) {
+      /* Mode-driven sweep (was: always-on sin while raining). The state
+         machine advances only while the sim runs, so a pause freezes the
+         arms mid-stroke instead of playing wiper audio under the menu —
+         updateCarVisual itself still runs while paused (the paused branch of
+         the frame loop calls it), which is also why the pose write below is
+         outside the `running` gate: the arms must HOLD their pose, not
+         vanish. */
+      if (this.running) {
+        const rate = WIPER_RATE[this.wiperMode];
+        if (this.wipeDir === 0) {
+          this.wipeWait -= dt;
+          // LO/HI never wait; INT waits out its pause parked
+          if (this.wiperMode !== 1 || this.wipeWait <= 0) {
+            this.wipeDir = 1;
+            // in-cabin sound only, like the trim creaks: from CHASE/HOOD the
+            // arms are hidden with the interior, and a swish with no arm on
+            // screen reads as a glitch rather than as weather
+            if (inside) this.audio.wiperSwipe(1 / rate, true);
+          }
+        }
+        if (this.wipeDir !== 0) {
+          this.wipeT += this.wipeDir * rate * dt;
+          if (this.wipeT >= 1) {
+            // reverse at the top — a wiper has no dwell up there
+            this.wipeT = 1;
+            this.wipeDir = -1;
+            if (inside) this.audio.wiperSwipe(1 / rate, false);
+          } else if (this.wipeT <= 0) {
+            this.wipeT = 0;
+            this.wipeDir = 0;
+            this.wipeWait = WIPER_INT_PAUSE;
+          }
+        }
+      }
+      const z = WIPER.park + this.wipeT * WIPER.sweep;
       rig.cockpit.wiperA.rotation.z = rig.cockpit.wiperB.rotation.z = z;
-      rig.cockpit.wiperA.visible = rig.cockpit.wiperB.visible = true;
-      wiping = true;
+      /* Hidden only while actually parked (INT sitting out its pause) — the
+         same buried-in-the-donor-dash reasoning as the dry branch below. */
+      const parked = this.wipeDir === 0 && this.wipeT < 0.02;
+      rig.cockpit.wiperA.visible = rig.cockpit.wiperB.visible = !parked;
+      wiping = this.wipeDir !== 0;
     } else {
       /* PARK, not rest. This used to ease to WIPER.rest, which is the RAISED
          end of the sweep — so switching the rain off left both arms standing
@@ -4188,6 +4389,10 @@ export class Game {
         rig.cockpit.wiperA.rotation.z, WIPER.park, 1 - Math.exp(-WIPER_PARK_EASE * dt)
       );
       rig.cockpit.wiperA.rotation.z = rig.cockpit.wiperB.rotation.z = z;
+      /* Mirror the eased pose back into the sweep state, so a mode switched
+         on mid-park resumes the arm from where it visibly is. */
+      this.wipeT = Math.max(0, (z - WIPER.park) / WIPER.sweep);
+      this.wipeDir = 0;
       /* HIDDEN once parked, and that is a decision rather than the missing
          half of the `visible = true` above.
 
@@ -4249,6 +4454,8 @@ export class Game {
           view: this.screenView,
           hover: this.screenHover,
           clickable: !this.isTouch && this.music.enabled,
+          dim: this.screenDim,
+          tripBase: this.tripBase,
         }
       );
     }

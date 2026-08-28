@@ -67,7 +67,18 @@ export interface Cockpit {
   /** Click volume for the hazards — both signals at once, same convention as
       the traffic hazard flash in traffic.ts. `imported` as above. */
   hazardSwitch(imported: boolean): THREE.Object3D;
+  /** Click volume for the wiper control — on the CONSOLE side of the dash,
+      beside the head unit. Deliberately nowhere near the wheel rim: the
+      owner had every wheel-area click volume removed (signals, then
+      hazards), so the rim band is retired ground for new targets. `imported`
+      as above. */
+  wiperSwitch(imported: boolean): THREE.Object3D;
   setMirrorVis(v: boolean): void;
+  /** Electrochromic dim on the REAR-VIEW glass, 0 (clear) .. 1 (dimmed) —
+      a gain write on that glass's own material. The wing mirrors share the
+      RT texture but not the material, so they stay at day gain: the cell in
+      a real car is in the rear-view only. */
+  setMirrorDim(k: number): void;
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
   /** Repaint the head unit. Takes the world/car/traffic the HUD minimap
    * takes, because the nav pane now draws that same map (carscreen.ts).
@@ -1468,6 +1479,28 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   donorWheelSpace.add(sigLDonor, sigRDonor, hazardHitDonor);
   interiorG.add(donorWheelSpace);
 
+  /* Wiper stalk click zone. The real stalk is a wheel-column part (the
+     donor's "Stalks" node lives at x 0.28..0.49, inside the rim band), and
+     the rim band is retired ground — the owner had every wheel-area click
+     volume removed. So the control hangs at the OTHER end of the
+     proven-visible strip: the CONSOLE side of the head unit, where the
+     dashcam sees dash stack rather than wheel. Both positions measured by
+     projecting through the live POV camera, same discipline as the volumes
+     above; the procedural box borrows the nav screen's proven depth, the
+     donor's rides its screen-top row (screen bbox x -0.102..0.067,
+     y 0.772..0.972 in volvo-s90-full.json — below y ~0.95 at dash depth the
+     dashcam sees nothing at all). */
+  const wiperHitProc = domeHit(0.15, 0.2, 0.14, [-0.37, 1.12, 0.72]);
+  interiorG.add(wiperHitProc);
+  /* Its own counter-scale group, NOT donorSpace or donorWheelSpace: the
+     console's hit test raycasts its group RECURSIVELY, so a sibling volume
+     under a shared group reads as "the console was clicked" — the exact bug
+     the round-1 click-through caught (commit 7cfe283). */
+  const donorDashSpace = new THREE.Group();
+  const wiperHitDonor = domeHit(0.16, 0.15, 0.12, [-0.19, 0.99, 0.72]);
+  donorDashSpace.add(wiperHitDonor);
+  interiorG.add(donorDashSpace);
+
   /* And its counterpart: a faint cool wash from the base of the windscreen
      raking BACK across the pad toward the seat — the "city light through the
      glass" that gives the pad top its grazing sheen in the reference photo.
@@ -1771,7 +1804,15 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      close to the render's own 2.5:1, so it shows the whole width at very
      nearly true proportions and needs no crop at all. */
   const mirrorGeo = new THREE.PlaneGeometry(0.3, 0.096);
-  const mirrorMesh = new THREE.Mesh(mirrorGeo, mirrorMat);
+  /* The rear-view gets its OWN material (sharing the RT map): setMirrorDim
+     writes a gain on it, and through the shared mirrorMat the wing mirrors
+     would dim along with it. `clear` is the day gain the shared material
+     already ran at; `dim` is low enough that tailgater high beams stop
+     stabbing through the dashcam frame but the glass still clearly holds an
+     image — a dimmed mirror that goes black reads as broken, not dimmed. */
+  const MIRROR_GAIN = { clear: 1.55, dim: 0.55 };
+  const rearMirrorMat = mirrorMat.clone();
+  const mirrorMesh = new THREE.Mesh(mirrorGeo, rearMirrorMat);
   /* z = MIR.z + 0.002 puts the glass in the PLANE OF THE LIP rather than in
      front of the whole assembly. It used to sit at MIR.z - 0.012, i.e. 9 mm
      proud of the rim's front face, so the rim was a ring floating behind a
@@ -2001,6 +2042,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   wsGlass.rotation.x = -0.42;
   interiorG.add(wsGlass);
   let dropAcc = 0;
+  let lastWipeRot = WIPER.park;
   function wiperCanvasWipe(zRot: number) {
     for (const px of [352, 160]) {
       // rotation.z back to sweep phase 0..1; the inverse of engine.ts's
@@ -2043,7 +2085,17 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
         dropCtx.stroke();
       }
     }
-    if (wiping) wiperCanvasWipe(wiperRotZ);
+    if (wiping) {
+      /* The blade slot is ~20 px wide, which covers only ~0.06 rad of sweep
+         per call — and this runs on the 33 ms droplet clock, across which a
+         HI-speed arm travels three times that. A single clear at the current
+         pose would leave unswept droplet stripes between ticks, so the blade
+         is walked through every intermediate pose since the last one. */
+      const steps = Math.max(1, Math.ceil(Math.abs(wiperRotZ - lastWipeRot) / 0.05));
+      for (let i = 1; i <= steps; i++)
+        wiperCanvasWipe(lastWipeRot + ((wiperRotZ - lastWipeRot) * i) / steps);
+    }
+    lastWipeRot = wiperRotZ;
     if (Math.random() < 0.06) {
       dropCtx.globalCompositeOperation = "destination-out";
       dropCtx.fillStyle = "rgba(0,0,0,.06)";
@@ -2097,6 +2149,16 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     hazardSwitch(imported) {
       donorWheelSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
       return imported ? hazardHitDonor : hazardHitProc;
+    },
+    wiperSwitch(imported) {
+      // same lazy counter-scale as cabinSwitch, on the stalk zone's own group
+      donorDashSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
+      return imported ? wiperHitDonor : wiperHitProc;
+    },
+    setMirrorDim: (k) => {
+      rearMirrorMat.color.setScalar(
+        MIRROR_GAIN.clear + (MIRROR_GAIN.dim - MIRROR_GAIN.clear) * k
+      );
     },
     setMirrorVis: (v) => {
       mirrorParts.forEach((m) => (m.visible = v));
