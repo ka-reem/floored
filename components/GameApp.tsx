@@ -468,31 +468,71 @@ function analogSteerLive() {
 function SteerWheel({ game }: { game: Game }) {
   const [rot, setRot] = useState(0);
   const active = useRef(false);
+  const pid = useRef<number | null>(null);
   const cx = useRef(0);
-  const end = () => {
+  const end = useCallback(() => {
     active.current = false;
+    pid.current = null;
     game.setWheelVal(0);
+    game.setWheelPointer(null);
     setRot(0);
-  };
+  }, [game]);
   /* Pausing unmounts this widget mid-drag; without zeroing here the last
      deflection keeps feeding readInput and the car resumes at hard lock. */
-  useEffect(() => () => game.setWheelVal(0), [game]);
+  useEffect(() => () => { game.setWheelVal(0); game.setWheelPointer(null); }, [game]);
+  /* Belt-and-braces: a gesture the browser hijacks outright (an edge-swipe,
+     the loupe the mobile-input work elsewhere is closing) can end a touch
+     without ever delivering pointerup/pointercancel/lostpointercapture to
+     #swheel itself. The window still sees the pointer go away — capture only
+     changes who an event targets, not whether window sees it at all in the
+     bubble phase — so this is the second line of defence behind
+     Game.watchdogTouchInput(), which is the third (see engine.ts). */
+  useEffect(() => {
+    const release = (e: PointerEvent) => {
+      if (pid.current !== null && e.pointerId === pid.current) end();
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    };
+  }, [end]);
   return (
     <div
       id="swheel"
       onPointerDown={(e) => {
+        // A second finger joining mid-drag must not re-base the origin: that
+        // is the wrong-way-jump bug (a stray touch shifts cx, and the next
+        // move computes against the new origin) as much as it is the stuck
+        // one (either finger's later lift then zeroes a still-held wheel).
+        if (active.current) return;
         active.current = true;
+        pid.current = e.pointerId;
         cx.current = e.clientX;
-        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        game.setWheelPointer(e.pointerId);
+        // State is already committed above, so a capture that throws (the
+        // pointer can be gone by the time this runs on a fast tap) loses
+        // only the drift-off-element case, never the press itself.
+        try {
+          (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        } catch {}
       }}
       onPointerMove={(e) => {
-        if (!active.current) return;
+        if (!active.current || e.pointerId !== pid.current) return;
         const v = Math.max(-1, Math.min(1, (e.clientX - cx.current) / 58));
         game.setWheelVal(v);
         setRot(v * 110);
       }}
-      onPointerUp={end}
-      onPointerCancel={end}
+      onPointerUp={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
+      onPointerCancel={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
+      onLostPointerCapture={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
     >
       <div id="swheelInner" style={{ transform: `rotate(${rot}deg)` }}>
         ◠<br />│

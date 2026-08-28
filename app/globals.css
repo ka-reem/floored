@@ -117,8 +117,18 @@ body {
      misses the guard is a bug waiting to be reported one button at a time.
 
      tap-highlight-color kills the grey flash iOS paints over a tapped
-     element, which on dark glass controls reads as a misfire. */
+     element, which on dark glass controls reads as a misfire.
+
+     user-select:none is the other half of the same fight, moved here from
+     body-only: iOS is documented-flaky about honouring an INHERITED
+     user-select for the double-tap word-select magnifier specifically (as
+     opposed to a long-press, which touch-callout alone was already stopping)
+     — #swheel had its own explicit user-select:none before this and never
+     showed the loupe; every other control, inheriting it from body instead,
+     still could. Set directly on every element rather than relied on. */
   -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
   -webkit-tap-highlight-color: transparent;
   box-sizing: border-box;
 }
@@ -261,6 +271,13 @@ html.cursor-idle * {
   border-radius: var(--r-md);
   border: 1px solid var(--border);
   background: rgba(8, 10, 18, 0.78);
+  /* Engine only ever draws to this canvas, never reads input from it — and on
+     phones it sits (see body.touch #mmap below) directly above the throttle
+     puck, so a double-tap aimed at the pedal that lands a few px high used to
+     hit a plain default-gesture canvas instead: double-tap zoom, the loupe,
+     the lot. pointer-events:none drops the touch straight through to
+     canvas.game underneath, which already carries touch-action:manipulation. */
+  pointer-events: none;
 }
 
 /* ---------- Menu ---------- */
