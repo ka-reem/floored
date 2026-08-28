@@ -1455,6 +1455,9 @@ export class Game {
     this.post.setMobile(this.tierCaps.mirrorHalf);
     // desktop-only cinematic extras: two-scale bloom + film-look finishers
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
+    // POV grade profile: the mobile tiers run the dashcam degrade at gentler
+    // strengths (post.ts POV_TUNE_TIER) so the road stays readable on a phone
+    this.post.setPovProfile(this.renderTier);
     /* Everything above is what the MENUS need: a canvas, a resolved tier, and
        the settings the panels read. The world itself — materials, terrain,
        expressway, town, traffic, the player rig — is NOT built here; it is
@@ -2626,6 +2629,8 @@ export class Game {
     if (this.post.setMobile(this.tierCaps.mirrorHalf)) this.lastPR = -1;
     // tier flips retarget the cinematic extras on the same frame too
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
+    // ...and the POV grade profile (console-edited knobs survive the flip)
+    this.post.setPovProfile(this.renderTier);
     /* DPR: perf mode floors everything at 1; otherwise the preset's own cap
        (low 1, medium 1.5) combines with the tier ceiling — 1.1 mobile-base,
        1.35 mobile-high, 1.75 desktop — and the lower one wins. */
