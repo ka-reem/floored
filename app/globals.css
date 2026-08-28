@@ -1,13 +1,103 @@
+/* ---------- Design tokens ----------
+
+   Every color/radius/spacing/blur value the menus and HUD chrome use lives
+   here once. Before this existed the same blue glow and border rgba() were
+   retyped with slightly different values in a dozen places — restyling meant
+   hunting for all of them and never being quite sure you got them all. Sizes
+   that are precise math tied to a comment below (tap-target minimums, the
+   paint-dot hit-area bleed, the z-index ladder's exact numbers) are left as
+   literals next to that math rather than indirected through a token. */
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #05060c;
+  --surface-1: rgba(13, 17, 28, 0.97); /* panels: settings/garage/controls */
+  --surface-2: rgba(18, 22, 38, 0.62); /* cards: carCard */
+  --surface-3: rgba(11, 14, 24, 0.7); /* chips: toast, gearBtn, form controls */
+  --scrim-menu: radial-gradient(
+    120% 90% at 50% 110%,
+    rgba(20, 27, 58, 0.93) 0%,
+    rgba(8, 10, 22, 0.95) 55%,
+    rgba(4, 5, 12, 0.98) 100%
+  );
+  --scrim-load: radial-gradient(
+    120% 90% at 50% 110%,
+    rgb(20, 27, 58) 0%,
+    rgb(8, 10, 22) 55%,
+    rgb(4, 5, 12) 100%
+  );
+  --scrim-pause: rgba(4, 6, 14, 0.74);
+
+  /* text */
+  --ink: #eef3ff;
+  --ink-dim: #a6b3d6;
+  --ink-faint: #7b87ab;
+
+  /* accent — the game's sodium-and-blue night world, kept restrained */
+  --accent: #5f8dff;
+  --accent-2: #7fd8ff;
+  --accent-grad: linear-gradient(90deg, var(--accent), var(--accent-2));
+  --accent-soft: rgba(95, 141, 255, 0.16);
+  --accent-line: rgba(140, 178, 255, 0.5);
+  --accent-glow: rgba(95, 141, 255, 0.4);
+  --jp: #ff6f9c;
+  --ok: #57ff9a;
+  --danger: #ff8fa3;
+
+  --border: rgba(154, 174, 214, 0.22);
+  --border-soft: rgba(154, 174, 214, 0.12);
+  --border-strong: var(--accent-line);
+
+  /* type — display face for titles/buttons/numerals, system stack for dense
+     UI text (see the comment on displayFont in app/layout.tsx) */
+  --font-display: var(--font-display-raw, "Segoe UI"), "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-body: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 16px;
+  --fs-2xl: 20px;
+
+  /* one spacing/radius/blur scale, reused everywhere */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+  --blur-sm: 6px;
+  --blur-md: 12px;
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+
+  /* stacking ladder — values unchanged, named so the ordering reads as one
+     thing instead of magic numbers scattered through the file */
+  --z-hud: 5;
+  --z-toast: 6;
+  --z-touch: 8;
+  --z-mmap: 25;
+  --z-wheel: 26;
+  --z-gear: 30;
+  --z-menu: 40;
+  --z-load: 50;
+}
+
 html,
 body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #05060c;
-  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  font-family: var(--font-body);
   -webkit-user-select: none;
   user-select: none;
-  color: #dfe7ff;
+  color: var(--ink);
 }
 
 * {
@@ -63,18 +153,27 @@ html.cursor-idle * {
   cursor: none !important;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .menuBtn.primary,
+  .loadSweep,
+  .menuRoot::after {
+    animation: none !important;
+  }
+}
+
 /* ---------- HUD ---------- */
 #hud {
   position: fixed;
   left: 18px;
   bottom: 16px;
-  color: #dfe7ff;
-  z-index: 5;
+  color: var(--ink);
+  z-index: var(--z-hud);
   pointer-events: none;
   text-shadow: 0 1px 8px rgba(0, 20, 60, 0.8);
   letter-spacing: 0.02em;
 }
 #hud .spd {
+  font-family: var(--font-display);
   font-size: 44px;
   font-weight: 700;
   line-height: 1;
@@ -100,16 +199,17 @@ html.cursor-idle * {
   gap: 14px;
   align-items: center;
   color: #cfe0ff;
-  z-index: 5;
+  z-index: var(--z-hud);
   pointer-events: none;
-  font-size: 14px;
+  font-size: var(--fs-md);
   opacity: 0.9;
   text-shadow: 0 1px 6px rgba(0, 10, 40, 0.9);
+  font-variant-numeric: tabular-nums;
 }
 .ind {
   opacity: 0.14;
   font-size: 19px;
-  color: #57ff9a;
+  color: var(--ok);
   transition: opacity 0.05s;
 }
 .ind.on {
@@ -121,17 +221,17 @@ html.cursor-idle * {
   top: 52px;
   left: 50%;
   transform: translateX(-50%);
-  color: #eaf2ff;
-  background: rgba(8, 12, 28, 0.66);
-  border: 1px solid rgba(120, 160, 255, 0.25);
+  color: var(--ink);
+  background: var(--surface-3);
+  border: 1px solid var(--accent-soft);
   padding: 7px 16px;
-  border-radius: 20px;
-  font-size: 13px;
-  z-index: 6;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-base);
+  z-index: var(--z-toast);
   opacity: 0;
   transition: opacity 0.3s;
   pointer-events: none;
-  backdrop-filter: blur(6px);
+  backdrop-filter: blur(var(--blur-sm));
   white-space: nowrap;
 }
 #exitHint {
@@ -143,11 +243,11 @@ html.cursor-idle * {
   background: rgba(6, 42, 22, 0.78);
   border: 1px solid rgba(110, 240, 170, 0.45);
   padding: 8px 20px;
-  border-radius: 10px;
-  font-size: 15px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-lg);
   font-weight: 600;
   letter-spacing: 0.06em;
-  z-index: 6;
+  z-index: var(--z-toast);
   opacity: 0;
   transition: opacity 0.25s;
   pointer-events: none;
@@ -157,9 +257,9 @@ html.cursor-idle * {
   position: fixed;
   right: 12px;
   bottom: 12px;
-  z-index: 25;
-  border-radius: 12px;
-  border: 1px solid rgba(150, 170, 210, 0.3);
+  z-index: var(--z-mmap);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
   background: rgba(8, 10, 18, 0.78);
 }
 
@@ -167,87 +267,152 @@ html.cursor-idle * {
 .menuRoot {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: var(--z-menu);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(
-    120% 90% at 50% 110%,
-    rgba(19, 26, 61, 0.92) 0%,
-    rgba(7, 10, 24, 0.94) 55%,
-    rgba(4, 5, 12, 0.97) 100%
-  );
+  /* Bounds the flex column's cross axis so text content wraps against the
+     viewport instead of shrink-wrapping to its own max-content width and
+     overflowing off-screen on a narrow phone — a fixed/inset:0 flex parent
+     with align-items:center gives unconstrained children no width to wrap
+     against otherwise. */
+  padding: 0 var(--sp-5);
+  text-align: center;
+  background: var(--scrim-menu);
   backdrop-filter: blur(3px);
 }
 .menuRoot.paused {
-  background: rgba(4, 6, 14, 0.72);
+  background: var(--scrim-pause);
+}
+/* Viewfinder frame — the one unique flair. The menus sit over an idling
+   dashcam canvas (AGENTS.md: the dashcam IS the game), so instead of a flat
+   panel the overlay reads as a camera viewfinder around it: four corner
+   brackets, static, painted once. Ties the chrome to the game's own identity
+   rather than decorating for its own sake. Kept off .loadRoot's ::after (the
+   pulse) so the loading screen isn't carrying a second motion element beside
+   its own bar/sweep. */
+.menuRoot::before,
+.loadRoot::before {
+  content: "";
+  position: absolute;
+  inset: 22px;
+  pointer-events: none;
+  opacity: 0.35;
+  background:
+    linear-gradient(var(--accent-line), var(--accent-line)) top left / 22px 1.5px no-repeat,
+    linear-gradient(var(--accent-line), var(--accent-line)) top left / 1.5px 22px no-repeat,
+    linear-gradient(var(--accent-line), var(--accent-line)) top right / 22px 1.5px no-repeat,
+    linear-gradient(var(--accent-line), var(--accent-line)) top right / 1.5px 22px no-repeat,
+    linear-gradient(var(--accent-line), var(--accent-line)) bottom left / 22px 1.5px no-repeat,
+    linear-gradient(var(--accent-line), var(--accent-line)) bottom left / 1.5px 22px no-repeat,
+    linear-gradient(var(--accent-line), var(--accent-line)) bottom right / 22px 1.5px no-repeat,
+    linear-gradient(var(--accent-line), var(--accent-line)) bottom right / 1.5px 22px no-repeat;
+}
+.menuRoot::after {
+  /* a single quiet status dot, echoing the recording-light a dashcam carries */
+  content: "";
+  position: absolute;
+  top: 34px;
+  left: 34px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+  animation: recPulse 2.4s ease-in-out infinite;
+}
+@keyframes recPulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 .menuTitle {
-  color: #f2f6ff;
+  font-family: var(--font-display);
+  color: var(--ink);
   font-size: min(9vw, 56px);
   margin: 0 0 4px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.06em;
-  text-shadow: 0 0 34px rgba(90, 140, 255, 0.75), 0 0 8px rgba(255, 255, 255, 0.4);
+  text-shadow: 0 0 34px rgba(95, 141, 255, 0.75), 0 0 8px rgba(255, 255, 255, 0.4);
+}
+.menuTitle.sm {
+  font-size: min(9vw, 34px);
 }
 .menuJp {
-  color: #ff5f8f;
+  color: var(--jp);
   font-size: min(5vw, 24px);
   letter-spacing: 0.5em;
-  text-shadow: 0 0 22px rgba(255, 80, 140, 0.9);
+  text-shadow: 0 0 22px rgba(255, 111, 156, 0.85);
   margin-bottom: 22px;
 }
 .menuSub {
-  color: #93a3cc;
-  font-size: 14px;
+  color: var(--ink-dim);
+  font-size: var(--fs-md);
   margin: 3px 0;
+  max-width: min(480px, 100%);
 }
 .menuBtns {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin-top: 26px;
+  gap: var(--sp-3);
+  margin-top: var(--sp-6);
   min-width: 260px;
 }
+.menuBtns.inline {
+  min-width: 0;
+  margin-top: var(--sp-5);
+}
 .menuBtn {
-  color: #eaf2ff;
-  background: rgba(20, 28, 58, 0.55);
-  border: 1px solid rgba(140, 180, 255, 0.5);
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
   padding: 12px 34px;
-  border-radius: 26px;
-  font-size: 15px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-lg);
+  font-family: var(--font-display);
+  font-weight: 500;
   letter-spacing: 0.14em;
   cursor: pointer;
   text-align: center;
-  transition: all 0.15s;
-  font-family: inherit;
+  transition: background 0.15s var(--ease), box-shadow 0.15s var(--ease), border-color 0.15s var(--ease), transform 0.1s var(--ease);
 }
 .menuBtn:hover {
   background: rgba(48, 70, 130, 0.65);
-  box-shadow: 0 0 26px rgba(80, 130, 255, 0.35);
+  box-shadow: 0 0 26px var(--accent-glow);
+}
+.menuBtn:active {
+  transform: scale(0.97);
+}
+.menuBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 .menuBtn.primary {
-  box-shadow: 0 0 26px rgba(80, 130, 255, 0.35) inset, 0 0 22px rgba(80, 130, 255, 0.25);
+  box-shadow: 0 0 26px var(--accent-glow) inset, 0 0 22px rgba(95, 141, 255, 0.25);
   animation: pulse 2.2s infinite;
 }
 @keyframes pulse {
   50% {
-    box-shadow: 0 0 34px rgba(80, 130, 255, 0.6) inset, 0 0 30px rgba(80, 130, 255, 0.45);
+    box-shadow: 0 0 34px rgba(95, 141, 255, 0.6) inset, 0 0 30px rgba(95, 141, 255, 0.45);
   }
 }
 .menuBack {
-  margin-top: 22px;
-  color: #7d8aa8;
+  margin-top: var(--sp-5);
+  color: var(--ink-faint);
   background: none;
   border: none;
-  font-size: 13px;
+  font-size: var(--fs-base);
   letter-spacing: 0.1em;
   cursor: pointer;
   font-family: inherit;
 }
 .menuBack:hover {
-  color: #cfd9f2;
+  color: var(--ink-dim);
+}
+.menuBack:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 /* ---------- Loading screen ----------
@@ -262,13 +427,16 @@ html.cursor-idle * {
    spinning GIF) freezes solid for the duration, which is precisely the "it
    just hangs" this screen exists to fix. Transform/opacity animations are
    handed to the compositor and keep moving while the main thread is buried.
+   The viewfinder frame above is exempt from that rule because it never
+   animates — it paints once and sits still, same as the rest of this
+   screen's static chrome.
 
    Sits above .menuRoot (z 40) because the touch-control pucks (z 8) are in
    the DOM the whole time and must not show through. */
 .loadRoot {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: var(--z-load);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -276,12 +444,7 @@ html.cursor-idle * {
   text-align: center;
   /* opaque, unlike the menu: there is nothing behind this worth showing, and
      a translucent layer over an unrendered canvas reads as a broken frame */
-  background: radial-gradient(
-    120% 90% at 50% 110%,
-    rgb(19, 26, 61) 0%,
-    rgb(7, 10, 24) 55%,
-    rgb(4, 5, 12) 100%
-  );
+  background: var(--scrim-load);
   /* The safe-area terms are zero today — app/layout.tsx does not set
      viewport-fit=cover, so the UA already keeps the page clear of the notch —
      and are here so this screen stays correct if it ever does. The 20px is
@@ -290,27 +453,28 @@ html.cursor-idle * {
     calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
 }
 .loadTitle {
-  color: #f2f6ff;
+  font-family: var(--font-display);
+  color: var(--ink);
   font-size: min(7vw, 30px);
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.16em;
   margin: 0;
-  text-shadow: 0 0 30px rgba(90, 140, 255, 0.7);
+  text-shadow: 0 0 30px rgba(95, 141, 255, 0.7);
 }
 .loadJp {
-  color: #ff5f8f;
+  color: var(--jp);
   font-size: min(3.6vw, 13px);
   letter-spacing: 0.5em;
   /* the tracking is on the right edge too, so nudge the block back to centre */
   margin: 8px 0 0 0.5em;
-  text-shadow: 0 0 18px rgba(255, 80, 140, 0.8);
+  text-shadow: 0 0 18px rgba(255, 111, 156, 0.8);
 }
 .loadBar {
   position: relative;
   width: min(400px, 74vw);
   height: 6px;
   margin-top: 34px;
-  border-radius: 4px;
+  border-radius: var(--r-sm);
   background: rgba(60, 75, 110, 0.4);
   overflow: hidden;
 }
@@ -319,7 +483,7 @@ html.cursor-idle * {
   inset: 0;
   /* no radius of its own: scaleX would squash it into a sliver, and the track
      above already clips the ends */
-  background: linear-gradient(90deg, #4f7dff, #6fd2ff);
+  background: var(--accent-grad);
   transform-origin: left center;
   /* both of these exist to force a compositor layer, so the motion survives a
      stage that has the main thread pinned */
@@ -327,7 +491,7 @@ html.cursor-idle * {
   /* scaleX, not width: this transition has to survive the stage it is
      announcing (see the rule above). Long and eased so the bar is still
      travelling through a blocking stage rather than snapping and sitting. */
-  transition: transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition: transform 0.5s var(--ease);
 }
 .loadSweep {
   position: absolute;
@@ -354,9 +518,9 @@ html.cursor-idle * {
   gap: 16px;
   width: min(400px, 74vw);
   margin-top: 12px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   letter-spacing: 0.18em;
-  color: #93a3cc;
+  color: var(--ink-dim);
   /* two lines' worth, so a label that wraps on a narrow phone cannot shove
      the bar up the screen mid-load */
   min-height: 2.6em;
@@ -368,128 +532,264 @@ html.cursor-idle * {
   /* never squeezed by a long stage label, and never re-flowed by its own
      digits changing */
   flex: none;
+  font-family: var(--font-display);
   color: #cfe0ff;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.06em;
 }
 .loadErr {
   width: min(400px, 74vw);
-  margin-top: 18px;
+  margin-top: var(--sp-4);
   text-align: left;
-  color: #ffb4c4;
+  color: var(--danger);
   font-size: 12.5px;
   line-height: 1.5;
 }
 .loadErr code {
   display: block;
   margin-top: 6px;
-  color: #8fa2c8;
-  font-size: 11px;
+  color: var(--ink-dim);
+  font-size: var(--fs-xs);
   word-break: break-word;
 }
 
 /* ---------- Panels (settings/controls/garage) ---------- */
 .panel {
+  /* .menuRoot centers its own title/subtitle text (see the overflow-fix
+     comment there), but that inherits into every panel it wraps — settings
+     rows, the controls grid, and garage cards read far better left-aligned,
+     so panels opt back out. */
+  text-align: left;
   width: min(560px, 94vw);
   max-height: 84vh;
   overflow: auto;
-  background: rgba(13, 16, 26, 0.96);
-  border: 1px solid rgba(150, 170, 210, 0.22);
-  border-radius: 14px;
-  padding: 18px 22px;
-  font-size: 13px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4) 22px;
+  font-size: var(--fs-base);
   color: #d5dbea;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+.panel.wide {
+  width: min(760px, 95vw);
 }
 .panel h2 {
+  font-family: var(--font-display);
   margin: 0 0 4px;
-  font-size: 16px;
+  font-size: var(--fs-xl);
+  font-weight: 600;
   letter-spacing: 0.14em;
-  color: #eef2fb;
+  color: var(--ink);
 }
 .panel .jp2 {
-  color: #7d8aa8;
-  font-size: 11px;
-  margin-bottom: 12px;
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+  margin-bottom: var(--sp-3);
 }
 .panel .row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin: 9px 0;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 .panel .row label {
   flex: 1;
 }
+/* Section dividers group the ~20 settings rows into readable clusters
+   instead of one long undifferentiated list — a labelled rule rather than a
+   bare <hr>, reusing the same rule visually so it still reads as one family
+   of separators. */
+.panel .sectionHead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: var(--sp-4) 0 var(--sp-2);
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.panel .sectionHead::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
 .panel input[type="range"] {
   flex: 1.2;
-  accent-color: #5f8dff;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  border: 1px solid var(--border-soft);
+  cursor: pointer;
 }
+.panel input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #0c1020;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+.panel input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  border: 1px solid var(--border-soft);
+}
+.panel input[type="range"]::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #0c1020;
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+.panel input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+/* Custom toggle switch. The rows are dense (~20 of them) so one styled
+   control upgrades every Check() at once — appearance:none on the checkbox
+   itself, the pill track and knob are the box + its ::before, and :checked
+   just slides and lights the knob. */
 .panel input[type="checkbox"] {
-  accent-color: #5f8dff;
-  transform: scale(1.15);
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.panel input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ink-dim);
+  transition: transform 0.15s var(--ease), background 0.15s var(--ease);
+}
+.panel input[type="checkbox"]:checked {
+  background: var(--accent-soft);
+  border-color: var(--border-strong);
+}
+.panel input[type="checkbox"]:checked::before {
+  transform: translateX(16px);
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+.panel input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .panel select,
 .panel button {
-  background: #1a1f30;
+  background: var(--surface-3);
   color: #dfe5f2;
-  border: 1px solid #33405e;
-  border-radius: 7px;
-  padding: 5px 10px;
-  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 6px 11px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   cursor: pointer;
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.panel select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23a6b3d6' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+.panel select:hover,
+.panel button:hover {
+  border-color: var(--border-strong);
+}
+.panel button:active {
+  transform: scale(0.97);
+}
+.panel select:focus-visible,
+.panel button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .panel .val {
   width: 48px;
   text-align: right;
-  color: #9fb0d4;
+  color: var(--ink-dim);
   font-variant-numeric: tabular-nums;
 }
 .panel hr {
   border: 0;
-  border-top: 1px solid rgba(120, 140, 180, 0.16);
-  margin: 12px 0;
+  border-top: 1px solid var(--border-soft);
+  margin: var(--sp-3) 0;
 }
 .panel .btnrow {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-2);
   justify-content: flex-end;
-  margin-top: 14px;
+  margin-top: var(--sp-4);
 }
 
 /* controls table */
 .ctrlGrid {
   display: grid;
   grid-template-columns: 110px 1fr;
-  gap: 7px 16px;
+  gap: 7px var(--sp-4);
   font-size: 13.5px;
   line-height: 1.5;
 }
 .ctrlGrid b {
-  color: #8fd0ff;
+  font-family: var(--font-display);
+  color: var(--accent-2);
   font-weight: 600;
+}
+.ctrlNote {
+  color: var(--ink-faint);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
 }
 
 /* ---------- Garage ---------- */
 .garageCars {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 12px;
-  margin: 14px 0;
+  gap: var(--sp-3);
+  margin: var(--sp-4) 0;
 }
 .carCard {
   position: relative; /* anchors .soonBadge */
-  border: 1px solid rgba(120, 145, 200, 0.25);
-  border-radius: 12px;
-  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-3) 14px;
   cursor: pointer;
-  background: rgba(18, 22, 38, 0.6);
-  transition: all 0.15s;
+  background: var(--surface-2);
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease), box-shadow 0.15s var(--ease);
 }
 .carCard:hover {
-  border-color: rgba(140, 180, 255, 0.6);
+  border-color: var(--border-strong);
+}
+.carCard:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* COMING SOON. The roster is down to one driveable car; the rest keep their
@@ -502,7 +802,7 @@ html.cursor-idle * {
   background: rgba(14, 17, 28, 0.55);
 }
 .carCard.locked:hover {
-  border-color: rgba(120, 145, 200, 0.25); /* no hover affordance on a dead card */
+  border-color: var(--border); /* no hover affordance on a dead card */
 }
 .carCard.locked > *:not(.soonBadge) {
   opacity: 0.42;
@@ -517,22 +817,22 @@ html.cursor-idle * {
   right: 10px;
   z-index: 1;
   padding: 3px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(160, 185, 240, 0.4);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong);
   background: rgba(8, 11, 20, 0.85);
   color: #cddaf5;
   font-size: 9px;
   letter-spacing: 0.14em;
 }
 .carCard.sel {
-  border-color: #6f9dff;
-  box-shadow: 0 0 18px rgba(90, 140, 255, 0.35);
+  border-color: var(--accent);
+  box-shadow: 0 0 18px var(--accent-glow);
   background: rgba(28, 38, 70, 0.7);
 }
 .carCard .carImg {
   aspect-ratio: 480 / 260;
   margin: -4px -6px 6px;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
   overflow: hidden;
   background: radial-gradient(ellipse at 50% 70%, rgba(60, 80, 140, 0.25), rgba(10, 12, 20, 0) 70%);
 }
@@ -543,21 +843,23 @@ html.cursor-idle * {
   display: block;
 }
 .carCard h3 {
+  font-family: var(--font-display);
   margin: 0 0 2px;
-  font-size: 15px;
-  color: #eef2fb;
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--ink);
 }
 .carCard .carJp {
-  color: #7d8aa8;
-  font-size: 11px;
-  margin-bottom: 8px;
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+  margin-bottom: var(--sp-2);
 }
 .statRow {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: #9fb0d4;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--ink-dim);
   margin: 3px 0;
 }
 .statRow span {
@@ -573,13 +875,13 @@ html.cursor-idle * {
 .statBar i {
   display: block;
   height: 100%;
-  background: linear-gradient(90deg, #4f7dff, #6fd2ff);
+  background: var(--accent-grad);
   border-radius: 3px;
 }
 .paintRow {
   display: flex;
-  gap: 8px;
-  margin-top: 10px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
 }
 .paintDot {
   width: 22px;
@@ -591,6 +893,10 @@ html.cursor-idle * {
 .paintDot.sel {
   border-color: #fff;
   box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+}
+.paintDot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 /* A 22px dot is half a tap target. The dot keeps its size and the ::before
    carries the hit area instead — a pseudo-element's clicks dispatch on its
@@ -614,7 +920,7 @@ body.touch .paintDot::before {
 .tc {
   position: fixed;
   bottom: 18px;
-  z-index: 8;
+  z-index: var(--z-touch);
   width: 74px;
   height: 74px;
   border-radius: 50%;
@@ -625,7 +931,7 @@ body.touch .paintDot::before {
   display: none;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(4px);
+  backdrop-filter: blur(var(--blur-sm));
   /* a drag off a puck must not become overscroll, the iOS callout menu, or a
      double-tap zoom — the pointer handlers own the gesture outright */
   touch-action: none;
@@ -633,6 +939,10 @@ body.touch .paintDot::before {
 }
 body.touch .tc {
   display: flex;
+}
+body.touch .tc:active {
+  border-color: var(--accent-line);
+  background: rgba(30, 40, 75, 0.35);
 }
 #tcL { left: 16px; }
 #tcR { left: 104px; }
@@ -671,7 +981,7 @@ body.touch #mmap {
   bottom: 16px;
   width: 132px;
   height: 132px;
-  z-index: 26;
+  z-index: var(--z-wheel);
   display: flex;
   border-radius: 50%;
   border: 4px solid rgba(180, 195, 225, 0.5);
@@ -701,12 +1011,12 @@ body.touch #gearBtn {
   position: fixed;
   top: 10px;
   right: 12px;
-  z-index: 30;
+  z-index: var(--z-gear);
   font-size: 20px;
   color: #cfd6e6;
-  background: rgba(10, 12, 20, 0.55);
-  border: 1px solid rgba(160, 175, 205, 0.25);
-  border-radius: 8px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   width: 38px;
   height: 38px;
   display: flex;
@@ -714,10 +1024,18 @@ body.touch #gearBtn {
   justify-content: center;
   cursor: pointer;
   user-select: none;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
   /* Not `none`: this one is a plain tap target, and touch-action:none would
      also swallow the double-tap-to-zoom suppression browsers give for free.
      `manipulation` keeps the tap instant (no 300 ms click delay) while still
      letting the browser rule out gestures it does not need to wait for. */
   touch-action: manipulation;
-  backdrop-filter: blur(6px);
+  backdrop-filter: blur(var(--blur-sm));
+}
+#gearBtn:hover {
+  border-color: var(--border-strong);
+}
+#gearBtn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
