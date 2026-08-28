@@ -5,7 +5,8 @@ import { HX, LANE_LAT } from "./world/const";
 import { getCorridor, PITCH, PHASE, TOLL } from "./world/corridor";
 import { worldTierCaps, rivalMode } from "./settings";
 import {
-  getRouteGraph, BYPASS, BYPASS_EDGE, DIVERGE_Z, type RoutePose,
+  getRouteGraph, BYPASS, BYPASS_EDGE, DIVERGE_Z, MOUNTAIN_EDGE, MTN,
+  type RoutePose,
 } from "./world/routegraph";
 import { signalPhase, type WorldData } from "./world/data";
 import type { REdge, EdgePose } from "./world/roadnet";
@@ -1432,6 +1433,42 @@ export class Traffic {
   private routes = getRouteGraph();
   /** mergeWindow() walks every bypass station — resolve once */
   private mergeWin = this.routes.mergeWindow();
+  /** …and the mountain road's own merge window, same deal */
+  private mtnMergeWin = this.routes.mergeWindow(this.routes.mtn);
+  /* Corner speed caps for the pass, one per 4 m of arclength: the tightest
+     corner is ~17 m radius, which nobody drives at expressway pace. Smoothed
+     curvature → v = √(A_LAT/κ), clamped to a walking-crawl floor and a
+     mountain-cruise ceiling. Both directions read the same table (the road
+     curves the same both ways); the LOOKAHEAD is applied per direction in
+     updateMountain, so a driver brakes before a hairpin, not inside it. */
+  private mtnCap: Float32Array = (() => {
+    const mt = getRouteGraph().mtn;
+    const st = mt.stations;
+    const n = Math.ceil(mt.len / 4) + 1;
+    const out = new Float32Array(n).fill(24);
+    const A_LAT = 3.4;
+    for (let k = 0; k < n; k++) {
+      const s = k * 4;
+      const i = mt.locate(s);
+      let kap = 0, m = 0;
+      for (let j = Math.max(1, i - 8); j <= Math.min(st.length - 2, i + 8); j++) {
+        const a = st[j - 1], b = st[j + 1];
+        let dh = Math.atan2(b.tx, b.tz) - Math.atan2(a.tx, a.tz);
+        while (dh > Math.PI) dh -= TAU;
+        while (dh < -Math.PI) dh += TAU;
+        kap += Math.abs(dh) / Math.max(0.01, b.s - a.s);
+        m++;
+      }
+      kap /= Math.max(1, m);
+      out[k] = clamp(Math.sqrt(A_LAT / Math.max(1e-4, kap)), 7, 24);
+    }
+    return out;
+  })();
+  /** player's mountain-road surface hit this frame, or null */
+  private playerMt: { s: number } | null = null;
+  private mpose: RoutePose = {
+    x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0, bank: 0,
+  };
   private bpose: RoutePose = {
     x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0, bank: 0,
   };
@@ -2293,6 +2330,82 @@ export class Traffic {
     return false;
   }
 
+  /** Seed a car onto the mountain pass while the player drives it. Two-way:
+      most of the flow is ONCOMING — headlights coming around a rock face are
+      the whole point of the road — with a thin same-direction trickle to
+      overtake. Hard per-direction caps keep it a mountain road, not a
+      mountain jam: the road is one narrow lane each way, so density IS
+      difficulty, and past ~3 cars a side there is nowhere to dodge to.
+      Same hidden-spawn contract as the other spawners; no heavies. */
+  private static readonly MTN_CAP_FWD = 2;
+  private static readonly MTN_CAP_ONC = 3;
+  private trySpawnMountain(
+    n: Npc, player: CarState, camFx: number, camFz: number, hd: number
+  ): boolean {
+    if (!this.ready[n.style]) return false;
+    if (n.type === "truck" || n.type === "bus") return false;
+    const pm = this.playerMt;
+    if (!pm) return false;
+    const mt = this.routes.mtn;
+    let fwd = 0, onc = 0;
+    for (const m of this.npcs) {
+      if (!m.active || !m.hw || m.route !== MOUNTAIN_EDGE) continue;
+      if (m.dir < 0) onc++;
+      else fwd++;
+    }
+    this.rollDriver(n);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const wantOnc =
+        onc < Traffic.MTN_CAP_ONC && (this.rng() < 0.65 || fwd >= Traffic.MTN_CAP_FWD);
+      if (!wantOnc && fwd >= Traffic.MTN_CAP_FWD) return false;
+      const dir = wantOnc ? -1 : 1;
+      /* both directions seed AHEAD of the player along their travel — an
+         oncoming car ahead is one about to come at them */
+      const s = pm.s + rand(40, 230);
+      if (s > mt.len - (dir < 0 ? 40 : 60)) return false;
+      /* oncoming cars below the lay-by have already parked — never seed one
+         mid-manoeuvre */
+      if (dir < 0 && s < MTN.laybyS1 + 30) return false;
+      const laneK = dir < 0 ? 1 : 0;
+      const off = mt.laneOffset(laneK, s);
+      const p = mt.worldOf(s, off, this._cw);
+      if (!this.warpSeed && !this.hidden(player, camFx, camFz, p.x, p.y, p.z, hd, false))
+        continue;
+      let blocked = false;
+      for (const m of this.npcs) {
+        if (!m.active || !m.hw || m.route !== MOUNTAIN_EDGE) continue;
+        if (m.laneK === laneK && Math.abs(m.s - s) < 30) blocked = true;
+      }
+      if (blocked) continue;
+      n.active = true;
+      n.hw = true;
+      n.edge = null;
+      n.dir = dir;
+      n.route = MOUNTAIN_EDGE;
+      n.wantBypass = 0;
+      n.laneK = laneK;
+      n.offCur = n.offT = off + this.biasAtMtn(n);
+      n.s = s;
+      n.wreck = null;
+      n.fade = 1;
+      /* mountain pace: the corner caps in updateMountain govern from here */
+      n.v0 = rand(12, 17) * n.drv.spd;
+      n.v = n.v0 * rand(0.8, 1.0);
+      n.turnCd = rand(2, 8);
+      n.blink = 0;
+      this.placeHwy(n, player.z);
+      n.hVis = this.routes.mtn.poseAt(s, this.mpose).h + (dir < 0 ? Math.PI : 0);
+      return true;
+    }
+    return false;
+  }
+
+  /** clamp(drv.bias) for the pass's single narrow lane per direction */
+  private biasAtMtn(n: Npc) {
+    const m = Math.max(0, MTN.laneW / 2 - n.W / 2 - 0.2);
+    return clamp(n.drv.bias, -m, m);
+  }
+
   /* ---------------- pose helpers ---------------- */
 
   private sampleTravel(n: Npc, sT: number, out: EdgePose) {
@@ -2320,6 +2433,17 @@ export class Traffic {
       Re-adding the right multiple of LOOP puts it back next to `refZ` (always
       the player, so far) without changing x/y, which are already periodic. */
   private placeHwy(n: Npc, refZ: number) {
+    if (n.route === MOUNTAIN_EDGE) {
+      /* same contract as the bypass branch below: edge-frame place, banked
+         cross-fall folded into y, own reused pose scratch. The pass never
+         leaves the canonical band either. */
+      const lat = n.offCur + (n.wob || 0);
+      const p = this.routes.mtn.poseAt(n.s, this.mpose);
+      n.x = p.x + lat * p.nx;
+      n.y = p.y + lat * p.bank;
+      n.z = p.z + lat * p.nz;
+      return;
+    }
     if (n.route === BYPASS_EDGE) {
       /* The bypass never leaves the canonical band, so no lap re-anchoring —
          and the banked cross-fall folds into y (the deck-height snap the
@@ -3461,8 +3585,15 @@ export class Traffic {
        and falls by several metres, so a fixed height threshold would misread
        it near the low points. */
     const deckY = this.cor.heightAt(player.x, player.z, 8);
-    const bySurf = this.routes.surfaceAt(player.x, player.z, 4);
+    /* surfaceAt answers for BOTH new pavements now — split by edge id, or
+       driving the pass would run the bypass spawner and vice versa */
+    const nSurf = this.routes.surfaceAt(player.x, player.z, 4);
+    const bySurf = nSurf && nSurf.edgeId === BYPASS_EDGE ? nSurf : null;
     this.playerBy = bySurf && Math.abs(player.y - bySurf.y) < 7 ? bySurf : null;
+    this.playerMt =
+      nSurf && nSurf.edgeId === MOUNTAIN_EDGE && Math.abs(player.y - nSurf.y) < 7
+        ? { s: nSurf.s }
+        : null;
     {
       /* route-space player slot for lane-change gap acceptance */
       const ps = this.playerSlot;
@@ -3479,7 +3610,8 @@ export class Traffic {
       }
     }
     const playerUp =
-      (deckY !== null && Math.abs(player.y - deckY) < 7) || this.playerBy !== null;
+      (deckY !== null && Math.abs(player.y - deckY) < 7) ||
+      this.playerBy !== null || this.playerMt !== null;
     const cap = Math.round(this.N * clamp(density, 0.15, 1));
     this.occBudget = 40;
     // camera forward, flattened
@@ -3539,9 +3671,9 @@ export class Traffic {
       }
       if (n.active) {
         let soft = false, hard = false;
-        if (n.hw && n.route === BYPASS_EDGE) {
-          /* bypass cars: `n.s` is edge arclength, not a corridor z, so
-             recycling runs on world distance (the town rule) */
+        if (n.hw && n.route !== -1) {
+          /* bypass/mountain cars: `n.s` is edge arclength, not a corridor z,
+             so recycling runs on world distance (the town rule) */
           const d = Math.hypot(n.x - player.x, n.z - player.z);
           soft = d > hd + 430;
           hard = d > hd + 560;
@@ -3585,7 +3717,7 @@ export class Traffic {
       let worst: Npc | null = null, wd = -1;
       for (const n of this.npcs)
         if (n.active && n.hw && !n.wreck && !n.rival) {
-          const d = n.route === BYPASS_EDGE
+          const d = n.route !== -1
             ? Math.hypot(n.x - player.x, n.z - player.z)
             : Math.abs(this.cor.deltaZ(player.z, n.s));
           if (d > wd) { wd = d; worst = n; }
@@ -3611,11 +3743,17 @@ export class Traffic {
       // file at the head of the idle pool could starve the live styles
       if (!this.ready[n.style]) continue;
       /* while the player drives the bypass, about half the stream is seeded
-         onto it ahead of them; the rest keeps the main deck alive below */
+         onto it ahead of them; the rest keeps the main deck alive below.
+         Same deal on the pass, but SPARSE — a mountain road with expressway
+         density is undodgeable — and capped per direction in the spawner. */
       const onBy =
         this.playerBy && this.rng() < 0.55 &&
         this.trySpawnBypass(n, player, camFx, camFz, hd);
-      if (onBy || this.trySpawnHwy(n, player, playerUp, camFx, camFz, hd)) hwyCount++;
+      const onMt =
+        !onBy && this.playerMt && this.rng() < 0.5 &&
+        this.trySpawnMountain(n, player, camFx, camFz, hd);
+      if (onBy || onMt || this.trySpawnHwy(n, player, playerUp, camFx, camFz, hd))
+        hwyCount++;
       spawnBudget--;
     }
     while (spawnBudget > 0 && townCount < townTarget && (idleTown.length || idleHwy.length)) {
@@ -3888,6 +4026,7 @@ export class Traffic {
 
       if (n.rival) this.updateRival(n, dt, player, playerSpeed, panic);
       else if (n.hw && n.route === BYPASS_EDGE) this.updateBypass(n, dt, v0, lead, panic);
+      else if (n.hw && n.route === MOUNTAIN_EDGE) this.updateMountain(n, dt, v0, lead, panic);
       else if (n.hw) this.updateHwy(n, dt, v0, lead, panic);
       else this.updateTown(n, dt, v0, lead, phase, panic);
 
@@ -3919,6 +4058,9 @@ export class Traffic {
       let targetH: number;
       if (n.hw && n.route === BYPASS_EDGE) {
         targetH = this.routes.bypass.poseAt(n.s, this.bpose).h;
+      } else if (n.hw && n.route === MOUNTAIN_EDGE) {
+        // oncoming cars face down the edge the other way
+        targetH = this.routes.mtn.poseAt(n.s, this.mpose).h + (n.dir < 0 ? Math.PI : 0);
       } else if (n.hw) {
         // the rival points where it is actually going, slide included
         targetH = n.rival ? this.riv.hTarget : this.cor.pose(n.s, this.cpose).h;
@@ -4213,6 +4355,11 @@ export class Traffic {
          the dashcam that reads as the flash doing nothing rather than as the
          rival ignoring you. */
       if (n.rival) continue;
+      /* Mountain cars are not candidates either: the pass is one lane each
+         way, so there is no lane to yield into — and the hail "move over"
+         path commits pendK, which only updateHwy/updateBypass ever apply, so
+         a hailed pass car would blink forever and never move. */
+      if (n.route === MOUNTAIN_EDGE) continue;
       // same road level: the deck runs over town streets, and you cannot flash
       // at something on a different deck through the windshield
       if (Math.abs(player.y - n.y) > 3) continue;
@@ -4958,6 +5105,110 @@ export class Traffic {
     }
   }
 
+  /** corner-cap lookup with lookahead in the travel direction: the cap that
+      binds is the tightest corner within braking distance, so a driver slows
+      BEFORE a hairpin the way a person does, not inside it */
+  private mtnCapAt(s: number, dir: number, v: number) {
+    const look = Math.max(16, v * 2.4);
+    let cap = 24;
+    for (const d of [0, look * 0.5, look]) {
+      const k = Math.round(Math.max(0, Math.min(this.routes.mtn.len, s + dir * d)) / 4);
+      if (k >= 0 && k < this.mtnCap.length) cap = Math.min(cap, this.mtnCap[k]);
+    }
+    return cap;
+  }
+
+  /* Mountain-pass driving: one narrow lane each way, no lane changes, corner
+     speed caps, and a direction. Forward (dir +1) runs the pass and merges
+     onto the deck through the mtn merge window exactly the way the bypass
+     merges. ONCOMING (dir −1) runs s-descending in its own (+lat, river-side)
+     lane and can never reach the one-way deck: it pulls into the lay-by
+     pocket before the diverge wedge, stops, and waits to be recycled — the
+     queue behind a parked car is ordinary IDM against a stopped leader.
+     Cross-stream safety is structural, not behavioural: each direction holds
+     its own lane centre (±laneW/2, bias clamped inside the lane), neither
+     ever targets the other's, so the streams are laterally disjoint by
+     construction — test/mountain-traffic-sim.mjs asserts exactly that. */
+  private updateMountain(
+    n: Npc, dt: number, v0: number,
+    lead: { ds: number; v: number } | null, panic = false
+  ) {
+    const drv = n.drv;
+    const mt = this.routes.mtn;
+    const mw = this.mtnMergeWin;
+    v0 = Math.min(v0 * 0.7, this.mtnCapAt(n.s, n.dir, n.v) * (0.8 + 0.25 * drv.spd));
+
+    const aMax = 1.5 * drv.acc, bCom = 2.6, T = 1.4 * drv.gap, s0 = 2.3 + 1.4 * (drv.gap - 1);
+    let acc: number;
+    if (lead) {
+      const dv = n.v - lead.v;
+      const sStar = s0 + n.v * T + (n.v * dv) / (2 * Math.sqrt(aMax * bCom));
+      acc = aMax * (1 - Math.pow(n.v / v0, 4) - Math.pow(sStar / Math.max(lead.ds, 0.55), 2));
+    } else acc = aMax * (1 - Math.pow(n.v / v0, 4));
+
+    if (n.dir < 0) {
+      /* the lay-by stop: an IDM stop against a virtual wall at the stop
+         line, plus the pull into the pocket over the last stretch */
+      const stopS = MTN.laybyS0 + 18;
+      const ds = n.s - stopS - n.L / 2;
+      if (ds < Math.max(30, n.v * 4)) {
+        const sStar = 2.0 + n.v * T + (n.v * n.v) / (2 * Math.sqrt(aMax * bCom));
+        acc = Math.min(acc,
+          aMax * (1 - Math.pow(n.v / Math.max(4, v0), 4) - Math.pow(sStar / Math.max(ds, 0.4), 2)));
+      }
+    } else if (n.s >= mw.s0 - 60) {
+      /* the merge, verbatim from the bypass: signal, take an accepted gap in
+         the deck's fast lane inside the window, forced by the wedge end */
+      n.blink = -1;
+      if (n.s >= mw.s0) {
+        const zc = this.cor.wrapZ(this.cor.zAt(n.x, n.z));
+        const k = this.cor.lanes(zc) - 1;
+        const off2 = this.cor.laneOffset(k, zc);
+        if (this.laneClearAt(n, zc, off2, -1) || n.s > mw.s1 - 6) {
+          n.route = -1;
+          n.dir = 1;
+          n.wantBypass = 0;
+          n.s = zc;
+          n.laneK = k;
+          n.pendK = -1;
+          n.offCur = this.cor.latAt(n.x, n.z);
+          n.offT = off2 + this.biasAt(n, zc);
+          n.laneRate = this.cor.lanePitch(zc) / 1.6;
+          n.blink = -1;
+          return;
+        }
+        acc = Math.min(acc, n.s > mw.s1 - 20 ? -2.8 : -1.4);
+      }
+    }
+
+    if (panic) acc = Math.min(acc, -6.5);
+    acc = clamp(acc, -8.5, 2.8);
+    n.brake = acc < (n.brake ? -0.12 : -0.35);
+    n.v = Math.max(0, n.v + acc * dt);
+    n.s += n.dir * n.v * dt;
+    if (n.dir > 0) n.s = Math.min(mt.len - 0.5, n.s);
+    /* belt and braces: whatever the following model does, a wrong-way car
+       never proceeds past the lay-by toward the one-way wedge */
+    else n.s = Math.max(MTN.laybyS0 - 2, n.s);
+
+    /* lane hold. No lane changes on a pass — the only lateral motion is the
+       oncoming stream easing into the lay-by pocket as it stops. */
+    let latT = mt.laneOffset(n.laneK, n.s) + this.biasAtMtn(n);
+    if (n.dir < 0) {
+      /* pull into the pocket by however much of it is actually OPEN here —
+         a fixed target had the body leaning on the stone parapet before the
+         pocket's own taper had opened (the sim's lane-envelope assert) */
+      const pocket = Math.max(0, mt.halfWidths(n.s).hwL - MTN.half - 0.35);
+      if (pocket > 0) latT += Math.min(pocket, MTN.laybyW - 0.35);
+    }
+    n.offT = latT;
+    const dOff = n.offT - n.offCur;
+    const rate = LANE_FOLLOW_RATE;
+    if (Math.abs(dOff) > 0.02) n.offCur += clamp(dOff, -rate * dt, rate * dt);
+    else n.offCur = n.offT;
+    if (n.blink !== 0 && n.dir > 0 && n.s < mw.s0 - 60) n.blink = 0;
+  }
+
   /* ---------------- instanced rendering ----------------
      One pass builds every instance buffer: every body goes into its style's
      single instanced mesh (the Orchids models are 0.3-2.6k triangles — cheap
@@ -4999,7 +5250,9 @@ export class Traffic {
          gate matches the lamp pools' own boolean; the tier gate is baked into
          the tables. One vec3 write per car per frame, no searches. */
       let wshR = 0, wshG = 0, wshB = 0;
-      if (night && n.hw) {
+      /* the mountain pass is unlit by design (four waypoint glows, no
+         street lighting), so its cars carry no streetlight wash at all */
+      if (night && n.hw && n.route !== MOUNTAIN_EDGE) {
         let w = 0;
         if (n.route === BYPASS_EDGE) {
           const ph = PHASE.light ?? 0;
@@ -5195,7 +5448,9 @@ export class Traffic {
           const ahead = n.L / 2 + sl * 0.42;
           const grade = !n.hw ? 0
             : n.route === BYPASS_EDGE ? this.routes.bypass.poseAt(n.s, this.bpose).grade
-              : this.cor.pose(n.s, this.cpose).grade;
+              : n.route === MOUNTAIN_EDGE
+                ? this.routes.mtn.poseAt(n.s, this.mpose).grade * n.dir
+                : this.cor.pose(n.s, this.cpose).grade;
           const q = 1 / Math.sqrt(1 + grade * grade);
           const sp = -grade * q, cp = q; // pitch that lays the quad on the slope
           const o = pk * 16;
