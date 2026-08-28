@@ -784,6 +784,19 @@ const WLINE = {
   scanEvery: 0.3, scanJitter: 0.2,
 };
 
+/* No Hesi scoring cadence (see scoreEvents/the close-call block). Deliberately
+   short next to the close-call audio's ~10s per-driver cooldown: audio is
+   avoiding a chorus of rare, discrete events, this is trying to keep up with
+   a player stringing several genuine near-misses together in a few seconds. */
+const NEARMISS = {
+  /** this car won't count again this soon (s) */
+  npcCd: 1.4,
+  /** …and nothing else in the fleet counts this soon either (s) — keeps one
+      near-miss encounter, however many cars are close, from paying out more
+      than once, without silencing genuinely separate weaves seconds apart */
+  globalCd: 0.35,
+};
+
 /* ===================== the rival ("rabbit") =====================
 
    An optional, persistent pace car (settings.rival, toggled from the start
@@ -1081,6 +1094,9 @@ export interface Npc {
   /** set the frame a close call with the player fires, else null; cooldown in ccCd */
   ccKind: "horn" | "chirp" | null;
   ccCd: number;
+  /** cooldown on THIS car counting again toward the No Hesi score — see
+      globalScoreCd */
+  scoreCd: number;
   /* ---- horn/flash reactions (see the HAIL block) ---- */
   /** how many gestures this car has been on the receiving end of this life —
       the k of the saturating curve. Never decays; that is what bounds it. */
@@ -1443,6 +1459,14 @@ export class Traffic {
       independently qualify in the same window, so weaving through a
       crowded scene can't produce a chorus of horns/chirps in short order. */
   private globalCcCd = 0;
+  /* No Hesi scoring feed (see scoreEvents) — its own cooldown, deliberately
+     shorter than the close-call audio's: that one is tuned to avoid a horn
+     "chorus" (rare, discrete, per-driver-personality events), this one has
+     to keep up with a player stringing several genuine near-misses together
+     in a few seconds, which is the entire combo fantasy. Same detection and
+     grading, different cadence. */
+  private globalScoreCd = 0;
+  private _scoreGrades: number[] = [];
   /** horn state last frame, and how long it has been held — update() turns the
       continuous `hornHeld` it is handed into discrete gestures from these, so
       the flash gesture is the only one the engine has to edge-detect itself */
@@ -1776,7 +1800,7 @@ export class Traffic {
         brake: false,
         blink: 0, blinkT: 0, turnCd: rand(2, 8), nudgeT: 0,
         hVis: 0, x: 0, y: -999, z: 0, spin: 0, wob: 0,
-        wreck: null, fade: 1, rival: false, ccKind: null, ccCd: 0,
+        wreck: null, fade: 1, rival: false, ccKind: null, ccCd: 0, scoreCd: 0,
         hailGest: 0, hailP: 0, hailAt: -1e9, hailDone: false, hailAck: 0, hailMad: 0,
         nudgeDwell: 0, nudgeKind: 0, nudgeLat: 0, nudgeCur: 0, nudgeHold: 0,
         nudgeGest: 0, nudgeRollAt: -1e9,
@@ -3278,6 +3302,17 @@ export class Traffic {
     return out;
   }
 
+  /** No Hesi scoring feed: the closeness grade (0..1, tighter is higher) of
+      every near-miss that fired THIS frame — same detection as closeCalls'
+      near-miss half, independent cooldown (see the NEARMISS block), and NOT
+      gated on CLOSE_CALL_AUDIO, so scoring works with the close-call sound
+      left off. Usually empty; can hold more than one value on a frame where
+      several cars register at once. Reuses an array — read before the next
+      update(). */
+  scoreEvents(): number[] {
+    return this._scoreGrades;
+  }
+
   /** Cheap per-frame feed for an audio doppler pool: the `count` nearest
       active NPCs to a listener point, nearest first, with world position and
       velocity. Returns the reused backing array (fixed capacity, currently
@@ -3474,6 +3509,8 @@ export class Traffic {
     else if (!wantRival && this.rival) this.releaseRival();
     if (this.rival && this.warpSeed) this.seedRival(player);
     this.globalCcCd = Math.max(0, this.globalCcCd - dt);
+    this.globalScoreCd = Math.max(0, this.globalScoreCd - dt);
+    this._scoreGrades.length = 0;
 
     /* Budget follows the player. On the deck almost everything goes on the
        deck; in town the deck only keeps a skeleton crew — and none at all once
@@ -3797,7 +3834,9 @@ export class Traffic {
       /* player as obstacle */
       let panic = false;
       let nearPass = false;
+      let nearPassGrade = 0;
       n.ccCd = Math.max(0, n.ccCd - dt);
+      n.scoreCd = Math.max(0, n.scoreCd - dt);
       n.ccKind = null;
       if (Math.abs(player.y - n.y) < 3) {
         const dx = player.x - n.x, dz = player.z - n.z;
@@ -3827,7 +3866,15 @@ export class Traffic {
         // side window / ahead -5..11 / combined speed >9 to a real near-miss;
         // tuned against a Monte Carlo sim of a 2-minute aggressive weave to
         // land around 5-10 total reactions rather than dozens.
-        if (side > 0.3 && side < 0.9 && ahead > -1 && ahead < 4 && playerSpeed + n.v > 28) nearPass = true;
+        if (side > 0.3 && side < 0.9 && ahead > -1 && ahead < 4 && playerSpeed + n.v > 28) {
+          nearPass = true;
+          /* Closeness grade for the No Hesi scoring feed (see scoreEvents) —
+             the SAME window as the detection above, just turned into a 0..1
+             continuous read instead of a boolean: 0.3 m (the tightest this
+             ever fires) grades 1, 0.9 m (the threshold) grades 0. Keep these
+             two literals in lockstep with the ones in the condition above. */
+          nearPassGrade = clamp(1 - (side - 0.3) / (0.9 - 0.3), 0, 1);
+        }
       } else if (n.hw && !n.rival && (n.nudgeCur !== 0 || n.nudgeDwell !== 0)) {
         /* player is on another deck: nothing can be crowding this car, but a
            nudge already committed still has to release and ease back rather
@@ -3856,6 +3903,14 @@ export class Traffic {
         n.ccKind = n.drv.timid ? "chirp" : "horn";
         n.ccCd = 10 + rand(0, 3);
         this.globalCcCd = Traffic.CC_GLOBAL_GAP;
+      }
+      /* No Hesi scoring feed — same near-miss read as the close-call audio
+         above, independent cooldown (see globalScoreCd). Not gated on
+         CLOSE_CALL_AUDIO: the feature this machinery was kept for. */
+      if (nearPass && n.scoreCd <= 0 && this.globalScoreCd <= 0) {
+        n.scoreCd = NEARMISS.npcCd;
+        this.globalScoreCd = NEARMISS.globalCd;
+        this._scoreGrades.push(nearPassGrade);
       }
 
       /* smooth heading + place */
