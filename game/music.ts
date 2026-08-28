@@ -482,6 +482,12 @@ export class MusicPlayer {
       playhead is only meaningful (and only worth banking) when it was */
   private soundOn = false;
   private vol = 1;
+  /** In-cabin volume knob, on top of `vol` — the head unit's own level, not
+      the settings menu's. Session-only by design: a real stereo forgets where
+      its knob sat between drives too, and persisting it would tangle this
+      module with the settings profile it otherwise has nothing to do with.
+      Stepped by cockpit.ts's volume buttons; see stepVolume(). */
+  private cabinVol = 1;
 
   constructor() {
     this.enabled =
@@ -733,7 +739,22 @@ export class MusicPlayer {
       game/audio.ts gets through setLevels(). */
   setLevels(vol: number) {
     this.vol = vol;
-    if (this.ready && this.running) this.rampMaster(MUSIC_LEVEL * vol, 0.08);
+    if (this.ready && this.running) this.rampMaster(MUSIC_LEVEL * vol * this.cabinVol, 0.08);
+  }
+
+  /** Step the in-cabin volume knob, from a click on the head-unit's own
+      +/- (cockpit.ts). Quarter steps: 0, .25, .5, .75, 1 — coarse enough that
+      each click is an audible move, which is the whole point of a knob you
+      can see the effect of. Returns the toast text; null off the rails
+      (disabled, or before the click that unlocks the AudioContext primes it —
+      same "no audio yet" case click() already returns null for). */
+  stepVolume(dir: 1 | -1): string | null {
+    if (!this.enabled) return null;
+    this.prime();
+    if (!this.ready) return null;
+    this.cabinVol = clamp(Math.round((this.cabinVol + dir * 0.25) * 4) / 4, 0, 1);
+    if (this.running) this.rampMaster(MUSIC_LEVEL * this.vol * this.cabinVol, 0.06);
+    return "VOLUME " + Math.round(this.cabinVol * 100) + "%";
   }
 
   private onVisibility = () => {
@@ -773,7 +794,7 @@ export class MusicPlayer {
       // rather than fired late.
       this.pieceStart = this.ctx.currentTime + 0.06 - this.offset;
       this.syncCursor();
-      this.rampMaster(MUSIC_LEVEL * this.vol, 0.12);
+      this.rampMaster(MUSIC_LEVEL * this.vol * this.cabinVol, 0.12);
       this.startTimer();
       this.tick();
     } else {

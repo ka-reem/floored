@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { clamp, mulberry32, rrand, TAU, type Rng } from "../util";
+import { clamp, mulberry32, rrand, sstep, TAU, type Rng } from "../util";
 import { worldTierCaps } from "../settings";
 
 /* Night cloudscape — a procedural deck of lit-edged cloud over the aurora.
@@ -49,6 +49,9 @@ export interface NightCloudsRoll {
   coverage: number;
   scale: number;
   drift: number;
+  /** 0 on most nights; up to 1 on the ~30% of seeds that roll a broken-storm
+      deck — more sky covered, torn ridged tops, faster drift. */
+  storm: number;
 }
 
 export interface NightClouds {
@@ -65,6 +68,21 @@ export interface NightClouds {
   /** live direction of the moon, unit length. Must match the moon sprite that
       sky.ts parks in the backdrop — see the uMoon comment. */
   moon: THREE.Vector3;
+  /** live 0..1 — how stormy the deck is right now. Rolled per seed (most
+      nights 0), and the knob to push to 1 to audition a broken-storm deck on
+      any sky without rerolling it. */
+  storm: number;
+  /** live 0..2 — the high cirrus veil layer's strength, 1 = as shipped.
+      Desktop/mobile-high only; mobile-base never builds the layer. */
+  veilAmt: number;
+  /** live 0..3 — how hard the low sun rims the deck at dusk and dawn,
+      1 = as shipped. 0 restores the old flat crossfade. */
+  duskAmt: number;
+  /** live direction of the sun, unit length. engine.weather() re-derives it
+      every frame from the same clock angle the directional light uses, so
+      re-aiming it by hand only sticks for a frame — audition the dusk look
+      with __neonx.setTime(17.8) and dial duskAmt instead. */
+  sun: THREE.Vector3;
   /** re-tint from whatever is lighting the deck right now — the aurora's
       palette under curtains, moonlight in the gaps between them, and a blend
       of the two while an arc fades. aurora.ts picks the mix and calls this
@@ -72,7 +90,10 @@ export interface NightClouds {
       is moving and not at all in between. */
   tint(lo: THREE.Vector3, hi: THREE.Vector3): void;
   reroll(seed?: number): NightCloudsRoll;
-  update(now: number, dayF: number, fogMul: number): void;
+  /** sunAng is the clock angle engine.weather() aims the directional light
+      with — the deck derives the dusk rim's direction and strength from it.
+      Optional so headless sims that only tick the night keep compiling. */
+  update(now: number, dayF: number, fogMul: number, sunAng?: number): void;
 }
 
 export function buildNightClouds(seed: number): NightClouds {
@@ -101,20 +122,50 @@ export function buildNightClouds(seed: number): NightClouds {
      moon, so it is a uniform and `__clouds.moon` re-aims it live. */
   const uMoon = { value: new THREE.Vector3(-0.392, 0.545, -0.741) };
   const uMoonAmt = { value: 1 };
+  /* Direction of the sun. Unlike uMoon this is not hand-coupled to a sprite:
+     engine.weather() re-derives it every frame from the same `sa` clock angle
+     it aims the directional light with (via update()'s sunAng), so the rim on
+     the deck and the light on the road always agree about where the sun is.
+     The default only matters for headless sims that never pass sunAng. */
+  const uSun = { value: new THREE.Vector3(-0.83, 0.1, -0.55).normalize() };
+  /* Dusk envelope × the duskAmt knob. 0 through the whole night and the whole
+     high day — the rim exists only while the sun is within a few degrees of
+     the horizon, which is what keeps it a sunset and not a second moon. */
+  const uDusk = { value: 0 };
+  const uStorm = { value: 0 };
+  const uVeil = { value: 1 };
 
   function applyRoll(s: number): NightCloudsRoll {
     const rng: Rng = mulberry32(s ^ 0x9e3779b9);
     /* Coverage is the one value that can ruin a night in either direction:
        too low and it is an overcast lid that hides the aurora, too high and
-       that hides the aurora entirely. This range runs from "scattered" to
-       "broken", never to "overcast". */
+       there is no deck at all. NOTE THE SIGN: uCov is a threshold on the
+       density field, so LOWER means MORE cloud. This base range runs from
+       "broken" (0.56) to "scattered" (0.66), never to "overcast". */
     const cov = rrand(rng, 0.56, 0.66);
     const scale = rrand(rng, 0.42, 0.78);
     const drift = rrand(rng, 0.6, 1.5);
-    uCov.value = cov;
+    /* The storm draw. Most nights roll 0 and keep the calm deck exactly as it
+       was; the top ~30% of draws ramp smoothly into a broken-storm sky —
+       coverage pushed DOWN past the calm range's floor (more sky covered,
+       still well short of the overcast lid that would hide the aurora),
+       ridged tops folded in by the shader, faster drift. Smooth because a
+       ramp keeps near-miss seeds looking like heavy weather rather than
+       snapping between two fixed decks. This draw comes AFTER the original
+       three so it only consumes new rng — the local mulberry32 stream, not
+       the world's rand(), so city layouts are untouched. */
+    const sr = rng();
+    const storm = sr < 0.7 ? 0 : (sr - 0.7) / 0.3;
+    const covS = cov - storm * 0.1;
+    const driftS = drift * (1 + storm * 0.4);
+    uCov.value = covS;
     uScale.value = scale;
-    uDrift.value = drift;
-    return { coverage: +cov.toFixed(3), scale: +scale.toFixed(3), drift: +drift.toFixed(3) };
+    uDrift.value = driftS;
+    uStorm.value = storm;
+    return {
+      coverage: +covS.toFixed(3), scale: +scale.toFixed(3),
+      drift: +driftS.toFixed(3), storm: +storm.toFixed(3),
+    };
   }
 
   /* Only the sky above the horizon. The deck's own bottom fade dies a couple
@@ -129,13 +180,14 @@ export function buildNightClouds(seed: number): NightClouds {
       uAmt: { value: 1 },
       uDay: { value: 0 },
       uCov, uScale, uDrift, uLit, uDark, uCity, uMoon, uMoonAmt,
+      uSun, uDusk, uStorm, uVeil,
     },
     vertexShader: `varying vec3 vDir;
 void main(){ vDir=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }`,
     fragmentShader: `precision highp float;
 varying vec3 vDir;
-uniform float uTime,uAmt,uDay,uCov,uScale,uDrift,uMoonAmt;
-uniform vec3 uLit,uDark,uCity,uMoon;
+uniform float uTime,uAmt,uDay,uCov,uScale,uDrift,uMoonAmt,uDusk,uStorm,uVeil;
+uniform vec3 uLit,uDark,uCity,uMoon,uSun;
 
 float h21(vec2 p){ p=fract(p*vec2(123.34,456.21)); p+=dot(p,p+45.32); return fract(p.x*p.y); }
 float vn(vec2 p){ vec2 i=floor(p),f=fract(p); f=f*f*(3.-2.*f);
@@ -145,6 +197,12 @@ float fbm2(vec2 p){ float s=vn(p)*.62; p*=2.07; return s+vn(p)*.38; }
 float fbm3(vec2 p){ float s=vn(p)*.52; p*=2.03; s+=vn(p)*.30;
 #if LOWQ == 0
  p*=2.07; s+=vn(p)*.18;
+ /* 4th octave, RIDGED: folding the noise at its midline creases the smooth
+    tops into torn cauliflower edges — the shape difference between "haze"
+    and "weather". Centred on its own mean (~.34) so the sum's distribution
+    stays where the cov/core threshold maths below expects it, and weighted
+    up on storm nights, where the tearing is most of the drama. */
+ p*=2.13; float rr=1.-abs(vn(p)*2.-1.); s+=(rr*rr-.34)*(.06+.10*uStorm);
 #endif
  return s; }
 
@@ -176,7 +234,21 @@ void main(){
     sky. A high-frequency bite taken only out of the body (never the core)
     turns those edges wispy. */
  body*=.66+.34*vn(p*3.1+q*2.+vec2(t*.02,0.));
- if(body<=.001){ gl_FragColor=vec4(0.); return; }
+ float av=0.;
+#if LOWQ == 0
+ /* A second deck, ~2.4× higher: same flat-plane divide, tighter cells (a
+    higher layer subtends smaller ones), its own faster drift on a different
+    heading. The two layers sliding against each other is real parallax on a
+    fixed sphere — the depth cue a single deck can never give. It reuses the
+    warp field q, so the whole layer costs one fbm2 (two fetches). Behind the
+    main deck in the composite below, because it is above it. */
+ float raw2=fbm2(p*2.4+q*1.1+vec2(-t*.019,t*.012));
+ float veil=smoothstep(.58,.82,raw2);
+ // low like everything else: gone by ~53° elevation, and eased in above the
+ // haze band — the dashcam window is 3–23°
+ av=veil*smoothstep(.035,.16,ey)*(1.-smoothstep(.30,.80,ey)*.55)*uVeil*uAmt*.16;
+#endif
+ if(body<=.001&&av<=.001){ gl_FragColor=vec4(0.); return; }
  /* Horizon falloff. Two jobs: the perspective divide goes singular down
     there, and the last couple of degrees belong to haze and the skyline
     anyway. A smoothstep, so the deck dissolves into the horizon rather than
@@ -192,8 +264,10 @@ void main(){
     at night is only really visible where something is lighting it, so the
     shadowed core is thinned rather than thickened — the aurora bleeds
     through it and a hard silhouette becomes a veil. The .70 ceiling means no
-    part of the deck is ever a solid lid. */
- float a=body*(1.-core*.55)*lowFade*highFade*uAmt*.70;
+    part of the deck is ever a solid lid — storm nights get a slightly
+    higher one (~.80 at full storm): heavy weather is allowed to be heavier,
+    but the cores stay thinned. */
+ float a=body*(1.-core*.55)*lowFade*highFade*uAmt*.70*(1.+uStorm*.14);
  // edges lit, cores in shadow: one noise fetch, two thresholds
  vec3 col=mix(uLit,uDark,core);
  // a touch of extra warmth in the lowest, most distant cloud — the light a
@@ -212,13 +286,37 @@ void main(){
  float md=max(0.,dot(d,uMoon));
  float md3=md*md*md;
  col+=vec3(.62,.68,.86)*uMoonAmt*((1.-core)*md3*.18+md3*md3*md3*.26);
- // daylight: hand the deck back to plausible grey-blue so the day sky is not
- // wearing the night's palette
- col=mix(col,mix(vec3(.80,.83,.90),vec3(.30,.34,.44),core),uDay);
+ /* Composite the high veil BEHIND the main deck (it is above it, so from
+    below the low deck occludes). Thin cirrus is nearly all lit edge, so it
+    takes the lit hue plus its share of moonlight and never a shadow core. */
+ vec3 cv=uLit*.58+vec3(.025)+vec3(.62,.68,.86)*uMoonAmt*md3*.15;
+ float A=a+av*(1.-a);
+ col=(col*a+cv*av*(1.-a))/max(A,1e-4);
+ /* Daylight: a dayF-and-sun-angle gradient instead of the old flat grey-blue.
+    At dusk the cores deepen toward violet-grey and the sunward side of the
+    deck warms; by high day uDusk is 0 and this collapses to exactly the
+    plausible grey-blue it replaced. */
+ float sd=max(0.,dot(d,uSun));
+ float sd3=sd*sd*sd;
+ // gradient mixes saturate at 1 so a cranked duskAmt (0..3) only ever means
+ // a hotter rim below, never day colours extrapolated past their targets
+ float dw=min(uDusk,1.);
+ vec3 dayEdge=mix(vec3(.80,.83,.90),vec3(1.0,.55,.30),dw*(.30+.70*sd));
+ vec3 dayCore=mix(vec3(.30,.34,.44),vec3(.34,.26,.40),dw);
+ col=mix(col,mix(dayEdge,dayCore,core),uDay);
+ /* SUNSET RIM — the moon lobe's warm twin, aimed down the live sun angle.
+    Same construction: a broad cos^3 forward-scatter over the sunward sky
+    plus a tighter triple-cubed streak near the disc, both powers of a
+    clamped dot so nothing here can print an edge. Applied after the day
+    crossfade so the rim rides the dusk deck instead of being faded out by
+    it, and strongly saturated on purpose — the POV grade's sky pulldown
+    gates on low saturation, so an orange this deep punches straight through
+    while grey haze around it is crushed. */
+ col+=vec3(1.0,.42,.16)*uDusk*((1.-core)*sd3*.34+sd3*sd3*sd3*.30);
  // sub-LSB dither — a smooth alpha ramp across the whole sky is exactly where
  // 8-bit banding shows first
  float dz=(h21(gl_FragCoord.xy+fract(uTime))-.5)*.004;
- gl_FragColor=vec4(max(col+dz,vec3(0.)),clamp(a+dz,0.,1.));
+ gl_FragColor=vec4(max(col+dz,vec3(0.)),clamp(A+dz,0.,1.));
 }`,
     transparent: true,
     depthWrite: false,
@@ -241,6 +339,12 @@ void main(){
     amount: 1,
     moonAmt: 1,
     moon: uMoon.value,
+    // applyRoll above just wrote the seed's storm draw into the uniform;
+    // start the live knob on that value so update() carries it forward
+    storm: uStorm.value,
+    veilAmt: 1,
+    duskAmt: 1,
+    sun: uSun.value,
     tint(lo: THREE.Vector3, hi: THREE.Vector3) {
       // lit rim takes the aurora's crown hue, held well under the grade's
       // white-clip so a rim stays coloured instead of bleaching
@@ -255,9 +359,12 @@ void main(){
     },
     reroll(s?: number) {
       api.roll = applyRoll(s ?? ((Math.random() * 0xffffffff) >>> 0));
+      // the reroll's storm draw replaces any live override — a new sky is a
+      // new night's weather, and update() reads the knob, not the uniform
+      api.storm = api.roll.storm;
       return api.roll;
     },
-    update(now: number, dayF: number, fogMul: number) {
+    update(now: number, dayF: number, fogMul: number, sunAng?: number) {
       mat.uniforms.uTime.value = now;
       mat.uniforms.uDay.value = clamp(dayF * 1.25, 0, 1);
       /* Unlike the aurora, cloud does not care what time it is — it is there
@@ -274,6 +381,25 @@ void main(){
          second, wrongly placed sun in it. */
       mat.uniforms.uMoonAmt.value =
         clamp(api.moonAmt, 0, 3) * (1 - clamp(dayF * 1.25, 0, 1));
+      mat.uniforms.uStorm.value = clamp(api.storm, 0, 1);
+      mat.uniforms.uVeil.value = clamp(api.veilAmt, 0, 2);
+      if (sunAng !== undefined) {
+        /* Same construction as the directional light's position in
+           engine.weather() — (-cos·520, sin·640, -260) around the car —
+           minus its 120 m night floor: the rim needs the TRUE sun, which
+           keeps setting below the horizon after the light clamps, because
+           that last stretch (sun just under, clouds still catching it) IS
+           the sunset. */
+        const se = Math.sin(sunAng);
+        uSun.value.set(-Math.cos(sunAng) * 520, se * 640, -260).normalize();
+        /* The dusk window, twice a day and ~0 everywhere else: eases in
+           from ~13° under the horizon (full by 2° under — twilight, the
+           underlit-cloud stretch) and back out by ~25° up, where the sky is
+           simply day. Both edges smooth — the rim fades, it never pops. */
+        const dusk =
+          sstep((se + 0.22) / 0.18) * (1 - sstep((se - 0.12) / 0.3));
+        mat.uniforms.uDusk.value = clamp(api.duskAmt, 0, 3) * dusk;
+      }
     },
   };
   return api;

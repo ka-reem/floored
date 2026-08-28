@@ -58,6 +58,30 @@ export interface UiBridge {
     contention with these and there is nothing to hold back for. */
 const NPC_VOICES = 8;
 
+/** No Hesi scoring loop (see noHesiUpdate/traffic.ts's scoreEvents). SPEED +
+    NEAR MISSES build score; contact resets the multiplier, never the total —
+    this is a running arcade score for the drive, not a life. */
+const NOHESI = {
+  /** minimum speed, m/s, for either scoring or combo decay to apply at all —
+      crawling through a jam should not slowly leak the multiplier */
+  speedFloor: 12,
+  /** points/second at combo x1 and speedFloor+1 m/s, roughly — points ≈
+      speed * combo * this * dt */
+  pointsScale: 9,
+  /** combo growth per near-miss event, scaled by its closeness grade (0..1
+      from traffic.ts) — a graze at the grading floor barely moves it, a
+      genuinely tight one moves it a lot */
+  comboStep: 0.4,
+  comboMax: 8,
+  /** seconds without a near-miss before the combo starts bleeding off, and
+      the rate (combo units/s) once it does */
+  decayAfter: 4, decayRate: 0.35,
+  /** only grades above this trigger the toast pulse — every near-miss counts
+      toward the combo, but not every one is worth a popup */
+  pulseGrade: 0.45,
+  pulseBase: 250, pulseCd: 1.1,
+};
+
 /* The v2 art (procedural canvas textures + hex palettes) was tuned under
    r128's non-color-managed pipeline; keep that exact response and do the
    ACES + sRGB encode ourselves in the composite pass. */
@@ -393,10 +417,13 @@ const CHASE_SHAKE = 0;
      for the 67-degree default and ~105 for the dashcam, so it is the widest
      lens in the car, which is the point. It is a BASELINE, not a fixed lens:
      consoleFov() reads it as the framing this camera has when the Field of
-     view slider is at its default and scales it with the slider from there.
-     Its own number so an experimental view can sit wider than the shipping
-     one; still on the slider, because the slider is the user's setting and a
-     camera the setting cannot move is a setting that does not work.
+     view slider is at its default and shifts it BY the slider's degrees from
+     there — additive, not scaled, so its constant +11-degree-wider-than-the-
+     dashcam feel holds across the whole range instead of running away at the
+     top of it. Its own number so an experimental view can sit wider than the
+     shipping one; still on the slider, because the slider is the user's
+     setting and a camera the setting cannot move is a setting that does not
+     work.
    - tilt 0.02 rad of nose-down, nominal. The dashcam needs 0.227 because it has
      to rake the cluster into frame from above it; this one sits behind and
      level with the dash and does not.
@@ -437,19 +464,25 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
             changed, because lampWash already carries it to sodium under every
             lamp and the between-lamps hue is a taste call for the user's eyes.
 
-   `on` mirrors the I key so the console can force either state, and because
-   `on * dome` is the effective level it also buys a residual: set on = 1 and
-   dome = 0.15 for "not off, just very low" without touching the key.
+   `on` mirrors the I key so the console can force any state, and because
+   `DOME_LEVELS[on] * dome` is the effective level it also buys a residual:
+   set on = 2 and dome = 0.15 for "not off, just very low" without touching
+   the key.
 
-     window.__cabinLight.on = 1          // as if I were pressed
+   It is a THREE-WAY CYCLE, not a flip: off -> dim -> full -> off, both from
+   the key and from the console click, so the two can never disagree about
+   which of the three the cabin is in. Reported as wanting a dimmer option
+   between pitch-black and full CABIN_DOME rather than only the two ends.
+
+     window.__cabinLight.on = 2          // full, as two presses from off
      window.__cabinLight.dome = 0.3      // a dimmer ON state
      window.__cabinLight.glass = 1.6     // more crest sheen, cabin still dark
      window.__cabinLight.glassHex = 0xffd0a0   // warm it toward the reference
 
    `hover` is the discoverability term, and it is the dome light being used as
    its own affordance. Resting the cursor on the overhead console eases the
-   lamp this fraction of the way toward the state a CLICK would produce —
-   0.22 up out of dark, or 0.22 down out of lit — then eases back when the
+   lamp this fraction of the way toward the level a CLICK would produce —
+   the next stop around the off/dim/full cycle — then eases back when the
    cursor leaves. Reported as "idk where to click", and this is the answer that
    suits the geometry: the console is the donor's own moulded ceiling panel and
    its material is shared with the floor and the mirror holder, so there is
@@ -470,6 +503,10 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
      window.__cabinLight.hover = 0.35    // a stronger tell while hunting for it
      window.__cabinLight.hover = 0       // off; the I key still works */
 const CABIN_LIGHT = { on: 0, dome: 1, glass: 1, glassHex: GLASS_REST.color, hover: 0.22 };
+/** Brightness fraction of CABIN_DOME/DONOR_FILL at each stop of the `on`
+    cycle — off, dim, full. Indexed by `on` directly, so DOME_LEVELS[k.on] is
+    the level a click would leave the lamp at from wherever it rests now. */
+const DOME_LEVELS = [0, 0.4, 1];
 /* Rate the hover preview eases at, per second, as an exponential time constant
    — about 0.2 s to settle either way. It is a fade rather than a step because
    every other light in this file is: a cabin that snaps between two levels as
@@ -605,6 +642,15 @@ const CAR_ENV = { night: 5 };
    says within about half a second, and pinning them to it would drag the menu
    framing around with a gameplay setting. */
 const CHASE_CAM = { dist: 3, height: 2.15 };
+/* How fast the chase camera's terrain floor (updateCamera, chasePos.y) eases
+   up when the ground rises under it, in 1/s. The floor used to be a hard
+   Math.max — an instant teleport onto the rising terrain height the moment it
+   overtook the trailing camera, a one-frame pop on every ramp that read as
+   "shake" even with CHASE_SHAKE and CHASE_FX both at 0. This is the time
+   constant of the lerp that replaced it: ~0.1 s to close the gap, fast enough
+   that the camera does not linger visibly under the road surface on a normal
+   ramp, but no longer an instant snap. */
+const CHASE_FLOOR_EASE = 10;
 
 /* ------------------------------------------------------------ roof tap ----
 
@@ -827,7 +873,7 @@ const POV_TILT = 0.227;
    which meant the only view that ships was the one view the slider could not
    touch. It reads the slider now, through the four constants below.
 
-   The slider (58..80, default 67, GameApp.tsx) is taken as a VERTICAL angle at
+   The slider (58..100, default 67, GameApp.tsx) is taken as a VERTICAL angle at
    16:9 and converted once into the horizontal the lens then holds constant on
    every other aspect. That hybrid is deliberate, because neither pure reading
    works on its own:
@@ -932,6 +978,11 @@ export class Game {
   get testMode() { return this.settings.testMode; }
   set testMode(v: boolean) { this.settings.testMode = v; }
 
+  /** Read-only: the running total and the best-ever, for GameApp.tsx's
+      persist() to copy into the profile alongside carId/seed/camMode. */
+  get noHesiScore() { return this.noHesi.score; }
+  get noHesiBest() { return this.noHesi.best; }
+
   /* Lens OFFSET for the interior currently on screen, all three axes — see
      povMount(), which this describes. Read live rather than cached because the
      donor cabin arrives ASYNCHRONOUSLY: the rig is on screen before the GLB
@@ -1002,15 +1053,40 @@ export class Game {
     return window.__chase;
   }
 
-  /** Flip the dome light. One place, because there are two ways to ask for it
-      — the I key and clicking the overhead console (onPointerDown) — and a
-      state this cheap to duplicate is a state that eventually disagrees with
-      itself. Only the knob is written; cabinLightUpdate() below is what carries
-      it into both interiors. */
+  /** Step the dome light around its off/dim/full cycle. One place, because
+      there are two ways to ask for it — the I key and clicking the overhead
+      console (onPointerDown) — and a state this cheap to duplicate is a state
+      that eventually disagrees with itself. Only the knob is written;
+      cabinLightUpdate() below is what carries it into both interiors. */
   private toggleCabinLight() {
     const c = this.cabinKnob();
-    c.on = c.on ? 0 : 1;
-    this.ui.toast("INTERIOR LIGHT " + (c.on ? "ON" : "OFF"));
+    c.on = ((c.on + 1) % DOME_LEVELS.length) as typeof c.on;
+    this.ui.toast("INTERIOR LIGHT " + (c.on === 0 ? "OFF" : c.on === 1 ? "DIM" : "ON"));
+  }
+
+  /** A click on the turn-signal hit volume near the wheel. Same state the Q/E
+      keys write (car.sigL/sigR), so the mouse and the keyboard can never
+      disagree about which side is signalling — and the same stalk-click
+      sound the high-beam flash uses (audio.ts), which is otherwise unused on
+      this gesture. */
+  private clickSignal(side: "l" | "r") {
+    const car = this.car;
+    if (side === "l") { car.sigL = !car.sigL; car.sigR = false; }
+    else { car.sigR = !car.sigR; car.sigL = false; }
+    this.audio.stalkClick();
+    const on = side === "l" ? car.sigL : car.sigR;
+    this.ui.toast("SIGNAL " + (side === "l" ? "LEFT" : "RIGHT") + (on ? " ON" : " OFF"));
+  }
+
+  /** A click on the hazard hit volume. Both signals together, same reading as
+      traffic.ts gives a wrecked or stopped NPC's blinkers — there is no
+      separate hazard flag on CarState, just sigL and sigR lit in lockstep. */
+  private clickHazard() {
+    const car = this.car;
+    const on = !(car.sigL && car.sigR);
+    car.sigL = car.sigR = on;
+    this.audio.stalkClick();
+    this.ui.toast("HAZARDS " + (on ? "ON" : "OFF"));
   }
 
   /** Push the cabin-light level into both interiors, every frame.
@@ -1040,12 +1116,16 @@ export class Game {
       // the head unit's hover is the same kind of state and goes out the same
       // door, or a button left lit at the pause menu stays lit behind it
       this.screenHover = null;
+      this.wheelHover = null;
+      this.renderer.domElement.style.cursor = "";
     }
     this.cabinHoverE = lerp(
       this.cabinHoverE, this.cabinHover, 1 - Math.exp(-CABIN_HOVER_EASE * dt)
     );
-    // the state a click would leave it in; the preview travels `hover` of the way
-    const eff = lerp(k.on, k.on ? 0 : 1, this.cabinHoverE * k.hover);
+    // the level a click would leave it at — the next stop around the cycle —
+    // the preview travels `hover` of the way there
+    const next = DOME_LEVELS[(k.on + 1) % DOME_LEVELS.length];
+    const eff = lerp(DOME_LEVELS[k.on], next, this.cabinHoverE * k.hover);
     const level = eff * k.dome;
     this.rig.cockpit.setCabinLight(level);
     this.rig.cockpitModel?.setFillLight(level);
@@ -1226,10 +1306,19 @@ export class Game {
       to it.
 
       So the knob's `fov` is re-read as the baseline AT THE SLIDER'S DEFAULT
-      and scaled from there: 78 at 67, 70 at 60, 93 at 80. Whatever
-      window.__consoleCam.fov is set to keeps meaning "what this camera looks
-      like with the slider where it shipped", so a tuning session is not undone
-      by someone else's setting.
+      and SHIFTED by the slider's degrees from there: 78 at 67, 71 at 60, 91
+      at 80. Whatever window.__consoleCam.fov is set to keeps meaning "what
+      this camera looks like with the slider where it shipped", so a tuning
+      session is not undone by someone else's setting.
+
+      This used to be multiplicative (`fov * (slider / FOV_SLIDER_REF)`), which
+      reads fine at the reference point but runs away either side of it because
+      degrees near 180 are tangent-nonlinear: at the slider's max of 100 that
+      scaled the 78-degree baseline to 116.4 vertical, ~141.8 horizontal at
+      16:9 through lensFov, well past the ~100 vertical / ~129.5 horizontal
+      every other camera tops out at — the "stretched at max FOV" report.
+      Additive keeps the console a constant amount wider than the dashcam
+      across the whole range instead of diverging from it at the top.
 
       Then through the SAME aspect machinery as the dashcam (lensFov), and
       that part is not optional. Assigning a base straight to camera.fov is
@@ -1249,7 +1338,7 @@ export class Game {
       degenerate projection. */
   private consoleFov(aspect: number): number {
     const base = clamp(
-      this.consoleCam().fov * (clamp(this.settings.fovBase, 58, POV_FOV_MAX) / FOV_SLIDER_REF),
+      this.consoleCam().fov + (clamp(this.settings.fovBase, 58, POV_FOV_MAX) - FOV_SLIDER_REF),
       40, CONSOLE_FOV_MAX
     );
     return this.lensFov(base, aspect);
@@ -1347,6 +1436,11 @@ export class Game {
   private dropT = 0;
   private hudT = 0;
   private chunkT = 0;
+  /** No Hesi scoring state (see noHesiUpdate). `best` is seeded from the
+      profile at construction and only ever grows; the caller (GameApp.tsx's
+      persist()) reads it back out through the noHesiBest getter alongside
+      carId/seed/camMode. */
+  private noHesi = { score: 0, best: 0, combo: 1, sinceAction: 0, pulseCd: 0 };
   private raf = 0;
   private disposed = false;
   private isTouch: boolean;
@@ -1357,6 +1451,24 @@ export class Game {
   private wheelVal = 0;
   private tiltVal = 0;
   private tiltHooked = false;
+  /** The pointer currently dragging #swheel, set by GameApp's SteerWheel —
+      lets the watchdog below tell a live drag from a wheelVal that got left
+      behind by a gesture the DOM never told anyone had ended. */
+  private wheelPointerId: number | null = null;
+  /** Every pointer id the window has seen go down and not yet seen go back up,
+      kept independently of which element claims to have captured it. Bound at
+      the window in the capture phase (bindInput) so nothing downstream —
+      stopPropagation on gearBtn, a retarget, a hidden element — can keep an
+      up/cancel from reaching it; that makes it the one source of truth the
+      per-control watchdog below can trust when an element's own release
+      listener never fires. */
+  private livePointers = new Set<number>();
+  /** One entry per held touch puck (bindHold), tracking every pointer id
+      currently pressing it. A second finger's stray pointerup landing on a
+      puck it never pressed must not release the first finger's hold — see
+      bindHold — so release is "the ids we captured minus the one that left,"
+      not "any pointerup that reaches this element." */
+  private touchHolds = new Map<string, { key: string; ids: Set<number> }>();
   private fogC = new THREE.Color();
   private prevBlinkOn = false;
   private crashCooldown = 0;
@@ -1409,6 +1521,7 @@ export class Game {
     this.paintIx = profile.paintIx;
     this.seed = profile.seed;
     this.camMode = profile.camMode;
+    this.noHesi.best = Number.isFinite(profile.noHesiBest) ? profile.noHesiBest : 0;
     this.isTouch = "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
     if (this.isTouch) document.body.classList.add("touch");
 
@@ -1739,6 +1852,10 @@ export class Game {
         weight: W.town,
         run: () => {
           buildTown(this.scene, this.mats, this.world, this.terrain, rng, deckLightPts);
+          /* last rng consumer in the build order — see the comment above
+             buildStages(): scenery must stay after town so earlier stages'
+             draws are unchanged for a given seed. */
+          buildScenery(this.scene, this.mats, this.world, this.terrain, rng);
           this.tintLampsSodium();
         },
       },
@@ -1931,22 +2048,72 @@ export class Game {
   };
 
   private onWindowBlur = () => {
-    // don't let held keys latch across alt-tab
-    for (const k in this.keydown) this.keydown[k] = 0;
-    /* The keyup for a held G never arrives if the tab lost focus mid-flash.
-       Clearing hiHeld also disarms the hold timer, so a G held through an
-       alt-tab cannot come back two seconds later having toggled the latch. */
-    this.hiHeld = false;
-    this.hiConsumed = false;
-    this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
+    this.clearLatchedInput();
     /* Same reasoning as hiHeld, and worse consequences: the keyup for a held B
        never arrives either, and lookBack has no timer to fall back on — the
        camera stays reversed for the rest of the session. */
     this.lookBack = false;
+  };
+
+  /** Wipes every input that only a matching release event clears — the
+      keyboard/touch bus, the high-beam hold timer, the analog steer axes —
+      for any moment a release can go missing: alt-tab (onWindowBlur) and
+      pausing (setRunning(false)), which on a phone hides the touch pucks via
+      display:none mid-hold and, on at least iOS Safari, can drop the
+      pointerup a hidden element would otherwise have received. lookBack is
+      deliberately not part of this: it has its own key (B) and blur is the
+      one place it needs clearing, not every pause. */
+  private clearLatchedInput() {
+    // don't let held keys latch across alt-tab or a pause
+    for (const k in this.keydown) this.keydown[k] = 0;
+    /* The keyup for a held G never arrives if the tab lost focus (or the
+       puck vanished) mid-flash. Clearing hiHeld also disarms the hold timer,
+       so a G held through the gap cannot come back later having toggled the
+       latch. */
+    this.hiHeld = false;
+    this.hiConsumed = false;
+    this.input.th = this.input.br = this.input.st = this.input.hb = this.input.horn = 0;
     /* Analog steer state is not a key and so survives the loop above. A phone
        put down mid-corner, or left tilted through a pause, otherwise resumes
        still steering. */
     this.wheelVal = this.tiltVal = 0;
+    this.wheelPointerId = null;
+    for (const hold of this.touchHolds.values()) hold.ids.clear();
+  }
+
+  /* Window-level, capture phase: fires before any element's own listener can
+     stopPropagation() (gearBtn's pointerdown does), so this is the one place
+     that always sees a pointer go down or come back up regardless of which
+     element the browser decided to target. livePointers is the ground truth
+     watchdogTouchInput() checks a held control against — the element-level
+     release listeners (pointerup/pointercancel/lostpointercapture on the
+     puck itself) are the fast path; this is the one that cannot be skipped. */
+  private onLivePointerDown = (e: PointerEvent) => {
+    this.livePointers.add(e.pointerId);
+  };
+  private onLivePointerGone = (e: PointerEvent) => {
+    this.livePointers.delete(e.pointerId);
+  };
+
+  /* touch-action:manipulation (globals.css canvas.game) only rules out
+     double-tap-to-ZOOM; iOS 15+ still runs its double-tap text-selection
+     magnifier off the synthetic click/dblclick pair a fast double tap on the
+     canvas produces, and preventDefault on touchend is the only thing that
+     stops that pair from firing. Canvas only: the menus sit on an opaque,
+     full-screen .menuRoot above it, so a tap there never reaches this
+     listener, and onPointerDown already handles every real canvas tap on
+     pointerdown — nothing here depends on click/dblclick ever firing. */
+  private onCanvasTouchEnd = (e: TouchEvent) => {
+    e.preventDefault();
+  };
+  private onCanvasDblClick = (e: MouseEvent) => {
+    e.preventDefault();
+  };
+  /* iOS-only pinch/rotate gesture events, unprevented by touch-action and
+     ignored by every other browser — nothing in this fixed, non-zooming
+     layout wants them. */
+  private onGestureEvent = (e: Event) => {
+    e.preventDefault();
   };
 
   /* ---------------- rig ---------------- */
@@ -2214,6 +2381,19 @@ export class Game {
     return ck.cabinSwitch(!!this.rig.cockpitModel);
   }
 
+  /** A turn-signal or hazard hit volume, or null when the pointer cannot be
+      over it at all. Desktop only, unconditionally — unlike the console
+      there is no touch fallback here (see the call site), so this gates
+      isTouch out for hover AND click alike rather than hover only. */
+  private wheelTarget(kind: "l" | "r" | "hazard"): THREE.Object3D | null {
+    if (this.isTouch) return null;
+    if (!this.running || !this.loaded || !this.inCar()) return null;
+    const ck = this.rig?.cockpit;
+    if (!ck) return null;
+    const imported = !!this.rig.cockpitModel;
+    return kind === "hazard" ? ck.hazardSwitch(imported) : ck.signalSwitch(kind, imported);
+  }
+
   /** The head-unit panel, when a pointer on it can do anything — or null.
 
       Desktop only, via `music.enabled` (false on touch): the panel's second
@@ -2236,6 +2416,10 @@ export class Game {
       it eased, and is what the light actually rides. See CABIN_LIGHT.hover. */
   private cabinHover = 0;
   private cabinHoverE = 0;
+  /** Which wheel-mounted control (if any) the cursor is over — signal stalk
+      zones and the hazard volume have no light of their own to preview like
+      the dome switch, so this drives the cursor swap only (see onPointerMove). */
+  private wheelHover: "l" | "r" | "hazard" | null = null;
   private hoverX = 0;
   private hoverY = 0;
   /* Hover test for the overhead console. Cheap by construction — one ray
@@ -2256,12 +2440,17 @@ export class Game {
     this.hoverY = e.clientY;
     const sw = this.cabinTarget(true);
     const panel = this.screenTarget();
-    if (!sw && !panel) {
+    const wl = this.wheelTarget("l");
+    const wr = wl && this.wheelTarget("r"); // same gate as wl; skip re-asking it
+    const wz = wl && this.wheelTarget("hazard");
+    if (!sw && !panel && !wl) {
       this.cabinHover = 0;
       this.screenHover = null;
+      this.wheelHover = null;
+      this.renderer.domElement.style.cursor = "";
       return;
     }
-    /* ONE aim for both targets, the same one onPointerDown uses. Two rays
+    /* ONE aim for every target, the same one onPointerDown uses. Two rays
        would be two answers to "what is the cursor over", and the highlight
        could then point at something the click would miss. */
     this.aimRay(e);
@@ -2273,6 +2462,16 @@ export class Game {
     const hit = panel ? this.clickRay.intersectObject(panel, false)[0] : undefined;
     this.screenHover =
       hit && hit.uv ? hitScreen(hit.uv.x, hit.uv.y, this.screenView) : null;
+    this.wheelHover =
+      wl && this.clickRay.intersectObject(wl, true).length ? "l"
+      : wr && this.clickRay.intersectObject(wr, true).length ? "r"
+      : wz && this.clickRay.intersectObject(wz, true).length ? "hazard"
+      : null;
+    /* One cursor for every cabin target, new and old alike — none of them had
+       one before this lane; a control that only reveals itself once you have
+       already clicked it is not discoverable. */
+    this.renderer.domElement.style.cursor =
+      this.cabinHover || this.screenHover || this.wheelHover ? "pointer" : "";
   };
   /* Leaving the canvas is a real event and gets a real listener: the last
      pointermove inside the window can easily be one that was still over the
@@ -2281,6 +2480,8 @@ export class Game {
   private onPointerLeave = () => {
     this.cabinHover = 0;
     this.screenHover = null;
+    this.wheelHover = null;
+    this.renderer.domElement.style.cursor = "";
   };
   private onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0) return;
@@ -2298,6 +2499,26 @@ export class Game {
     const sw = this.cabinTarget(false);
     if (sw && this.hitCabinSwitch(e, sw)) {
       this.toggleCabinLight();
+      return;
+    }
+    /* Turn signals and hazards, reached the same way as the dome switch
+       above: one ray, tested against a volume near the wheel rim rather than
+       the real stalk/dash-triangle position, because the dashcam frame does
+       not reach as low as either — see signalSwitch/hazardSwitch in
+       cockpit.ts for the measurement. Desktop only (wheelTarget already
+       excludes touch): a fingertip aiming at something this small, this
+       close to the steering input, is the interference the brief asked to
+       avoid, not a feature to add. */
+    for (const side of ["l", "r"] as const) {
+      const t = this.wheelTarget(side);
+      if (t && this.clickRay.intersectObject(t, true).length) {
+        this.clickSignal(side);
+        return;
+      }
+    }
+    const hz = this.wheelTarget("hazard");
+    if (hz && this.clickRay.intersectObject(hz, true).length) {
+      this.clickHazard();
       return;
     }
     /* Touch's way to the same switch, and the reason it needs one: the roof
@@ -2328,11 +2549,16 @@ export class Game {
     if (!hit || !hit.uv) return;
     const action = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
     if (!action) return;
-    if (action === "music" || action === "map") {
-      this.screenView = action === "music" ? "music" : "map";
+    if (action === "music" || action === "map" || action === "trip") {
+      this.screenView = action;
       /* The hover is stale the instant the view flips — the cursor has not
          moved, but what is under it has. Re-ask with the ray already aimed. */
       this.screenHover = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
+      return;
+    }
+    if (action === "volDown" || action === "volUp") {
+      const msg = this.music.stepVolume(action === "volUp" ? 1 : -1);
+      if (msg) this.ui.toast(msg);
       return;
     }
     const msg = this.music.click(action);
@@ -2404,6 +2630,69 @@ export class Game {
     this.ui.toast("HIGH BEAMS " + (this.hiLatch ? "ON" : "OFF"));
   }
 
+  /** Binds a hold-style control (a touch puck) with pointer-id tracking
+      instead of "any pointerup reaching this element releases it": without
+      that, a second finger that never pressed this element — e.g. it came
+      down on the canvas, which never captures — can lift directly over the
+      puck and its pointerup targets the puck by ordinary hit-testing, killing
+      the first finger's still-held press. onDown fires once per press (ids
+      empty -> non-empty), onUp once per full release (ids non-empty ->
+      empty), so a second finger on the SAME puck keeps it held until both
+      lift.
+
+      State is written before setPointerCapture, and capture is wrapped in
+      try/catch: a fast tap can have the pointer already gone by the time
+      capture runs (throws NotFoundError), and with capture first that used to
+      abort the handler before the state write ever ran — a press that looked
+      like it landed but did nothing, for a frame or forever. Capture only
+      matters for what happens if the finger later drifts off the element; it
+      must never be able to veto the press itself. */
+  private bindPointerHold(el: HTMLElement, onDown: () => void, onUp: () => void): Set<number> {
+    const ids = new Set<number>();
+    el.addEventListener("pointerdown", (e) => {
+      const first = ids.size === 0;
+      ids.add(e.pointerId);
+      if (first) onDown();
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {}
+    });
+    const release = (e: PointerEvent) => {
+      if (!ids.delete(e.pointerId)) return; // not a pointer this element is holding — ignore
+      if (ids.size === 0) onUp();
+    };
+    el.addEventListener("pointerup", release);
+    el.addEventListener("pointercancel", release);
+    /* The browser's own "this element no longer owns that pointer" signal —
+       capture stolen by another element, or (confirmed in Chrome, unverified
+       on iOS Safari — see brief risk notes) display:none while captured,
+       which is exactly what gearBtn's pause does mid-hold. Fires whether or
+       not pointerup/pointercancel ever does, so it is the second of three
+       release paths (element release, this, the frame watchdog below). */
+    el.addEventListener("lostpointercapture", release);
+    return ids;
+  }
+
+  /** Runs every frame (readInput). watchdogTouchInput is the third release
+      path, for whatever the first two — the puck's own pointerup/cancel, and
+      lostpointercapture — both miss: an iOS gesture hijack that eats the
+      touch stream outright and never tells the element anything. livePointers
+      is tracked at the window in the capture phase, so it is the one signal
+      that cannot be blocked the same way; a held control whose pointer isn't
+      in there anymore has no finger on it, whatever the element thinks. */
+  private watchdogTouchInput() {
+    if (!this.isTouch) return;
+    for (const hold of this.touchHolds.values()) {
+      if (this.keydown[hold.key] !== 1) continue;
+      for (const id of hold.ids) if (!this.livePointers.has(id)) hold.ids.delete(id);
+      if (hold.ids.size === 0) this.keydown[hold.key] = 0;
+    }
+    if (this.wheelPointerId !== null && !this.livePointers.has(this.wheelPointerId)) {
+      this.wheelVal = 0;
+      this.wheelPointerId = null;
+    }
+  }
+
   private bindInput() {
     addEventListener("keydown", this.onKeyDown);
     this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown);
@@ -2413,16 +2702,25 @@ export class Game {
     this.renderer.domElement.addEventListener("pointermove", this.onPointerMove);
     this.renderer.domElement.addEventListener("pointerleave", this.onPointerLeave);
     addEventListener("keyup", this.onKeyUp);
+    if (this.isTouch) {
+      // capture phase: see onLivePointerDown/onLivePointerGone
+      addEventListener("pointerdown", this.onLivePointerDown, true);
+      addEventListener("pointerup", this.onLivePointerGone, true);
+      addEventListener("pointercancel", this.onLivePointerGone, true);
+      this.renderer.domElement.addEventListener("touchend", this.onCanvasTouchEnd, { passive: false });
+      this.renderer.domElement.addEventListener("dblclick", this.onCanvasDblClick);
+      document.addEventListener("gesturestart", this.onGestureEvent, { passive: false });
+      document.addEventListener("gesturechange", this.onGestureEvent, { passive: false });
+    }
     const bindHold = (id: string, key: string) => {
       const el = document.getElementById(id);
       if (!el) return;
-      el.addEventListener("pointerdown", (e) => {
-        el.setPointerCapture((e as PointerEvent).pointerId);
-        this.keydown[key] = 1;
-      });
-      const off = () => (this.keydown[key] = 0);
-      el.addEventListener("pointerup", off);
-      el.addEventListener("pointercancel", off);
+      const ids = this.bindPointerHold(
+        el,
+        () => (this.keydown[key] = 1),
+        () => (this.keydown[key] = 0),
+      );
+      this.touchHolds.set(id, { key, ids });
     };
     bindHold("tcL", "a");
     bindHold("tcR", "d");
@@ -2432,16 +2730,17 @@ export class Game {
        (see the input block in frame()), so a held button is all it needs. */
     bindHold("tcH", "f");
     /* Flash cannot: see hiBeamDown/hiBeamUp. Same press/release pair as G, so
-       tap = flash and a 2 s hold = latch, identical to the keyboard. */
+       tap = flash and a 2 s hold = latch, identical to the keyboard. Not
+       registered in touchHolds — hiBeamHold() already self-clears hiHeld once
+       HI_HOLD passes, so a missed release heals within that window on its
+       own without the frame watchdog's help. */
     const flashBtn = document.getElementById("tcF");
     if (flashBtn) {
-      flashBtn.addEventListener("pointerdown", (e) => {
-        flashBtn.setPointerCapture((e as PointerEvent).pointerId);
-        this.hiBeamDown();
-      });
-      const up = () => this.hiBeamUp();
-      flashBtn.addEventListener("pointerup", up);
-      flashBtn.addEventListener("pointercancel", up);
+      this.bindPointerHold(
+        flashBtn,
+        () => this.hiBeamDown(),
+        () => this.hiBeamUp(),
+      );
     }
     const camBtn = document.getElementById("tcC");
     if (camBtn)
@@ -2466,6 +2765,12 @@ export class Game {
   }
   setWheelVal(v: number) {
     this.wheelVal = v;
+  }
+  /** Which pointer #swheel considers itself grabbed by, or null when let go —
+      set by GameApp's SteerWheel on pointerdown/end so watchdogTouchInput can
+      tell a live drag from a wheelVal a lost gesture left behind. */
+  setWheelPointer(id: number | null) {
+    this.wheelPointerId = id;
   }
 
   private dom(id: string): HTMLElement | null {
@@ -2506,6 +2811,7 @@ export class Game {
   };
 
   private readInput(dt: number) {
+    this.watchdogTouchInput();
     const kd = this.keydown;
     if (this.debug.override) {
       const o = this.debug.override;
@@ -2738,6 +3044,10 @@ export class Game {
 
   setRunning(run: boolean) {
     this.running = run;
+    /* Pausing hides the touch pucks (display:none) out from under whatever
+       finger is holding one — see clearLatchedInput — so a held throttle or
+       a mid-turn wheel drag cannot resume the instant Drive comes back. */
+    if (!run) this.clearLatchedInput();
     this.audio.setLevels(this.settings.vol, run ? 1 : 0.12);
     if (!run) this.audio.quiesce();
     /* quiesce() zeroes the reverb send directly, so the cached value no longer
@@ -2759,6 +3069,15 @@ export class Game {
     removeEventListener("resize", this.onResize);
     window.removeEventListener("error", this.onWindowError);
     window.removeEventListener("blur", this.onWindowBlur);
+    if (this.isTouch) {
+      removeEventListener("pointerdown", this.onLivePointerDown, true);
+      removeEventListener("pointerup", this.onLivePointerGone, true);
+      removeEventListener("pointercancel", this.onLivePointerGone, true);
+      this.renderer.domElement.removeEventListener("touchend", this.onCanvasTouchEnd);
+      this.renderer.domElement.removeEventListener("dblclick", this.onCanvasDblClick);
+      document.removeEventListener("gesturestart", this.onGestureEvent);
+      document.removeEventListener("gesturechange", this.onGestureEvent);
+    }
     document.body.classList.remove("touch");
     this.audio.dispose();
     this.music.dispose();
@@ -3095,18 +3414,64 @@ export class Game {
     }
   }
 
+  /** Live refs into glowPts' shader, written by tintLampsSodium()'s
+      onBeforeCompile patch below — chunksUpdate() updates these every frame
+      with the SAME scaled draw distance it uses for the town chunks, so the
+      shader's per-fragment lamp fade always tracks the chunk cull. */
+  private lampFade?: { uFadeNear: { value: number }; uFadeFar: { value: number } };
+
   /** Street and deck lamps are built as one pooled sprite cloud plus one
       ground-quad batch. Both come out of the town builder as a generic warm
       white; retint them once, here, to low-pressure sodium — the orange is
       most of what says "road at night" in the reference, and a wider sprite
       with additive blending gives each head the halation a real lamp has in
-      damp air instead of a flat dot. */
+      damp air instead of a flat dot.
+
+      This is also the fix for the far-city lights blinding the player
+      (brief-world-lights.json): PointsMaterial's built-in fog mixes each
+      fragment toward the fog COLOUR, which under additive blending means a
+      lamp can never fade to black — hundreds of them compress into a few
+      hundred pixels at the horizon, sum past 1.0 luma and trip the bloom
+      threshold. `fog:false` plus an onBeforeCompile patch that fades alpha
+      explicitly by distance (and clamps a distance-attenuated point size in
+      place of the old flat 9.8 px) fixes it at the root — a FADE, never a
+      hard stop, using the same distance chunksUpdate() already culls the
+      town chunks at. */
   private tintLampsSodium() {
     const g = this.world.glowPts?.material as THREE.PointsMaterial | undefined;
     if (g) {
       g.color.setHex(0xffa235);
       g.size = 9.8;
       g.blending = THREE.AdditiveBlending;
+      g.fog = false;
+      g.onBeforeCompile = (sh) => {
+        sh.uniforms.uFadeNear = { value: 300 };
+        sh.uniforms.uFadeFar = { value: 700 };
+        this.lampFade = { uFadeNear: sh.uniforms.uFadeNear, uFadeFar: sh.uniforms.uFadeFar };
+        sh.vertexShader = sh.vertexShader
+          .replace(
+            "uniform float size;",
+            "uniform float size;\nuniform float uFadeNear;\nuniform float uFadeFar;\nvarying float vLampFade;"
+          )
+          .replace(
+            "gl_PointSize = size;",
+            /* lampDist is view-space depth — the same quantity the built-in
+               sizeAttenuation branch below would have divided by — so size
+               and fade move on one curve instead of clipping at different
+               points and printing a ring. Clamped to [2, size] px: a lamp
+               at 60 m still reads its old flat 9.8 px, one past the fade
+               distance is a 2 px dot at ~0 alpha rather than vanishing. */
+            "float lampDist = -mvPosition.z;\n" +
+              "gl_PointSize = clamp( size * 55.0 / max( lampDist, 1.0 ), 2.0, size );\n" +
+              "vLampFade = 1.0 - smoothstep( uFadeNear, uFadeFar, lampDist );"
+          );
+        sh.fragmentShader = sh.fragmentShader
+          .replace("#include <common>", "#include <common>\nvarying float vLampFade;")
+          .replace(
+            "#include <map_particle_fragment>",
+            "#include <map_particle_fragment>\ndiffuseColor.a *= vLampFade;"
+          );
+      };
       g.needsUpdate = true;
     }
     const p = this.world.pools?.material as THREE.MeshBasicMaterial | undefined;
@@ -3217,9 +3582,11 @@ export class Game {
        0: the deck's own ±5 m grade must not bob the horizon. */
     sky.backdrop.position.set(car.x, 0, car.z);
     // aurora rides the same day/fog curve as the rest of the backdrop glow;
-    // the cloud deck over it is there at any hour and only shifts palette
+    // the cloud deck over it is there at any hour and only shifts palette —
+    // plus, at dusk and dawn, a sun rim derived from the same angle `sa`
+    // that aims the directional light, so the two never disagree
     sky.aurora?.update(now, f, fogMultiplier(this.settings.fog));
-    sky.clouds?.update(now, f, fogMultiplier(this.settings.fog));
+    sky.clouds?.update(now, f, fogMultiplier(this.settings.fog), sa);
     sky.starMat.opacity = 0.8 * (1 - f);
     sky.moonMat.opacity = 0.95 * (1 - f);
     for (const m of this.mats.winMats) {
@@ -3727,6 +4094,13 @@ export class Game {
       const d = Math.hypot(c.cx - this.camera.position.x, c.cz - this.camera.position.z);
       c.group.visible = d < dd;
     }
+    // the town lamp/pool shader fade (tintLampsSodium) tracks the SAME
+    // distance the chunks just culled at, so a chunk's lamps finish fading
+    // out by the time the chunk itself disappears rather than popping
+    if (this.lampFade) {
+      this.lampFade.uFadeFar.value = dd;
+      this.lampFade.uFadeNear.value = dd * 0.55;
+    }
   }
 
   private blinkOnNow(now: number) {
@@ -4078,10 +4452,16 @@ export class Game {
         this.chasePos.x = car.x + (dxC / hd) * minD;
         this.chasePos.z = car.z + (dzC / hd) * minD;
       }
-      this.chasePos.y = Math.max(
-        this.chasePos.y,
-        this.terrain.heightAt(this.chasePos.x, this.chasePos.z, car.y) + 1.2
-      );
+      // a rising ramp raises this floor smoothly, but Math.max used to snap
+      // chasePos.y onto it the instant it overtook the trailing camera — a
+      // one-frame pop that read as third-person "shake" even with
+      // CHASE_SHAKE/CHASE_FX both 0. Ease up to it instead (CHASE_FLOOR_EASE);
+      // still instant on a fresh entry, which already snaps the whole
+      // chasePos above rather than easing into a stale one.
+      const chaseFloorY = this.terrain.heightAt(this.chasePos.x, this.chasePos.z, car.y) + 1.2;
+      if (freshEntry) this.chasePos.y = Math.max(this.chasePos.y, chaseFloorY);
+      else if (this.chasePos.y < chaseFloorY)
+        this.chasePos.y = lerp(this.chasePos.y, chaseFloorY, 1 - Math.exp(-CHASE_FLOOR_EASE * dt));
       /* THE LATERAL LAG WAS THE SHAKE, and it is off (fx.lag 0).
 
          "For the third-person view, remove the shakiness and camera effects
@@ -4295,9 +4675,22 @@ export class Game {
         -this.rig.bodyG.rotation.z +
         (clamp(car.u * car.r * 0.0035, -0.06, 0.06) + this.head.roll) * this.chaseShake();
     }
+    /* The speed FOV kick is a raw add onto fovBase with no lensFov and no cap,
+       so at a high slider setting it can walk the projection past what every
+       clamped mode allows — COCKPIT (kickM 1) transiently hit 119 vertical at
+       the slider's max of 100 (100 + the full 19-degree kick), against the
+       ~100 every other mode tops out at. Fading the kick out as fovBase nears
+       POV_FOV_MAX keeps the total under that ceiling without touching the
+       kick's feel at the slider's own default, where it still lands at full
+       strength: 1 at FOV_SLIDER_REF (67) and below, sliding to 0 at
+       POV_FOV_MAX (100). */
+    const kickFade = clamp(
+      (POV_FOV_MAX - this.settings.fovBase) / (POV_FOV_MAX - FOV_SLIDER_REF), 0, 1
+    );
     const kickM =
       (this.camMode === CAM_CHASE ? 0.18 : this.camMode === CAM_HOOD ? 0.6 : 1) *
-      (this.camMode === CAM_CHASE ? this.chaseShake() : 1);
+      (this.camMode === CAM_CHASE ? this.chaseShake() : 1) *
+      kickFade;
     /* The dashcam still runs a FIXED lens in the sense that matters: no speed
        FOV kick, because a bracket-mounted camera has no zoom and the kick is a
        driver-sensation cue rather than an optical one. What it no longer
@@ -4345,6 +4738,45 @@ export class Game {
     rig.exteriorG.visible = ev;
   }
 
+  /** No Hesi scoring loop — see the NOHESI block. Reads traffic.ts's
+      scoreEvents() (must run after this.traffic.update() this frame) and the
+      contact flag the caller derives from collidePlayer's result, using the
+      SAME relSpeed/wallImpact thresholds the crash sound already gates on:
+      a "hit" for scoring is a hit the player would hear and feel, not every
+      depenetration nudge. Combo dies on contact; the running score does not
+      — this is an arcade total for the drive, not a life. */
+  private noHesiUpdate(dt: number, hadContact: boolean) {
+    const nh = this.noHesi;
+    const on = this.settings.noHesiScore;
+    if (hadContact) {
+      nh.combo = 1;
+      nh.sinceAction = 0;
+    } else {
+      const grades = this.traffic.scoreEvents();
+      if (grades.length) {
+        nh.sinceAction = 0;
+        let best = 0;
+        for (const g of grades) {
+          nh.combo = Math.min(NOHESI.comboMax, nh.combo + NOHESI.comboStep * g);
+          if (g > best) best = g;
+        }
+        if (on && best > NOHESI.pulseGrade && nh.pulseCd <= 0) {
+          const pts = Math.round(NOHESI.pulseBase * (0.5 + 0.5 * best) * nh.combo / 10) * 10;
+          this.ui.toast(`+${pts} CLOSE`);
+          nh.pulseCd = NOHESI.pulseCd;
+        }
+      } else {
+        nh.sinceAction += dt;
+        if (nh.sinceAction > NOHESI.decayAfter)
+          nh.combo = Math.max(1, nh.combo - NOHESI.decayRate * dt);
+      }
+    }
+    nh.pulseCd = Math.max(0, nh.pulseCd - dt);
+    if (on && Math.abs(this.car.u) > NOHESI.speedFloor)
+      nh.score += Math.abs(this.car.u) * nh.combo * NOHESI.pointsScale * dt;
+    if (nh.score > nh.best) nh.best = nh.score;
+  }
+
   private hud(now: number, dt: number) {
     this.hudT += dt;
     const car = this.car;
@@ -4374,6 +4806,15 @@ export class Game {
           ew.dataset.wx = wx;
           ew.innerHTML = WX_ICONS[wx];
         }
+      }
+      /* No Hesi score + combo — see NOHESI/noHesiUpdate. Semantic ids/classes
+         only, no layout here; ui-redesign owns the actual styling pass. */
+      const enh = this.dom("noHesi");
+      if (enh) {
+        if (this.settings.noHesiScore) {
+          enh.textContent = `${Math.round(this.noHesi.score)} ×${this.noHesi.combo.toFixed(1)}`;
+          enh.classList.toggle("combo-hot", this.noHesi.combo > 3);
+        } else enh.textContent = "";
       }
       /* exit navigation hint */
       if (car.y > 4 && Math.abs(car.u) > 1) {
@@ -4460,6 +4901,10 @@ export class Game {
       const preCX = this.car.x, preCZ = this.car.z;
       const res = collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
       this.scrapeUpdate(dt, res.hit, this.car.x - preCX, this.car.z - preCZ);
+      // No Hesi: a hit worth the crash sound is a hit that kills the combo —
+      // same relSpeed/wallImpact thresholds as the audio/damage below, so
+      // "contact" means the same thing everywhere it's judged this frame.
+      let noHesiHit = res.wallImpact > 4;
       for (const hitInfo of res.npcHits) {
         this.traffic.applyImpact(hitInfo);
         if (hitInfo.relSpeed > 2.5 && this.crashCooldown <= 0) {
@@ -4471,6 +4916,7 @@ export class Game {
           // the moment the player later switches into POV
           if (this.camMode === CAM_POV) this.post.dashcamHit(hitInfo.relSpeed);
         }
+        if (hitInfo.relSpeed > 2.5) noHesiHit = true;
       }
       if (res.wallImpact > 4 && this.crashCooldown <= 0) {
         this.crashCooldown = 0.4;
@@ -4484,6 +4930,8 @@ export class Game {
         this.hiFlashPulse
       );
       this.hiFlashPulse = false; // one press, one gesture — consumed here
+      // after traffic.update() — scoreEvents() reads this frame's feed
+      this.noHesiUpdate(dt, noHesiHit);
       /* Per SECOND, not per rendered frame. This gate was a flat 0.35 chance
          every frame, so a 120 Hz display made four times the smoke a 30 Hz one
          did — everything inside fx.ts is dt-scaled and this was the last term

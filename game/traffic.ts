@@ -738,6 +738,65 @@ const NUDGE = {
   probe: 2.2,
 };
 
+/* ===================== white-lining (see USER-REQUESTS #4) =====================
+
+   Two NPCs riding side-by-side in adjacent lanes normally sit close enough
+   that the gap on the line between them is not really rideable. This is the
+   owner's own spec: side-by-side pairs drift apart on the white line ~70% of
+   the time, by a randomised width, so a driver who is actually good can
+   thread it. It rides the SAME offset pathway as the courtesy nudge above —
+   `offT`, folded in and clamped by maxBias exactly where nudgeCur is — not a
+   second lateral controller.
+
+   THE PAIR ROLLS ONCE, TOGETHER, WITH NO SHARED STATE. Each car derives its
+   half of the decision from a hash of both cars' pool ids (order-independent)
+   plus a coarse bucket of where on the road the pair formed, so both sides of
+   an encounter land on the same open/closed call and the same width without
+   either one having to read the other's fields — the same reason the rival's
+   yield mechanic never needed a lock. Re-forming the pair somewhere else on
+   the road, or with a different car entirely, rolls again. */
+const WLINE = {
+  /** how close in |Δs| counts as "riding side by side", as a fraction of the
+      pair's combined length */
+  sFrac: 0.6,
+  /** ...and how long that has to hold before the pair is considered FORMED
+      and rolls (s); a brief overtake alongside is not a pairing */
+  dwell: 1.5,
+  /** how similar the speeds must be, m/s — this is drifting apart, not one
+      car peeling off */
+  dv: 4,
+  /** nobody drifts apart below this speed — not worth it in a crawl */
+  minSpeed: 9,
+  /** chance a formed pair opens a gap at all */
+  openChance: 0.7,
+  /** each car's own outward ease, metres — rolled per pair (so both sides
+      use the same number), weighted toward the middle by averaging two
+      rolls rather than taking one flat uniform draw */
+  gapLo: 0.25, gapHi: 0.55,
+  /** how fast the ease itself moves, m/s — same order as NUDGE.rate, reads
+      as drift rather than a lane change */
+  rate: 0.18,
+  /** clearance probe before committing — reuses laneClearAt exactly as the
+      courtesy nudge does, so this can no more ease into a car, wall or
+      parapet than a voluntary lane lean can */
+  probe: 2.2,
+  /** rescan cadence for a car with no current partner, seconds (jittered) */
+  scanEvery: 0.3, scanJitter: 0.2,
+};
+
+/* No Hesi scoring cadence (see scoreEvents/the close-call block). Deliberately
+   short next to the close-call audio's ~10s per-driver cooldown: audio is
+   avoiding a chorus of rare, discrete events, this is trying to keep up with
+   a player stringing several genuine near-misses together in a few seconds. */
+const NEARMISS = {
+  /** this car won't count again this soon (s) */
+  npcCd: 1.4,
+  /** …and nothing else in the fleet counts this soon either (s) — keeps one
+      near-miss encounter, however many cars are close, from paying out more
+      than once, without silencing genuinely separate weaves seconds apart */
+  globalCd: 0.35,
+};
+
 /* ===================== the rival ("rabbit") =====================
 
    An optional, persistent pace car (settings.rival, toggled from the start
@@ -885,6 +944,18 @@ const RIVAL = {
   laneGain: 1.3,
   /** ...and during a patience spell, where it wants a dramatic gain */
   laneGainHold: 3.0,
+  /** ---- rubber-band "hustle": how eagerly it hunts for a lane, never its
+      top speed or following distance (see the RIVAL block comment on the
+      removed "defend" — that reacted to a single moment and fought the
+      easing; this integrates over seconds of genuinely losing ground and
+      changes nothing that could put it into anybody). Meaningfully behind
+      for hustleAfter seconds and it starts lowering the gain a lane change
+      needs; hustleSpan later it is at gainMin. Decays twice as fast as it
+      builds, so a moment back in front does not leave it keyed up. */
+  hustleBehind: 25, hustleAfter: 4, hustleSpan: 8, hustleGainMin: 0.85,
+  /** folAMax/folBCom lerp toward this at full hustle — still comfortably
+      under what the layer-3 backstop and its own brakeHard can absorb. */
+  hustleFolMax: 8.0,
   /** lateral m/s the target eases at */
   laneRate: 9.0,
   /** How close counts as having ARRIVED at the chosen line (m), and the
@@ -1023,6 +1094,9 @@ export interface Npc {
   /** set the frame a close call with the player fires, else null; cooldown in ccCd */
   ccKind: "horn" | "chirp" | null;
   ccCd: number;
+  /** cooldown on THIS car counting again toward the No Hesi score — see
+      globalScoreCd */
+  scoreCd: number;
   /* ---- horn/flash reactions (see the HAIL block) ---- */
   /** how many gestures this car has been on the receiving end of this life —
       the k of the saturating curve. Never decays; that is what bounds it. */
@@ -1055,6 +1129,25 @@ export interface Npc {
   /** gesture count k for the saturating curve, and the clock of the last roll */
   nudgeGest: number;
   nudgeRollAt: number;
+  /* ---- white-lining (see the WLINE block) ---- */
+  /** the adjacent-lane NPC this car currently reads as riding alongside it,
+      or null. Re-validated every frame at O(1); re-searched for on wlT. */
+  wlPartner: Npc | null;
+  /** unbroken seconds paired with wlPartner */
+  wlDwell: number;
+  /** has this pair's one-time roll happened yet */
+  wlRolled: boolean;
+  /** …and what it decided: open a gap, and by how much (this car's own
+      outward ease, metres — see WLINE.gapLo/gapHi) */
+  wlOpen: boolean;
+  wlGap: number;
+  /** committed lateral ease target, metres in corridor-offset space, signed
+      away from the partner; 0 when not easing. wlCur eases toward it. */
+  wlLat: number;
+  /** the eased, currently-applied ease — folds into offT alongside nudgeCur */
+  wlCur: number;
+  /** seconds until the next partner rescan (only spent while unpaired) */
+  wlT: number;
 }
 
 type Cloud = { arr: Float32Array; geo: THREE.BufferGeometry; pts: THREE.Points };
@@ -1366,6 +1459,14 @@ export class Traffic {
       independently qualify in the same window, so weaving through a
       crowded scene can't produce a chorus of horns/chirps in short order. */
   private globalCcCd = 0;
+  /* No Hesi scoring feed (see scoreEvents) — its own cooldown, deliberately
+     shorter than the close-call audio's: that one is tuned to avoid a horn
+     "chorus" (rare, discrete, per-driver-personality events), this one has
+     to keep up with a player stringing several genuine near-misses together
+     in a few seconds, which is the entire combo fantasy. Same detection and
+     grading, different cadence. */
+  private globalScoreCd = 0;
+  private _scoreGrades: number[] = [];
   /** horn state last frame, and how long it has been held — update() turns the
       continuous `hornHeld` it is handed into discrete gestures from these, so
       the flash gesture is the only one the engine has to edge-detect itself */
@@ -1431,6 +1532,8 @@ export class Traffic {
 
     /** seconds it has been continuously behind the player — see reseedAfter */
     behindT: 0,
+    /** seconds it has been MEANINGFULLY behind — see RIVAL.hustleBehind */
+    hustleT: 0,
     /** slow drift on its pace, so it is never an exact multiple of yours */
     mood: 1,
     moodTo: 1,
@@ -1697,10 +1800,12 @@ export class Traffic {
         brake: false,
         blink: 0, blinkT: 0, turnCd: rand(2, 8), nudgeT: 0,
         hVis: 0, x: 0, y: -999, z: 0, spin: 0, wob: 0,
-        wreck: null, fade: 1, rival: false, ccKind: null, ccCd: 0,
+        wreck: null, fade: 1, rival: false, ccKind: null, ccCd: 0, scoreCd: 0,
         hailGest: 0, hailP: 0, hailAt: -1e9, hailDone: false, hailAck: 0, hailMad: 0,
         nudgeDwell: 0, nudgeKind: 0, nudgeLat: 0, nudgeCur: 0, nudgeHold: 0,
         nudgeGest: 0, nudgeRollAt: -1e9,
+        wlPartner: null, wlDwell: 0, wlRolled: false, wlOpen: false, wlGap: 0,
+        wlLat: 0, wlCur: 0, wlT: 0,
       });
     }
 
@@ -1864,6 +1969,14 @@ export class Traffic {
     n.nudgeLat = 0;
     n.nudgeCur = 0;
     n.nudgeHold = 0;
+    // white-lining state (see the WLINE block) — manoeuvre state too
+    n.wlPartner = null;
+    n.wlDwell = 0;
+    n.wlRolled = false;
+    n.wlOpen = false;
+    n.wlLat = 0;
+    n.wlCur = 0;
+    n.wlT = 0;
   }
 
   /** Roll a persistent personality. Heavies never speed, police are always brisk. */
@@ -2322,6 +2435,9 @@ export class Traffic {
     n.mergeLean = 0;
     n.nudgeCur = 0;
     n.nudgeLat = 0;
+    n.wlPartner = null;
+    n.wlLat = 0;
+    n.wlCur = 0;
     n.laneK = Math.max(0, Math.min(cor.lanes(z) - 1, cor.lanes(z) >> 1));
     n.s = z;
     n.offCur = n.offT = cor.laneOffset(n.laneK, z);
@@ -2445,16 +2561,30 @@ export class Traffic {
       which is what preserves the decisiveness that measured as load-bearing
       (dropping stickiness entirely cost 11 points of time-in-front and doubled
       the passes against it). */
-  private bestLane(n: Npc, vFree: number, patient = false): number {
+  private bestLane(n: Npc, vFree: number, gain: number): number {
     const cor = this.cor;
     const nl = cor.lanes(n.s);
     const cur = this.nearestLane(n.s, n.offCur);
-    const gain = patient ? RIVAL.laneGainHold : RIVAL.laneGain;
     let bestOff = cor.laneOffset(cur, n.s);
     let bestV = this.laneFree(n, bestOff, vFree) * gain;
     for (let k = 0; k < nl; k++) {
       if (k === cur) continue;
       const off = cor.laneOffset(k, n.s);
+      if (!this.rivalLatClear(n, off)) continue;
+      const v = this.laneFree(n, off, vFree);
+      if (v > bestV) { bestV = v; bestOff = off; }
+    }
+    /* THREADING: the line BETWEEN two adjacent lanes, not just their centres.
+       A human no-hesi driver splits the gap when the cars flanking it are
+       staggered rather than waiting for a whole lane to clear — the same
+       fantasy Part 2's white-lining opens up for the player. This reuses
+       laneFree/rivalLatClear exactly as the lane-centre scan above does, so
+       it is still the one offset pathway: a midpoint is only worth taking
+       when both flanks are far enough along their own lane that laneFree
+       scores it above sitting in the current lane, and rivalLatClear still
+       refuses it outright if either flank is anywhere near abeam. */
+    for (let k = 0; k < nl - 1; k++) {
+      const off = (cor.laneOffset(k, n.s) + cor.laneOffset(k + 1, n.s)) / 2;
       if (!this.rivalLatClear(n, off)) continue;
       const v = this.laneFree(n, off, vFree);
       if (v > bestV) { bestV = v; bestOff = off; }
@@ -2720,6 +2850,10 @@ export class Traffic {
        nobody can watch the fix — put it back in front. See RIVAL.reseedAfter
        for why the dwell matters more than the distance does. */
     riv.behindT = ahead < 0 ? riv.behindT + dt : 0;
+    riv.hustleT = ahead < -RIVAL.hustleBehind
+      ? riv.hustleT + dt : Math.max(0, riv.hustleT - 2 * dt);
+    const hustle = clamp(
+      (riv.hustleT - RIVAL.hustleAfter) / RIVAL.hustleSpan, 0, 1);
     if (ahead < -RIVAL.reseedBehind && riv.behindT > RIVAL.reseedAfter) {
       riv.behindT = 0;
       n.s = cor.wrapZ(pz + RIVAL.reseedAhead);
@@ -2879,7 +3013,13 @@ export class Traffic {
        uses the proportional law instead (see RIVAL.spdP). */
     let acc: number;
     if (lead) {
-      const aMax = RIVAL.folAMax, bCom = RIVAL.folBCom;
+      /* Hustle also lets it press closer to a leader before the follow
+         limit bites — still gated by the layer-3 backstop below, which
+         does not care whether the frame it is cleaning up came from a
+         lateral move or from following too close, so this cannot be the
+         thing that puts it into the leader's boot. */
+      const aMax = lerp(RIVAL.folAMax, RIVAL.hustleFolMax, hustle);
+      const bCom = lerp(RIVAL.folBCom, RIVAL.hustleFolMax, hustle);
       const dv = n.v - lead.v;
       /* It is always in a hurry now — there is no "behind where it wants to
          be" any more, because it has no target gap to be behind. See
@@ -2996,7 +3136,9 @@ export class Traffic {
       } else if ((arrived && riv.laneT > RIVAL.laneMinHold) ||
         riv.laneT > RIVAL.laneMaxHold) {
         riv.laneT = 0;
-        riv.laneWant = this.bestLane(n, v0, riv.holdT > 0);
+        const gain = riv.holdT > 0 ? RIVAL.laneGainHold
+          : lerp(RIVAL.laneGain, RIVAL.hustleGainMin, hustle);
+        riv.laneWant = this.bestLane(n, v0, gain);
       }
       want = riv.laneWant;
     }
@@ -3158,6 +3300,17 @@ export class Traffic {
     out.length = 0;
     for (const n of this.npcs) if (n.active && n.ccKind) out.push(n);
     return out;
+  }
+
+  /** No Hesi scoring feed: the closeness grade (0..1, tighter is higher) of
+      every near-miss that fired THIS frame — same detection as closeCalls'
+      near-miss half, independent cooldown (see the NEARMISS block), and NOT
+      gated on CLOSE_CALL_AUDIO, so scoring works with the close-call sound
+      left off. Usually empty; can hold more than one value on a frame where
+      several cars register at once. Reuses an array — read before the next
+      update(). */
+  scoreEvents(): number[] {
+    return this._scoreGrades;
   }
 
   /** Cheap per-frame feed for an audio doppler pool: the `count` nearest
@@ -3356,6 +3509,8 @@ export class Traffic {
     else if (!wantRival && this.rival) this.releaseRival();
     if (this.rival && this.warpSeed) this.seedRival(player);
     this.globalCcCd = Math.max(0, this.globalCcCd - dt);
+    this.globalScoreCd = Math.max(0, this.globalScoreCd - dt);
+    this._scoreGrades.length = 0;
 
     /* Budget follows the player. On the deck almost everything goes on the
        deck; in town the deck only keeps a skeleton crew — and none at all once
@@ -3679,7 +3834,9 @@ export class Traffic {
       /* player as obstacle */
       let panic = false;
       let nearPass = false;
+      let nearPassGrade = 0;
       n.ccCd = Math.max(0, n.ccCd - dt);
+      n.scoreCd = Math.max(0, n.scoreCd - dt);
       n.ccKind = null;
       if (Math.abs(player.y - n.y) < 3) {
         const dx = player.x - n.x, dz = player.z - n.z;
@@ -3709,7 +3866,15 @@ export class Traffic {
         // side window / ahead -5..11 / combined speed >9 to a real near-miss;
         // tuned against a Monte Carlo sim of a 2-minute aggressive weave to
         // land around 5-10 total reactions rather than dozens.
-        if (side > 0.3 && side < 0.9 && ahead > -1 && ahead < 4 && playerSpeed + n.v > 28) nearPass = true;
+        if (side > 0.3 && side < 0.9 && ahead > -1 && ahead < 4 && playerSpeed + n.v > 28) {
+          nearPass = true;
+          /* Closeness grade for the No Hesi scoring feed (see scoreEvents) —
+             the SAME window as the detection above, just turned into a 0..1
+             continuous read instead of a boolean: 0.3 m (the tightest this
+             ever fires) grades 1, 0.9 m (the threshold) grades 0. Keep these
+             two literals in lockstep with the ones in the condition above. */
+          nearPassGrade = clamp(1 - (side - 0.3) / (0.9 - 0.3), 0, 1);
+        }
       } else if (n.hw && !n.rival && (n.nudgeCur !== 0 || n.nudgeDwell !== 0)) {
         /* player is on another deck: nothing can be crowding this car, but a
            nudge already committed still has to release and ease back rather
@@ -3717,6 +3882,9 @@ export class Traffic {
            that through the same path. */
         this.nudgeUpdate(n, dt, now, 1e9, 1e9, 0, 0);
       }
+      // white-lining (see the WLINE block) — unrelated to the player, so it
+      // runs regardless of which branch above fired. Mainline traffic only.
+      if (n.hw && !n.rival && n.route === -1) this.wlineUpdate(n, dt);
 
       if (n.rival) this.updateRival(n, dt, player, playerSpeed, panic);
       else if (n.hw && n.route === BYPASS_EDGE) this.updateBypass(n, dt, v0, lead, panic);
@@ -3735,6 +3903,14 @@ export class Traffic {
         n.ccKind = n.drv.timid ? "chirp" : "horn";
         n.ccCd = 10 + rand(0, 3);
         this.globalCcCd = Traffic.CC_GLOBAL_GAP;
+      }
+      /* No Hesi scoring feed — same near-miss read as the close-call audio
+         above, independent cooldown (see globalScoreCd). Not gated on
+         CLOSE_CALL_AUDIO: the feature this machinery was kept for. */
+      if (nearPass && n.scoreCd <= 0 && this.globalScoreCd <= 0) {
+        n.scoreCd = NEARMISS.npcCd;
+        this.globalScoreCd = NEARMISS.globalCd;
+        this._scoreGrades.push(nearPassGrade);
       }
 
       /* smooth heading + place */
@@ -4256,6 +4432,119 @@ export class Traffic {
     else n.nudgeCur = n.nudgeLat;
   }
 
+  /** A deterministic per-pair roll — see the WLINE block for why this needs
+      no shared state: both cars in a pair compute the identical result from
+      their own two pool ids plus a coarse bucket of where the pair formed. */
+  private wlinePairRoll(n: Npc, p: Npc): { open: boolean; gap: number } {
+    const lo = Math.min(n.id, p.id), hi = Math.max(n.id, p.id);
+    const bucket = Math.round(n.s / 25);
+    const seed = (lo * 2654435761 + hi * 40503 + bucket * 97) >>> 0;
+    const rnd = mulberry32(seed);
+    const open = rnd() < WLINE.openChance;
+    // average two draws so the width leans toward the middle of the band
+    // rather than sitting flat across it — "sometimes wide, sometimes
+    // narrow" per the owner's spec, not uniformly either
+    const gap = lerp(WLINE.gapLo, WLINE.gapHi, (rnd() + rnd()) / 2);
+    return { open, gap };
+  }
+
+  /** Does `n` still ride alongside `p` right now — same lane gap, similar
+      speed, still both real traffic? O(1); the O(N) search only runs when
+      a car has no partner at all (see wlineUpdate). */
+  private wlinePaired(n: Npc, p: Npc | null): boolean {
+    if (!p || !p.active || !p.hw || p.rival || p.wreck || p.route !== -1) return false;
+    // mid lane-change/merge on either side — not a stable pair to drift as
+    if (p.blink !== 0 || p.pendK >= 0 || p.mergeLean !== 0) return false;
+    if (n.blink !== 0 || n.pendK >= 0 || n.mergeLean !== 0) return false;
+    if (n.v < WLINE.minSpeed || p.v < WLINE.minSpeed) return false;
+    if (Math.abs(p.v - n.v) > WLINE.dv) return false;
+    if (Math.abs(this.cor.deltaZ(n.s, p.s)) > WLINE.sFrac * (n.L + p.L) / 2)
+      return false;
+    // adjacent lanes only — same lane is a leader/follower, not a pair
+    const dLane = Math.abs(this.nearestLane(p.s, p.offCur) - this.nearestLane(n.s, n.offCur));
+    return dLane === 1;
+  }
+
+  /** White-lining (see the WLINE block). One call per active mainline NPC
+      per frame, from update()'s player-obstacle pass — unconditionally,
+      since this has nothing to do with where the player is. */
+  private wlineUpdate(n: Npc, dt: number) {
+    const cor = this.cor;
+    /* Suspended inside the rival's yield corridor — the same window
+       yieldToRival itself reads, plus a margin, so a car does not open a
+       gap for the player and then have the rival want that exact space a
+       moment later. Reset outright rather than merely held: re-pairing
+       fresh once clear reads better than resuming a stale drift. */
+    const r = this.rival;
+    if (r && r.active && !r.wreck) {
+      const behind = cor.deltaZ(r.s, n.s);
+      if (behind > -20 && behind < RIVAL.yieldSee &&
+        Math.abs(r.offCur - n.offCur) < RIVAL.yieldLat + 3) {
+        n.wlPartner = null;
+        n.wlDwell = 0;
+        n.wlRolled = false;
+        n.wlLat = 0;
+        const dw = n.wlLat - n.wlCur;
+        if (Math.abs(dw) > 0.004) n.wlCur += clamp(dw, -WLINE.rate * dt, WLINE.rate * dt);
+        else n.wlCur = n.wlLat;
+        return;
+      }
+    }
+    let p = this.wlinePaired(n, n.wlPartner) ? n.wlPartner : null;
+    if (!p) {
+      n.wlT -= dt;
+      if (n.wlT <= 0) {
+        n.wlT = WLINE.scanEvery + this.rng() * WLINE.scanJitter;
+        let bestDs = Infinity;
+        for (const m of this.npcs) {
+          if (m === n || !m.active || !m.hw) continue;
+          if (!this.wlinePaired(n, m)) continue;
+          const ds = Math.abs(cor.deltaZ(n.s, m.s));
+          if (ds < bestDs) { bestDs = ds; p = m; }
+        }
+      }
+    }
+    if (p !== n.wlPartner) {
+      n.wlPartner = p;
+      n.wlDwell = 0;
+      n.wlRolled = false;
+    }
+    if (!p) {
+      n.wlDwell = 0;
+      n.wlLat = 0;
+    } else {
+      n.wlDwell += dt;
+      if (!n.wlRolled && n.wlDwell >= WLINE.dwell) {
+        n.wlRolled = true;
+        const roll = this.wlinePairRoll(n, p);
+        n.wlOpen = roll.open;
+        n.wlGap = roll.gap;
+      }
+      if (n.wlOpen && n.wlDwell >= WLINE.dwell) {
+        const away = Math.sign(n.offCur - p.offCur) || 1;
+        /* 3+ abreast: if this car ALSO has a qualifying neighbour on the far
+           side (the side it would be easing TOWARD), it is the middle car of
+           the group and stays put — easing would drive it into that third
+           car rather than open anything. */
+        let middled = false;
+        for (const m of this.npcs) {
+          if (m === n || m === p || !m.active || !m.hw) continue;
+          if (Math.sign(m.offCur - n.offCur) !== away) continue;
+          if (this.wlinePaired(n, m)) { middled = true; break; }
+        }
+        const want = middled ? 0
+          : clamp(away * n.wlGap, -this.maxBias(n, n.s), this.maxBias(n, n.s));
+        n.wlLat = want !== 0 && this.laneClearAt(n, n.s, n.offCur + away * WLINE.probe)
+          ? want : 0;
+      } else {
+        n.wlLat = 0;
+      }
+    }
+    const dw = n.wlLat - n.wlCur;
+    if (Math.abs(dw) > 0.004) n.wlCur += clamp(dw, -WLINE.rate * dt, WLINE.rate * dt);
+    else n.wlCur = n.wlLat;
+  }
+
   private updateHwy(
     n: Npc, dt: number, v0: number,
     lead: { ds: number; v: number } | null, panic = false
@@ -4535,12 +4824,14 @@ export class Traffic {
     // a lean-waiting car aims at its lane edge instead of centre + bias; the
     // blinker must not clear while the lean holds, or followers lose the
     // widened perception that makes them yield
-    // the courtesy nudge rides on top of the driver's own bias, clamped
-    // together so the pair can never push the body past its lane line; a
-    // lean-waiting car is already at its edge and is left alone
+    // the courtesy nudge and the white-lining ease both ride on top of the
+    // driver's own bias, clamped together so none of the three can push the
+    // body past its lane line; a lean-waiting car is already at its edge
+    // and is left alone
     n.offT = cor.laneOffset(n.laneK, n.s) +
       (n.mergeLean !== 0 ? n.mergeLean
-        : clamp(this.biasAt(n, n.s) + n.nudgeCur, -this.maxBias(n, n.s), this.maxBias(n, n.s)));
+        : clamp(this.biasAt(n, n.s) + n.nudgeCur + n.wlCur,
+          -this.maxBias(n, n.s), this.maxBias(n, n.s)));
     const dOff = n.offT - n.offCur;
     const rate = n.blink !== 0 ? n.laneRate || cor.lanePitch(n.s) / 3 : LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) {

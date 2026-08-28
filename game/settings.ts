@@ -73,6 +73,21 @@ export interface TierCaps {
   roadDecals?: boolean;
   /** sodium ground pool under every Nth deck streetlight (1 = all) */
   lampPoolEvery?: number;
+  /** emit every Nth TOWN streetlamp into the glow-point cloud (1 = all).
+      Deck lamps are never thinned by this — see townmesh.ts. Halves the
+      point count feeding the horizon stack on the tier that lags most;
+      safe to thin because the streetlight placement loop consumes no rng
+      calls per lamp, so skipping some doesn't reseed the town layout. */
+  lampGlowEvery?: number;
+  /** window InstancedMeshes cast shadows (townmesh.ts). Town shadows fall
+      from a ~170 m shadow box the deck never sees from the dashcam, so the
+      two mobile tiers buy back the shader recompile + shadow-pass cost. */
+  townCastShadow?: boolean;
+  /** obstruction-light glow points on the crossing overpass (highway.ts
+      buildOverpass) — the box-girder/pier geometry itself stays on every
+      tier (three draw calls total, not worth gating), only the additive
+      points are capped, same as lampCones */
+  overpassLights?: boolean;
 
   /** Procedural concrete decimetre detail on parapets, deck fascia and the
       tunnel crown — the grit atlas fetch plus the surface-gradient normal
@@ -138,6 +153,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: false, lampConeEvery: 2, jetFans: false, catwalks: false,
     propModels: false, tollGlow: true, cityRings: 2, roadDecals: false,
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
+    lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -147,6 +163,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: true, lampConeEvery: 2, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
+    lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -156,6 +173,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampCones: true, lampConeEvery: 1, jetFans: true, catwalks: true,
     propModels: true, tollGlow: true, cityRings: 3, roadDecals: true,
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
+    lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
   },
 };
 
@@ -412,6 +430,11 @@ export interface GameSettings {
       cuts through traffic and still signals is a contradiction, and the
       ABSENCE of a blinker is characterisation the player reads immediately. */
   rivalSignals: boolean;
+  /** the No Hesi scoring loop — speed + near misses build a combo, contact
+      resets it (see NOHESI in game/engine.ts). On by default, same pattern
+      as `rival`: it costs nothing while driving clean and reads immediately
+      as this game's version of the reference title's vibe bar. */
+  noHesiScore: boolean;
 }
 
 export interface Profile {
@@ -420,6 +443,9 @@ export interface Profile {
   paintIx: number;
   seed: number;
   camMode: number;
+  /** best-ever No Hesi score, across every drive on this profile — see
+      game/engine.ts's noHesiUpdate. Only ever grows. */
+  noHesiBest: number;
 }
 
 export const defaultSettings = (): GameSettings => ({
@@ -468,6 +494,7 @@ export const defaultSettings = (): GameSettings => ({
   rival: false,
   rivalSignals: false,
   testMode: false,
+  noHesiScore: true,
 });
 
 export const defaultProfile = (): Profile => ({
@@ -482,6 +509,7 @@ export const defaultProfile = (): Profile => ({
      looking for the camera control. Only affects first run: an existing
      profile keeps whatever camera it was last left on. */
   camMode: 3,
+  noHesiBest: 0,
 });
 
 /** Preset side-effects (ported from legacy applyPreset). */
@@ -523,6 +551,7 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
   "autoTime", "rain", "mmap", "rival", "rivalSignals", "testMode",
+  "noHesiScore",
 ] as const;
 
 /** Non-negative integer, or the fallback. For the persisted array indices whose
@@ -640,6 +669,8 @@ export function loadProfile(): Profile {
        player again — someone who picks the KAZE GT after this keeps it. */
     if (migrateCar && prof.carId === "kaze") prof.carId = DEFAULT_CAR_ID;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
+    if (typeof prof.noHesiBest !== "number" || !Number.isFinite(prof.noHesiBest) || prof.noHesiBest < 0)
+      prof.noHesiBest = base.noHesiBest;
     return prof;
   } catch {
     return base;

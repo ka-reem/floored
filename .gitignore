@@ -4,6 +4,7 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 test/artifacts/
+test/_*.mjs
 .DS_Store
 .vercel
 public/assets-staging/

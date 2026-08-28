@@ -130,6 +130,7 @@ export default function GameApp() {
     p.paintIx = g.paintIx;
     p.seed = g.seed;
     p.camMode = g.camMode;
+    p.noHesiBest = g.noHesiBest;
     saveProfile(p);
   }, []);
 
@@ -225,6 +226,16 @@ export default function GameApp() {
       <div id="hud" style={{ display: playing ? "block" : "none" }}>
         <div className="spd" id="spd">0<small>{unitLabel(g ? g.settings.units : "mph")}</small></div>
         <div className="gear" id="gearTxt">D1</div>
+        {/* No Hesi score + combo (game/engine.ts's noHesiUpdate writes the
+            text; hidden via the setting, not via this style, so the engine
+            is the one source of truth for whether it's on). Semantic id/
+            class only — inline-minimal placement, real styling is the
+            ui-redesign lane's to hand off (see the rival-whiteline report). */}
+        <div
+          className="noHesi"
+          id="noHesi"
+          style={{ fontSize: "0.55em", opacity: 0.85, marginTop: "2px" }}
+        />
       </div>
       <div id="toast" style={{ opacity: toast ? 1 : 0 }}>{toast}</div>
       <div id="exitHint" style={{ opacity: exitHint && playing ? 1 : 0 }}>{exitHint}</div>
@@ -308,7 +319,7 @@ export default function GameApp() {
 
       {screen === "paused" && (
         <div className="menuRoot paused">
-          <h1 className="menuTitle" style={{ fontSize: 34 }}>PAUSED</h1>
+          <h1 className="menuTitle sm">PAUSED</h1>
           <div className="menuBtns">
             <button className="menuBtn primary" onClick={resume}>RESUME</button>
             <button className="menuBtn" onClick={() => setScreen("garage")}>GARAGE</button>
@@ -387,7 +398,7 @@ export default function GameApp() {
               <b>, / .</b><span>previous / next piece</span>
               <b>Esc</b><span>pause menu (music pauses with it)</span>
             </div>
-            <p style={{ color: "#7d8aa8", marginTop: 12, fontSize: 12 }}>
+            <p className="ctrlNote">
               Follow the green EXIT boards on the expressway — each numbered exit has a lit
               off-ramp down into the town on both sides. Crashed cars keep their hazards on,
               smoke, and get towed away shortly.
@@ -430,7 +441,7 @@ function LoadingScreen({
         <div className="loadErr">
           Something went wrong building the town.
           <code>{error}</code>
-          <div className="menuBtns" style={{ minWidth: 0, marginTop: 18 }}>
+          <div className="menuBtns inline">
             <button className="menuBtn primary" onClick={() => location.reload()}>
               RELOAD
             </button>
@@ -468,31 +479,71 @@ function analogSteerLive() {
 function SteerWheel({ game }: { game: Game }) {
   const [rot, setRot] = useState(0);
   const active = useRef(false);
+  const pid = useRef<number | null>(null);
   const cx = useRef(0);
-  const end = () => {
+  const end = useCallback(() => {
     active.current = false;
+    pid.current = null;
     game.setWheelVal(0);
+    game.setWheelPointer(null);
     setRot(0);
-  };
+  }, [game]);
   /* Pausing unmounts this widget mid-drag; without zeroing here the last
      deflection keeps feeding readInput and the car resumes at hard lock. */
-  useEffect(() => () => game.setWheelVal(0), [game]);
+  useEffect(() => () => { game.setWheelVal(0); game.setWheelPointer(null); }, [game]);
+  /* Belt-and-braces: a gesture the browser hijacks outright (an edge-swipe,
+     the loupe the mobile-input work elsewhere is closing) can end a touch
+     without ever delivering pointerup/pointercancel/lostpointercapture to
+     #swheel itself. The window still sees the pointer go away — capture only
+     changes who an event targets, not whether window sees it at all in the
+     bubble phase — so this is the second line of defence behind
+     Game.watchdogTouchInput(), which is the third (see engine.ts). */
+  useEffect(() => {
+    const release = (e: PointerEvent) => {
+      if (pid.current !== null && e.pointerId === pid.current) end();
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    };
+  }, [end]);
   return (
     <div
       id="swheel"
       onPointerDown={(e) => {
+        // A second finger joining mid-drag must not re-base the origin: that
+        // is the wrong-way-jump bug (a stray touch shifts cx, and the next
+        // move computes against the new origin) as much as it is the stuck
+        // one (either finger's later lift then zeroes a still-held wheel).
+        if (active.current) return;
         active.current = true;
+        pid.current = e.pointerId;
         cx.current = e.clientX;
-        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        game.setWheelPointer(e.pointerId);
+        // State is already committed above, so a capture that throws (the
+        // pointer can be gone by the time this runs on a fast tap) loses
+        // only the drift-off-element case, never the press itself.
+        try {
+          (e.target as HTMLElement).setPointerCapture(e.pointerId);
+        } catch {}
       }}
       onPointerMove={(e) => {
-        if (!active.current) return;
+        if (!active.current || e.pointerId !== pid.current) return;
         const v = Math.max(-1, Math.min(1, (e.clientX - cx.current) / 58));
         game.setWheelVal(v);
         setRot(v * 110);
       }}
-      onPointerUp={end}
-      onPointerCancel={end}
+      onPointerUp={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
+      onPointerCancel={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
+      onLostPointerCapture={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
     >
       <div id="swheelInner" style={{ transform: `rotate(${rot}deg)` }}>
         ◠<br />│
@@ -542,7 +593,7 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
   };
   return (
     <div className="menuRoot">
-      <div className="panel" style={{ width: "min(760px,95vw)" }}>
+      <div className="panel wide">
         <h2>GARAGE</h2>
         <div className="jp2">車庫 — pick your machine</div>
         <div className="garageCars">
@@ -617,6 +668,12 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="row"><label>{label}</label>{children}</div>
+  );
+}
+
+function Section({ label }: { label: string }) {
+  return (
+    <div className="sectionHead">{label}</div>
   );
 }
 
@@ -791,6 +848,13 @@ function SettingsPanel({
             onChange={(v) => upd((x) => (x.rivalSignals = v))}
           />
         )}
+        {/* No Hesi scoring: speed + near misses build a combo, contact
+            resets it (game/engine.ts's noHesiUpdate). On by default. */}
+        <Check
+          label="No Hesi score (speed + near misses)"
+          checked={s.noHesiScore}
+          onChange={(v) => upd((x) => (x.noHesiScore = v))}
+        />
         <Row label={`Field of view — ${s.fovBase}°`}>
           <input
             type="range" min={58} max={100} value={s.fovBase}
@@ -803,7 +867,7 @@ function SettingsPanel({
             onChange={(e) => upd((x) => (x.vol = +e.target.value / 100))}
           />
         </Row>
-        <hr />
+        <Section label="World & weather" />
         <Row label={`Time of day — ${fmtTime(game.time)}`}>
           <input
             type="range" min={0} max={24} step={0.25} value={game.time}
@@ -823,7 +887,7 @@ function SettingsPanel({
             }}
           />
         </Row>
-        <hr />
+        <Section label="Session" />
         <Row label={`Town seed — ${game.seed}`}>
           <button onClick={onReseed}>NEW TOWN (reloads)</button>
         </Row>

@@ -59,6 +59,14 @@ export interface Cockpit {
       belonging to the cabin on show may be live. Returns an Object3D to be
       raycast RECURSIVELY: see where the volumes are built. */
   cabinSwitch(imported: boolean): THREE.Object3D;
+  /** Click volume for a turn-signal stalk, near the top of the wheel/column —
+      not at the real stalk's position, which the dashcam lens cannot see; see
+      where the volumes are built for the measurement. `imported` selects the
+      donor cabin's volume, same convention as cabinSwitch. */
+  signalSwitch(side: "l" | "r", imported: boolean): THREE.Object3D;
+  /** Click volume for the hazards — both signals at once, same convention as
+      the traffic hazard flash in traffic.ts. `imported` as above. */
+  hazardSwitch(imported: boolean): THREE.Object3D;
   setMirrorVis(v: boolean): void;
   drawGauges(rpm: number, kmh: number, gearTxt: string, now: number, flags: GaugeFlags): void;
   /** Repaint the head unit. Takes the world/car/traffic the HUD minimap
@@ -1420,6 +1428,46 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   donorSpace.add(domeHit(0.23, 0.076, 0.23, [0, 1.337, 0.321]));
   interiorG.add(donorSpace);
 
+  /* Turn-signal and hazard click volumes, same "pure hit geometry" idea as
+     the dome switch above — and forced into the SAME cramped corner of the
+     frame the dome switch is, for the same reason: the dashcam is a
+     105-degree lens 30 cm behind the wheel, and almost everything at dash
+     height (the real stalks, the real hazard triangle, both well under eye
+     level) sits far enough below the lens that the ONLY pixels near them
+     that survive into frame are up around the wheel rim and the top of the
+     binnacle. Measured by projecting candidate points through the live POV
+     camera rather than guessed: below roughly y 0.95 (procedural) / y 0.95
+     (donor) at dash depth, nothing is on screen at all — same story as the
+     console above it. So these three read as "somewhere near the column",
+     not as the stalk tip or the dash-mounted triangle a real Volvo has them
+     at; a target that cannot be seen is not a target.
+
+     Procedural volumes sit at the depth of the nav screen (z 0.72, SCR.z)
+     since nothing is actually drawn here either — the wheel rim itself
+     tops out well short of that depth (POD.z + rim radius ~= 0.6), so
+     borrowing the screen's proven-visible depth costs nothing.  Donor
+     volumes sit on the wheel's own rim, whose top clears the frame the way
+     the roof console never does. */
+  const sigHitProc = (at: P3) => domeHit(0.16, 0.16, 0.16, at);
+  const sigLProc = sigHitProc([0.3, 1.0, 0.72]);
+  const sigRProc = sigHitProc([-0.15, 1.0, 0.72]);
+  const hazardHitProc = domeHit(0.16, 0.16, 0.16, [0.075, 1.15, 0.72]);
+  interiorG.add(sigLProc, sigRProc, hazardHitProc);
+  /* A SEPARATE counter-scale group from the console's donorSpace, not a
+     shared one — hitCabinSwitch's raycast against the console volume is
+     recursive, so a sibling hit box under the SAME group would register as
+     "the console was clicked" on every signal/hazard click and the dome
+     would answer instead of the signal. Reported by a headless click-through
+     that logged which handler actually fired: toggleCabinLight ran, not
+     clickSignal, even though the ray demonstrably hit the signal box first. */
+  const donorWheelSpace = new THREE.Group();
+  const sigHitDonor = (at: P3) => domeHit(0.16, 0.18, 0.16, at);
+  const sigLDonor = sigHitDonor([0.594, 0.99, 0.61]);
+  const sigRDonor = sigHitDonor([0.177, 0.99, 0.61]);
+  const hazardHitDonor = domeHit(0.16, 0.16, 0.16, [0.385, 1.05, 0.61]);
+  donorWheelSpace.add(sigLDonor, sigRDonor, hazardHitDonor);
+  interiorG.add(donorWheelSpace);
+
   /* And its counterpart: a faint cool wash from the base of the windscreen
      raking BACK across the pad toward the seat — the "city light through the
      glass" that gives the pad top its grazing sheen in the reference photo.
@@ -2037,6 +2085,18 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     cabinSwitch(imported) {
       donorSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
       return imported ? donorSpace : domeHitProc;
+    },
+    signalSwitch(side, imported) {
+      // same lazy counter-scale as cabinSwitch — donorWheelSpace is one group
+      // shared by the three wheel-area volumes, so this is a no-op the
+      // second and every later call in a click makes.
+      donorWheelSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
+      if (imported) return side === "l" ? sigLDonor : sigRDonor;
+      return side === "l" ? sigLProc : sigRProc;
+    },
+    hazardSwitch(imported) {
+      donorWheelSpace.scale.set(1, interiorG.scale.x, interiorG.scale.x);
+      return imported ? hazardHitDonor : hazardHitProc;
     },
     setMirrorVis: (v) => {
       mirrorParts.forEach((m) => (m.visible = v));

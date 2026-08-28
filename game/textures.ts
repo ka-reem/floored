@@ -837,18 +837,28 @@ export function skyCanvas(dayF: number) {
   c.height = 256;
   const x = c.getContext("2d")!;
   const g = x.createLinearGradient(0, 0, 0, 256);
-  function mix(a: string, b: string, t: number) {
-    const pa = parseInt(a.slice(1), 16),
-      pb = parseInt(b.slice(1), 16);
-    const r = (pa >> 16) + (((pb >> 16) - (pa >> 16)) * t),
-      gg = ((pa >> 8) & 255) + ((((pb >> 8) & 255) - ((pa >> 8) & 255)) * t),
-      bl = (pa & 255) + (((pb & 255) - (pa & 255)) * t);
-    return `rgb(${r | 0},${gg | 0},${bl | 0})`;
+  const ch = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  /* Dusk pull. A straight night→day lerp passes through its muddiest greys
+     exactly at sunset, which is the one frame of the eight-step cache people
+     actually stare at — so the mid frames detour through a third, saturated
+     colour instead. sin(π·dayF) is zero at both ends: full night and high
+     noon stay bit-identical to the old gradient, only the crossfade warms. */
+  const dusk = Math.sin(Math.PI * dayF);
+  function stop(a: string, b: string, d: string, k: number) {
+    const A = ch(a), B = ch(b), D = ch(d);
+    const v = A.map((va, i) => {
+      const m = va + (B[i] - va) * dayF;
+      return (m + (D[i] - m) * dusk * k) | 0;
+    });
+    return `rgb(${v[0]},${v[1]},${v[2]})`;
   }
-  g.addColorStop(0, mix("#04050e", "#77aef0", dayF));
-  g.addColorStop(0.45, mix("#0a0f26", "#a8c8ec", dayF));
-  g.addColorStop(0.72, mix("#231a3a", "#e8c9a8", dayF));
-  g.addColorStop(1, mix("#3a2033", "#f2d9b4", dayF));
+  // dusk targets run violet at the zenith down to hot orange at the horizon —
+  // the same low-drama-high-colour shape the cloud deck's sun rim has, so the
+  // dome and the deck read as one sunset rather than two effects
+  g.addColorStop(0, stop("#04050e", "#77aef0", "#241636", 0.3));
+  g.addColorStop(0.45, stop("#0a0f26", "#a8c8ec", "#58306a", 0.3));
+  g.addColorStop(0.72, stop("#231a3a", "#e8c9a8", "#e86a3c", 0.45));
+  g.addColorStop(1, stop("#3a2033", "#f2d9b4", "#ff8f4a", 0.5));
   x.fillStyle = g;
   x.fillRect(0, 0, 8, 256);
   return c;

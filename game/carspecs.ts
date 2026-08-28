@@ -57,6 +57,12 @@ export interface PhysicsSpec {
  *  would have used, instead of quietly scaling a hardcoded 1. */
 export const BRAKE_F = 16400;
 export const STEER_AY = 19.5;
+/** Test-mode launch torque multiplier (testDriveSpec's TQ_T scale) — the one
+ *  knob to nudge if the launch ever needs to be faster/slower again. Keep at
+ *  or above 2.4: test-mode vmax rides physics.ts's 82 m/s sanity clamp, not
+ *  the gearing, so this cannot move top speed on its own, but the top-gear
+ *  pull into that clamp gets soft below the floor. See testDriveSpec below. */
+export const TEST_ACCEL_MULT = 2.7;
 
 /* ---- Test mode ---------------------------------------------------------
    A dev toggle (K in engine.ts), not a difficulty and not a car: a way to
@@ -110,10 +116,15 @@ export function testDriveSpec(spec: PhysicsSpec): PhysicsSpec {
        angle the peak arrives at — the car takes far more and still lets go at
        the same stick position rather than turning to ice at the limit.
 
-       Torque x3.2 with a 0.72 final drive: torque alone would just spin the
-       tyres, and the shorter final is what turns it into speed rather than
-       noise. Drag x0.6 lifts the top end, which is where the final drive
-       would otherwise cost it.
+       Torque x TEST_ACCEL_MULT (2.7) with a 0.72 final drive: torque alone
+       would just spin the tyres, and the shorter final is what turns it into
+       speed rather than noise. Drag x0.6 lifts the top end, which is where
+       the final drive would otherwise cost it. 2.7 is down from a first-pass
+       3.2 — full throttle read as too violent — and top speed cannot follow
+       it down: test mode runs into physics.ts's 82 m/s sanity clamp
+       (measured, 295.2 km/h at both multipliers — test/testdrive-accel-sim.mjs).
+       Keep TEST_ACCEL_MULT at or above 2.4 so the top-gear pull into that cap
+       stays firm.
 
        Brakes x4 are not optional at this grip. Braking force is capped by
        what the tyre can hold, so a pedal sized for stock grip is invisible
@@ -125,7 +136,7 @@ export function testDriveSpec(spec: PhysicsSpec): PhysicsSpec {
        grip multiplier would make half lock at speed an instant spin. Keeping
        it well under means the extra grip mostly shows up as speed KEPT
        through a corner rather than as a sharper turn-in. */
-    TQ_T: spec.TQ_T.map((t) => t * 3.2),
+    TQ_T: spec.TQ_T.map((t) => t * TEST_ACCEL_MULT),
     FINAL: spec.FINAL * 0.72,
     drag: spec.drag * 0.6,
     gripF: spec.gripF * 2.8,
