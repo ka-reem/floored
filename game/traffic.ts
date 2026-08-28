@@ -885,6 +885,18 @@ const RIVAL = {
   laneGain: 1.3,
   /** ...and during a patience spell, where it wants a dramatic gain */
   laneGainHold: 3.0,
+  /** ---- rubber-band "hustle": how eagerly it hunts for a lane, never its
+      top speed or following distance (see the RIVAL block comment on the
+      removed "defend" — that reacted to a single moment and fought the
+      easing; this integrates over seconds of genuinely losing ground and
+      changes nothing that could put it into anybody). Meaningfully behind
+      for hustleAfter seconds and it starts lowering the gain a lane change
+      needs; hustleSpan later it is at gainMin. Decays twice as fast as it
+      builds, so a moment back in front does not leave it keyed up. */
+  hustleBehind: 25, hustleAfter: 4, hustleSpan: 8, hustleGainMin: 0.85,
+  /** folAMax/folBCom lerp toward this at full hustle — still comfortably
+      under what the layer-3 backstop and its own brakeHard can absorb. */
+  hustleFolMax: 8.0,
   /** lateral m/s the target eases at */
   laneRate: 9.0,
   /** How close counts as having ARRIVED at the chosen line (m), and the
@@ -1431,6 +1443,8 @@ export class Traffic {
 
     /** seconds it has been continuously behind the player — see reseedAfter */
     behindT: 0,
+    /** seconds it has been MEANINGFULLY behind — see RIVAL.hustleBehind */
+    hustleT: 0,
     /** slow drift on its pace, so it is never an exact multiple of yours */
     mood: 1,
     moodTo: 1,
@@ -2445,16 +2459,30 @@ export class Traffic {
       which is what preserves the decisiveness that measured as load-bearing
       (dropping stickiness entirely cost 11 points of time-in-front and doubled
       the passes against it). */
-  private bestLane(n: Npc, vFree: number, patient = false): number {
+  private bestLane(n: Npc, vFree: number, gain: number): number {
     const cor = this.cor;
     const nl = cor.lanes(n.s);
     const cur = this.nearestLane(n.s, n.offCur);
-    const gain = patient ? RIVAL.laneGainHold : RIVAL.laneGain;
     let bestOff = cor.laneOffset(cur, n.s);
     let bestV = this.laneFree(n, bestOff, vFree) * gain;
     for (let k = 0; k < nl; k++) {
       if (k === cur) continue;
       const off = cor.laneOffset(k, n.s);
+      if (!this.rivalLatClear(n, off)) continue;
+      const v = this.laneFree(n, off, vFree);
+      if (v > bestV) { bestV = v; bestOff = off; }
+    }
+    /* THREADING: the line BETWEEN two adjacent lanes, not just their centres.
+       A human no-hesi driver splits the gap when the cars flanking it are
+       staggered rather than waiting for a whole lane to clear — the same
+       fantasy Part 2's white-lining opens up for the player. This reuses
+       laneFree/rivalLatClear exactly as the lane-centre scan above does, so
+       it is still the one offset pathway: a midpoint is only worth taking
+       when both flanks are far enough along their own lane that laneFree
+       scores it above sitting in the current lane, and rivalLatClear still
+       refuses it outright if either flank is anywhere near abeam. */
+    for (let k = 0; k < nl - 1; k++) {
+      const off = (cor.laneOffset(k, n.s) + cor.laneOffset(k + 1, n.s)) / 2;
       if (!this.rivalLatClear(n, off)) continue;
       const v = this.laneFree(n, off, vFree);
       if (v > bestV) { bestV = v; bestOff = off; }
@@ -2720,6 +2748,10 @@ export class Traffic {
        nobody can watch the fix — put it back in front. See RIVAL.reseedAfter
        for why the dwell matters more than the distance does. */
     riv.behindT = ahead < 0 ? riv.behindT + dt : 0;
+    riv.hustleT = ahead < -RIVAL.hustleBehind
+      ? riv.hustleT + dt : Math.max(0, riv.hustleT - 2 * dt);
+    const hustle = clamp(
+      (riv.hustleT - RIVAL.hustleAfter) / RIVAL.hustleSpan, 0, 1);
     if (ahead < -RIVAL.reseedBehind && riv.behindT > RIVAL.reseedAfter) {
       riv.behindT = 0;
       n.s = cor.wrapZ(pz + RIVAL.reseedAhead);
@@ -2879,7 +2911,13 @@ export class Traffic {
        uses the proportional law instead (see RIVAL.spdP). */
     let acc: number;
     if (lead) {
-      const aMax = RIVAL.folAMax, bCom = RIVAL.folBCom;
+      /* Hustle also lets it press closer to a leader before the follow
+         limit bites — still gated by the layer-3 backstop below, which
+         does not care whether the frame it is cleaning up came from a
+         lateral move or from following too close, so this cannot be the
+         thing that puts it into the leader's boot. */
+      const aMax = lerp(RIVAL.folAMax, RIVAL.hustleFolMax, hustle);
+      const bCom = lerp(RIVAL.folBCom, RIVAL.hustleFolMax, hustle);
       const dv = n.v - lead.v;
       /* It is always in a hurry now — there is no "behind where it wants to
          be" any more, because it has no target gap to be behind. See
@@ -2996,7 +3034,9 @@ export class Traffic {
       } else if ((arrived && riv.laneT > RIVAL.laneMinHold) ||
         riv.laneT > RIVAL.laneMaxHold) {
         riv.laneT = 0;
-        riv.laneWant = this.bestLane(n, v0, riv.holdT > 0);
+        const gain = riv.holdT > 0 ? RIVAL.laneGainHold
+          : lerp(RIVAL.laneGain, RIVAL.hustleGainMin, hustle);
+        riv.laneWant = this.bestLane(n, v0, gain);
       }
       want = riv.laneWant;
     }

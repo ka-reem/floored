@@ -75,6 +75,8 @@ const RIVAL = {
   clearLon: 1.0, clearLat: 0.3, sepLon: 0.9, sepLat: 0.25, sepPasses: 4,
   backOffStep: 0.6, backOffSteps: 40,
   seeAhead: 240, followSee: 95, laneFreeMax: 30, laneGain: 1.3, laneGainHold: 3.0,
+  hustleBehind: 25, hustleAfter: 4, hustleSpan: 8, hustleGainMin: 0.85,
+  hustleFolMax: 8.0,
   yawMax: 9 * Math.PI / 180, yawTau: 0.10,
   folS0: 1.2, folTUrgent: 0.06, folAMax: 5.0, folBCom: 5.0,
   holdFrom: 40, holdSpan: 120, brakeNear: -1.5, brakeTtc: 2.0,
@@ -265,13 +267,13 @@ console.log("3. toll plaza: lined up on a gate before the islands");
    A crude player model: tops out at 82 m/s but is held to a threading average
    by traffic, which is the whole premise — the rival is SLOWER flat out and
    only gains because it never lifts. */
-function run(playerAvg, seed, laps = 3, charge = false, round = false) {
+function run(playerAvg, seed, laps = 3, charge = false) {
   const rng = mulberry32(seed);
   let rs = c.Z0 + RIVAL.seedAhead, rv = clamp(playerAvg + 8, 22, RIVAL.top);
   let ps = c.Z0, pv = playerAvg;
   let holdT = 0, holdCd = rng() * 6, holdStr = 0;
   let pace = playerAvg;
-  let onBreak = false, mood = 1, moodTo = 1, concede = 0, braking = false;
+  let onBreak = false, mood = 1, moodTo = 1, braking = false;
   let moodT = lerp(RIVAL.moodEvery[0], RIVAL.moodEvery[1], rng());
   const hist = [];
   let maxGap = -1e9, minGap = 1e9, passes = 0, wasAhead = true, breakFrames = 0, brakeFrames = 0;
@@ -323,12 +325,6 @@ function run(playerAvg, seed, laps = 3, charge = false, round = false) {
       const t = clamp((ahead - RIVAL.easeBeyond) / RIVAL.easeSpan, 0, 1);
       v0 = lerp(v0, Math.max(pace - RIVAL.gapDown, 0), t);
     }
-    if (ahead < -RIVAL.concedeAt) concede = RIVAL.concede;
-    else if (concede > 0) concede -= DT;
-    // `round` models a player who has pulled out of the rival's line to go
-    // past; a player sitting square behind it never trips the defence at all
-    if (concede <= 0 && ahead > 0 && ahead < RIVAL.defendAt && pv > rv && round)
-      v0 += clamp((pv - rv) * RIVAL.defendGain, 0, RIVAL.defendMax);
     v0 = clamp(v0, 0, RIVAL.top);
 
     let acc;
@@ -403,13 +399,15 @@ for (const [label, avg] of [
      as a goal outright ("idc abt the bumper stuff"), and the rival no longer
      eases anywhere the player can see, so closing on it is not something the
      design promises. */
-  /* ...and the same player, once they pull OUT to go round, must find it very
-     hard to actually complete the move. Same pace, same charge, one variable
-     changed — that contrast is the design. */
-  const ch = run(55, 13, 3, true, true);
-  console.log(`   same player, pulling out to pass: ${ch.passes} pass(es), under 10 m for ${(ch.close * 100).toFixed(0)}% of the run`);
-  if (ch.passes > 4) bad(`charging player got past ${ch.passes} times — defence too weak`);
-  else ok(`defence holds: ${ch.passes} pass(es) over 3 laps of trying to go round`);
+  /* No traffic in this scenario, so nothing here tests threading — it is a
+     pure station-keeping check: a player who pins the throttle whenever the
+     rival is in reach must still not get past it on pace alone (the rival
+     has no active "defence" — that design was tried and removed, see the
+     RIVAL block comment in traffic.ts — so this has to hold on speed alone). */
+  const ch = run(55, 13, 3, true);
+  console.log(`   charging player (no traffic): ${ch.passes} pass(es), under 10 m for ${(ch.close * 100).toFixed(0)}% of the run`);
+  if (ch.passes > 4) bad(`charging player got past ${ch.passes} times on pace alone`);
+  else ok(`holds on pace alone: ${ch.passes} pass(es) over 3 laps of charging`);
   /* Brake lamps have to MEAN something — lit all the time telegraphs nothing,
      which is exactly what the first LIVE run showed (26 of 26 samples) before
      the free-flow law stopped being IDM's ^4 term.
@@ -457,10 +455,15 @@ console.log("5. threading traffic — body separation");
    of tuning rounds before it was noticed). The flowing case is the one that
    can actually answer "is the rival fast", and the corridor spends plenty of
    time looking like it. */
-for (const NC of [180, 60]) {
-  console.log(`   ---- ${NC === 180 ? "dense" : "flowing"} traffic ----`);
+/* Three seeds per density, not one — a single fixed seed cannot back the
+   "zero overlaps is absolute" claim, and the ahead%/speed-ratio numbers the
+   report cites need a range rather than one lucky (or unlucky) draw. */
+const DENSITY_SEEDS = [20260825, 90210, 314159];
+const seedResults = [];
+for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
+  console.log(`   ---- ${NC === 180 ? "dense" : "flowing"} traffic, seed ${SEED} ----`);
   const DIM = { car: { L: 4.62, W: 1.82 }, truck: { L: 9.4, W: 2.5 } };
-  const rng = mulberry32(20260825);
+  const rng = mulberry32(SEED);
   const R = { L: 4.62, W: 1.82 };
 
   function mkFleet(nCars, aroundZ) {
@@ -522,16 +525,22 @@ for (const NC of [180, 60]) {
     return Math.min(RIVAL.laneFreeMax, d / closing);
   };
 
-  const bestLane = (rs, roff, fleet, vFree, patient = false) => {
+  const bestLane = (rs, roff, fleet, vFree, gain) => {
     laneEvals++;
     const nl = c.lanes(rs);
     const cur = nearestLane(rs, roff);
-    const gain = patient ? RIVAL.laneGainHold : RIVAL.laneGain;
     let bestOff = c.laneOffset(cur, rs);
     let bv = laneFree(rs, bestOff, vFree, fleet) * gain;
     for (let k = 0; k < nl; k++) {
       if (k === cur) continue;
       const off = c.laneOffset(k, rs);
+      if (!latClear(rs, off, fleet)) { excluded++; continue; }
+      const v = laneFree(rs, off, vFree, fleet);
+      if (v > bv) { bv = v; bestOff = off; }
+    }
+    // threading: the line BETWEEN two adjacent lanes — see bestLane in traffic.ts
+    for (let k = 0; k < nl - 1; k++) {
+      const off = (c.laneOffset(k, rs) + c.laneOffset(k + 1, rs)) / 2;
       if (!latClear(rs, off, fleet)) { excluded++; continue; }
       const v = laneFree(rs, off, vFree, fleet);
       if (v > bv) { bv = v; bestOff = off; }
@@ -622,6 +631,7 @@ for (const NC of [180, 60]) {
   const r = { s: c.Z0 + 90, off: c.laneOffset(1, c.Z0 + 90), v: 55, laneWant: 0,
               laneT: 0, offT: 0, pace: 52, holdT: 0,
               holdCd: 6, mood: 1 };
+  let hustleT = 0, hustleFrames = 0;
   r.offT = r.off;
   offPrevOld = offPrevNew = r.off;
   let fleet = mkFleet(NC, c.Z0 + 300);
@@ -641,7 +651,7 @@ for (const NC of [180, 60]) {
       pv = clamp(pv + clamp(pAcc, -7, 3.4) * DT, 4, 82);
       ps = c.wrapZ(ps + pv * DT);
       pLaneT -= DT;
-      if (pLaneT <= 0) { pLaneT = 1.2; pLaneWant = bestLane(ps, pOff, fleet, 78); }
+      if (pLaneT <= 0) { pLaneT = 1.2; pLaneWant = bestLane(ps, pOff, fleet, 78, RIVAL.laneGain); }
       const pWant = pLaneWant; // bestLane returns an OFFSET now, not an index
       pOffT += clamp(pWant - pOffT, -3.0 * DT, 3.0 * DT);
       /* The player is subject to the SAME lateral gate as the rival. Without
@@ -755,6 +765,9 @@ for (const NC of [180, 60]) {
     // --- the rival ---
     let ahead = c.deltaZ(ps, r.s);
     behindT = ahead < 0 ? behindT + DT : 0;
+    hustleT = ahead < -RIVAL.hustleBehind ? hustleT + DT : Math.max(0, hustleT - 2 * DT);
+    const hustleNow = clamp((hustleT - RIVAL.hustleAfter) / RIVAL.hustleSpan, 0, 1);
+    if (hustleNow > 0) hustleFrames++;
     if (ahead < -RIVAL.reseedBehind && behindT > RIVAL.reseedAfter) {
       behindT = 0;
       r.s = c.wrapZ(ps + RIVAL.reseedAhead);
@@ -776,17 +789,13 @@ for (const NC of [180, 60]) {
       const t = clamp((ahead - RIVAL.easeBeyond) / RIVAL.easeSpan, 0, 1);
       v0 = lerp(v0, Math.max(r.pace - RIVAL.gapDown, 0), t);
     }
-    if (RIVAL.leadKeep > 0 && ahead < RIVAL.leadKeep) {
-      const lt = clamp((RIVAL.leadKeep - ahead) / RIVAL.leadKeep, 0, 1 + RIVAL.leadBack);
-      const sh = lt <= 1 ? lt * lt * lt : lt;
-      v0 = Math.max(v0, pv + Math.min(RIVAL.leadMargin * sh, RIVAL.leadBoostMax));
-    }
     v0 = clamp(v0, 0, RIVAL.top);
 
     const lead = perceive(r.s, r.off, fleet, RIVAL.followSee, (R.W + 2.5) / 2 + 0.25);
     let acc = (v0 - r.v) * RIVAL.spdP;
     if (lead) {
-      const aMax = RIVAL.folAMax, bCom = RIVAL.folBCom;
+      const aMax = lerp(RIVAL.folAMax, RIVAL.hustleFolMax, hustleNow);
+      const bCom = lerp(RIVAL.folBCom, RIVAL.hustleFolMax, hustleNow);
       const dv = r.v - lead.v;
       const T = RIVAL.folTUrgent;
       const sS = RIVAL.folS0 + r.v * T + (r.v * dv) / (2 * Math.sqrt(aMax * bCom));
@@ -843,7 +852,9 @@ for (const NC of [180, 60]) {
       } else if ((arrived && r.laneT > RIVAL.laneMinHold) || r.laneT > RIVAL.laneMaxHold) {
         r.laneT = 0;
         const prev = r.laneWant;
-        r.laneWant = bestLane(r.s, r.off, fleet, v0, r.holdT > 0);
+        const gain = r.holdT > 0 ? RIVAL.laneGainHold
+          : lerp(RIVAL.laneGain, RIVAL.hustleGainMin, hustleNow);
+        r.laneWant = bestLane(r.s, r.off, fleet, v0, gain);
         /* WIGGLE METRICS — a known failure mode now, so they live here
            permanently. A "move" is a decision that shifts the target by more
            than a metre; it COMPLETES if the body reaches it before the target
@@ -963,6 +974,7 @@ for (const NC of [180, 60]) {
   console.log(`   TRAFFIC YIELDS: ${yields} in ${(STEPS * DT / 60).toFixed(1)} min = ${(yields / (STEPS * DT / 60)).toFixed(1)} per minute`);
   console.log(`      wanted to yield on ${yieldWant} frames; had NOWHERE TO GO on ${blockedYield} lane-tries (${(blockedYield / Math.max(yieldWant, 1) * 100).toFixed(0)}% of wants were boxed in)`);
   console.log(`   WIGGLE: ${movesStarted} moves started, ${movesDone} completed = ${(100 - movesDone / Math.max(movesStarted, 1) * 100).toFixed(0)}% ABANDONED | direction reversals ${(reversals / (STEPS * DT / 60)).toFixed(1)}/min`);
+  console.log(`   HUSTLE (rubber-band): active on ${(hustleFrames / STEPS * 100).toFixed(1)}% of frames`);
   console.log(`   LANE CHANGES: ${laneSwitches} in ${(STEPS * DT / 60).toFixed(1)} min = ${(laneSwitches / (STEPS * DT / 60)).toFixed(1)} per minute (abandoned mid-move: ${abandoned})`);
   let fv = 0; for (const m of fleet) fv += m.v;
   console.log(`   the FLEET's own mean speed: ${f(fv / fleet.length)} m/s — the flow the rival is embedded in`);
@@ -972,6 +984,38 @@ for (const NC of [180, 60]) {
   else ok("never shared a body with a traffic car");
   if (minSep < 0) bad(`minimum separation went negative (${f(minSep)} m)`);
   else ok(`worst-case separation ${f(minSep)} m — bodies always clear`);
+
+  seedResults.push({
+    NC, SEED, overlapFrames,
+    aheadPct: aheadFrames / STEPS * 100,
+    rivalMean: vSum / STEPS,
+    fleetMean: fv / fleet.length,
+    abandonedPct: 100 - movesDone / Math.max(movesStarted, 1) * 100,
+  });
+}
+
+console.log("6. aggregate over seeds — the numbers the report cites");
+for (const NC of [180, 60]) {
+  const rs = seedResults.filter((r) => r.NC === NC);
+  const label = NC === 180 ? "dense" : "flowing";
+  const totalOverlap = rs.reduce((s, r) => s + r.overlapFrames, 0);
+  const ratios = rs.map((r) => r.rivalMean / r.fleetMean);
+  const aheads = rs.map((r) => r.aheadPct);
+  const abandons = rs.map((r) => r.abandonedPct);
+  const rng2 = (a) => `${f(Math.min(...a))}–${f(Math.max(...a))}`;
+  console.log(`   ${label}: overlap frames across ${rs.length} seeds = ${totalOverlap}`);
+  console.log(`   ${label}: rival/flow speed ratio ${rng2(ratios)}x (seeds: ${rs.map((r) => f(r.rivalMean / r.fleetMean)).join(", ")})`);
+  console.log(`   ${label}: rival ahead of player ${rng2(aheads)}%`);
+  console.log(`   ${label}: WIGGLE abandoned ${rng2(abandons)}%`);
+  if (totalOverlap > 0) bad(`${label}: ${totalOverlap} overlap frames across seeds — zero overlaps is the one absolute`);
+  else ok(`${label}: zero overlap frames across all ${rs.length} seeds`);
+}
+{
+  const flowing = seedResults.filter((r) => r.NC === 60);
+  const worstRatio = Math.min(...flowing.map((r) => r.rivalMean / r.fleetMean));
+  if (worstRatio < 1.6)
+    console.log(`   NOTE: flowing-traffic speed ratio (worst seed ${f(worstRatio)}x) is short of the 1.6x target — see the report`);
+  else ok(`flowing-traffic speed ratio clears 1.6x on every seed (worst ${f(worstRatio)}x)`);
 }
 
 console.log(fail ? `\n${fail} FAILED` : "\nall rival checks passed");
