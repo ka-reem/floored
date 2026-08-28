@@ -125,6 +125,7 @@ const TYRE_C = 0x0b0b0f;
    were measured on the ORCHIDS bakes and mean nothing on the new atlases. */
 const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
   truck:   { hue: -1,    refLum: 0.668 },
+  van:     { hue: -1,    refLum: 0.697 },
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
