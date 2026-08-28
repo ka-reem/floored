@@ -82,12 +82,37 @@ const frac = (x: number) => x - Math.floor(x);
  * skyCrush: darkens the upper frame's dim, desaturated sky glow — the thing
  * sensorGain lifts along with everything else — back toward black, without
  * touching saturated or genuinely bright pixels (tail lamps, headlights,
- * signs). See the povMat shader for the screen-y / saturation / luma mask. */
+ * signs). See the povMat shader for the screen-y / saturation / luma mask.
+ * blackCrush: 0..1, scales the black-crush point (1 = the full 0.06 cut).
+ * The crush is where the road surface, unlit cars and the mirror's darks
+ * live, so this is the single biggest legibility lever the degrade has.
+ * blackToe: 0..1 softness of that crush. 0 is the old hard clip (everything
+ * under the crush point snaps to pure black — a cutoff, not a fade); above 0
+ * the clip becomes a smooth toe that lets near-floor detail linger as it
+ * fades out, per the lights-fade-never-stop rule. Identity at the bright end
+ * is untouched either way.
+ * midLift: 0..1, eases the per-channel gamma (1.18/1.24/1.22 at 0) toward a
+ * flatter 1.06/1.10/1.08 — recovers midtone separation where the road and
+ * the cars ahead sit, without lifting the noise floor the way gain would.
+ * grain: 0..1, scales both POV grain layers (luma + chroma blotch) together.
+ * vignette: 0..1, scales the whole edge treatment as one: the r2 darkening,
+ * the red/magenta corner bleed and the red edge cast. On a phone the frame
+ * is small enough that a 55% corner falloff eats real road, so the mobile
+ * profiles run it reduced.
+ * snapMix: 0..1, how much unsnapped bilinear is mixed back over the half-res
+ * grid snap (the "upscaled 480p" term). Mobile renders at a DPR cap of
+ * 1.1-1.35 BEFORE the POV chain halves it, so the same 0.22 that reads as
+ * soft video on a desktop frame reads as mush there — the mobile profiles
+ * mix more of the bilinear tap back in. Same fetches either way.
+ * mbTau: exposure time constant of the POV frame blend, in seconds (see
+ * POV_MB_TAU). Shorter = faster sensor = less ghosting on cars ahead. */
 declare global {
   interface Window {
     __povTune?: {
       gainFloor: number; shadowGrain: number; lampProtect: number; sensorGain: number;
       skyCrush: number; mirrorShield: number; screenShield: number;
+      blackCrush: number; blackToe: number; midLift: number; grain: number;
+      vignette: number; snapMix: number; mbTau: number;
     };
   }
 }
@@ -110,6 +135,38 @@ const SCREEN_SHIELD = 0.92;
 const POV_TUNE_DEFAULT = {
   gainFloor: 0.4, shadowGrain: 1, lampProtect: 1, sensorGain: 1.25, skyCrush: 0.6,
   mirrorShield: MIRROR_SHIELD, screenShield: SCREEN_SHIELD,
+  // legibility/identity split (see the knob notes above): desktop keeps the
+  // full filmic character; blackToe > 0 is the one desktop change — the crush
+  // becomes a fade instead of a clip, which the fade-never-stop rule asks of
+  // blacks the same as of lights. Everything else here IS the old balance.
+  blackCrush: 1, blackToe: 0.55, midLift: 0, grain: 1, vignette: 1,
+  snapMix: 0.22, mbTau: 0.0401,
+};
+/* Per-tier POV grade profiles. The dashcam identity is non-negotiable, but a
+   phone shows this frame at a fifth of the visual angle, outdoors, off a
+   1.1-1.35 DPR render — the same degrade strengths that read as "night
+   evidence footage" on a monitor read as "can't see the road" there (the
+   owner's exact complaint). So the mobile tiers keep every effect, at gentler
+   strengths, plus a slightly faster sensor: shallower/softer black crush,
+   flatter midtone gamma where the road and cars sit, quieter grain, a lighter
+   edge treatment, more bilinear over the half-res snap, a touch more sensor
+   gain (skyCrush unchanged — the sky-clouds lane tunes against 0.6), and a
+   shorter exposure so cars ahead don't double. All ALU-only deltas inside
+   passes that already run on every tier: frame cost is unchanged.
+   Selected by setPovProfile() (engine feeds the render tier); the values land
+   in window.__povTune, so the console remains the live A/B for every one. */
+const POV_TUNE_TIER: Record<string, typeof POV_TUNE_DEFAULT> = {
+  desktop: POV_TUNE_DEFAULT,
+  "mobile-high": {
+    ...POV_TUNE_DEFAULT,
+    gainFloor: 0.55, sensorGain: 1.32, blackCrush: 0.75, blackToe: 0.75,
+    midLift: 0.35, grain: 0.65, vignette: 0.7, snapMix: 0.42, mbTau: 0.028,
+  },
+  "mobile-base": {
+    ...POV_TUNE_DEFAULT,
+    gainFloor: 0.6, sensorGain: 1.32, blackCrush: 0.75, blackToe: 0.75,
+    midLift: 0.45, grain: 0.5, vignette: 0.7, snapMix: 0.5, mbTau: 0.028,
+  },
 };
 
 /* ---- Wet-road reflection source ------------------------------------------
@@ -193,7 +250,13 @@ const DIRT_URL = "/assets/lens/dirt_02.png";
  * desktop frame is unchanged to four decimal places.
  *
  * Lower this to shorten the smear; it is a real exposure time, so 0.030 reads
- * as a faster sensor rather than as "motion blur turned down". */
+ * as a faster sensor rather than as "motion blur turned down".
+ *
+ * Now carried by the __povTune.mbTau knob (this constant is its desktop
+ * default, duplicated as a literal in POV_TUNE_DEFAULT above because that
+ * object is initialised before this declaration): the mobile profiles run a
+ * shorter 0.028 s exposure — on a small screen the doubled edges of the car
+ * ahead are the least affordable part of the smear. */
 const POV_MB_TAU = 0.0401;
 /* Speed-scaled radial edge blur for CHASE and HOOD. Off: reported as one of
    the "camera effects" that make third person feel unsettled. Set true to
@@ -204,20 +267,30 @@ const PERIPH_BLUR = false;
  *  matches engine.ts's own dt clamp, so a long stall cuts rather than drags. */
 const POV_MB_DT_MIN = 1 / 240, POV_MB_DT_MAX = 0.1;
 
-function readPovTune() {
-  if (typeof window === "undefined") return POV_TUNE_DEFAULT;
-  if (!window.__povTune) window.__povTune = { ...POV_TUNE_DEFAULT };
+function readPovTune(def: typeof POV_TUNE_DEFAULT) {
+  if (typeof window === "undefined") return def;
+  if (!window.__povTune) window.__povTune = { ...def };
   const t = window.__povTune;
   const c01 = (v: number, d: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : d);
-  const cGain = (v: number) => (Number.isFinite(v) ? Math.max(1, Math.min(3, v)) : POV_TUNE_DEFAULT.sensorGain);
+  const cGain = (v: number) => (Number.isFinite(v) ? Math.max(1, Math.min(3, v)) : def.sensorGain);
+  // mbTau floor: a zero/negative time constant would make the blend divide
+  // toward retention 1 (a frozen frame); 5 ms is already "no visible drag"
+  const cTau = (v: number) => (Number.isFinite(v) ? Math.max(0.005, Math.min(0.12, v)) : def.mbTau);
   return {
-    gainFloor: c01(t.gainFloor, POV_TUNE_DEFAULT.gainFloor),
-    shadowGrain: c01(t.shadowGrain, POV_TUNE_DEFAULT.shadowGrain),
-    lampProtect: c01(t.lampProtect, POV_TUNE_DEFAULT.lampProtect),
-    skyCrush: c01(t.skyCrush, POV_TUNE_DEFAULT.skyCrush),
+    gainFloor: c01(t.gainFloor, def.gainFloor),
+    shadowGrain: c01(t.shadowGrain, def.shadowGrain),
+    lampProtect: c01(t.lampProtect, def.lampProtect),
+    skyCrush: c01(t.skyCrush, def.skyCrush),
     sensorGain: cGain(t.sensorGain),
-    mirrorShield: c01(t.mirrorShield, POV_TUNE_DEFAULT.mirrorShield),
-    screenShield: c01(t.screenShield, POV_TUNE_DEFAULT.screenShield),
+    mirrorShield: c01(t.mirrorShield, def.mirrorShield),
+    screenShield: c01(t.screenShield, def.screenShield),
+    blackCrush: c01(t.blackCrush, def.blackCrush),
+    blackToe: c01(t.blackToe, def.blackToe),
+    midLift: c01(t.midLift, def.midLift),
+    grain: c01(t.grain, def.grain),
+    vignette: c01(t.vignette, def.vignette),
+    snapMix: c01(t.snapMix, def.snapMix),
+    mbTau: cTau(t.mbTau),
   };
 }
 
@@ -260,6 +333,10 @@ export class PostFX {
   private dirtLoadStarted = false;
   private speedKmh = 0;
   private pov = false;
+  /** active POV grade profile (setPovProfile): the defaults window.__povTune
+      is seeded from and clamps fall back to. Desktop until the engine says
+      otherwise, matching every other tier default in this file. */
+  private povDef = POV_TUNE_DEFAULT;
   /** false for one frame after a hard view change: the temporal blend is
       skipped so a camera teleport cuts instead of dragging a ghost. */
   private histValid = false;
@@ -636,12 +713,19 @@ void main(){ vec3 s=vec3(0.); float wsum=0.;
         // material's pre-first-frame defaults).
         uGainFloor: { value: 0.4 }, uShadowGrain: { value: 1 }, uLampProtect: { value: 1 },
         uSkyCrush: { value: 0.6 },
+        // tier-profiled legibility terms (all derived from readPovTune() in
+        // process(); these are the desktop-profile equivalents)
+        uCrush: { value: 0.06 }, uToe: { value: 0.00245 },
+        uGamma: { value: new THREE.Vector3(1.18, 1.24, 1.22) },
+        uGrainAmt: { value: 1 }, uVig: { value: 1 }, uSnapMix: { value: 0.22 },
       },
       vertexShader: VSH,
       fragmentShader: `precision highp float; varying vec2 vUv;
 uniform sampler2D tLow,tSmear,tOver,tFull; uniform vec2 uLow,uOverPos,uOverSize;
 uniform float uTime,uOverAmt,uHitEnv,uHitSeed,uHitT;
 uniform float uGainFloor,uShadowGrain,uLampProtect,uSkyCrush;
+uniform float uCrush,uToe,uGrainAmt,uVig,uSnapMix;
+uniform vec3 uGamma;
 ${SHIELD_FN}float h21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
 void main(){
  vec2 d=vUv-.5; float r2=dot(d,d);
@@ -686,9 +770,9 @@ void main(){
  // impact spike pushes the split hard for the length of the burst
  vec2 ca=(d*(.0045+.032*r2)+vec2(.0016,0.))*(1.+uHitEnv*2.4);
  vec3 col;
- col.r=mix(texture2D(tLow,uvs+ca).r,texture2D(tLow,uv+ca).r,.22);
- col.g=mix(texture2D(tLow,uvs).g,   texture2D(tLow,uv).g,   .22);
- col.b=mix(texture2D(tLow,uvs-ca).b,texture2D(tLow,uv-ca).b,.22);
+ col.r=mix(texture2D(tLow,uvs+ca).r,texture2D(tLow,uv+ca).r,uSnapMix);
+ col.g=mix(texture2D(tLow,uvs).g,   texture2D(tLow,uv).g,   uSnapMix);
+ col.b=mix(texture2D(tLow,uvs-ca).b,texture2D(tLow,uv-ca).b,uSnapMix);
  // (c) blown highlights: the smear layer goes in hot and then clips to flat
  // white, so lamps read as hard streaks rather than pretty glow
  col+=texture2D(tSmear,uv).rgb*1.15;
@@ -705,13 +789,20 @@ void main(){
  // impact registers, decaying linearly to 0 well inside the burst envelope
  col+=vec3(clamp(1.-uHitT/.06,0.,1.))*uHitEnv;
  // (b) crushed blacks, then sensor bleed: the edges of the frame clip into
- // dark red/magenta (negative green) and the vignette carries a red cast
- col=max(col-.06,vec3(0.))*1.22;
- col=pow(max(col,vec3(0.)),vec3(1.18,1.24,1.22));
+ // dark red/magenta (negative green) and the vignette carries a red cast.
+ // The crush is a soft-max toe rather than the old max(col-.06,0) clip: at
+ // uToe=0 the two are bit-identical (sqrt(cb*cb)=|cb|), and above 0 the road
+ // and unlit cars FADE into the floor over a shallow tail instead of clipping
+ // at it — the "scoped" cutoff mechanism from the realistic-light notes, now
+ // applied to the frame's own blacks. Converges on the old line within
+ // ~0.01 by twice the crush point, so midtones and highlights are untouched.
+ vec3 cb=col-vec3(uCrush);
+ col=.5*(cb+sqrt(cb*cb+vec3(uToe)))*1.22;
+ col=pow(max(col,vec3(0.)),uGamma);
  float le=dot(col,vec3(.299,.587,.114));
- col+=vec3(.085,-.012,.045)*smoothstep(.06,.5,r2)*(1.-smoothstep(0.,.5,le));
- col*=1.-r2*.55;
- col.r*=1.+r2*.16;
+ col+=vec3(.085,-.012,.045)*smoothstep(.06,.5,r2)*(1.-smoothstep(0.,.5,le))*uVig;
+ col*=1.-r2*.55*uVig;
+ col.r*=1.+r2*.16*uVig;
  // sky pulldown: sensor gain (povSrcMat) brightens the whole source frame,
  // sky included, so the upper half can read as lit night haze instead of
  // black. Pull it back down — but only dim, washed-out, upper-frame content:
@@ -747,8 +838,8 @@ void main(){
  // taper above already uses, so nothing changes outside the shadows.
  dark=mix(dark,dark*mix(.5,1.,shadowT),uShadowGrain);
  float n1=h21(np+tq*13.7), n2=h21(np*.33+tq*7.1+41.3), n3=h21(np*.29+tq*3.9+91.7);
- col+=(n1-.5)*.22*dark;
- col+=vec3(n2-.5,(n2+n3)*.5-.5,n3-.5)*.10*dark;
+ col+=(n1-.5)*.22*dark*uGrainAmt;
+ col+=vec3(n2-.5,(n2+n3)*.5-.5,n3-.5)*.10*dark*uGrainAmt;
  // auto-gain floor: adaptive dark-end lift, like a real camera's night gain
  // riding up the noise floor so silhouettes stay barely readable instead of
  // crushing to pure black. A floor, not a brightening — it only ever lifts
@@ -945,6 +1036,22 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
    */
   setSpeed(kmh: number) {
     this.speedKmh = kmh;
+  }
+
+  /** Select the POV grade profile for the device tier (POV_TUNE_TIER): the
+   * engine feeds its resolved render tier here at construction and on every
+   * settings apply, exactly like setCinema. Live console edits survive a tier
+   * flip: only knobs still sitting at the OLD profile's default are moved to
+   * the new profile's value — anything the console touched is left alone. */
+  setPovProfile(tier: string) {
+    const next = POV_TUNE_TIER[tier] ?? POV_TUNE_DEFAULT;
+    if (next === this.povDef) return;
+    const prev = this.povDef;
+    this.povDef = next;
+    const t = typeof window !== "undefined" ? window.__povTune : undefined;
+    if (t)
+      for (const k of Object.keys(next) as (keyof typeof POV_TUNE_DEFAULT)[])
+        if (t[k] === prev[k]) t[k] = next[k];
   }
 
   /** Force (or release) the extreme evidence-footage degrade. engine.ts calls
@@ -1247,8 +1354,10 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
        (window.__povTune.mirrorShield / .screenShield, defaults MIRROR_SHIELD /
        SCREEN_SHIELD) — at 0 a panel is exactly as it was before the shield
        existed, which is also the console A/B for judging it. */
-    const povTune = readPovTune();
-    const strengths = [povTune.mirrorShield, povTune.screenShield];
+    // one read serves the shields here, the frame-blend time constant below
+    // and the degrade uniforms in the pov block — all live via window.__povTune
+    const tune = readPovTune(this.povDef);
+    const strengths = [tune.mirrorShield, tune.screenShield];
     for (let i = 0; i < PANELS; i++) {
       const str = pov && this.shieldRect(i) ? strengths[i] : 0;
       this.mbMat.uniforms.uPanStr.value[i] = str;
@@ -1357,7 +1466,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
          dashcam with no exposure drag; see the doMbSetting note above for what
          happens if you try to do it by skipping. */
       const mb = pov
-        ? (opts.mbOn ? Math.exp(-povDt / POV_MB_TAU) : 0)
+        ? (opts.mbOn ? Math.exp(-povDt / tune.mbTau) : 0)
         : doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
       this.mbMat.uniforms.tCur.value = cur.texture;
       this.mbMat.uniforms.tPrev.value = this.prevRT.texture;
@@ -1393,8 +1502,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       const holdFrame =
         hitActive && hitEnv > 0.2 &&
         frac(Math.sin(hitBucket * 12.9898 + this.hitSeed * 78.233) * 43758.5453) > 0.8;
-      // live-tunable, read fresh every frame so console edits land immediately
-      const tune = readPovTune();
+      // (tune was read once above, fresh this frame, shared with the shields)
       // box-downsample to half res (exact 2:1, so the bilinear tap averages a
       // clean 2x2) *with sensor gain applied here* — povSrcMat multiplies by
       // uGain instead of a plain copy, so the brightened image is what the
@@ -1428,6 +1536,20 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.povMat.uniforms.uShadowGrain.value = tune.shadowGrain;
       this.povMat.uniforms.uLampProtect.value = tune.lampProtect;
       this.povMat.uniforms.uSkyCrush.value = tune.skyCrush;
+      // tier-profiled legibility terms — knob semantics in the __povTune notes
+      this.povMat.uniforms.uCrush.value = 0.06 * tune.blackCrush;
+      // the toe uniform is the softness SQUARED (saves the shader a multiply);
+      // 0.09 maps the knob's 1 to a tail about 1.5x the full crush point wide
+      const toe = 0.09 * tune.blackToe;
+      this.povMat.uniforms.uToe.value = toe * toe;
+      (this.povMat.uniforms.uGamma.value as THREE.Vector3).set(
+        1.18 + (1.06 - 1.18) * tune.midLift,
+        1.24 + (1.1 - 1.24) * tune.midLift,
+        1.22 + (1.08 - 1.22) * tune.midLift,
+      );
+      this.povMat.uniforms.uGrainAmt.value = tune.grain;
+      this.povMat.uniforms.uVig.value = tune.vignette;
+      this.povMat.uniforms.uSnapMix.value = tune.snapMix;
       this.runPass(this.povMat, null);
     }
     this.renderer.setRenderTarget(null);
