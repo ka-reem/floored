@@ -118,13 +118,13 @@ const TYRE_C = 0x0b0b0f;
 
    Taxi, police and bus are deliberately absent — their liveries are the
    point, and a lilac police cruiser is not traffic. */
+/* Only the truck still needs the texel recolour: the 2026-08-28 hi-fi fleet
+   ships a real `paintable` mask (white paint swatch, paintable=1), so its
+   per-instance colour comes from the mask path and running the texel
+   recolour on top double-painted the bodies into mush — the refLums here
+   were measured on the ORCHIDS bakes and mean nothing on the new atlases. */
 const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
-  sedan:   { hue: -1,    refLum: 0.675 },
-  compact: { hue: -1,    refLum: 0.636 },
-  van:     { hue: -1,    refLum: 0.697 },
   truck:   { hue: -1,    refLum: 0.668 },
-  hybrid:  { hue: 0.311, refLum: 0.481 }, // authored green
-  suv:     { hue: 0.594, refLum: 0.106 }, // authored blue
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
