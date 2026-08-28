@@ -3217,9 +3217,11 @@ export class Game {
        0: the deck's own ±5 m grade must not bob the horizon. */
     sky.backdrop.position.set(car.x, 0, car.z);
     // aurora rides the same day/fog curve as the rest of the backdrop glow;
-    // the cloud deck over it is there at any hour and only shifts palette
+    // the cloud deck over it is there at any hour and only shifts palette —
+    // plus, at dusk and dawn, a sun rim derived from the same angle `sa`
+    // that aims the directional light, so the two never disagree
     sky.aurora?.update(now, f, fogMultiplier(this.settings.fog));
-    sky.clouds?.update(now, f, fogMultiplier(this.settings.fog));
+    sky.clouds?.update(now, f, fogMultiplier(this.settings.fog), sa);
     sky.starMat.opacity = 0.8 * (1 - f);
     sky.moonMat.opacity = 0.95 * (1 - f);
     for (const m of this.mats.winMats) {
