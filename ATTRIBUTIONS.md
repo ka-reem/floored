@@ -256,6 +256,28 @@ Rebuild the pre-strip source with:
     node --max-old-space-size=12288 tools/build-car-body.mjs <source.glb> \
       --out volvo-s90-body-lite --tris 300000 --tex 128 --compress draco
 
+**Not yet rebuilt — rear-biased.** The shipped file above spends its budget
+evenly across the car; the owner wants the rear (tailgate, lamps, bumper,
+rear glass — what a chase camera and the mirror actually frame) kept near
+donor quality while the front and sides stay hard-decimated. `--rear-bias`
+now exists for exactly that (weights named rear parts at 8.0, spatial-biases
+anything the name regexes miss by world-space Z, exempts high-weight parts
+from the per-pass error relaxation so the tail-lamp shells don't get
+unlocked pass over pass) and `--strip` folds the wheel/tyre/disc/caliper
+removal into the same command instead of the ad-hoc post-step above (which
+left one stray brake-disc mesh in the shipped file). Rebuild with:
+
+    node --max-old-space-size=12288 tools/build-car-body.mjs <source.glb> \
+      --out volvo-s90-body-lite --exterior --strip --rear-bias \
+      --tris 300000 --tex 128 --tex-rear 512 --compress meshopt
+
+This has not been run: the 386 MB donor is not committed (gitignored, see
+above) and downloading it from the Sketchfab API
+(`api.sketchfab.com`) was blocked by this sandbox's network egress policy
+(403 on CONNECT) when attempted 2026-08-28. Whoever runs this next needs a
+network path to Sketchfab and the donor's download token; see
+`docs/handoff/reports/volvo-body.md` for the full account.
+
 ## Sourcing notes / other candidates evaluated but not shipped
 
 A parallel hunt for realistic car **interior** models (dashboard/wheel/seats,
