@@ -379,7 +379,27 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
       .replace(
         "#include <color_fragment>",
         `#include <color_fragment>
-        diffuseColor.rgb = mix(diffuseColor.rgb, vPaintCol, vPaintable);${PAINT_TINT_GLSL}`
+        diffuseColor.rgb = mix(diffuseColor.rgb, vPaintCol, vPaintable);${PAINT_TINT_GLSL}
+        /* Runtime-authored lens quads (npcmodels.ts LENS_KIND = 4): their uv
+           points at nothing meaningful in the style's atlas, so the albedo is
+           authored here instead of sampled — dark red lens plastic, picked so
+           the emissive levels below land near the tagged bakes' red lens
+           texels (~0.62 red per the lampLvl notes). Also the daylight look. */
+        if (vLampKind > 3.5) diffuseColor.rgb = vec3(0.55, 0.035, 0.045);`
+      )
+      /* The synthetic lens quads must not inherit whatever roughness/metal
+         texel their meaningless uv lands on — a metalness-1 texel would kill
+         the diffuse term and read as a black hole in daylight. Glossy
+         dielectric plastic instead. */
+      .replace(
+        "#include <roughnessmap_fragment>",
+        `#include <roughnessmap_fragment>
+        if (vLampKind > 3.5) roughnessFactor = 0.3;`
+      )
+      .replace(
+        "#include <metalnessmap_fragment>",
+        `#include <metalnessmap_fragment>
+        if (vLampKind > 3.5) metalnessFactor = 0.0;`
       )
       /* Lamps light themselves. The lamp quads are ordinary dark paint
          otherwise, so they only showed when something else lit them, and a
@@ -1235,7 +1255,14 @@ export interface Npc {
   wlT: number;
 }
 
-type Cloud = { arr: Float32Array; geo: THREE.BufferGeometry; pts: THREE.Points };
+type Cloud = {
+  arr: Float32Array;
+  geo: THREE.BufferGeometry;
+  pts: THREE.Points;
+  /** per-point brightness (vertex colour), only on clouds that fade in at
+      range — the tail/brake glows, which hand over from the emissive lenses */
+  fade?: Float32Array;
+};
 type Lod = {
   mesh: THREE.InstancedMesh;
   paint: THREE.InstancedBufferAttribute;
@@ -1835,20 +1862,30 @@ export class Traffic {
     this.poolInst.visible = false;
     scene.add(this.poolInst);
 
-    const mkCloud = (color: number | THREE.Color, size: number): Cloud => {
+    const mkCloud = (color: number | THREE.Color, size: number, fades = false): Cloud => {
       const arr = new Float32Array(N * 2 * 3);
       arr.fill(-999);
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+      /* A fading cloud carries a per-point brightness in the vertex colour
+         (additive blending, so scaling colour IS the fade — opacity stays
+         shared). updateLights ramps it 0→1 across the lens→sprite handover
+         band, so the far glow joins as a fade rather than popping in whole. */
+      let fade: Float32Array | undefined;
+      if (fades) {
+        fade = new Float32Array(N * 2 * 3).fill(1);
+        geo.setAttribute("color", new THREE.BufferAttribute(fade, 3));
+      }
       const pmat = new THREE.PointsMaterial({
         size, map: glowTex, color, transparent: true, opacity: 0.95,
         sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending,
+        vertexColors: fades,
       });
       clampSprite(pmat);
       const pts = new THREE.Points(geo, pmat);
       pts.frustumCulled = false;
       scene.add(pts);
-      return { arr, geo, pts };
+      return { arr, geo, pts, fade };
     };
     /* Head glow: size 1.05 → 1.35 with the tint scaled 0.82× (0xcfe0ff →
        0xa9b7d1 — a uniform scale, so the hue is untouched). Broader and softer:
@@ -1905,8 +1942,8 @@ export class Traffic {
        everything past 70 m) show. */
     this.clouds = {
       head: mkCloud(0xa9b7d1, 1.0),
-      tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.8),
-      brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.25),
+      tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.8, true),
+      brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.25, true),
       sig: mkCloud(0xffa028, 1.05),
       roof: mkCloud(0xffb040, 0.95), polR: mkCloud(0xff3040, 1.5),
       polB: mkCloud(0x3d74ff, 1.5),
@@ -5530,28 +5567,21 @@ export class Traffic {
       wa[i * 3 + 2] = wshB;
       /* Emissive lamp levels. A wreck's lights are dead; otherwise the tails
          glow at a running level and jump on the brakes. These are radiance
-         multipliers on lamp-flagged vertices (lampKind) — a model whose bake
-         carries no lamp flags simply leaves its lighting to the glow
-         sprites, which is where today's Orchids fleet reads its lights.
+         multipliers on lamp-flagged vertices (lampKind), and since 2026-08
+         EVERY style has tail lens geometry: the hi-fi bakes tag their real
+         lens pixels in `_LAMP`, and npcmodels.ts authors lens quads at load
+         time for any bake that arrives without tags (the Orchids fleet, and
+         the suv/bus bakes whose tail artwork the tagger missed). So the rear
+         level below is the live brightness of every taillight in the game.
 
-         And that is in fact ALL of the fleet: verified by dumping the `_LAMP`
-         accessor out of every public/models/cars/*.glb — min..max is 0..0 in
-         all nine files, because tools/build-orchids-models.mjs allocates
-         `lampKind` and then writes zeros into the GLB without ever tagging a
-         vertex. So this whole emissive path is inert today and the rear levels
-         below have no visual effect; the red lamps are 100% glow sprite (which
-         is why the tail/brake fix lives in the tint of those clouds).
-
-         The rear levels are still set to values that would be RIGHT the moment
-         a rebuild tags the lenses, rather than left at ones known to be wrong.
-         Emissive is `diffuseColor.rgb * lvl`, i.e. albedo-proportional, and a
-         red lens texel is roughly (0.62, 0.055, 0.06), luma ~0.22; the bloom
-         bright-pass floor is 0.40 post-exposure (uExp 0.98 at night). So the
-         old 1.5 gave luma 0.33 — BELOW the floor, a lamp that could not bloom —
-         and 3.4 gave 0.75. Matching the sprite targets (tail 0.68, brake 0.95)
-         wants 3.1 and 4.4. The lens albedo is an estimate from the source
-         artwork, not a measurement, so treat these as a starting point for
-         whoever tags the geometry. */
+         Level arithmetic (kept from the original sizing pass): emissive is
+         `diffuseColor.rgb * lvl`, albedo-proportional. A tagged red lens
+         texel is roughly (0.62, 0.055, 0.06) and the authored albedo of the
+         runtime lenses is (0.55, 0.035, 0.045) — see npcShader — so the two
+         paths land within ~12% of each other. The bloom bright-pass floor is
+         0.40 post-exposure (uExp 0.98 at night): running 3.1 puts the lens
+         at luma ~0.55 (blooms, reads as a lit lamp), brake 4.4 at ~0.75 — a
+         clear step up, matching the sprite targets (tail 0.68, brake 0.95). */
       const la = lod.lamp.array as Float32Array;
       const lit = night && !n.wreck;
       la[i * 2] = lit ? 2.2 : 0;
@@ -5603,12 +5633,19 @@ export class Traffic {
     const pe = this.poolInst.instanceMatrix.array as Float32Array;
     const pc = this.poolColor.array as Float32Array;
     let li = 0;
-    const put = (cloud: Cloud, slot: number, x: number, y: number, z: number, show: boolean) => {
+    const put = (
+      cloud: Cloud, slot: number, x: number, y: number, z: number, show: boolean, w: number
+    ) => {
       const o = (li * 2 + slot) * 3, a = cloud.arr;
       if (show) {
         a[o] = x;
         a[o + 1] = y;
         a[o + 2] = z;
+        if (cloud.fade) {
+          cloud.fade[o] = w;
+          cloud.fade[o + 1] = w;
+          cloud.fade[o + 2] = w;
+        }
       } else a[o + 1] = -999;
     };
     /* Lamp positions are quoted in body-local metres — lateral, height,
@@ -5617,8 +5654,8 @@ export class Traffic {
        which matters at 120 cars a frame. */
     let bfx = 0, bfz = 0, brx = 0, brz = 0, bx = 0, by = 0, bz = 0;
     const emit = (
-      cloud: Cloud, slot: number, lx: number, ly: number, lz: number, show: boolean
-    ) => put(cloud, slot, bx + bfx * lz + brx * lx, by + ly, bz + bfz * lz + brz * lx, show);
+      cloud: Cloud, slot: number, lx: number, ly: number, lz: number, show: boolean, w = 1
+    ) => put(cloud, slot, bx + bfx * lz + brx * lx, by + ly, bz + bfz * lz + brz * lx, show, w);
     for (let i = 0; i < this.npcs.length; i++) {
       li = i;
       const n = this.npcs[i];
@@ -5685,20 +5722,23 @@ export class Traffic {
       const tx1 = tl ? tl[1][0] : hw2, ty1 = tl ? tl[1][1] : 0.74, tz1 = tl ? tl[1][2] : -hl;
       emit(SP.head, 0, hx0, hy0, hz0, running);
       emit(SP.head, 1, hx1, hy1, hz1, running);
-      /* A style with real lens geometry keeps its shaped emissive lamps up
-         close — the round sprite only joins past the range where the lens
-         is sub-pixel and something must carry the light. 70 m: the sprite
-         is a couple of pixels when it appears, so there is no pop. Styles
-         without lens tags (truck, and any pre-hifi bake) keep the sprites
-         at every range, as before. */
+      /* A style with real lens geometry (baked tags, or the runtime lenses
+         npcmodels.ts authors for the untagged bakes — every style, now)
+         keeps its shaped emissive lamps up close; the round glow only
+         carries the light where distance shrinks the lens toward sub-pixel.
+         The handover is a fade, not a switch: the sprite's per-point vertex
+         colour ramps 0→1 across 70→95 m, so nothing pops in. A style with
+         no lens geometry at all (a malformed bake with no tail anchors)
+         keeps its sprite at full strength at every range, as before. */
       const gdx = n.x - player.x, gdz = n.z - player.z;
       const gd2 = gdx * gdx + gdz * gdz;
       const lg = this.lampGeoOf[n.style];
-      const tailSprite = !lg.tail || gd2 > 4900;
-      emit(SP.tail, 0, tx0, ty0, tz0, running && !n.brake && tailSprite);
-      emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake && tailSprite);
-      emit(SP.brake, 0, tx0, ty0, tz0, !wrecked && n.brake && tailSprite);
-      emit(SP.brake, 1, tx1, ty1, tz1, !wrecked && n.brake && tailSprite);
+      const tailW = !lg.tail ? 1 : clamp((Math.sqrt(gd2) - 70) / 25, 0, 1);
+      const tailSprite = tailW > 0;
+      emit(SP.tail, 0, tx0, ty0, tz0, running && !n.brake && tailSprite, tailW);
+      emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake && tailSprite, tailW);
+      emit(SP.brake, 0, tx0, ty0, tz0, !wrecked && n.brake && tailSprite, tailW);
+      emit(SP.brake, 1, tx1, ty1, tz1, !wrecked && n.brake && tailSprite, tailW);
       /* Signals — both slots at once is a hazard flash: a wreck, or the
          two-blink acknowledgement a car gives when it takes a hint and speeds
          up rather than moving over (see HAIL.ackT). */
@@ -5720,7 +5760,10 @@ export class Traffic {
       emit(SP.polB, 0, fb ? fb[0] : -0.24, fb ? fb[1] : 1.38, fb ? fb[2] : 0, isPol && !flash);
       emit(SP.polB, 1, 0, -999, 0, false);
     }
-    for (const cl of CL) (cl.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    for (const cl of CL) {
+      (cl.geo.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+      if (cl.fade) (cl.geo.attributes.color as THREE.BufferAttribute).needsUpdate = true;
+    }
     this.poolInst.count = pk;
     this.poolInst.visible = pk > 0;
     if (pk) {
