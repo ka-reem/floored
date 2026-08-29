@@ -255,7 +255,7 @@ catalogued in `public/assets-staging/CATALOG.md` §18–24.
 
 | Files | Asset / Author | Source |
 |---|---|---|
-| `engine/loop_0.wav` … `loop_3.wav` | Racing car engine sound loops, by domasx2 | https://opengameart.org/content/racing-car-engine-sound-loops |
+| `engine/loop_0.wav` … `loop_4.wav` | auto5.wav ("Driving my Ford Escort Mk3 1985. Full acceleration from traffic light"), by escortmarius (freesound) | https://freesound.org/people/escortmarius/sounds/141459/ |
 | `engine/idle.wav` | Elantra Engine Idle and Rev, by microman502 (freesound) | https://freesound.org/people/microman502/sounds/865228/ |
 | `reverb/tunnel_ir.wav` | 13.7s Boca Underpass (impulse response), by djericmark (freesound) | https://freesound.org/people/djericmark/sounds/724019/ |
 | `crash/debris.wav` | crash, by Feed_ (freesound) | https://freesound.org/people/Feed_/sounds/545692/ |
@@ -266,6 +266,40 @@ catalogued in `public/assets-staging/CATALOG.md` §18–24.
 | `horns/npc_b.wav` | Car horn beep beep, by AmishRob (freesound) | https://freesound.org/people/AmishRob/sounds/423990/ |
 | `horns/truck.wav` | Truck_horns, by ikbenraar (freesound) | https://freesound.org/people/ikbenraar/sounds/570603/ |
 
+### The engine rpm ladder — how `loop_0` … `loop_4` were made
+
+All five rungs are cut from **one continuous 55-second take**: a 1985 Ford
+Escort Mk3 accelerating away from a traffic light through several gears, with
+the microphone inside the cabin. Licence verified CC0 on the sound's own page
+(2026-08-21); the author is escortmarius, and the file is mono 44.1kHz 16-bit
+at source. Fetched as the public HQ preview (freesound's original downloads
+are login-gated), decoded once to WAV and cut without re-encoding.
+
+Using a single take is the point of the set, not a convenience. An rpm ladder
+only works if the loops differ in engine SPEED and nothing else — same engine,
+same microphone, same cabin, so the resonances stay put and the crossfade
+changes rpm rather than changing car. The rungs sit at 761 / 1732 / 2032 /
+2425 / 2991rpm, spanning 3.93× in firing frequency.
+
+Each loop is a whole number of engine cycles, cut at the position where the
+recording splices most cleanly, with an equal-power crossfade (14–47ms, longer
+where the revs were climbing fastest) fed from material before the loop start
+so the fade cannot alter the loop's length — and therefore its pitch. Measured
+seam discontinuity is 0.79–1.08× the loop's own interior, i.e. the wrap is
+indistinguishable from anywhere else in the loop. Every loop is normalised to
+equal RMS, because the game does its own level shaping and any difference
+between rungs would read as a lurch at the crossfade.
+
+**Superseded:** the previous four loops came from
+[racing car engine sound loops](https://opengameart.org/content/racing-car-engine-sound-loops)
+by domasx2 (CC0). They were not four rpm points — that page states plainly
+that "difference between the files is pitch only", i.e. one recording
+pitch-shifted four ways — so the set spanned just 1.63× and had to be
+resampled far outside its range to cover an 8.7× rev range. That is what made
+the engine sound like a motorbike at the top and a bus at idle. Those files
+are still staged in `public/assets-staging/audio/engine/`.
+
+## Player cockpit dashboard — `public/models/cockpits/volvo-s90.glb`
 ## Player cockpit dashboard — `public/models/cockpits/volvo-s90-full.glb`
 
 | | |

@@ -18,7 +18,7 @@ import { buildTown } from "./world/townmesh";
 import { buildScenery } from "./world/scenery";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
-import { getCorridor, TUNNEL, PITCH, PHASE } from "./world/corridor";
+import { getCorridor, TUNNEL, PITCH, PHASE, OVERPASSES } from "./world/corridor";
 import {
   getRouteGraph, BYPASS_EDGE, MOUNTAIN_EDGE, type PolyRouteEdge,
 } from "./world/routegraph";
@@ -1535,6 +1535,9 @@ export class Game {
     x: 0, z: 0, vx: 0, vz: 0, heavy: false,
   }));
   private npcFeed: { x: number; z: number; vx: number; vz: number; heavy: boolean }[] = [];
+  /** last relative-longitudinal position per tracked npc, for the pass-by
+      whoosh's sign-flip detection — see npcAudioFeed() */
+  private passbyPrev = new WeakMap<object, number>();
   /** last state pushed to mats.setPbrDetail; the call recompiles materials, so
       it must only ever fire on a real transition */
   private pbrDetail = true;
@@ -2314,13 +2317,19 @@ export class Game {
       this.car.lightsUser = !this.car.lightsUser;
       this.ui.toast("LIGHTS " + (this.car.lightsUser ? "ON" : "AUTO"));
     }
+    /* Stalk click on the toggle edge, both engage and cancel — the click
+       volumes that used to give the signals their mechanical clunk are gone
+       (keyboard-only now, owner's call), but the stalk itself still moves.
+       The blink-rate tick in hud() is separate and untouched. */
     if (k === "q") {
       this.car.sigL = !this.car.sigL;
       this.car.sigR = false;
+      this.audio.stalkClick();
     }
     if (k === "e") {
       this.car.sigR = !this.car.sigR;
       this.car.sigL = false;
+      this.audio.stalkClick();
     }
     if (k === "r") this.setRain(!this.rain);
     if (k === "t") {
@@ -3383,8 +3392,54 @@ export class Game {
       whole town would be badly wrong. */
   private tunnelAmount() {
     const car = this.car;
-    if (this.cor.heightAt(car.x, car.z, 14) === null) return 0;
-    return clamp(this.cor.tunnelBlend(this.cor.zAt(car.x, car.z)), 0, 1);
+    if (this.cor.heightAt(car.x, car.z, 14) === null) {
+      /* Off the deck. The mountain pass climbs through a rock cut (uphill
+         face west, jittered rock both sides mid-route) — a one-sided canyon,
+         so it gets a PARTIAL enclosure, never a tunnel's. The fade envelope
+         is the same sstep window highway.ts's rockK() uses for the rock
+         HEIGHT, so what you hear closing in is exactly what is drawn closing
+         in, and both ends fade over ~50m — no hard cuts, the audio fade rule
+         is the light fade rule. 0.32 peak stays under the tunnel thump/
+         shimmer gates (0.5+), so the pass can never fire portal effects. */
+      const hit = this.world.routes?.surfaceAt(car.x, car.z, 2);
+      if (hit && hit.edgeId === MOUNTAIN_EDGE && this.world.routes) {
+        const len = this.world.routes.mtn.len;
+        const ss = (v: number) => {
+          const x = clamp(v, 0, 1);
+          return x * x * (3 - 2 * x);
+        };
+        return 0.32 * ss((hit.s - 18) / 50) * ss((len - 22 - hit.s) / 50);
+      }
+      return 0; // bypass viaduct and anywhere else off-deck: open air
+    }
+    const zc = this.cor.zAt(car.x, car.z);
+    let v = clamp(this.cor.tunnelBlend(zc), 0, 1);
+    /* Crossings overhead get a brief reverb kiss, faded in and out — the
+       girder overpasses (corridor.OVERPASSES) and the bypass deck where it
+       crosses the main route (routes.crossings). A slab 9m up does add a
+       real early reflection for the ~25m you are under it; 0.2-0.22 peak is
+       an audible flick of the tail, nowhere near the growl/thump territory
+       (those gate at 0.5+), and the 14m shoulder fade at 30m/s is ~half a
+       second each side — a swell, not a switch. */
+    for (const o of OVERPASSES) {
+      const half = o.girderW / 2, fade = 14;
+      const d = Math.abs(zc - o.z);
+      if (d < half + fade) {
+        const x = clamp(1 - (d - half) / fade, 0, 1);
+        v = Math.max(v, 0.22 * x * x * (3 - 2 * x));
+      }
+    }
+    const crossings = this.world.routes?.crossings;
+    if (crossings)
+      for (const cr of crossings) {
+        const mid = (cr.z0 + cr.z1) / 2, half = (cr.z1 - cr.z0) / 2, fade = 14;
+        const d = Math.abs(zc - mid);
+        if (d < half + fade) {
+          const x = clamp(1 - (d - half) / fade, 0, 1);
+          v = Math.max(v, 0.2 * x * x * (3 - 2 * x));
+        }
+      }
+    return v;
   }
 
   private tunnelUpdate(dt: number, now: number) {
@@ -3502,6 +3557,26 @@ export class Game {
       feed.push(e);
     }
     this.audio.updateNpcs(feed, car.x, car.z, car.wvx, car.wvz, car.h);
+    /* Pass-by whoosh: fire the one-shot at the exact frame an NPC's
+       longitudinal position relative to the player's heading changes sign —
+       the moment it crosses the player's ears, in either direction (the
+       unpassable rival re-passing the player is the loud case). Keyed on the
+       Npc object itself (WeakMap — dead cars just fall out), with a jump
+       guard so a spawn, despawn-reuse or seam splice teleporting a car
+       across the plane cannot read as a pass. */
+    const sh = Math.sin(car.h), ch = Math.cos(car.h);
+    for (const s of samples) {
+      if (!s.npc) continue;
+      const dx = s.x - car.x, dz = s.z - car.z;
+      const relLong = dx * sh + dz * ch;
+      const prev = this.passbyPrev.get(s.npc);
+      this.passbyPrev.set(s.npc, relLong);
+      if (prev === undefined) continue;
+      if ((prev > 0) === (relLong > 0)) continue;
+      if (Math.abs(relLong - prev) > 15) continue; // teleport, not a pass
+      const closing = Math.abs((s.vx - car.wvx) * sh + (s.vz - car.wvz) * ch);
+      this.audio.npcPassby(closing, dx * ch - dz * sh);
+    }
     for (const n of this.traffic.closeCalls()) {
       if (n.ccKind === "chirp") this.audio.npcChirp(n.x, n.z);
       else this.audio.npcHorn(n.x, n.z, n.type === "truck" || n.type === "bus");

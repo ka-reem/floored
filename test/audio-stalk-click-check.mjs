@@ -120,6 +120,36 @@ const c4 = await clicks();
 if (c4 - c3 === 1) pass("back-to-back presses inside the debounce window click once (no overlap)");
 else fail(`debounce window presses fired ${c4 - c3} clicks (want 1)`);
 
+// 5) the turn-signal stalk clicks too: Q engage + Q cancel = two clicks
+// (spaced past the 70ms debounce), and the signal state actually toggles
+await key("keydown", "q");
+await key("keyup", "q");
+await advance(page, 300);
+let sig = await page.evaluate(() => window.__neonx.game.car.sigL);
+if (sig) pass("Q engages the left signal");
+else fail("Q did not set sigL");
+await key("keydown", "q");
+await key("keyup", "q");
+await advance(page, 300);
+sig = await page.evaluate(() => window.__neonx.game.car.sigL);
+const c5 = await clicks();
+if (!sig) pass("second Q cancels the left signal");
+else fail("second Q did not clear sigL");
+if (c5 - c4 === 2) pass("both signal toggle edges click the stalk");
+else fail(`signal toggles fired ${c5 - c4} clicks (want 2)`);
+
+// 6) pass-by whoosh voice: the one-shot builds and rate-limits without error
+const pb = await page.evaluate(() => {
+  const a = window.__audioDebug;
+  const n0 = a.getPassbyCount();
+  a.npcPassby(25, 3.5); // full-speed pass one lane over — must fire
+  a.npcPassby(25, -3.5); // inside the 150ms pile-up gate — must not
+  a.npcPassby(3, 3.5); // under the 6 m/s closing floor — must not
+  return a.getPassbyCount() - n0;
+});
+if (pb === 1) pass("pass-by whoosh fires once and gates the pile-up/slow cases");
+else fail(`pass-by fired ${pb} of 3 calls (want exactly 1)`);
+
 await browser.close();
 if (errors.length) {
   console.log("\n❌ FAILURES:");
