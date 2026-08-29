@@ -118,12 +118,14 @@ const measure = () => page.evaluate(() => {
   cam.updateMatrixWorld(true);
   wg.updateWorldMatrix(true, true);
 
-  // gather world-space vertices of every visible mesh under the wheel group
+  // gather world-space vertices of every visible mesh under the wheel group —
+  // except the moulded hands ("hand" groups): their sleeves sit at rim radius
+  // but off the wheel plane, and they'd bias the rim fit off the axle
   const pts = [];
   wg.traverse((o) => {
     if (!o.isMesh || !o.visible || !o.geometry) return;
     let p = o; let vis = true;
-    while (p) { if (p.visible === false) vis = false; p = p.parent; }
+    while (p) { if (p.visible === false) vis = false; if (p.name === "hand") return; p = p.parent; }
     if (!vis) return;
     const a = o.geometry.getAttribute("position");
     if (!a) return;
