@@ -6,7 +6,7 @@ import { getCorridor, PITCH, PHASE, TOLL } from "./world/corridor";
 import { worldTierCaps, rivalMode } from "./settings";
 import {
   getRouteGraph, BYPASS, BYPASS_EDGE, DIVERGE_Z, MOUNTAIN_EDGE, MTN,
-  type RoutePose,
+  type RoutePose, type SurfaceHit,
 } from "./world/routegraph";
 import { signalPhase, type WorldData } from "./world/data";
 import type { REdge, EdgePose } from "./world/roadnet";
@@ -1477,6 +1477,12 @@ export class Traffic {
   private bpose: RoutePose = {
     x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0, bank: 0,
   };
+  /** surfaceAt target for the once-a-frame player classification below.
+      playerBy may alias it between frames — safe because this is the ONLY
+      call that writes it, once, before playerBy is re-derived. */
+  private nsurfHit: SurfaceHit = { y: 0, edgeId: 0, s: 0, lat: 0, bank: 0 };
+  /** halfWidths target for the per-NPC mountain lane hold */
+  private mtnHw = { hwL: 0, hwR: 0 };
   /** player's bypass surface hit this frame, or null (set in update()) */
   private playerBy: { s: number } | null = null;
   /** Player's route-space slot this frame (set in update()): corridor z/lat
@@ -1868,19 +1874,47 @@ export class Traffic {
     /* Desktop upgrade: stream the HD bodyshells (1024px atlas, ~3x the
        triangles) well after the opening seconds and hot-swap them through
        the same applyModel path, which already supports landing mid-drive.
-       Gated per tier — phones never fetch a byte of this — and delayed so
-       the fetches never compete with the corridor seeding or the first
-       seconds of driving. */
-    if (worldTierCaps().hdFleet) {
-      this.fleetLoaded.then(() => {
-        setTimeout(() => {
-          loadNpcModels(
-            HD_STYLES.filter((s) => this.styleOf[s] !== undefined),
-            (m) => this.applyModel(m),
-            HD_BASE
-          );
-        }, 8000);
-      });
+       Gated per tier — phones never fetch a byte of this.
+
+       Armed here, FIRED from update(): the delay counts seconds of actual
+       driving (update only runs once the world is loaded and the player is
+       on the road), not wall-clock. A wall-clock timeout from this spot ran
+       out DURING the load on slow devices — the loader's warm-frame stage
+       alone can outlast 8 s there — putting the HD fetches in competition
+       with the world build, the exact first-frame contention the delay
+       exists to avoid (perf-pass cold-load trace). Landed models queue and
+       applyModel is fed one per cooldown tick, so the four synchronous
+       shader compiles + 1024² texture uploads spread across frames instead
+       of stacking into one. */
+    if (worldTierCaps().hdFleet) this.fleetLoaded.then(() => { this.hdArmed = true; });
+  }
+
+  /** HD-fleet streaming state — see the hdFleet block in the constructor. */
+  private hdArmed = false;
+  private hdDelay = 8; // seconds of driving before the fetch starts
+  private hdQueue: NpcModel[] = [];
+  private hdCd = 0;
+
+  /** Counted down by update(); fetches once, then drains one model per
+      cooldown so no single frame pays more than one compile + upload. */
+  private hdUpdate(dt: number) {
+    if (this.hdArmed) {
+      this.hdDelay -= dt;
+      if (this.hdDelay <= 0) {
+        this.hdArmed = false;
+        loadNpcModels(
+          HD_STYLES.filter((s) => this.styleOf[s] !== undefined),
+          (m) => this.hdQueue.push(m),
+          HD_BASE
+        );
+      }
+    }
+    if (this.hdQueue.length) {
+      this.hdCd -= dt;
+      if (this.hdCd <= 0) {
+        this.hdCd = 0.7;
+        this.applyModel(this.hdQueue.shift()!);
+      }
     }
   }
 
@@ -1969,6 +2003,9 @@ export class Traffic {
       material.needsUpdate = true;
       npcShader(material, m.style);
       lod.mesh.material = material;
+      // a fresh material after the load's compile pass — let the engine's
+      // slow tick precompile it (data.ts compileDirty) rather than the draw
+      this.world.compileDirty = true;
     }
     old.deleteAttribute("paintCol");
     old.deleteAttribute("dissolve");
@@ -3622,13 +3659,14 @@ export class Traffic {
         held state, since the reaction is to the gesture and not to the beams */
     flashed = false
   ) {
+    this.hdUpdate(dt);
     /* "on the expressway" has to come from the corridor now — the deck rises
        and falls by several metres, so a fixed height threshold would misread
        it near the low points. */
     const deckY = this.cor.heightAt(player.x, player.z, 8);
     /* surfaceAt answers for BOTH new pavements now — split by edge id, or
        driving the pass would run the bypass spawner and vice versa */
-    const nSurf = this.routes.surfaceAt(player.x, player.z, 4);
+    const nSurf = this.routes.surfaceAt(player.x, player.z, 4, this.nsurfHit);
     const bySurf = nSurf && nSurf.edgeId === BYPASS_EDGE ? nSurf : null;
     this.playerBy = bySurf && Math.abs(player.y - bySurf.y) < 7 ? bySurf : null;
     this.playerMt =
@@ -5239,7 +5277,7 @@ export class Traffic {
       /* pull into the pocket by however much of it is actually OPEN here —
          a fixed target had the body leaning on the stone parapet before the
          pocket's own taper had opened (the sim's lane-envelope assert) */
-      const pocket = Math.max(0, mt.halfWidths(n.s).hwL - MTN.half - 0.35);
+      const pocket = Math.max(0, mt.halfWidths(n.s, this.mtnHw).hwL - MTN.half - 0.35);
       if (pocket > 0) latT += Math.min(pocket, MTN.laybyW - 0.35);
     }
     n.offT = latT;
