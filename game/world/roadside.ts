@@ -420,7 +420,7 @@ export function buildRoadside(
       if (inBand(wz, side > 0 ? EAST_SKIP : WEST_SKIP)) continue;
       // the eastside frontage strip gets its formal street trees in PASS B
       if (side > 0 && wz > -560 && wz < 40) continue;
-      if (rng() >= 0.38 * wave(wz) * level) continue;
+      if (rng() >= 0.44 * wave(wz) * level) continue;
       // one cluster: 1-4 trees around an anchor, correlated sizes
       const hw = cor.halfWidth(wz);
       const lat0 = side * (hw + rrand(rng, 9, 24));
@@ -430,7 +430,7 @@ export function buildRoadside(
       /* crown tops ride a couple of metres over the parapet sightline — high
          enough to serrate the glow band, low enough that a near cluster
          stays a roadside line instead of a wall over the windshield */
-      const hBase = rrand(rng, -2.5, 2.5);
+      const hBase = rrand(rng, -1.5, 4);
       let planted = 0;
       for (let k = 0; k < n; k++) {
         const dz = k === 0 ? 0 : rrand(rng, -8, 8);
@@ -443,7 +443,7 @@ export function buildRoadside(
         // loop-periodic, so a splice twin re-seats on its own terrain
         for (const z of copies(wz + dz)) {
           const gy = terrain.h(p.x, p.z + (z - (wz + dz)));
-          const h = Math.max(5.5, Math.min(16, deckY + hBase + hj - gy));
+          const h = Math.max(5.5, Math.min(18, deckY + hBase + hj - gy));
           const w = h * (t2 === TILE.conifer ? rrand(rng, 0.42, 0.55)
             : t2 === TILE.poplar ? rrand(rng, 0.3, 0.4) : rrand(rng, 0.72, 0.95));
           addPlant(z, p.x, gy, t2, h, w, nearLamp(wz));
