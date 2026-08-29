@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { sstep, type Rng, rrand } from "../util";
 import { SURFACE_TOL } from "./const";
 import { getCorridor, type Corridor } from "./corridor";
-import { getRouteGraph } from "./routegraph";
+import { getRouteGraph, type SurfaceHit } from "./routegraph";
 import { buildRamps, rampAt, type Ramp } from "./ramps";
 
 /* Rolling terrain the whole town conforms to. Flattened along the expressway
@@ -52,6 +52,11 @@ export function makeTerrain(rng: Rng): Terrain {
     return r ? r.y : null;
   };
 
+  /* surfaceAt target for heightAt below — read and dropped inside one call,
+     which physics makes up to 18×/frame (3 probes × 6 substeps); a fresh
+     SurfaceHit per probe was steady GC churn on the hottest path there is */
+  const _surfHit: SurfaceHit = { y: 0, edgeId: 0, s: 0, lat: 0, bank: 0 };
+
   /* Which surface is under the car: of the candidates that pass their refY
      gate, the one NEAREST the car's current height — not the highest.
 
@@ -90,7 +95,7 @@ export function makeTerrain(rng: Rng): Terrain {
        runs ≥ 6 m above any live street mid-route and neither answers near
        deck height over the main pavement */
     const routes = getRouteGraph();
-    const g = routes.surfaceAt(x, z, 1.0);
+    const g = routes.surfaceAt(x, z, 1.0, _surfHit);
     if (g && Math.abs(g.y - refY) < SURFACE_TOL) take(g.y);
     /* the mountain gores' runoff aprons: deck-height pavement just outside
        the deck edge, same refY gate as the deck itself */

@@ -4089,7 +4089,9 @@ export class Game {
     const dd = this.perfMode ? Math.min(scaled, 520) : scaled;
     for (const c of this.world.chunks) {
       const d = Math.hypot(c.cx - this.camera.position.x, c.cz - this.camera.position.z);
-      c.group.visible = d < dd;
+      // r: coarse buckets (the town light layers) cull on nearest-edge
+      // distance, so members near the cell's rim don't pop while lit
+      c.group.visible = d - (c.r ?? 0) < dd;
     }
     // the town lamp/pool shader fade (tintLampsSodium) tracks the SAME
     // distance the chunks just culled at, so a chunk's lamps finish fading
@@ -4097,6 +4099,14 @@ export class Game {
     if (this.lampFade) {
       this.lampFade.uFadeFar.value = dd;
       this.lampFade.uFadeNear.value = dd * 0.55;
+    }
+    /* Async content landed since the load's compile pass (world.compileDirty
+       in data.ts): link its programs now, in the background where the driver
+       allows it, instead of on the frame the content first enters the view.
+       Riding this 6.25 Hz tick batches several arrivals into one walk. */
+    if (this.world.compileDirty && this.loaded) {
+      this.world.compileDirty = false;
+      this.renderer.compileAsync(this.scene, this.camera).catch(() => {});
     }
   }
 
