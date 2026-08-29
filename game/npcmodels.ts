@@ -50,6 +50,12 @@ export interface NpcModel {
   metalnessMap: THREE.Texture | null;
   lamps: NpcLamps;
   wheels: NpcWheel[];
+  /** the bake tagged real lens geometry — split per lamp kind, because a
+      bake can find headlight pixels yet miss smoked tail lenses (the
+      Fortuner did exactly that and drove around with no tail lights): a
+      kind with no tagged pixels must keep its glow sprite at every range */
+  hasHeadGeo: boolean;
+  hasTailGeo: boolean;
 }
 
 const BASE = "/models/cars/";
@@ -122,6 +128,14 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
     "lampKind",
     lamp ?? new THREE.BufferAttribute(new Float32Array(src.attributes.position.count), 1)
   );
+  let hasHeadGeo = false, hasTailGeo = false;
+  if (lamp) {
+    const la = lamp.array as ArrayLike<number>;
+    for (let i = 0; i < la.length && !(hasHeadGeo && hasTailGeo); i++) {
+      if (la[i] > 1.5) hasTailGeo = true;
+      else if (la[i] > 0.5) hasHeadGeo = true;
+    }
+  }
   if (src.index) geo.setIndex(src.index);
   geo.computeBoundingSphere();
 
@@ -138,12 +152,14 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
     metalnessMap: material?.metalnessMap ?? null,
     lamps: readLamps(extras.lamps),
     wheels: readWheels(extras.wheels),
+    hasHeadGeo,
+    hasTailGeo,
   };
 }
 
 /** The styles a desktop-only HD variant is baked for (1024px atlas, gentler
     decimation) — tools/build-hifi-models.mjs --hd writes exactly these. */
-export const HD_STYLES = ["sedan", "hybrid", "compact", "suv"];
+export const HD_STYLES = ["sedan", "hybrid", "compact", "suv"]; // the ItsDiyor modern heroes (owner's final call)
 export const HD_BASE = "/models/cars-hd/";
 
 /** Load a bodyshell per style, calling `onModel` as each one lands. Never

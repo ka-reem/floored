@@ -13,8 +13,10 @@ Two things this document is *not*: it is not a changelog (git has that), and it
 is not a wishlist. If something is genuinely gone, it is only here when a copy
 still exists somewhere recoverable.
 
-Written 2026-08-26 against `main` @ `31d623e`. Line numbers drift — the
-constant names and comment quotes are the durable handles.
+Written 2026-08-26 against `main` @ `31d623e`; every entry re-verified
+2026-08-29 against post-overhaul `main` (updates are marked in place, with
+commits). Line numbers drift — the constant names and comment quotes are the
+durable handles.
 
 ---
 
@@ -34,6 +36,10 @@ exception noted in the migration row.
 | `rivalSignals` | 282 | `false` | Whether the rival indicates its lane changes. *"a car that cuts through traffic and still signals is a contradiction, and the ABSENCE of a blinker is characterisation the player reads immediately."* Only shown in the panel while `rival` is on. |
 | `testMode` | 283 | `false` | See §7. |
 | `tierOverride` | 277 | `"auto"` | Manual render-tier pin, deferring to device detection. |
+
+*Re-verified 2026-08-29: all of the above still default off. The overhaul
+added `noHesiScore` (the No Hesi score HUD), which defaults **on** — listed
+here only so nobody hunts for it in this table.*
 
 **Re-enable:** tick the box in the pause → Settings panel (`components/GameApp.tsx`
 ~line 594 onward), or press the in-game key (V / R / K / X). To change the
@@ -65,7 +71,7 @@ gates one further down. The effective state is `userSetting && tierCap`.
 | Cap | mobile-base | mobile-high | desktop | What is lost when off |
 |---|---|---|---|---|
 | `reflections` | ✗ | ✗ | ✓ | Planar road-reflection RT is not rendered into at all |
-| `mblur` | ✗ | ✗ | ✓ | Frame-blend motion blur — **and the dashcam exposure blend, see §6** |
+| `mblur` | ✗ | ✗ | ✓ | Frame-blend motion blur (chase streak only — the dashcam exposure blend answers to the raw setting since `ff517f1`, see §6) |
 | `pbrDetail` | ✗ | ✓ | ✓ | Scanned-road PBR detail layers + their deferred fetch |
 | `spreadCones` | ✗ | ✓ | ✓ | Headlight lateral fill cones |
 | `fenceOverdraw` | ✗ | ✓ | ✓ | Perforated-steel sound barriers → translucent slab wall fallback |
@@ -82,6 +88,23 @@ gates one further down. The effective state is `userSetting && tierCap`.
 | `lampPoolEvery` | 2 | 1 | 1 | Sodium ground pool under every Nth lamp |
 | `dprCap` | 1.1 | 1.35 | 1.75 | Renderer pixel-ratio ceiling |
 | `drawDistScale` | 0.65 | 0.85 | 1.0 | Multiplier on `settings.drawDist` for town chunk culling |
+
+The overhaul grew the table (re-verified 2026-08-29):
+
+| Cap | mobile-base | mobile-high | desktop | What is lost when off / low |
+|---|---|---|---|---|
+| `wallDetail` | 0 | 0.5 | 1 | Weathered-wall shader detail level |
+| `deckTexPx` | 256 | 512 | 1024 | Deck texture resolution (read at world build — needs reload) |
+| `cabinPbrMaps` | ✗ | ✓ | ✓ | The donor cabin's normal/metallic-roughness maps (~184 MB decoded) — base colour always ships |
+| `lampGlowEvery` | 2 | 1 | 1 | Glow sprite under every Nth lamp |
+| `townCastShadow` | ✗ | ✗ | ✓ | Town buildings casting daylight shadows |
+| `overpassLights` | ✗ | ✓ | ✓ | Lamps on the crossing overpasses |
+| `wheelTracks` | ✗ | ✓ | ✓ | Worn wheel-track darkening on the deck |
+| `deckDressing` | 0.35 | 0.7 | 1 | Density level for the deck-detail overlays |
+| `districts` | 0.55 | 0.8 | 1 | Density level for the second-pass roadside districts (`scenery.ts`) |
+| `mtnDetail` | 0.5 | 0.75 | 1 | Mountain-road dressing density |
+| `hdFleet` | ✗ | ✗ | ✓ | The lazy HD NPC-fleet upgrade — currently moot everywhere, see §3h |
+| `tollGlow` | ✓ | ✓ | ✓ | Listed for completeness — on for every tier |
 
 `dashcam` is `true` on **every** tier — deliberately: *"the POV filter is core to
 the game's look (user call); mblur (chase-cam motion blur) remains the perf cut."*
@@ -110,9 +133,14 @@ Applied at `engine.ts:3185` (`camMode === CAM_CHASE ? this.chaseShake() : 1`) an
 in the FOV kick at 3203.
 
 **Re-enable:** live, `window.__chaseShake = 1`, no reload — `chaseShake()`
-(engine.ts:546) seeds the window value from the constant on first read and then
-reads the window value every frame. To ship it, change the constant.
-Per AGENTS.md this only affects a debug camera, so it barely matters either way.
+seeds the window value from the constant on first read and then reads the
+window value every frame. To ship it, change the constant.
+
+*Re-verified 2026-08-29: still `0` (engine.ts ~389) — and the framing changed.
+The chase camera is a player-facing view now (AGENTS.md owner update
+2026-08-28), and shake-off is the owner's explicit request ("third-person
+camera shake off", HANDOFF.md), so this is a deliberate ship decision, not a
+debug-camera shrug.*
 
 ### 3b. `TOWN_TRAFFIC = false` — the entire town driving model, parked
 
@@ -128,6 +156,10 @@ zeroed, at `traffic.ts:3319` (`const townTarget = TOWN_TRAFFIC ? … : …`).
 
 **Re-enable:** set to `true` and rebuild. Expect a real frame-rate cost — this is
 the largest single disabled feature in the repo.
+
+*Re-verified 2026-08-29: still `false` (traffic.ts ~88). Note the mountain
+road's oncoming traffic is separate machinery and IS live — town streets stay
+empty, the 峠 does not.*
 
 ### 3c. Road SSR — NO LONGER DISABLED (as of `7621f1e`)
 
@@ -192,17 +224,42 @@ Listed for completeness because they are the master switches the tier caps gate
 
 | Flag | File | State |
 |---|---|---|
-| `FX_AURORA` | `game/world/aurora.ts:46` | `true` |
-| `FX_CITY_LAYERS` | `game/world/sky.ts:18` | `true` |
-| `FX_NIGHT_CLOUDS` | `game/world/nightclouds.ts:39` | `true` |
-| `FX_LAMP_CONES`, `FX_JET_FANS`, `FX_FENCE_PANELS`, `FX_CATWALKS`, `FX_PROP_MODELS`, `FX_TOLL_GLOW`, `FX_ROAD_DECALS`, `FX_LAMP_POOLS` | `game/world/highway.ts:49-66` | all `true` |
-| `DUAL_BLOOM`, `FILM_GRAIN`, `FILM_VIGNETTE`, `FILM_CA`, `FILM_TONE`, `FILM_DIRT` | `game/post.ts:135-147` | all `true` |
+| `FX_AURORA` | `game/world/aurora.ts` | `true` |
+| `FX_CITY_LAYERS` | `game/world/sky.ts` | `true` |
+| `FX_NIGHT_CLOUDS` | `game/world/nightclouds.ts` | `true` |
+| `FX_LAMP_CONES`, `FX_JET_FANS`, `FX_FENCE_PANELS`, `FX_CATWALKS`, `FX_PROP_MODELS`, `FX_TOLL_GLOW`, `FX_ROAD_DECALS`, `FX_LAMP_POOLS` | `game/world/highway.ts` ~49-67 | all `true` |
+| `FX_OVERPASS`, `FX_HIGH_MASTS`, `FX_WHEEL_TRACKS`, `FX_MOUNTAIN`, `FX_DECK_DRESSING` (new with the overhaul) | `game/world/highway.ts` ~70-81 | all `true` |
+| `FX_DISTRICTS` (new; module-private) | `game/world/scenery.ts` ~77 | `true` |
+| `DUAL_BLOOM`, `FILM_GRAIN`, `FILM_VIGNETTE`, `FILM_CA`, `FILM_TONE`, `FILM_DIRT` | `game/post.ts` | all `true` |
 
 A feature builds only when its `FX_*` flag **and** its `TierCaps` field agree. So
 if an effect is missing on your machine, check the tier first — the flag is
 probably not the reason. `FILM_GRAIN` and `FILM_TONE` are the exception to the
 `filmLook` cap: *"they cost nothing but ALU and were making the mobile frame
 worse rather than cheaper, so they now run on every tier."*
+
+### 3h. The HD NPC fleet upgrade — pipeline live, roster empty (added 2026-08-29)
+
+`game/npcmodels.ts`: `HD_STYLES: string[] = []` and `HD_BASE =
+"/models/cars-hd/"`. The desktop tier's `hdFleet: true` cap, the lazy-upgrade
+loader in `traffic.ts`, and `tools/build-hifi-models.mjs --hd` are all in
+place — but the style list is empty and `public/models/cars-hd/` does not
+exist, so nothing ever streams.
+
+Why: the owner's call after driving the 2026-08-28 hi-fi fleet. `8f85877`
+("the Orchids passenger fleet returns; HD upgrade parks"): the pack donors
+were out entirely, and *"the ItsDiyor moderns don't clear the owner's bar
+either — the old bakes read better"*. `HD_STYLES` empties *"so the desktop
+upgrade stays dormant until heroes worth streaming exist; the pipeline and
+the tier gate stay in place for that next bake."* Earlier the same day,
+`fc4fda1` had already sent taxi/police/van back to the Orchids bakes (the
+civil-pack versions read *"glitched and angled"*); the new bus is the one
+2026-08-28 bake that survived on the road.
+
+**Re-enable:** bake heroes (`tools/build-hifi-models.mjs --hd <styles>`),
+commit them under `public/models/cars-hd/`, and put the style names back in
+`HD_STYLES`. Check `node test/size-budget.mjs` — the HD directory counts
+against the total budget.
 
 ---
 
@@ -280,15 +337,16 @@ of the rows above is simply never hidden.
 garage."* Everything that read the flag now reads `rig.cockpitModel`, which is
 non-null exactly when the donor cabin is the cabin on screen.
 
-**Not fetched at all on `mobile-base`,** even for the Volvo: `COCKPIT_MODEL`'s
-`mobile-base` entry is `""` (`game/player.ts`). *"The procedural dash is not a
-placeholder for those players — it is the shipped one."* The degrade is partial
-and silent — that player still gets the Volvo's donor EXTERIOR, because
-`BODY_MODEL` is not tiered. The one seam that creates is the donor's bonnet,
-lifted out of that body and re-hung inside the cabin (`player.ts` `attachHood`):
-`engine.ts` `hoodUpdate()` gates it on `rig.cockpitModel` rather than on the
-hood merely existing, so a donor bonnet can never hang in front of a procedural
-dash.
+~~**Not fetched at all on `mobile-base`,** even for the Volvo~~ — **no longer
+true** (as of `b50d5b4`, "The Volvo cabin loads on mobile"): `COCKPIT_MODEL`'s
+three tier rows all point at `volvo-s90-full` now (`game/player.ts` — the rows
+stay per-tier as the hook for a future `-4k` desktop variant). What
+mobile-base declines instead is the cabin's normal/metallic-roughness maps
+(`TierCaps.cabinPbrMaps`, §2 — ~184 MB of the cabin's 280 MB decoded texture),
+so the weakest tier pays for base colour only. The fail-soft is unchanged: a
+cabin that 404s leaves the procedural dash on screen, and `engine.ts`
+`hoodUpdate()` still gates the donor bonnet on `rig.cockpitModel`, so it can
+never hang in front of a procedural dash.
 
 ---
 
@@ -313,10 +371,12 @@ authored around is **not running for anyone** unless they tick the box.
 
 **Re-enable:** Settings → Motion blur. `POV_MB_TAU` itself is untouched.
 
-⚠️ **On mobile, ticking the box does nothing in POV.** `engine.ts:3488` gates on
-`this.settings.mblur && this.tierCaps.mblur`, and `tierCaps.mblur` is `false` on
-both mobile tiers — so `opts.mblur` is always 0 there, `doFinal` is false in POV,
-and the blend pass never runs. See §9.
+~~⚠️ On mobile, ticking the box does nothing in POV~~ — **fixed** the same day
+this document was written (`ff517f1`, "split the POV exposure from the perf
+cap"): the POV exposure blend is now gated on `opts.mbOn` — the player's raw
+`settings.mblur`, unfiltered by `tierCaps.mblur` — while the cap keeps gating
+only the chase-camera streak. *"Two effects, two gates."* On every tier the
+Motion blur checkbox now controls the dashcam exposure.
 
 ---
 
@@ -358,25 +418,29 @@ in the settings panel. It persists across reloads like any other setting.
 
 ### Cameras
 
-AGENTS.md is explicit: **`CAM_POV` (DASHCAM) is the only view that ships.**
-Constants at `game/engine.ts:230`; the C key cycles them.
+*Updated 2026-08-29.* The old AGENTS.md rule — dashcam is the only view that
+ships — is **retired** by the owner (AGENTS.md update, 2026-08-28): every
+camera is player-facing now, so this table no longer lists disabled content,
+only the cycle. It stays because the §3a gate and the per-camera quirks below
+are still where "why does the chase cam not shake?" gets answered.
 
 | Index | Name | Status |
 |---|---|---|
-| 0 | CHASE | Debug. Its sensation effects are gated to 0 (§3a) |
-| 1 | COCKPIT | Debug. Carries its own eye offset `COCKPIT_EYE_IMPORTED` (engine.ts:356) and its own mirror framing (donor housing shown) |
-| 2 | HOOD | Debug |
-| 3 | **DASHCAM** — `CAM_POV` | **The shipping view.** `defaultProfile().camMode = 3` (settings.ts:297) |
-| 4 | CONSOLE — `CAM_CONSOLE` | **EXPERIMENTAL.** A wide lens on the tunnel between the seats. `CONSOLE_CAM` at engine.ts:401 |
+| 0 | CHASE | Player-facing. Its sensation effects are gated to 0 (§3a, owner request) |
+| 1 | COCKPIT | Player-facing. Carries its own eye offset `COCKPIT_EYE_IMPORTED` and its own mirror framing (donor housing shown) |
+| 2 | HOOD | Player-facing |
+| 3 | **DASHCAM** — `CAM_POV` | **The default and most-played view.** `defaultProfile().camMode = 3` |
+| 4 | CONSOLE — `CAM_CONSOLE` | Player-facing. A wide lens on the tunnel between the seats (`CONSOLE_CAM`); its FOV now follows the slider (`05cea99`) |
 
 The cycle order is **not** numeric order (`CAM_CYCLE`, engine.ts:246). The
 dashcam must stay last in the cycle, but `camMode` is *persisted*, so renumbering
 *"would boot every existing player into whatever took index 3"* — hence
 CAM_CONSOLE taking the free index at the end while the cycle walks a table.
 
-CAM_CONSOLE has its own FOV (78° vertical, ~110° horizontal at 16:9 — the widest
-lens in the car) rather than inheriting the slider, *"because this camera exists
-to be experimented with, not to inherit the shipping view's constraints."*
+CAM_CONSOLE has its own FOV *baseline* (78° vertical at the slider's default —
+the widest lens in the car), and since `05cea99` the Field-of-view slider
+SHIFTS it in degrees from there rather than being dead in this view; the old
+inherit-nothing reasoning applies only to the caps now.
 
 `defaultProfile().camMode = 3` was itself a fix: it *"defaulted to chase, which
 meant every new visitor landed in third person and never saw the interior at all."*
@@ -407,7 +471,13 @@ CONTROLS screen at `components/GameApp.tsx:294-312`.
 | **K** | test mode | see §7 |
 | **P** | music play / pause | desktop only — `music.enabled` is false on touch |
 | **, / .** | previous / next track | desktop only |
+| **I** | interior cabin light | desktop only, by explicit owner request; the roof-band tap covers touch |
 | Esc | pause menu | music pauses with it |
+
+On touch, the ⋯ overflow drawer (`components/GameApp.tsx`, mobile-controls
+lane) surfaces L / X / M / R / T / V / K / N through `uiKeyTap()` — the same
+handlers, so a drawer row and its key cannot disagree — and the topbar's ◀ ▶
+telltales are the Q / E switches.
 
 K, T and V are the debug/A-B set. There is no build flag hiding them — they
 ship live to players, and the CONTROLS screen documents them.
@@ -567,10 +637,12 @@ the donor."* Rebuild command in `.gitignore`.
 
 ### The development render gallery
 
-`docs/gallery/` — 2.9 MB, 87 renders, committed (`eb76226`) and excluded from
-deploys via `.vercelignore`. Unreachable at runtime three times over (outside
-`public/`, not imported, not walked by the size budget). Browse it on GitHub or
-open `index.html` from a clone over `file://`.
+`docs/gallery/` — ~11 MB, 184 renders in 32 chapters as of 2026-08-29 (every
+overhaul lane contributed one), fronted by an interactive build-up timeline.
+Committed and excluded from deploys via `.vercelignore`. Unreachable at
+runtime three times over (outside `public/`, not imported, not walked by the
+size budget). Browse it on GitHub or open `index.html` from a clone over
+`file://`.
 
 ### Not built: a `-4k` interior variant
 
@@ -581,9 +653,27 @@ dashcam pass then softens, grains and crushes most of it toward black.
 
 ---
 
-## 12. Unmerged branches
+## 12. Unmerged branches — RESOLVED 2026-08-29
 
-`git branch --no-merged main` — two, and they should be handled very differently.
+**Status now:** `git branch -r` shows `origin/main` and active work branches
+only. Every branch below is gone from the remote. The 2026-08-29
+`cloud/branch-harvest` evaluation (`docs/handoff/reports/branch-harvest.md`,
+merged in `ff15914`) established by tree diff that the three old feature
+branches were content-supersets of a pre-rewrite main — today's main already
+contains everything they carried, mostly improved — and they have since been
+deleted from the remote, along with `verify/cloud-pass-1` (74.6 MB of
+disposable verification PNGs) and `engine-sfx-candidate`. Note the wrinkle the
+harvest report documents: main's history was truncated and restarted from a
+snapshot (the `pre-revamp` tag marks the old line), which is why
+ancestry-based `--no-merged` checks stopped being meaningful for the old
+branches.
+
+`engine-sfx-candidate` was the one branch with genuinely unmerged work — a
+replacement recorded engine sound the harvest report flagged as "audition or
+decline". Its deletion from the remote reads as the decline; recovering the
+work now means a local clone that still has the ref, or redoing it.
+
+The original entries follow as a record of what stood here.
 
 ### `engine-sfx-candidate` — replacement engine audio, **never listened to**
 
@@ -628,6 +718,15 @@ They are stale labels, not pending work.
 
 ### The head-unit music card, switched off; the nav map expanded to fill the console
 
+**OVERTAKEN BY EVENTS (2026-08-29 update): the card was never switched off —
+it was made real instead.** The intent below never landed; what shipped is the
+opposite resolution of the same complaint: `carscreen.ts`'s `paintMusic` now
+takes the live player's state (*"Without this the card cheerfully showed
+'Midnight Loop / Neon Arcade' while Beethoven was actually playing"*), and the
+hard-coded `TRACKS` rotation survives only as the fallback for when no real
+player runs (touch, where `music.enabled` is false). The split layout stays.
+The original entry follows as a record of the intent.
+
 **Status at the time of writing: not landed.** `game/carscreen.ts` is byte-identical
 to `HEAD` (`git diff` is empty; mtime 2026-08-21 18:11), and still describes and
 draws the split layout:
@@ -665,44 +764,37 @@ parameter change, not a rewrite.
 
 ## 14. Things that look like accidents rather than deliberate disables
 
-Flagged, **not fixed** — per the brief.
+Flagged, **not fixed** — per the brief. *Re-audited 2026-08-29: items 1, 2, 3
+and 5 are resolved; struck below with the fixing evidence. 4 and 6 stand.*
 
-1. **Two stale comments now assert the opposite of what the code does.**
-   Commit `5c6cadd` removed the `|| pov` force on the dashcam frame blend, but:
-   - `game/post.ts:1195-1199` still says *"the mobile tiers run this path even
-     with mblur off, because POV forces doMbSetting on"* — they no longer do.
-   - `game/engine.ts:3495` still says *"this path runs on mobile even though
-     tierCaps.mblur is false there — POV forces the blend on regardless of the
-     setting"* — it does not.
+1. ~~**Two stale comments now assert the opposite of what the code does.**~~
+   Resolved by `ff517f1` (the same commit that first added this document):
+   both the `post.ts` and `engine.ts` comments were rewritten when the POV
+   exposure was split from the perf cap. Neither stale sentence survives in
+   the tree.
 
-   These are exactly the comments the next person will trust.
+2. ~~**On mobile, the Motion blur checkbox cannot affect the dashcam at
+   all.**~~ Resolved by `ff517f1` — exactly the "wants its own gate" fix this
+   entry asked for: the POV exposure blend now reads `opts.mbOn` (the raw
+   setting), the tier cap gates only the chase streak. See §6.
 
-2. **On mobile, the Motion blur checkbox cannot affect the dashcam at all.**
-   `engine.ts:3488` gates on `settings.mblur && tierCaps.mblur`, and
-   `tierCaps.mblur` is `false` on both mobile tiers — so `opts.mblur` is always
-   0, `doFinal` is false in POV, and the exposure blend pass never runs. The
-   *point* of `5c6cadd` was to give the player a say; on mobile they still have
-   none, in the opposite direction from before. Whether the 40 ms POV exposure
-   should be gated by the *chase-cam perf cap* at all is the real question —
-   they are different effects sharing one cap. Probably wants its own cap field.
-
-3. **The Reflections checkbox is partly inert.** Road SSR is hardcoded to 0
-   (§3c) with the settings parameter explicitly voided (`void reflectionsOn;`).
-   The checkbox still governs the planar reflection RT, so it is not *fully*
-   dead — but a player who unticks it expecting the road to change sees nothing.
-   Deliberate at the shader level; the UI was never told.
+3. ~~**The Reflections checkbox is partly inert.**~~ Resolved with the SSR
+   revival (§3c, `7621f1e`): `mats.setWet(on, reflectionsOn)` consumes the
+   checkbox for the road reflection, and the planar RT it always governed
+   still stands. Unticking it changes the road again.
 
 4. **`fenceOverdraw` is described as having no consumer, and now does.**
-   `settings.ts:32` still reads *"no consumer yet; the fence lane gates on this"*,
-   but `highway.ts:1159-1161` consumes it (*"the fenceOverdraw cap finally gets
-   its consumer"*). Harmless, but the comment misleads.
+   Still true 2026-08-29: `settings.ts` ~32 reads *"no consumer yet; the fence
+   lane gates on this"*, while `highway.ts` ~1263 consumes it (*"the
+   fenceOverdraw cap finally gets its consumer"*). Harmless, but the comment
+   misleads.
 
-5. **The steer-response sim is modified in the working tree.**
-   `test/steer-response-sim.mjs` and `game/physics.ts` were dirty during this
-   sweep — another lane's in-flight work, not a disable. Noted so it is not
-   mistaken for one.
+5. ~~**The steer-response sim is modified in the working tree.**~~ That lane's
+   work landed; `test/steer-response-sim.mjs` is committed and the tree is
+   clean.
 
 6. **Not an accident, but easy to mistake for one:** `tools/build-cockpit.mjs`
    freezes the `mirror` role to the *retired* cut dash's frustum. It looks like
    dead donor-specific code. It is load-bearing — removing it moves every mirror
-   anchor in `cockpitmodel.ts`.
+   anchor in `cockpitmodel.ts`. (Re-verified 2026-08-29: the tool's header
+   still documents this; the shipped `volvo-s90-full` bake depends on it.)

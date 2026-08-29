@@ -6,6 +6,7 @@ import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
 import { worldTierCaps } from "../settings";
+import { buildRoadside } from "./roadside";
 
 /* Roadside scenery zones: the stretches of world the corridor passes that are
    neither the town nor the backdrop rings. Before this file the map east of
@@ -83,27 +84,40 @@ const CANYON = { z0: 1580, z1: 2000 };
 /** Merge helper: bakes transformed template geometries (and per-part colour)
     into one non-indexed soup, one draw call per material. Templates must be
     uv-consistent within a bucket (they all are — box/cylinder/icosa carry
-    uv), or the attribute arrays would fall out of step. */
-class Merge {
+    uv), or the attribute arrays would fall out of step. Exported for
+    roadside.ts, which builds by the same rules. */
+export class Merge {
   pos: number[] = [];
   norm: number[] = [];
   uv: number[] = [];
   col: number[] = [];
+  /* transforms per vertex straight out of the source attributes — the old
+     clone().applyMatrix4() allocated a full geometry (3-4 typed arrays) per
+     placed object and dropped it immediately; the districts pass places
+     thousands (perf-pass). The source geometry is never touched. */
+  private static _v = new THREE.Vector3();
+  private static _nm = new THREE.Matrix3();
   add(geo: THREE.BufferGeometry, m: THREE.Matrix4, color?: THREE.Color) {
-    const g = geo.clone().applyMatrix4(m);
-    const p = g.attributes.position as THREE.BufferAttribute;
-    const n = g.attributes.normal as THREE.BufferAttribute | undefined;
-    const u = g.attributes.uv as THREE.BufferAttribute | undefined;
+    const p = geo.attributes.position as THREE.BufferAttribute;
+    const n = geo.attributes.normal as THREE.BufferAttribute | undefined;
+    const u = geo.attributes.uv as THREE.BufferAttribute | undefined;
+    const v = Merge._v;
+    // same normal handling as BufferGeometry.applyMatrix4: normal matrix,
+    // then re-normalize (applyNormalMatrix does both)
+    const nm = n ? Merge._nm.getNormalMatrix(m) : null;
     const push = (k: number) => {
-      this.pos.push(p.getX(k), p.getY(k), p.getZ(k));
-      if (n) this.norm.push(n.getX(k), n.getY(k), n.getZ(k));
+      v.fromBufferAttribute(p, k).applyMatrix4(m);
+      this.pos.push(v.x, v.y, v.z);
+      if (n && nm) {
+        v.fromBufferAttribute(n, k).applyNormalMatrix(nm);
+        this.norm.push(v.x, v.y, v.z);
+      }
       if (u) this.uv.push(u.getX(k), u.getY(k));
       if (color) this.col.push(color.r, color.g, color.b);
     };
-    const idx = g.index;
+    const idx = geo.index;
     if (idx) for (let i = 0; i < idx.count; i++) push(idx.getX(i));
     else for (let i = 0; i < p.count; i++) push(i);
-    g.dispose();
   }
   get empty() {
     return this.pos.length === 0;
@@ -127,8 +141,11 @@ class Merge {
    Drawn against the grade (see realistic-light): peaks stay near 0.75 of full
    white so the emissive panel keeps its hue instead of clipping, and every
    glow in the artwork is a long-tailed gradient, not a hard disc. */
-function adAtlasTex(rng: Rng): THREE.Texture {
-  return makeTex(1024, 512, (ctx) => {
+function adAtlasTex(rng: Rng, px = 1024): THREE.Texture {
+  return makeTex(px, px / 2, (ctx) => {
+    /* the designs are authored in 512×256 cell coordinates; a canvas-level
+       scale maps them onto whatever resolution the tier pays for */
+    ctx.scale(px / 1024, px / 1024);
     const designs: ((x: number, y: number, w: number, h: number) => void)[] = [
       (x, y, w, h) => {
         // vertical sodium gradient wash + big katakana
@@ -218,6 +235,13 @@ function adAtlasTex(rng: Rng): THREE.Texture {
       ctx.strokeRect(x + 3, y + 3, 506, 250);
     });
   });
+}
+
+/** Exactly the rng draws adAtlasTex's shuffle consumes — burned where a
+    second atlas build was dropped (the canyon shares the first one now), so
+    every later draw in that stream lands where it always did. */
+function adAtlasShuffleBurn(rng: Rng) {
+  for (let i = 3; i > 0; i--) rrandi(rng, 0, i);
 }
 
 export function buildScenery(
@@ -569,12 +593,20 @@ export function buildScenery(
      to the seam (and its mirror-image overrun behind the spawn). The panels
      are emissive against the grade — peak artwork luma sits near 0.75 so the
      boards glow in colour instead of clipping white. */
+  /* ONE ad atlas and ONE panel material for both board families (this run
+     and the neon canyon's) — a second identical-content atlas cost ~2.7 MB
+     of VRAM and split the boards across two materials for nothing but a
+     different shuffle; per-board design choice is where the variety already
+     comes from. Mobile-base pays quarter resolution: its boards are a
+     fraction of a small screen, and the emissive artwork is all gradients
+     that survive the downscale (perf-pass). */
+  const adAtlas = adAtlasTex(rng, caps.tier === "mobile-base" ? 512 : 1024);
+  const adPanelMat = new THREE.MeshStandardMaterial({
+    map: adAtlas, emissive: 0xffffff, emissiveMap: adAtlas, emissiveIntensity: 0.8,
+    roughness: 0.85, metalness: 0,
+  });
   {
-    const atlas = adAtlasTex(rng);
-    const panelMat = new THREE.MeshStandardMaterial({
-      map: atlas, emissive: 0xffffff, emissiveMap: atlas, emissiveIntensity: 0.8,
-      roughness: 0.85, metalness: 0,
-    });
+    const panelMat = adPanelMat;
     const panelM = new Merge();
     const panelG = new THREE.PlaneGeometry(1, 1);
     const boards: [number, number][] = [
@@ -664,7 +696,7 @@ export function buildScenery(
       TQ.identity();
       TM.compose(TV, TQ, TS);
       poolC.set(hex).multiplyScalar(k);
-      glowPools.add(poolG.clone(), TM, poolC);
+      glowPools.add(poolG, TM, poolC);
     };
     /** shared vertex-coloured bucket: containers, tarps, coloured shells */
     const colored = new Merge();
@@ -721,7 +753,7 @@ export function buildScenery(
       TV.set(x, y, z);
       TS.set(wd, ht, 1);
       TM.compose(TV, TQ, TS);
-      neonBuckets[k].add(neonPlane.clone(), TM);
+      neonBuckets[k].add(neonPlane, TM);
     };
 
     /* ------------------------------ WHARF ------------------------------ */
@@ -952,11 +984,10 @@ export function buildScenery(
       // extra boards between the first pass's four (those sit at 1655/1748/
       // 1862/1956); keep 30 m clear of each and alternate sides
       const HAVE = [1655, 1748, 1862, 1956];
-      const atlas2 = adAtlasTex(rng2);
-      const panelMat2 = new THREE.MeshStandardMaterial({
-        map: atlas2, emissive: 0xffffff, emissiveMap: atlas2, emissiveIntensity: 0.8,
-        roughness: 0.85, metalness: 0,
-      });
+      // the shared atlas + material (see the billboard run above); the forked
+      // stream still burns its shuffle draws so the rest of rng2 is unmoved
+      adAtlasShuffleBurn(rng2);
+      const panelMat2 = adPanelMat;
       const panelM2 = new Merge();
       const panelG2 = new THREE.PlaneGeometry(1, 1);
       let bi = 0;
@@ -1176,4 +1207,11 @@ export function buildScenery(
   taperCyl.dispose();
   blob.dispose();
   trunk.dispose();
+
+  /* Third pass — the full-lap roadside density layer (map-density lane):
+     continuous clumped tree lines, imposter ranks and near-road clutter
+     filling the space BETWEEN the districts above. Runs last and draws only
+     from its own forked stream (same contract as FX_DISTRICTS), so it can
+     never reshuffle anything rolled before it. */
+  buildRoadside(scene, mats, world, terrain);
 }

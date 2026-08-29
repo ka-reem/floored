@@ -349,6 +349,62 @@ function paintMaterial(paint: Paint, env: THREE.Texture): THREE.MeshPhysicalMate
   return tameSpecular(m);
 }
 
+/* ------------------------------------------------- painting the donor body ----
+
+   The donor shell ships ONE bodywork material, `Car_Paint`: a textureless
+   grey (baseColor 0.28, metalness 1, clearcoat 1) — factory silver, baked at
+   export. Until now the game left it alone, which made the garage swatches a
+   half-truth: they repainted kaze's procedural shell but the Volvo kept its
+   silver in every chase camera, and GaragePanel carried a comment admitting
+   as much.
+
+   So the chosen Paint is written ONTO that material when the body lands —
+   the same per-finish recipe paintMaterial() gives the procedural shell
+   (base colour + metalness/roughness/env level, plus the mica sheen for
+   pearls), so one swatch means one colour on both cars, in the garage card
+   and on the road. Factors only, deliberately: the GLB on disk is untouched
+   (the model build belongs to another lane), the material keeps its maps (it
+   has none) and its authored clearcoat, and lightDonorBody() below still
+   applies its own floor to that clearcoat right after this runs. The
+   orange-peel normal map is NOT copied over — it is tiled for the procedural
+   shell's UVs, and the donor has real panel geometry doing that job.
+
+   Matched by material name rather than applied to every mesh: the donor also
+   carries glass, chrome, rubber and lamp materials, and a car with every
+   surface in body colour is a toy. An asset rebuild that renames Car_Paint
+   simply leaves the donor its baked silver — the same quiet fallback as a
+   missing GLB. */
+function tintDonorPaint(root: THREE.Object3D, paint: Paint) {
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.material) return;
+    for (const mat of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      const m = mat as THREE.MeshPhysicalMaterial;
+      if (!/car.?paint/i.test(m.name)) continue;
+      m.color.setHex(paint.hex);
+      /* envMapIntensity BEFORE lightDonorBody registers the material: carenv
+         stashes the first value it sees as the authored base for the night
+         lift, so writing it later would compound instead of replace. */
+      if (paint.finish === "solid") {
+        m.metalness = 0.06;
+        m.roughness = 0.46;
+        m.envMapIntensity = 1.0;
+      } else if (paint.finish === "pearl") {
+        m.metalness = 0.5;
+        m.roughness = 0.4;
+        m.envMapIntensity = 1.2;
+        m.sheen = 0.7;
+        m.sheenColor = new THREE.Color(paint.pearlHex ?? 0xffffff);
+        m.sheenRoughness = 0.55;
+      } else {
+        m.metalness = 0.88;
+        m.roughness = 0.36;
+        m.envMapIntensity = 1.3;
+      }
+    }
+  });
+}
+
 /* ------------------------------------------------- lighting the donor body ----
 
    "The car is still like black and really dark and hard to see. Can you make it
@@ -1262,7 +1318,12 @@ export function buildPlayerCar(
     attachBodyModel(exteriorG, P, bodyDonor, [pivFL, pivFR, wRL, wRR, ...glowSprites],
       (h) => {
         bodyRef.model = h;
-        if (h) lightDonorBody(h.group, env, withEnv);
+        /* Paint first, light second: the tint writes the env level the
+           registration in lightDonorBody will stash as this material's base. */
+        if (h) {
+          tintDonorPaint(h.group, paintByHex(paintHex));
+          lightDonorBody(h.group, env, withEnv);
+        }
         /* Its own try/catch, and not for tidiness: bodymodel.ts runs this
            callback inside one of its own, and a throw from here would be
            caught THERE and answered by calling this callback a second time

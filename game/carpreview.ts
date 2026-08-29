@@ -26,16 +26,15 @@ import { envFaceCanvas, glowTexF } from "./textures";
 
 const cache = new Map<string, string>();
 
-/** Pass-two shots, keyed by CAR ALONE and not by paint. The donor body carries
-    its own baked paint and player.ts does not retint it (lightDonorBody only
-    touches env/roughness), and every procedural part still on show under it —
-    the four wheels, the lamp glows — is built from fixed materials rather than
-    from the chosen hex. So the shot genuinely cannot vary with the swatch, and
-    keying it by paint would only re-fetch and re-parse the GLB once per colour
-    to produce the same PNG. See the note in GaragePanel about what that means
-    for the paint row. */
+/** Pass-two shots, keyed by CAR AND PAINT — same key shape as the procedural
+    cache. This used to be keyed by car alone, back when the donor body kept
+    its baked silver whatever the swatch said; player.ts tintDonorPaint now
+    repaints the donor on load, so each colour genuinely is a different PNG.
+    The per-colour GLB re-parse that keying used to be avoiding is real but
+    cheap: the fetch itself comes out of the browser's HTTP cache after the
+    first swatch. */
 const realCache = new Map<string, string>();
-/** Cards waiting on a pass-two shot that is already in flight, per car. */
+/** Cards waiting on a pass-two shot that is already in flight, per car+paint. */
 const realWaiting = new Map<string, Set<(url: string) => void>>();
 
 let studio: {
@@ -105,14 +104,14 @@ function shoot(st: NonNullable<typeof studio>, rig: PlayerRig, spec: CarSpec): s
 /** Build a second rig, wait for its donor exterior, re-shoot, hand the PNG to
     everyone waiting on this car. At most one in flight per car. */
 function shootReal(spec: CarSpec, paintHex: number, cb: (url: string) => void) {
-  const id = spec.id;
-  const waiting = realWaiting.get(id);
+  const key = spec.id + ":" + paintHex;
+  const waiting = realWaiting.get(key);
   if (waiting) {
     waiting.add(cb);
     return;
   }
   const set = new Set([cb]);
-  realWaiting.set(id, set);
+  realWaiting.set(key, set);
 
   const st = getStudio();
   const rig = buildPlayerCar(
@@ -136,9 +135,9 @@ function shootReal(spec: CarSpec, paintHex: number, cb: (url: string) => void) {
       rig.carGroup.visible = false;
     }
     rig.dispose(st.scene);
-    realWaiting.delete(id);
+    realWaiting.delete(key);
     if (!url) return;
-    realCache.set(id, url);
+    realCache.set(key, url);
     for (const f of set) f(url);
   });
 }
@@ -159,7 +158,7 @@ export function carPreviewURL(
      fallback car and put four identical shots on the shelf. */
   const spec = carById(carId) || getCar(carId);
 
-  const real = realCache.get(carId);
+  const real = realCache.get(carId + ":" + paintHex);
   if (real) return real;
 
   const k = carId + ":" + paintHex;

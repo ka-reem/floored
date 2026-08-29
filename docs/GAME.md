@@ -1,8 +1,10 @@
 # NEON EXPRESSWAY — the whole game in one file
 
-Written 2026-08-21. This is the orientation document: read it top to bottom and
-you should be able to open any file in `game/` and know why it looks the way it
-does. It is not API reference — it is the reasoning.
+Written 2026-08-21; factual claims re-verified and updated 2026-08-29 against
+`main` after the two-day overhaul (the 2026-08-28 merge wave — see
+`docs/CHANGELOG-2026-08-28.md`). This is the orientation document: read it top
+to bottom and you should be able to open any file in `game/` and know why it
+looks the way it does. It is not API reference — it is the reasoning.
 
 A warning about line numbers: this document names **files and symbols**, and
 mostly avoids line numbers, because the tree was under active edit by a dozen
@@ -15,11 +17,19 @@ names are stable; grep for them.
 
 A night drive. You are in a car on an elevated Japanese urban expressway —
 首都高 — that loops forever, with a procedurally generated town beneath it.
-There is dense AI traffic, rain, neon, fog, a tunnel, a toll plaza, an
-on-ramp and off-ramp, a bypass viaduct that crosses back over the main deck,
-and a garage of four cars.
+There is dense AI traffic, rain, neon, fog, seeded tunnels (two per lap), a
+toll plaza, an on-ramp and off-ramp, a bypass viaduct that crosses back over
+the main deck, a two-way mountain road off EXIT 4 (峠 Tōge, `corridor.MTN` /
+`game/world/highway.ts`), a necklace of roadside districts within sight of the
+deck (`game/world/scenery.ts`), and a garage of five cars — two playable,
+three COMING SOON.
 
-There is no score, no race, no timer. The game is the drive.
+There is no race and no timer, but there is a running arcade score: the **No
+Hesi loop** (`NOHESI` in `engine.ts`, `scoreEvents` in `traffic.ts`) — speed
+and near misses build a combo multiplier, contact resets the multiplier but
+never the total. It is HUD chrome on top of the drive (`settings.noHesiScore`
+turns it off), plus an optional **rival** pace car (`settings.rival`,
+`traffic.ts` "the rabbit"). The game is still the drive.
 
 Built with Next.js 16 + React 19 + Three.js (r180). Everything is client-side
 WebGL; the server does nothing but serve the bundle. Package name
@@ -28,24 +38,34 @@ pre-Next single-file v2 original, kept for reference and not part of the build.
 
 ---
 
-## 2. The one rule that governs everything
+## 2. The one rule that governs everything — and its 2026-08-28 amendment
 
-From `AGENTS.md`, and it explains more odd-looking code than anything else in
-this document:
+The original rule from `AGENTS.md` explains more odd-looking code than
+anything else in this document:
 
 > `CAM_POV` — the hard-mounted **DASHCAM** view, last in the camera cycle — is
 > the view the game is actually played in. Treat it as the only one that ships.
 > CHASE, COCKPIT and HOOD exist for debugging and possible later use.
 
+**The "only view that ships" half is RETIRED** (owner update in `AGENTS.md`,
+2026-08-28): players use multiple cameras, so CHASE, COCKPIT, HOOD and the
+CONSOLE camera are player-facing now, and a change may not degrade them. What
+survives: the dashcam is still the **default** and the first frame to judge
+any visual change in, and everything below about the optimisations the rigid
+POV lens made legal is still how the code is built.
+
 Concretely, `game/engine.ts` declares:
 
 ```ts
-const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3;
-const CAM_COUNT = 4;
-const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM"];
+const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3, CAM_CONSOLE = 4;
+const CAM_COUNT = 5;
+const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE"];
+const CAM_CYCLE = [CAM_CHASE, CAM_COCKPIT, CAM_HOOD, CAM_CONSOLE, CAM_POV];
 ```
 
-`C` cycles them. A **first-run profile defaults to `camMode: 3`** — before that
+`C` cycles them in `CAM_CYCLE` order — not numeric order, because `camMode` is
+persisted, so CAM_CONSOLE took the free index rather than renumbering every
+saved profile. A **first-run profile defaults to `camMode: 3`** — before that
 change, every new visitor landed in third person and never saw the interior.
 
 ### What follows from the rule
@@ -56,34 +76,44 @@ returning to COCKPIT starts centred. Because the lens never moves relative to
 the dashboard, a whole class of optimisation becomes legal, and the codebase
 takes all of them:
 
-- **The donor dash is clipped to the POV frustum at bake time.** 42% of the
-  imported Volvo model's geometry is deleted because it is permanently out of
-  frame — the whole centre console, the shifter, the passenger third of the pad.
-  Out of frame is out of frame *forever*, so it need not exist.
-- **POV gets its own field of view.** Every other camera uses
-  `settings.fovBase` plus a speed kick. POV ignores both and derives its
-  vertical FOV from a fixed **105° horizontal** (`POV_HFOV`) against the live
-  aspect ratio, clamped to 62–100°. A dashcam has a wide fixed lens; the player
-  does not get to change it.
+- **The donor dash used to be clipped to the POV frustum at bake time** — 42%
+  of the imported Volvo model's geometry deleted as permanently out of frame.
+  That cut is RETIRED (it printed sliced edges once the FOV slider widened
+  past what it was cut for; see DISABLED.md §11): the shipped
+  `volvo-s90-full.glb` is whole donor nodes, decimated, never frustum-clipped.
+  The bake-time aggression moved from "delete what the lens can't see" to
+  "decimate what it can".
+- **POV has its own lens maths but now honours the FOV slider.** It derives
+  its vertical FOV from a *horizontal* target against the live aspect ratio
+  (`povFov()` / `lensFov()`), with the slider clamped 58–`POV_FOV_MAX` (100°)
+  as the last gate before the projection matrix. The old fixed-105°-horizontal
+  lens went with the frustum-cut dash.
 - **POV forces a harder post-processing degrade**, independent of the `V`-key
   dashcam filter (see §5.6). Cheap-sensor artefacts — interlace tear, macroblock
   snap, bit-crush, sensor bleed — are the *look*, not a toggle.
-- **Cabin audio EQ is deliberately not applied in POV.** `audio.setInterior()`
-  is called with `camMode === CAM_COCKPIT` only. A dashcam's microphone is stuck
-  to the glass, not sitting in the driver's ears.
+- **The dashcam has its own microphone character.** `audio.setInterior()` now
+  takes three modes — `"pov"`, `"cabin"` (COCKPIT and CONSOLE), `"out"` — and
+  POV's cabin lowpass takes more perceived engine loudness out than any level
+  knob (see the comment at `audio.ts` ~396). It used to get no interior EQ at
+  all; the three-mode split replaced that.
 - **The headlight beam carpet is widened 1.5× laterally in POV only**, to
   correct for the wide lens.
 - **Impact glitch effects only fire in POV.** They are gated at the *call site*
   rather than inside `post.dashcamHit()`, specifically so a hit taken in another
   camera cannot arm a burst that fires later when the player switches into POV.
 - **Every lighting decision is budgeted against two numbers in the POV
-  composite**: the blown-highlight clip at `smoothstep(.72, 1.02, luma)` and the
-  black crush at `col - .06`. Comments across `mats.ts`, `traffic.ts`,
-  `engine.ts` and `decaltex.ts` quote those two constants as tuning targets. A
-  light that "has a hard edge" is usually not a falloff bug — it is one of those
-  two thresholds being crossed. There is a `realistic-light` skill for this.
+  composite**: the blown-highlight clip at `smoothstep(.72, 1.02, luma)` and
+  the black crush around `.06`. Comments across `mats.ts`, `traffic.ts`,
+  `engine.ts` and `decaltex.ts` quote those two constants as tuning targets.
+  (The crush itself was softened in the dashcam-clarity pass — the old hard
+  clip `max(col - .06, 0)` is now a soft-max toe, so darks fade out instead of
+  snapping to black — but the *threshold* is still the tuning target.) A light
+  that "has a hard edge" is usually not a falloff bug — it is one of those two
+  thresholds being crossed. There is a `realistic-light` skill for this.
 
-If a change only matters in CHASE, COCKPIT or HOOD, it barely matters.
+A change is judged in the dashcam first — but "only matters in CHASE" is no
+longer a reason to skip it (the owner's 2026-08-28 update): the chase camera
+fronts the rebuilt player-car exterior and gets real quality attention.
 
 ---
 
@@ -106,36 +136,43 @@ production ships by explicit manual promote. The Vercel project is named
 double-invokes effects, which would construct two `Game` instances and two WebGL
 renderers.
 
-**Assets deploy from git**, which is why the 16 MB baked cockpit GLB is
-committed rather than gitignored. A gitignored dash means every visitor silently
-falls back to the procedural one.
+**Assets deploy from git**, which is why the baked cockpit GLB (5.7 MB,
+`volvo-s90-full.glb`) is committed rather than gitignored. A gitignored dash
+means every visitor silently falls back to the procedural one.
 
 ### The test suite
 
-27 scripts in `test/` (plus whatever `_*-scratch.mjs` probes an agent has left
-lying around), of which exactly **two** are wired to npm:
+~47 scripts in `test/` as of 2026-08-29 (plus whatever `_*-scratch.mjs` probes
+an agent has left lying around) — the overhaul lanes each brought their own
+sims and probes — of which exactly **two** are wired to npm:
 
 | Command | What it does | Needs a server? |
 |---|---|---|
-| `npm run engine-rpm` | Compiles the real `physics.ts` and asserts the flywheel model's properties across all four cars | **No** |
+| `npm run engine-rpm` | Compiles the real `physics.ts` and asserts the flywheel model's properties across the whole roster | **No** |
 | `npm run smoke` | Full headless boot, menu walk, drive, crash, screenshots to `test/artifacts/` | **Yes** — and it spawns its own `next dev -p 3111` if you don't pass `--url` |
 
-The other 25 are run by hand. There is no CI, no runner, no `test` script.
+The rest are run by hand. There is no CI, no runner, no `test` script.
 Practically they fall into three tiers: standalone regression checks, browser
 assertion checks, and one-off investigation instruments kept around as evidence
 (several headers say "NOT part of CI" outright).
 
-**Standalone — no server, no browser** (run these freely):
-`audio-assets-check`, `audio-creak-sim`, `bypass-drive`, `corridor-check`,
-`corridor-drive`, `engine-rpm-check`, `ramp-attach-sim`, `routegraph-check`,
-`size-budget`, `traffic-bias-check`, `traffic-merge-sim`.
+**Standalone — no server, no browser** (run these freely; list not
+exhaustive): `audio-assets-check`, `audio-creak-sim`, `bypass-drive`,
+`corridor-check`, `corridor-drive`, `engine-rpm-check`, `lane-plan`,
+`ramp-attach-sim`, `routegraph-check`, `size-budget`, `traffic-bias-check`,
+`traffic-merge-sim`, plus the overhaul lanes' sims (`mountain-traffic-sim`,
+`rival-sim`, `whiteline-sim`, `console-fov-sim`, `testdrive-accel-sim`,
+`steer-response-sim`, `hail-sim`, `roster-check` and friends — check each
+header).
 
-Six of those shell out to `npx tsc` to compile `game/world/*.ts` into a temp dir
-first, because there is no bundler in the test path.
+Several of those shell out to `npx tsc` to compile `game/world/*.ts` into a
+temp dir first, because there is no bundler in the test path.
 
-**Puppeteer — need the app served over HTTP**: `smoke`, the six `audio-*-check`
+**Puppeteer — need the app served over HTTP**: `smoke`, the `audio-*-check`
 scripts, `bypass-shots`, `canvas-dump`, `carscreen-shots`, `corridor-shots`,
-`lane-r-measure`, `pov-bisect`, `pov-paint`, `pov-shot`, `ramp-debug`.
+`lane-r-measure`, `lap-shots` (the 40-station dashcam contact sheet),
+`pov-bisect`, `pov-paint`, `pov-shot`, `ramp-debug`, and more of the same
+vintage.
 
 URL conventions are inconsistent by vintage — most take `--url <url>` with a
 per-script default port (3141, 3142 or 3000); `canvas-dump` and
@@ -143,27 +180,25 @@ per-script default port (3141, 3142 or 3000); `canvas-dump` and
 They all drive the game through `window.__neonx`, the debug API the `Game`
 constructor installs (see §5.1).
 
-### The size budget currently fails — this is known
+### The size budget now passes
 
 `node test/size-budget.mjs` checks committed assets against a 15 MB
-critical-path budget and a 30 MB total budget. Last verified output:
+critical-path budget and a 30 MB total budget. When this section was first
+written the critical path failed at 22.96 MB, dominated by the 16.35 MB
+frustum-cut Volvo dash. That asset was retired and replaced by the 5.68 MB
+`volvo-s90-full.glb` whole-cabin decimation, and the budget has passed since.
+Verified 2026-08-29:
 
 ```
-Critical: 22.96 MB / 15 MB budget
-Total:    25.05 MB / 30 MB budget
-FAIL: critical-path assets exceed 15 MB
+Critical: 12.78 MB / 15 MB budget
+Total:    14.86 MB / 30 MB budget
+OK: within budget
 ```
 
-Exit code 1. The dominant line is `public/models/cockpits` at **16.35 MB** — the
-baked Volvo S90 dash, which is a single file and is the thing the whole dashcam
-view depends on. **Nothing is broken; this is a standing, pre-existing state.**
-Don't be alarmed by a red test here.
-
-**These numbers are actively falling.** An asset-compression pass ran while this
-was written, and the same script reported three different answers within one
-hour: `30.23 / 43.80` → `24.79 / 26.84` → `22.96 / 25.05`. The *total* budget now
-passes; only the critical path fails, and it is dominated by the one file that
-cannot easily shrink. Re-run the script rather than trusting the figures above.
+Re-run the script rather than trusting the figures above — the whole point of
+the check is that assets keep moving. `public/models/cars-hd` is listed but
+absent: the desktop lazy HD fleet upgrade is parked (`HD_STYLES` is empty in
+`game/npcmodels.ts`) until a bake worth streaming exists.
 
 ---
 
@@ -178,7 +213,9 @@ cannot easily shrink. Re-run the script rather than trusting the figures above.
 | `carspecs.ts` | The five cars — two playable, three COMING SOON: body shape params, physics params, paints |
 | `collide.ts` | Player collision against parapets, static geometry, and NPCs |
 | `traffic.ts` | The pooled NPC fleet: IDM car-following, lane changes, wrecks, courtesy/yielding, instanced rendering |
-| `npcmodels.ts` | Loads the nine baked NPC body GLBs |
+| `npcmodels.ts` | Loads the nine baked NPC body GLBs (and holds the parked HD-fleet lazy-upgrade path, `HD_STYLES`) |
+| `bodymodel.ts` | Loads the donor Volvo exterior shell (`volvo-s90-body-lite.glb`) for the chase cameras, mirror and garage |
+| `gamepad.ts` | Gamepad polling — a pad that is connected and in use writes the whole frame's input |
 | `audio.ts` | The entire Web Audio graph — engine, tyres, wind, rain, crashes, horns, reverb |
 | `music.ts` | Synthesised classical music player for the dash screen (independent AudioContext) |
 | `post.ts` | `PostFX`: HDR pipeline, bloom, ACES, film grade, FXAA, motion blur, and both dashcam degrade passes |
@@ -292,21 +329,22 @@ comes from the loop splice, not from streaming.
 
 ### 5.1 Engine, cameras, and the debug API
 
-`engine.ts` is ~2700 lines and has explicit `/* ---- section ---- */` headers:
+`engine.ts` is ~5100 lines and has explicit `/* ---- section ---- */` headers:
 staged load, rig, input, settings, lifecycle, per-frame systems, endless
 highway, tunnel, then `weather()` (the single largest method, ~465 lines), then
 `updateCamera`, `hud`, and the main loop.
 
 **`window.__neonx`** is installed by the constructor and deleted by `destroy()`.
 Every browser test drives the game through it: `teleport`, `setCam`,
-`setInput`, `toCorridor`, `toTunnel`, `toSeam`, `toBypass`, `state()` (a ~25-field
-snapshot), `crashTest`, `setRain`, `setTime`, `collidersNear`, and
-`loadTimings` (real per-stage milliseconds, attached after a successful load).
+`setInput`, `toCorridor`, `toTunnel`, `toSeam`, `toBypass`, `toMountain`,
+`state()` (a ~25-field snapshot), `crashTest`, `setRain`, `setTime`,
+`collidersNear`, and `loadTimings` (real per-stage milliseconds, attached
+after a successful load).
 `window.__audioDebug` and `window.__audioTune` / `window.__povTune` are the
 audio and post-processing equivalents — the last two are re-read **every frame**,
 so you can tune the mix and the dashcam degrade live from the console.
 
-**Keybinds** (verified against the handlers; note the README's table is stale):
+**Keybinds** (verified against the handlers, 2026-08-29):
 
 | Key | Action |
 |---|---|
@@ -314,19 +352,21 @@ so you can tune the mix and the dashcam degrade live from the console.
 | `Space` | handbrake |
 | `F` | horn (hold) |
 | `Esc` | pause — the only key that works while paused |
-| `C` | cycle camera: CHASE → COCKPIT → HOOD → **DASHCAM** |
+| `C` | cycle camera: CHASE → COCKPIT → HOOD → CONSOLE → **DASHCAM** |
 | `L` | headlights ON / AUTO |
 | `Q` / `E` | left / right turn signal |
 | `G` | high beams — tap to flash-to-pass, **hold 2 s** to latch |
 | `B` | look back (hold; CHASE and COCKPIT only, POV ignores it by design) |
 | `R` | rain · `T` time-lapse (0 → 150 → 1500) · `V` dashcam grade |
 | `M` | mirrors · `X` minimap · `N` reset to nearest road · `H` controls overlay |
+| `K` | test mode (the arcade physics set — see DISABLED.md §7) |
+| `I` | interior cabin light — desktop only, by explicit request |
+| `P` / `,` / `.` | music play-pause / prev / next — desktop only |
 
-README discrepancies, since you'll trip on them: the README's camera row says
-"chase → cockpit → hood" and omits DASHCAM entirely; `G` and `H` are
-missing from it; arrow keys are undocumented in both the README and the in-game
-panel; and the in-game panel describes `G` as "double-tap to latch" when the code
-is a 2-second hold.
+On touch, everything secondary lives in the ⋯ overflow drawer
+(`components/GameApp.tsx`), which drives the same handlers via `uiKeyTap()` —
+a drawer row and the key it stands for cannot drift apart. The README's
+controls table was rewritten 2026-08-29 and agrees with this one.
 
 **Reset (`N`)** has three branches: on the bypass viaduct, re-place mid-lane on
 the current bypass edge; above y=4 (on the deck), `cor.respawn()`; otherwise find
@@ -349,13 +389,17 @@ Everything lives in `game/world/`. There is no `buildWorld()` — the engine's
 | `terrain.ts` | The rolling heightfield the town conforms to, flattened under the expressway; the composite `heightAt()` that arbitrates ground / deck / ramp / bypass |
 | `roadnet.ts` | The town street **graph**: jittered 74 m grid, pruned links, curved Bezier edges sampled to ~3.2 m polylines. Everything downstream — meshes, traffic, minimap, spawning — reads these samples |
 | `corridor.ts` | **The expressway itself**, modelled as a graph over z (see below) |
-| `routegraph.ts` | Promotes the corridor into a 6-node / 8-edge / 3-loop closed graph and adds the **bypass** |
+| `routegraph.ts` | Promotes the corridor into a closed route graph and adds the **bypass** and the **mountain road** (EXIT 4) — `assertClosed()` throws on any dead end |
 | `ramps.ts` | The two on/off ramp centrelines — the shared source for parapet gaps, meshes, colliders, drivable height, building keep-out, *and the player spawn* |
 | `highway.ts` | All corridor mesh build-out: deck, parapets, markings, tunnel, toll plaza, ramps, bypass viaduct, gantries, signs, lights, barriers |
 | `townmesh.ts` | Everything west of the deck. The **only** module that populates `world.chunks` |
 | `mats.ts` | The shared material library plus four `onBeforeCompile` shader families |
 | `decals.ts` / `decaltex.ts` | Road-realism decal scatter (5 instanced meshes = 5 draw calls for the whole corridor) and its texture supply |
 | `sky.ts` | Sky dome, stars, moon, skyline, mountains, distant city glow, three landmarks |
+| `aurora.ts` | The procedural aurora (own seed, deliberately off the world seed — `?aurora=<n>` pins it) |
+| `nightclouds.ts` | The night cloud deck and storm layers |
+| `scenery.ts` | The roadside districts, both passes: the far zone necklace (river/grove/industry/billboards) and the 2026-08-28 near-deck districts (wharf, eastside, foreground industry, neon canyon), gated by `FX_DISTRICTS` + `TierCaps.districts` |
+| `deckdetail.ts` | Deck dressing detail overlays (highway-realism lane), scaled by `TierCaps.deckDressing` |
 | `data.ts` | The shared contract: `WorldData`, `ColliderIndex` (26 m uniform hash grid), `signalPhase()` |
 
 #### What a "corridor" is
@@ -368,9 +412,12 @@ translation** in z — no rotation, no x fix-up. `spliceDelta(car.z)` returns th
 shift, and `loopSplice()` applies it to the car and to every camera position the
 engine holds.
 
-The corridor also owns the lane-count schedule (it varies from 2 to 6 lanes),
-the tunnel, the toll plaza, the bridge, the sign plan, and the `stations` array
-that is the single source of truth for **both** meshes and physics.
+The corridor also owns the lane-count schedule (seeded per town since
+`ca2c95b`: 3 to 5 lanes, `BASE_LANES = 3`, pinned to 3 across the splice and
+toll), the two seeded tunnels (240–509 m, with generated Japanese names), the
+toll plaza, the bridge and `OVERPASSES` lists, the sign plan, the mountain
+road spec (`corridor.MTN`, EXIT 4), and the `stations` array that is the
+single source of truth for **both** meshes and physics.
 
 #### The bypass
 
@@ -578,6 +625,23 @@ that just slows the rear car. Wrecks only come from *player* impacts above
 2.6 m/s relative, at which point the car becomes a free body integrated with
 damping and spin, contained by the parapets, and eventually dissolved out via an
 ordered-dither `discard` on a per-instance attribute (no material clone).
+
+#### The rival ("the rabbit") and the No Hesi score — added 2026-08-28
+
+Two systems the rival-whiteline lane added on top of the fleet:
+
+- **The rival** (`settings.rival`, off by default) is an optional persistent
+  pace car that lives *in* the `npcs` array — collision needs no special case —
+  but drives its own controller: it carves through the stream and will not
+  slide into an occupied space (`rivalLatClear`), with `rivalSeparate()` as a
+  hard backstop that only ever moves the rival. `settings.rivalSignals`
+  decides whether it indicates; the absence of a blinker is characterisation.
+- **No Hesi scoring** (`scoreEvents` in `traffic.ts`, the `NOHESI` block and
+  `noHesiUpdate` in `engine.ts`): above a speed floor, points accrue as
+  `speed × combo`; near misses step the combo up by closeness grade (cap ×8),
+  quiet seconds bleed it off, and contact resets the multiplier but never the
+  total. Best score persists in the profile (`noHesiBest`);
+  `settings.noHesiScore` (default on) shows/hides the HUD corner.
 
 #### Traffic courtesy — the yield system
 
@@ -798,9 +862,12 @@ auto time-of-day, tier override.
 **The render tier** — `"mobile-base" | "mobile-high" | "desktop"`, resolved from
 a deliberately conservative GPU-string sniff (unknown ⇒ `mobile-base`).
 Precedence: `?tier=` URL param (test-only, never persisted) > persisted
-override > detection. `TIER_CAPS` gates ~20 things — DPR cap, PBR detail,
-spread cones, draw-distance scale, mirror resolution, reflections, motion blur,
-dual-scale bloom, and a batch of world-dressing caps.
+override > detection. `TIER_CAPS` gates ~30 things — DPR cap, PBR detail,
+spread cones, draw-distance scale, mirror resolution, reflections, motion
+blur, dual-scale bloom, and a batch of world-dressing caps that grew with the
+overhaul (`districts`, `deckDressing`, `mtnDetail`, `wheelTracks`,
+`overpassLights`, `cabinPbrMaps`, `hdFleet`, …). DISABLED.md §2 keeps the
+full table.
 
 Caps only ever gate *down*: a user setting can turn something off, never on
 above its cap. Note that **`dashcam: true` on every tier including mobile** —
@@ -811,7 +878,7 @@ world builders in `game/world/*` run inside startup and can't reach the `Game`
 instance mid-build.
 
 **Persistence** — one `localStorage` key, `"neonx.profile.v3"`, holding
-`{ settings, carId, paintIx, seed, camMode }`. `loadProfile()` does real
+`{ settings, carId, paintIx, seed, camMode, noHesiBest }`. `loadProfile()` does real
 defensive migration: it rejects non-object JSON, migrates the old numeric fog
 multiplier onto named levels, and forces the numeric keys finite (a NaN here
 reaches the projection matrix, the audio gain, or the chunk culler) and the
@@ -874,22 +941,30 @@ able to leave the player without a dashboard."*
 
 **The donor pipeline.** `public/assets-staging/volvo_s90_recharge_free.glb` is
 386 MB, 3.27 M triangles, 45 images. `tools/build-cockpit.mjs` is run offline
-(no npm script) and produces `public/models/cockpits/volvo-s90.glb` at 16.35 MB
-plus a JSON sidecar manifest. It: matches nodes to **roles** by regex (cluster,
-screen, wheel, column, mirror, cabin, shell); bakes world matrices and flattens
-the hierarchy; measures the steering axis from the rim's vertex cloud by
-covariance eigen-decomposition *before* clipping; clips to the POV frustum;
-renames every node to `role_n`; and prunes.
+(no npm script) and knows **two cuts** (its header is the reference):
 
-"Clip to the POV frustum" means: for each vertex, rotate into camera space
-(105° H-FOV, 13° nose-down cant), test the half-angles with loose margins, keep
-any triangle with at least one visible vertex, then **compact** — rebuild every
-attribute against a dense vertex remap. Dropping indices alone would leave every
-original vertex in the buffers, so the triangle count would fall and the file
-would not. The margins are loose on purpose: three's FOV is *vertical* and the
-engine derives it from aspect per frame, so a portrait phone sees materially
-more than 16:9, and cutting to a desktop frame would print a hard geometry edge
-across a phone's view. `mobile-base` gets no donor at all.
+- **What ships — `volvo-s90-full`** (`--no-clip --full-cabin --simplify`):
+  whole NODES only. Every node the widest legal frustum can reach is kept
+  entire and decimated with meshoptimizer; nodes no legal frustum can reach
+  (rear bench, rear door cards, all bodywork) are dropped whole. Nothing is
+  ever sliced, so there is no cut edge to walk past and the FOV slider is
+  clean to its maximum. 356,880 tris, 21 images, 5.68 MB on disk.
+- **The retired dash — `volvo-s90`** (default flags): a per-vertex frustum
+  clip at near-donor resolution. Sharper over the third of the cabin it kept,
+  but sliced — past the frame it was clipped for there is simply nothing, so
+  the engine had to cap the lens at 88° while it was on screen. Retired for
+  exactly that; recoverable per DISABLED.md §11. The clip survives inside the
+  tool because it is still how the `mirror` anchor role is frozen.
+
+Both cuts match nodes to **roles** by regex (cluster, screen, wheel, column,
+mirror, cabin, shell), bake world matrices and flatten the hierarchy, measure
+the steering axis from the rim's vertex cloud by covariance
+eigen-decomposition, and write a JSON sidecar of per-role bounding boxes so
+cockpit code binds by role, never by donor node names. As of 2026-08-28 all
+three tiers fetch the same `volvo-s90-full` cabin (`COCKPIT_MODEL` in
+`player.ts` — the rows stay per-tier as the hook for a future `-4k` desktop
+variant); `TierCaps.cabinPbrMaps` decides whether its normal/roughness maps
+are paid for (mobile-base declines, saving ~184 MB of decoded texture).
 
 **The instrument cluster** (`dashboard.ts`) is a hybrid: flat art on canvas
 textures (dial faces painted once, repainted only when rev limit or units
@@ -924,12 +999,11 @@ Both maps use a **mirrored-x** transform with heading rotated by `−car.h`. Tha
 was a real bug fix — the two maps previously disagreed about which way a left
 turn bends.
 
-**Known gap worth writing down: the music card is still fake.** `carscreen.ts`
-has a hard-coded fictional tracklist advancing on a timer. `music.ts` ships a
-real player with a deliberate panel contract, and `engine.ts` holds a public
-`music` instance commented "Public because the dash screen reads its state to
-draw the panel" — but **nothing reads it**. The pane exists and works; it
-displays fiction.
+**The music card is no longer fake** — closed 2026-08-28. `carscreen.ts` now
+takes a `live` music state (`paintMusic`'s own comment: "Without this the card
+cheerfully showed 'Midnight Loop / Neon Arcade' while Beethoven was actually
+playing") and the fictional `TRACKS` rotation is only the fallback for when no
+real player is running (touch devices, where `music.enabled` is false).
 
 **`player.ts` vs `carshape.ts`**: `carshape.ts` is a pure geometry factory (no
 materials, no scene, no lights) that extrudes three side profiles into a hull,
@@ -984,12 +1058,12 @@ lamp-post rhythm. `assertPitches()` throws if you break it. §5.2.
 
 ### 5. The asset size budget
 
-`node test/size-budget.mjs` fails today on the critical path (24.79 MB against
-15 MB when last run; it was 30.23 MB an hour earlier and is actively falling as
-assets get compressed). Assets deploy from git, so anything you commit into
-`public/` ships to every visitor, and binaries do not delta — each rebuild of a
-model adds a permanent full copy to history. Check the budget before committing
-a new asset. §3.
+`node test/size-budget.mjs` passes today (12.78 / 15 MB critical, 14.86 / 30 MB
+total as of 2026-08-29) — but the margin is finite and the reason it passes is
+that heavy assets kept getting retired or rebaked. Assets deploy from git, so
+anything you commit into `public/` ships to every visitor, and binaries do not
+delta — each rebuild of a model adds a permanent full copy to history. Check
+the budget before committing a new asset. §3.
 
 ### 6. `AGENTS.md`'s top block is machine-generated
 
@@ -1090,11 +1164,18 @@ change on its own. `engine.ts` resets `lastReverb = -1` for exactly this reason.
 | Mobile/low-end behaviour | `TIER_CAPS` in `game/settings.ts` |
 | The loading screen | `game/loading.ts` (the mechanism), `buildStages()` in `engine.ts` (the stages), `app/globals.css` (the CSS, which must animate on the compositor) |
 | Keybinds | `game/engine.ts` — `onKeyDown`/`onKeyUp`/`readInput`; touch buttons in `bindInput` |
-| Camera placement and FOV | `game/engine.ts` — `POV_MOUNT`, `POV_TILT`, `POV_HFOV`, and `updateCamera()` |
+| Camera placement and FOV | `game/engine.ts` — `POV_MOUNT`, `POV_TILT`, `povFov()`/`lensFov()`, `CONSOLE_CAM`, and `updateCamera()` |
+| The roadside districts | `game/world/scenery.ts` — both passes, gated by `FX_DISTRICTS` and `TierCaps.districts` |
+| The mountain road (EXIT 4) | `corridor.MTN` (spec), `routegraph.ts` (the edge), `highway.ts` (meshes), `traffic.ts` (oncoming flow) |
+| The rival, No Hesi scoring | `game/traffic.ts` ("the rival" / `scoreEvents`), `NOHESI` + `noHesiUpdate` in `engine.ts` |
 
 ---
 
-## 8. In flight at the time of writing
+## 8. In flight at the time of writing (2026-08-21 — historical)
+
+*2026-08-29 note: everything in this table landed long ago, and the music-card
+row is obsolete — the dash panel now reads the live player (§5.8). The table
+is kept as a record of what was moving while the document was researched.*
 
 The body of this document was researched against `2b6e472` and describes what
 was **committed and stable** there. A dozen agents were mid-edit throughout, and
@@ -1132,9 +1213,8 @@ statement.
   has landed.** Its "world build", terrain, and bypass-viaduct tasks are all done
   in the tree. Whether its traffic, collide and minimap sections are fully
   implemented was not audited. Do not use it as current documentation.
-- **`README.md`'s controls table is out of date** — see §5.1 for the
-  discrepancies. So is the in-game CONTROLS panel's description of the high-beam
-  latch.
+- ~~**`README.md`'s controls table is out of date**~~ — resolved 2026-08-29:
+  the README was rewritten and agrees with §5.1.
 - **`tools/build-npc-models.mjs` is a superseded baker.** It targets a different
   (rgsdev CC0) asset pack and defines a `kei` style that is not in the roster.
   The shipping fleet was baked by `tools/build-orchids-models.mjs`. Per
@@ -1145,24 +1225,25 @@ statement.
   annoyed horn-back sets the close-call kind without checking that flag, and the
   engine consumes it unconditionally. The horn-back *is* audible. The newer
   `HAIL` comment says this is intentional; the older one is simply out of date.
-- **The NPC emissive lamp path is inert.** Every shipped NPC GLB has its lamp
-  accessor written as all zeros, so the red rear lamps are 100% glow sprite. The
-  emissive levels in the code are set to what would be right *if* someone tags
-  the lenses. This is documented in the code and confirmed, but it means those
-  constants currently have no visual effect.
-- **Road screen-space reflections are hard-disabled** (`const str = 0` in
-  `mats.setWet`) by an explicit user decision, with the restore expression
-  preserved in the comment. The `reflections` setting still exists and still
-  gates other things.
-- **Number discrepancies in `player.ts` prose**: it says the 1K texture cut
-  "costs 23 MB"; the committed GLB is 16.35 MB. The build tool's header quotes
-  68 MB / 0.81 GB, which describe a 4K variant that is not what ships. Treat
-  those prose figures as approximate.
+- **The NPC emissive lamp path is live now** (was inert when written): the
+  2026-08-28 fleet bakes tag real lens geometry (`hasLampGeo` in
+  `npcmodels.ts` / `traffic.ts`), and up close the shaped emissive lenses
+  carry the light while the round glow sprites retire (`084dbc4`).
+- **Road screen-space reflections are no longer hard-disabled** — the old
+  `const str = 0` was replaced by a bright-pass-sourced reflection
+  (`REF_GAIN` in `mats.ts`; DISABLED.md §3c has the story). The `reflections`
+  setting gates it along with the planar RT.
+- **Number discrepancies in `player.ts` prose** may persist; the shipped
+  cabin is `volvo-s90-full.glb` at 5.68 MB and the build tool's header now
+  carries the measured numbers for both cuts. Treat older prose figures as
+  approximate.
 - **Size-budget figures are a snapshot.** §3's numbers were verified by running
   the script, but an asset-compression pass was mid-flight. Re-run it.
 - **The Vercel project is named `wangan`**, not `neon-expressway`. Worth knowing;
   I did not investigate why.
-- **`fenceOverdraw`** exists in `TIER_CAPS` with no consumer found.
+- ~~**`fenceOverdraw`** exists in `TIER_CAPS` with no consumer found~~ — it
+  has one now (`highway.ts` ~1263: mobile-base falls back to slab walls); only
+  the `settings.ts` comment still says "no consumer yet".
 - **Nothing in this document has been visually verified.** I read code; I did not
   run the game. Where a comment explains why something looks the way it does, I
   have relayed the comment's reasoning, not confirmed the result on screen.

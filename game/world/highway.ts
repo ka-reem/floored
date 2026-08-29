@@ -3197,6 +3197,7 @@ function buildToll(
         im.castShadow = true;
         im.computeBoundingSphere();
         plaza.add(im);
+        world.compileDirty = true; // landed after the load's compile pass
       };
       loadProp("/assets/props/concrete-road-barrier/concrete_road_barrier_1k.gltf", place(slotsA));
       loadProp("/assets/props/concrete-road-barrier-02/concrete_road_barrier_02_1k.gltf", place(slotsB));
@@ -3224,6 +3225,7 @@ function buildToll(
           g.add(halo);
         }
         plaza.add(g);
+        world.compileDirty = true; // landed after the load's compile pass
       });
     } else {
       /* Tier stand-ins: the colliders above are identical, so the plaza plays
@@ -3858,6 +3860,18 @@ function buildMountainRoad(
   const delinPosts: { x: number; y: number; z: number; h: number }[] = [];
   const delinPts: number[] = [];
 
+  /* The pass's one-off furniture — chevron posts/boards, the four waypoint
+     lamps, the gore quads and nose blocks — used to be added as individual
+     meshes per splice copy, and the boards each allocated their own material:
+     ~46 draw calls and 16 single-use materials across the two copies for a
+     couple dozen small shapes (perf-pass measurement). Collected here and
+     materialised after the sweep as one InstancedMesh per shape, the idiom
+     the overpasses and delineators already use. */
+  type Placed = { x: number; y: number; z: number; h?: number; sx?: number; sy?: number };
+  const chevPosts: Placed[] = [], lampPoles: Placed[] = [], lampHeads: Placed[] = [],
+    noseBlks: Placed[] = [], goreQuads: Placed[] = [];
+  const chevBoards: (Placed & { tint: number })[] = [];
+
   /* ---- the sweep, once per splice copy. Separate meshes per copy (rather
      than one Soup spanning both) so each copy keeps its own bounding sphere
      and frustum culling works: a single mesh would span 4 km and never cull. */
@@ -4079,19 +4093,12 @@ function buildMountainRoad(
       const { hwL, hwR } = mt.halfWidths(cs);
       const latB = out > 0 ? hwL + 1.1 : -(hwR + 0.95);
       const w = mt.worldOf(cs, latB);
-      const post = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.05, 0.06, 1.1, 5), mats.concDark);
-      post.position.set(w.x, w.y + 0.55, w.z + dz);
-      scene.add(post);
-      for (const flip of [0, Math.PI]) {
-        const bd = new THREE.Mesh(
-          new THREE.PlaneGeometry(1.15, 0.72),
-          new THREE.MeshBasicMaterial({ map: mats.chevTex, fog: true, color: 0x6f6f6f })
-        );
-        bd.position.set(w.x, w.y + 1.5, w.z + dz);
-        bd.rotation.y = p.h + flip;
-        scene.add(bd);
-      }
+      chevPosts.push({ x: w.x, y: w.y + 0.55, z: w.z + dz });
+      for (const flip of [0, Math.PI])
+        chevBoards.push({
+          x: w.x, y: w.y + 1.5, z: w.z + dz, h: p.h + flip,
+          sx: 1.15, sy: 0.72, tint: 0x6f6f6f,
+        });
     }
 
     /* sparse, warm lamps: one at each gore mouth, one over each of the two
@@ -4109,15 +4116,8 @@ function buildMountainRoad(
       const w = mt.worldOf(ls, -(hwR + 0.55));
       lamp(w.x, w.y + 5.6, w.z + dz, 0xffab55, 0.55);
       const p = mt.poseAt(ls);
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.07, 0.1, 5.7, 6), mats.concDark
-      );
-      pole.position.set(w.x, w.y + 2.85, w.z + dz);
-      scene.add(pole);
-      const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.16, 0.28), mats.concDark);
-      head.position.set(w.x, w.y + 5.62, w.z + dz);
-      head.rotation.y = p.h;
-      scene.add(head);
+      lampPoles.push({ x: w.x, y: w.y + 2.85, z: w.z + dz });
+      lampHeads.push({ x: w.x, y: w.y + 5.62, z: w.z + dz, h: p.h });
     }
 
     /* gore treatment on the deck: chevron paint + amber beacon at both noses
@@ -4125,11 +4125,10 @@ function buildMountainRoad(
        carries the full exit picture */
     const gore = (z: number, lat: number, flipRot: boolean) => {
       const gp = cor.worldOf(z + (flipRot ? -4 : 4), lat);
-      const m = new THREE.Mesh(flatQuad(3.2, 6.4), goreMat);
-      m.rotation.y = cor.pose(z).h + (flipRot ? Math.PI : 0);
-      m.position.set(gp.x, gp.y + 0.03, gp.z + dz);
-      m.layers.set(LAYER_NOREF);
-      scene.add(m);
+      goreQuads.push({
+        x: gp.x, y: gp.y + 0.03, z: gp.z + dz,
+        h: cor.pose(z).h + (flipRot ? Math.PI : 0),
+      });
       const bp = cor.worldOf(z, Math.sign(lat) * (cor.halfWidth(z) - 0.5));
       const bea = new THREE.Sprite(world.goreBeaconMat!);
       bea.scale.set(1.9, 1.9, 1);
@@ -4144,16 +4143,10 @@ function buildMountainRoad(
        station whose deck side has fully separated. Merge: cap the deck's east
        parapet where its gap opens. Colliders canonical-copy only. */
     const nose = (x: number, y: number, z: number, h: number) => {
-      const blk = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.8, 1.3), mats.concDark);
-      blk.position.set(x, y + 0.4, z + dz);
-      blk.rotation.y = h;
-      blk.castShadow = true;
-      scene.add(blk);
-      const bd = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.9),
-        new THREE.MeshBasicMaterial({ map: mats.chevTex }));
-      bd.position.set(x, y + 1.35, z + dz);
-      bd.rotation.y = h + Math.PI;
-      scene.add(bd);
+      noseBlks.push({ x, y: y + 0.4, z: z + dz, h });
+      chevBoards.push({
+        x, y: y + 1.35, z: z + dz, h: h + Math.PI, sx: 1.4, sy: 0.9, tint: 0xffffff,
+      });
       if (dz === 0)
         add({ x0: x - 0.6, x1: x + 0.6, z0: z - 0.8, z1: z + 0.8, y0: y - 0.5, y1: y + 1.1 });
     };
@@ -4169,6 +4162,51 @@ function buildMountainRoad(
         const w = cor.worldOf(mrgGap.z0 - 1, cor.halfWidth(mrgGap.z0 - 1) + 0.23);
         nose(w.x, w.y, w.z, cor.pose(mrgGap.z0 - 1).h);
       }
+    }
+  }
+
+  /* ---- materialise the furniture collectors: one draw call per shape,
+     both splice copies together (each list spans ~2 km + LOOP, but every
+     shape is a handful of instances, so the lost cull is a rounding error
+     next to the ~40 draws saved) ---- */
+  {
+    const M = new THREE.Matrix4(), V = new THREE.Vector3(),
+      Q = new THREE.Quaternion(), E = new THREE.Euler(), S = new THREE.Vector3();
+    const instanced = (geo: THREE.BufferGeometry, mat: THREE.Material, list: Placed[]) => {
+      const m = new THREE.InstancedMesh(geo, mat, list.length);
+      list.forEach((p, i) => {
+        E.set(0, p.h ?? 0, 0);
+        Q.setFromEuler(E);
+        V.set(p.x, p.y, p.z);
+        S.set(p.sx ?? 1, p.sy ?? 1, 1);
+        M.compose(V, Q, S);
+        m.setMatrixAt(i, M);
+      });
+      m.computeBoundingSphere();
+      scene.add(m);
+      return m;
+    };
+    if (chevPosts.length)
+      instanced(new THREE.CylinderGeometry(0.05, 0.06, 1.1, 5), mats.concDark, chevPosts);
+    if (lampPoles.length)
+      instanced(new THREE.CylinderGeometry(0.07, 0.1, 5.7, 6), mats.concDark, lampPoles);
+    if (lampHeads.length)
+      instanced(new THREE.BoxGeometry(0.5, 0.16, 0.28), mats.concDark, lampHeads);
+    if (noseBlks.length)
+      instanced(new THREE.BoxGeometry(0.7, 0.8, 1.3), mats.concDark, noseBlks).castShadow = true;
+    if (goreQuads.length)
+      instanced(flatQuad(3.2, 6.4), goreMat, goreQuads).layers.set(LAYER_NOREF);
+    if (chevBoards.length) {
+      /* unit plane scaled per instance — the corner boards (1.15×0.72, dimmed
+         to 0x6f6f6f, see the realistic-light note above) and the nose boards
+         (1.4×0.9, full) share the one material via per-instance colour */
+      const bd = instanced(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({ map: mats.chevTex, fog: true }),
+        chevBoards
+      );
+      const c = new THREE.Color();
+      chevBoards.forEach((b, i) => bd.setColorAt(i, c.set(b.tint)));
     }
   }
 

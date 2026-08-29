@@ -27,6 +27,10 @@ const LAZY_DIRS = [
   // HD NPC bodyshells stream in ~8s after the first drivable frame, desktop
   // tier only (traffic.ts hdFleet gate) — never on the critical path.
   'public/models/cars-hd',
+  // Home-screen install icons (tools/build-pwa-icons.mjs renders): the
+  // browser fetches these when it reads the manifest at install/add-to-home
+  // time, never on the path to the first drivable frame.
+  'public/icons',
 ];
 // Subtrees of CRITICAL_DIRS that are actually lazy (listed above) — skipped
 // while summing the critical walk so they are not double-counted.

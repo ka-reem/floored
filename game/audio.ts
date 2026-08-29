@@ -91,10 +91,11 @@ const PROFILES: Record<string, EngineProfile> = {
      what was done to the samples. A 4-cylinder at 6400 fires at 213Hz — very
      nearly an octave lower, and squarely where a real saloon sits.
 
-     Four cylinders is also what the recordings ARE (LOOP_F0 measures 42.9Hz
-     at what is ~1290rpm for a four), so the ladder now needs far less
-     stretching to reach the right pitch and its formants stay put. The
-     interior is a Volvo S90, which is a four in real life.
+     Four cylinders is also what the recordings ARE — the ladder is cut from
+     an in-car recording of a four-cylinder saloon, and LOOP_F0's rungs sit
+     at 761-2991rpm for a four — so the ladder needs almost no stretching to
+     reach the right pitch through the driving range and its formants stay
+     put. The interior is a Volvo S90, which is a four in real life.
 
      `bright` up (harmonics roll off faster, less edge), `odd` up (a four is
      lumpier than a straight six — that unevenness is what stops it droning),
@@ -137,7 +138,7 @@ export type EngineMode = "synth" | "sampled";
     decodeAudioData treats WAV bit-identically in every browser (Safari can't
     decode OGG at all, and MP3/AAC pad ~40ms of encoder delay onto one-shot
     heads and break loop seams). One-shots/beds are 22.05k — their content
-    sits below ~10kHz — so the whole set stays ~1.4MB; the four rpm-ladder
+    sits below ~10kHz — so the whole set stays ~1.4MB; the five rpm-ladder
     loops keep their original 44.1k samples byte-for-byte (seamless loops).
     Licenses/provenance: see ATTRIBUTIONS.md ("Recorded audio"). */
 const SAMPLE_BASE = "/assets/audio";
@@ -146,6 +147,7 @@ const SAMPLE_FILES: Record<string, string> = {
   eng1: "engine/loop_1.wav",
   eng2: "engine/loop_2.wav",
   eng3: "engine/loop_3.wav",
+  eng4: "engine/loop_4.wav",
   idle: "engine/idle.wav",
   skid: "tires/skid.wav",
   ir: "reverb/tunnel_ir.wav",
@@ -177,44 +179,84 @@ const SAMPLE_FILES: Record<string, string> = {
   hornTruck: "horns/truck.wav",
 };
 
-/** MEASURED firing fundamental of each ladder loop, Hz. Obtained by
-    autocorrelation over each WAV (confidence 0.83-0.95) and confirmed
-    against the spectral peaks, which sit on these frequencies and their
-    integer multiples — loop_0 also shows the half-order at 21.5Hz, exactly
-    what a four-stroke does.
+/** Firing fundamental of each ladder loop, Hz — EXACT, not estimated.
 
-    These four numbers are the reason the engine did not sound like it was
-    revving. The loops span only 42.9 -> 69.9Hz, a ratio of 1.63; the tuning
-    anchors below claimed they spanned 1050 -> 6400rpm, a ratio of 6.1. With
-    playbackRate set to rpm/anchor, as it was, the pitch you actually heard
-    was f_measured * rpm/anchor — which RISES about 2.3x inside a band and
-    then FALLS ~38% the instant the crossfade moves to the next loop, three
-    times over the rev range. Net pitch from idle to redline was 42.9 ->
-    69.9Hz: barely a musical fifth, non-monotonic, with three backward jumps
-    in it. Meanwhile the mixer's level terms (thr*0.23 on the ladder,
-    thr*0.105 on the synth) climbed monotonically with throttle. An engine
-    whose loudness rises while its pitch goes nowhere is precisely the
-    reported "it sounds like it's idling and then just getting louder — it
-    doesn't sound like the rpm is increasing".
+    Each loop is cut as a whole number of engine cycles, so its length IS its
+    pitch: looping n samples makes the result periodic at rate/n whatever was
+    recorded in it, and a four fires four times per cycle, so
 
-    Worse, inside a band the two crossfading loops were a fifth or more
-    apart in pitch, so the equal-power crossfade blended two dissonant
-    voices rather than morphing one timbre into another. That is the muddy,
-    beating quality on top of the missing rev sweep.
+        f0 = 4 * cycles * 44100 / samples
 
-    playbackRate is now derived from these measured values against the
-    engine's true firing frequency (see the sampled block in update()), so
-    all four loops sound in UNISON at the correct pitch at every rpm, the
-    crossfade only changes texture the way the comment below always claimed,
-    and pitch tracks rpm monotonically across the whole range. */
-const LOOP_F0 = [42.9, 60.0, 64.7, 69.9];
+    which is where these five numbers come from (2/5/5/6/9 cycles over
+    13901/15276/13020/13094/15923 samples). Every one was cross-checked
+    against the written file's own spectrum and agrees to within 1.2%. That
+    is a much stronger guarantee than the previous set had — those were
+    autocorrelation ESTIMATES over loops nobody had cut to whole cycles, so
+    the number and the file could, and did, disagree.
 
-/** rpm at which each ladder loop is the dominant TIMBRE. Purely a texture
-    schedule now, not a pitch one: pitch comes from LOOP_F0 above, so which
-    loop is playing no longer changes what note you hear, only its character.
-    Spread across the rev range so the recording's colour still evolves from
-    idle to redline. */
-const RPM_ANCHORS = [1050, 2400, 4200, 6400];
+    WHY THE PREVIOUS SET SOUNDED LIKE A MOTORBIKE. It was [42.9, 60.0, 64.7,
+    69.9] — a span of 1.63x. That was never four rungs of a ladder: the
+    source (domasx2, OpenGameArt) is one recording pitch-shifted four ways,
+    and its own page says so ("difference between the files is pitch only").
+    So the ladder had to be resampled to cover a range it did not contain,
+    and resampling moves FORMANTS as well as pitch — airbox, bore, exhaust
+    length, the body of the car around the microphone all scale with the
+    playback rate. The set was wrong at BOTH ends: at 850rpm idle the lowest
+    loop played at 0.66x (formants dropped a third — a bus), and around
+    4200rpm the top loop played at 2.16x (formants up a full octave — a
+    motorbike). The complaint was accurate and it was unfixable by tuning,
+    because the recordings simply had no rev range in them.
+
+    These five are cut from ONE continuous take: a 1985 Ford Escort Mk3
+    accelerating away from a traffic light, microphone inside the cabin
+    (freesound 141459 by escortmarius, CC0 — see ATTRIBUTIONS.md). One car,
+    one microphone, one road, so the formants are identical from rung to
+    rung and only the engine speed changes — which is the entire point of a
+    ladder. They span 25.38 -> 99.70Hz, a ratio of 3.93, and they sit at
+    761 / 1732 / 2032 / 2425 / 2991rpm on a four. In the range the game
+    actually drives in, every loop therefore plays within about 20% of 1.0x
+    and its formants stay where the car put them.
+
+    Measuring these was not a matter of running a pitch detector. In this
+    recording — as in any cabin recording made on a phone, whose microphone
+    rolls off hard below ~100Hz — the FOURTH engine order is the loudest
+    thing in the spectrum, 10-20x the firing fundamental itself, and a
+    four-stroke additionally puts real energy on the crank-rev component at
+    half the firing rate. A general detector picks the octave wrong in both
+    directions. The octave was pinned instead by physical argument: the idle
+    section can only be ~750rpm, the gear-ratio steps between pulls can only
+    be gear-ratio steps, and both readings agree that the dominant peak is
+    consistently 2x the firing frequency.
+
+    The one hole in the set is between loop_0 and loop_1: 25.4 -> 57.7Hz, a
+    2.27x gap covering 761-1732rpm. The recording goes from idle to a launch
+    with nothing steady in between, so there is no material for a rung there
+    and none was invented (a pitch-shifted one would be exactly the thing
+    this change exists to remove). Around 1200rpm the two neighbours are
+    therefore stretched about 1.5x and 0.68x — the worst the ladder gets
+    anywhere below 4000rpm, and better than the old set managed at idle. */
+const LOOP_F0 = [25.38, 57.74, 67.74, 80.83, 99.70];
+
+/** rpm at which each ladder loop is the dominant TIMBRE, derived rather than
+    tabulated: a loop should be dominant exactly where it plays at 1.0x, and
+    that rpm is a property of LOOP_F0 and the engine's cylinder count, not a
+    number to be chosen. Firing frequency is rpm*cyl/120, so
+
+        anchor_i = LOOP_F0[i] * 120 / cyl
+
+    which on the four-cylinder profiles lands on 761/1732/2032/2425/2991rpm —
+    the actual engine speeds in the recording — and on the straight-six
+    (shirayuki) and the kei triple (tanuki) shifts to wherever those engines
+    reach the same firing frequency, because that is what they will sound
+    like at. The old hardcoded [1050, 2400, 4200, 6400] could only ever be
+    right for one cylinder count and, as it happened, was right for none.
+
+    Still purely a texture schedule, not a pitch one — pitch comes from
+    LOOP_F0 either way — but now the texture crossfade and the pitch agree
+    about which loop is at home where, so the crossfade morphs between two
+    loops that are both playing near 1.0x instead of between a stretched one
+    and a squashed one. */
+const ladderAnchors = (cyl: number) => LOOP_F0.map((f) => (f * 120) / cyl);
 
 /** Hard bounds on ladder playbackRate — a sanity clamp, not a taste one.
     Pitch must keep TRACKING rpm right to the redline: a loop pinned at a
@@ -223,36 +265,46 @@ const RPM_ANCHORS = [1050, 2400, 4200, 6400];
     against each other. Better a heavily stretched loop, at the low level it
     is mixed at up there, than a stationary one.
 
-    3.6 -> 2.4, on "it sounds like a motorbike". Resampling shifts FORMANTS,
-    not just pitch: at 3.5x every resonance of the recorded engine — airbox,
-    bore, exhaust length, the body of the car around it — moves up by three
-    and a half times as well. That is not a car revving higher, it is a much
-    smaller engine, which is exactly what a motorbike is. Pitch was tracking
-    correctly; the timbre underneath it was shrinking.
+    2.4 -> 2.6, because the reason it was cut to 2.4 no longer applies. It
+    came down from 3.6 on "it sounds like a motorbike", which was the right
+    diagnosis of the wrong constant: with a set that spanned 1.63x, the
+    formant shift was already severe in the middle of the rev range, and
+    clamping the top just moved where it stopped getting worse. The set now
+    spans 3.93x and is at ~1.0x wherever the game spends its time, so the
+    clamp can go back to being what its name says — a stop against runaway
+    rate at the very top, well past where `takeover` has handed the tone to
+    the synth — instead of a taste control. On a four it first binds at
+    7800rpm, above the highest redline in PROFILES.
 
-    Capping at 2.4 only works because LADDER_STRETCH came down with it (see
-    below) — the synth now has the top of the range to itself before the
-    clamp ever bites, so the drone this constant exists to prevent cannot
-    happen. */
-const RATE_MIN = 0.5, RATE_MAX = 2.4;
+    RATE_MIN is untouched and, with loop_0 sitting at idle rather than a
+    third above it, is now unreachable: it would take 381rpm to trip. */
+const RATE_MIN = 0.5, RATE_MAX = 2.6;
 
 /** The stretch beyond which the recordings stop reading as an engine and
     start reading as a chipmunk — where the synth should be carrying the
     tone, with the ladder demoted to texture underneath it. Distinct from
     RATE_MAX above: this one is a judgement about timbre and decides the
     crossfade, that one only stops the rate running away. The engine needs
-    850 -> 7400rpm (8.7x) and these recordings span 1.63x, so the top of the
-    range genuinely cannot be covered by stretching them; this is where that
-    is conceded.
+    850 -> 7400rpm (8.7x); the recordings span 3.93x, so a concession is
+    still needed at the top — but a far smaller one than before.
 
-    2.8 -> 2.0, in step with RATE_MAX above. The handover to the synth now
-    completes near 4450rpm on a four rather than 6200, so the top half of the
-    rev range is carried by the oscillator model — which is generated at
-    exactly the right frequency and has no formants to shift, so it cannot
-    develop the small-engine character no matter how high it revs. The
-    recordings keep the bottom end, where they are barely stretched and sound
-    like what they are. */
-const LADDER_STRETCH = 2.0;
+    2.0 -> 1.9, which sounds like a cut and is a large increase in what the
+    recordings actually cover. The number multiplies the TOP loop, and the
+    top loop went from 69.9Hz to 99.7Hz: the ladder's usable ceiling is
+    LADDER_STRETCH * LOOP_F0[last] * 120 / cyl, so on a four that moves from
+    4194rpm to 5683rpm, and the handover to the synth now begins at 4433rpm
+    and completes at 6024 rather than starting at 3271. The recordings carry
+    roughly 1500rpm more of the range than they did, and carry it at a much
+    lower stretch: 1.48x where the handover starts, against the 2.16x the old
+    set was already at by 4200rpm.
+
+    1.9 rather than 2.0 or higher because the point of the extra span is to
+    spend it on FIDELITY, not on reach. Past about 1.5x the formant shift
+    starts to be audible as the engine "shrinking", and above the handover
+    the synth is the better voice anyway — it is generated at exactly the
+    right frequency and has no formants to move, so it cannot develop the
+    small-engine character however high it revs. */
+const LADDER_STRETCH = 1.9;
 
 /** How much of the synth tonal body stays mixed in underneath the recordings
     at ordinary rpm. Was 0 — sampled mode muted the oscillator path outright
@@ -260,8 +312,65 @@ const LADDER_STRETCH = 2.0;
     LOOP_F0, could not actually carry a rev sweep. A floor keeps a correctly
     pitched fundamental present at every rpm, so "the revs are climbing" is
     audible even where the ladder is thin, without the synth reading as a
-    separate voice on top. */
+    separate voice on top.
+
+    Deliberately left at 0.2 with the new ladder. The recordings can now carry
+    a rev sweep on their own, so the argument that put this floor here is
+    weaker — but it is also doing a second job, filling in the fundamental
+    that the phone microphone in the source recording barely captured below
+    ~100Hz, and that job did not go away. Worth revisiting by ear; not worth
+    changing blind in the same edit that replaced the samples. */
 const SYNTH_FLOOR = 0.2;
+
+/** Source-level makeup for the escortmarius ladder, applied to the per-loop
+    crossfade gains. MEASURED, not taste: the domasx2 loops this set replaced
+    were mastered at RMS 0.397 (peaks ~0.71), the new cuts are normalized to
+    RMS 0.160 (peaks 0.29-0.49) — a straight swap would drop the recorded
+    voice 7.9dB inside an engine mix the user tuned by ear across four level
+    passes (see ENGINE_TUNE_DEFAULT.level's history). 2.4x restores the old
+    RMS within a dB, so every downstream number keeps meaning what it meant.
+    Worst-case source peak after trim is 0.49 * 2.4 = 1.18, which is fine at
+    this point in the graph: the crossfade gains cap at 1, sampBus sits at
+    <= ~0.35, and engLim bounds the whole engine bus after that. If the
+    ladder ever changes again, re-measure and reset this to
+    oldRMS/newRMS — it is a property of the FILES, not a mix knob. */
+const LADDER_TRIM = 2.4;
+
+/* ---- The mix map: where every continuous layer sits ---------------------
+   The level BALANCE between the sound families, gathered from four rounds
+   of by-ear feedback ("engine too loud" x4, "wind drowns the mix", "more
+   road presence"). These are the CEILINGS each layer can reach at full
+   drive — the per-frame formulas in update() shape how each one gets there.
+   Approximate full-song picture at high speed, dB vs the wind ceiling:
+
+     wind roar         0.30   0dB     dominant flat out, by design
+     tyre screech      0.15   -6dB    only while genuinely sliding
+     engine bus        —      see ENGINE_TUNE_DEFAULT (level 0.42 + limiter);
+                              deliberately behind wind at top speed
+     tyre hum          0.085  -11dB   the road presence under everything
+     road rumble       0.07   -13dB   low-band half of the same job
+     music             0.16   ~-14dB vs engine peaks — see music.ts
+                              MUSIC_LEVEL (its own context and master)
+     NPC pass-by       0.16   transient only, scales with closing speed
+     UI tick/stalk     0.05   in-cabin one-shots, dry, never ducked
+     toasts            —      visual only, no sound by design
+
+   Wind saturates at 75 m/s (see the windRise curve) — above it, including
+   test mode's 82 m/s clamp, the mix holds its top-speed balance rather than
+   growing further; tyre hum and road rumble saturate near 45 and 40 m/s,
+   which is why the last stretch to top speed reads as pure wind. Change the
+   BALANCE here; change the SHAPE (what opens when) in update(). */
+const WIND_CEIL = 0.30;
+const TIRE_HUM_CEIL = 0.085;
+const ROAD_RUMBLE_CEIL = 0.07;
+const SCREECH_CEIL = 0.15;
+/** Recorded skid loop's ceiling in sampled mode (the synth screech drops to
+    a quarter of SCREECH_CEIL underneath it — see the tire block). */
+const SKID_CEIL = 0.3;
+/** Peak of an NPC pass-by whoosh at full closing speed, before distance/pan.
+    Sits with the event one-shots (npcHorn 0.10-0.13): clearly audible over
+    the beds for the half-second it lasts, nowhere near crash levels. */
+const PASSBY_LEVEL = 0.16;
 
 /** One crash() invocation, as recorded into the debug log (see
     getCrashLog()) — lets the headless test assert which layers/variants a
@@ -829,6 +938,11 @@ export class GameAudio {
   private sampLimDepth!: GainNode; // rev-limiter stutter into sampBus.gain
   private loopSrcs: AudioBufferSourceNode[] = [];
   private loopGains: GainNode[] = [];
+  /** rpm at which each ladder loop is dominant, for the CURRENT car — see
+      ladderAnchors(). Recomputed in setCar() rather than per frame because it
+      only depends on the profile's cylinder count, and defaulted here so the
+      crossfade is well-defined if update() runs before setCar() ever does. */
+  private anchors: number[] = ladderAnchors(PROFILES.generic.cyl);
   private idleG: GainNode | null = null;
   private skidSrc: AudioBufferSourceNode | null = null;
   private skidG: GainNode | null = null;
@@ -947,6 +1061,10 @@ export class GameAudio {
     if (p === this.prof) return;
     this.prof = p;
     this.peakRpm = p.revLimit;
+    // Which rpm each recorded loop belongs at depends on how often THIS
+    // engine fires, so the ladder's crossfade schedule is a property of the
+    // car, not of the sample set. See ladderAnchors().
+    this.anchors = ladderAnchors(p.cyl);
     if (!this.ok) return;
     const w = this.engineWave(p);
     for (const o of this.oscs) o.setPeriodicWave(w);
@@ -1563,15 +1681,17 @@ export class GameAudio {
     }
   }
 
-  /** Start the four ladder loops + idle bed against the prebuilt sampled
-      bus. Sources run forever at gain 0 until update() mixes them in —
-      same always-running pattern as every synth layer in init(). */
+  /** Start the ladder loops + idle bed against the prebuilt sampled bus.
+      Sources run forever at gain 0 until update() mixes them in — same
+      always-running pattern as every synth layer in init().
+
+      Keyed off LOOP_F0.length rather than a fixed four, so the ladder's
+      depth is set in one place: adding or removing a rung is an edit to
+      LOOP_F0 and a file in SAMPLE_FILES, and the node graph, the crossfade
+      and the anchors all follow. */
   private wireSampledEngine() {
     const c = this.ctx;
-    const loops = [
-      this.samples.get("eng0"), this.samples.get("eng1"),
-      this.samples.get("eng2"), this.samples.get("eng3"),
-    ];
+    const loops = LOOP_F0.map((_, i) => this.samples.get(`eng${i}`));
     if (loops.some((b) => !b)) return; // ladder incomplete -> stay on synth
     for (const buf of loops) {
       const src = c.createBufferSource();
@@ -1936,6 +2056,57 @@ export class GameAudio {
     o2.stop(t + 0.032);
   }
   /* ---- end stalk click (lane O) ---- */
+
+  /* ---- wiper sweep (cabin-wipers lane) — synthesized, no samples ----
+     One half-stroke of the wiper: a soft servo/rubber swish. Fired by
+     engine.ts at the START of each stroke (up and return each get one), with
+     `dur` the stroke's real travel time so the sound and the arm arrive
+     together at every mode speed. Two layers:
+       1. the wet-rubber drag: lowpassed noise with a slow rise-and-fall
+          envelope filling ~85% of the stroke — this is most of the sound;
+       2. the motor under it: a quiet ~90Hz hum with a slight pitch sag,
+          which is what separates "wiper" from "cloth on glass".
+     Level sits well under the rain bed it will always play against (rG runs
+     ~0.1+; this peaks ~0.035). Routed into `master`, so volume/duck/mute and
+     the cabin EQ apply unchanged — same policy as stalkClick above. */
+  private wiperSwipeCount = 0;
+  getWiperSwipeCount() {
+    return this.wiperSwipeCount;
+  }
+  wiperSwipe(dur: number, up: boolean) {
+    if (!this.ok) return;
+    const c = this.ctx, t = c.currentTime;
+    this.wiperSwipeCount++;
+    const d = Math.min(1.4, Math.max(0.25, dur)) * 0.85;
+    const n = this.noiseNode();
+    const lp = c.createBiquadFilter();
+    lp.type = "lowpass";
+    /* The return stroke reads slightly darker — the blade drags rather than
+       pushes — which is what keeps an endless LO cycle from sounding like a
+       loop of one sample. */
+    lp.frequency.setValueAtTime(up ? 950 : 780, t);
+    lp.frequency.linearRampToValueAtTime(up ? 620 : 520, t + d);
+    lp.Q.value = 0.9;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.032, t + d * 0.35);
+    g.gain.setValueAtTime(0.032, t + d * 0.7);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    n.connect(lp).connect(g).connect(this.master);
+    n.stop(t + d + 0.02);
+    const o = c.createOscillator();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(92, t);
+    o.frequency.linearRampToValueAtTime(78, t + d);
+    const og = c.createGain();
+    og.gain.setValueAtTime(0.0001, t);
+    og.gain.exponentialRampToValueAtTime(0.012, t + d * 0.3);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(og).connect(this.master);
+    o.start(t);
+    o.stop(t + d + 0.02);
+  }
+  /* ---- end wiper sweep ---- */
 
   /* ---- interior trim creaks (lane U) ----
      Research notes (automotive: when does cabin trim actually creak?):
@@ -2622,7 +2793,7 @@ export class GameAudio {
        generated at exactly the right frequency and has no range limit at all
        — fades up and takes the top end, which is also where an engine most
        needs to sound sharp and angry. */
-    const ladderTop = (LADDER_STRETCH * LOOP_F0[3] * 120) / p.cyl;
+    const ladderTop = (LADDER_STRETCH * LOOP_F0[LOOP_F0.length - 1] * 120) / p.cyl;
     const takeover = smoothstep(ladderTop * 0.78, ladderTop * 1.06, rpm);
     const synthMix = SYNTH_FLOOR + (1 - SYNTH_FLOOR) * takeover;
 
@@ -2705,13 +2876,33 @@ export class GameAudio {
        the recording still breathes with load. */
     let sampLevelTarget = 0;
     if (this.engReady) {
-      const A = RPM_ANCHORS;
+      /* Anchors are per-CAR, not per-build: they come from LOOP_F0 and this
+         profile's cylinder count, so each loop is dominant at the rpm where
+         this engine reaches the firing frequency that loop was recorded at.
+         See ladderAnchors. Below the first anchor the lowest loop carries it
+         alone; above the last, the highest one does — and up there `takeover`
+         is already fading the whole ladder out under the synth. */
+      const A = this.anchors;
+      const last = A.length - 1;
       let g0 = 0, g1 = 0, band = 0;
       if (rpm <= A[0]) { band = 0; g0 = 1; }
-      else if (rpm >= A[3]) { band = 2; g1 = 1; }
+      else if (rpm >= A[last]) { band = last - 1; g1 = 1; }
       else {
-        band = rpm < A[1] ? 0 : rpm < A[2] ? 1 : 2;
-        const x = clamp01((rpm - A[band]) / (A[band + 1] - A[band]));
+        while (band < last - 1 && rpm >= A[band + 1]) band++;
+        /* Crossfade position measured in LOG rpm, not linear rpm. The rungs
+           are spaced geometrically (each loop sits about 20% above the last,
+           except the wide bottom gap), and what the ear tracks across a band
+           is the ratio to each loop's home pitch, not the arithmetic distance
+           in rpm — a loop 400rpm above home at 800rpm is stretched twice as
+           far as one 400rpm above home at 2000. Linear positioning therefore
+           held the lower loop in the mix well past the point where it was the
+           worse-matched of the two: across the 761-1732rpm gap it left loop_0
+           audible at 1500rpm still playing at 1.97x. In log position the
+           handover is symmetric about the geometric mean, which is exactly
+           where the two loops are equally stretched. */
+        const x = clamp01(
+          Math.log(rpm / A[band]) / Math.log(A[band + 1] / A[band])
+        );
         g0 = Math.cos((x * Math.PI) / 2);
         g1 = Math.sin((x * Math.PI) / 2);
       }
@@ -2719,11 +2910,13 @@ export class GameAudio {
          fundamental (LOOP_F0) on the engine's true firing frequency `base2`.
          Not rpm/anchor — see the long note on LOOP_F0 for why that made the
          pitch fall backwards three times on the way to redline instead of
-         rising. Because the target is the same for all four, the loops are
+         rising. Because the target is the same for all of them, the loops are
          always in unison and the crossfade morphs texture only. */
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < LOOP_F0.length; i++) {
         const g = !sampled ? 0 : i === band ? g0 : i === band + 1 ? g1 : 0;
-        this.sp(this.loopGains[i].gain, g, 0.045);
+        // LADDER_TRIM here, at the loops alone — the idle bed is a different
+        // recording at its own (hotter) master level and must not ride it.
+        this.sp(this.loopGains[i].gain, g * LADDER_TRIM, 0.045);
         this.sp(
           this.loopSrcs[i].playbackRate,
           clampRange(base2 / LOOP_F0[i], RATE_MIN, RATE_MAX),
@@ -2988,7 +3181,7 @@ export class GameAudio {
     this.sp(this.tireRoadF.frequency, 150 + Math.min(1, speed / 50) * 220, 0.06);
     this.sp(
       this.tireRoadG.gain,
-      Math.min(1, speed / 45) * 0.085 * (1 - this.slipEnv * 0.45) + (raining ? 0.015 : 0),
+      Math.min(1, speed / 45) * TIRE_HUM_CEIL * (1 - this.slipEnv * 0.45) + (raining ? 0.015 : 0),
       0.06
     );
 
@@ -3013,10 +3206,10 @@ export class GameAudio {
     // rest, and the same speed/wet scaling applies.
     const skidSampled = sampled && this.skidG !== null;
     const screechMix = smoothstep(0.55, 0.92, this.demandEnv);
-    const screechBase = screechMix * (skidSampled ? 0.04 : 0.15) * speedGate * wetLevel;
+    const screechBase = screechMix * (skidSampled ? 0.04 : SCREECH_CEIL) * speedGate * wetLevel;
     if (this.skidG && this.skidSrc) {
       const skidMix = skidSampled ? smoothstep(0.5, 0.88, this.demandEnv) : 0;
-      this.sp(this.skidG.gain, skidMix * 0.3 * speedGate * wetLevel, 0.05);
+      this.sp(this.skidG.gain, skidMix * SKID_CEIL * speedGate * wetLevel, 0.05);
       // slight pitch rise with slip + a wet-road brightening nudge, so the
       // loop tracks the slide instead of droning at one pitch
       this.sp(
@@ -3094,7 +3287,7 @@ export class GameAudio {
        tuned. */
     const roadRise = Math.min(1, speed / 40);
     this.sp(this.roadRumbleF.frequency, 55 + roadRise * 70, 0.1);
-    this.sp(this.roadRumbleG.gain, roadRise * 0.07 * (1 - screechMix * 0.55), 0.1);
+    this.sp(this.roadRumbleG.gain, roadRise * ROAD_RUMBLE_CEIL * (1 - screechMix * 0.55), 0.1);
 
     /* ---- environment ----
        Wind roar opens (cutoff + level) with speed and is deliberately mixed
@@ -3126,7 +3319,7 @@ export class GameAudio {
        of the top-speed total than before (0.30 of 0.455 summed vs 0.27 of
        0.365) because road/tyre came up in the same pass. */
     const windRise = Math.pow(smoothstep(15, 75, speed), 1.3);
-    const windLevel = windRise * 0.30 + (raining ? 0.02 : 0);
+    const windLevel = windRise * WIND_CEIL + (raining ? 0.02 : 0);
     this.sp(this.wF.frequency, Math.min(1400, 300 + speed * 26), 0.15);
     this.sp(this.wG.gain, windLevel, 0.12);
     this.sp(this.windFlutterDepth.gain, windRise * 0.04, 0.15);
@@ -3672,6 +3865,70 @@ export class GameAudio {
     src.connect(f).connect(g).connect(pn).connect(this.sfxBus);
     src.start(t);
     src.stop(t + decay * 3 + 0.02);
+  }
+
+  /** Rate limit + counter for npcPassby() — engine.ts fires one per actual
+      geometric pass, this is only the pile-up guard for two cars crossing in
+      the same instant. Counter is for the headless check. */
+  private lastPassby = -1;
+  private passbyCount = 0;
+  getPassbyCount() {
+    return this.passbyCount;
+  }
+
+  /** Pass-by whoosh: the air-displacement transient of a car crossing the
+      player's ears, fired by engine.ts at the moment an NPC's relative
+      longitudinal position changes sign with real closing speed. This is an
+      EVENT one-shot like npcHorn/npcChirp — the sustained doppler drone pool
+      stays disabled per the user's 2026-08-17 decision (docs/DISABLED.md
+      §3d); a half-second whoosh as a car passes is the part of that sound a
+      real cabin actually hears, and with the unpassable rival sitting on the
+      player's tail it is the moment that sells the speed differential.
+
+      Shape: broadband noise through a bandpass that SWEEPS DOWN through the
+      event — the doppler brightness fall of a source going from approaching
+      to receding — with a fast swell into a longer tail, panned to the side
+      the car passes on with a small motion sweep outward. `closing` (m/s,
+      positive) scales level and how far the sweep falls; `lateral` (m,
+      signed, +right) sets pan and attenuates a far-lane pass. Routed via
+      sfxBus, so a pass inside the tunnel gets thrown back off the walls. */
+  npcPassby(closing: number, lateral: number) {
+    if (!this.ok) return;
+    const c = this.ctx, t = c.currentTime;
+    if (t - this.lastPassby < 0.15) return;
+    const absLat = Math.abs(lateral);
+    // inaudible passes: crawling alongside, or a whole deck away
+    if (closing < 6 || absLat > 12) return;
+    this.lastPassby = t;
+    this.passbyCount++;
+    const u = smoothstep(6, 40, closing);
+    // a pass one lane over (~3.5m) is full level; the fade to 12m matches
+    // the npcSpatial() attenuation family rather than inventing a new curve
+    const near = 1 - smoothstep(4.5, 12, absLat);
+    const gain = PASSBY_LEVEL * (0.35 + 0.65 * u) * near;
+    if (gain < 0.01) return;
+    const dur = 0.28 + 0.25 * (1 - u); // faster pass = shorter whoosh
+    const src = c.createBufferSource();
+    src.buffer = this.noiseBuf;
+    src.loop = true;
+    const f = c.createBiquadFilter();
+    f.type = "bandpass";
+    f.Q.value = 0.8;
+    // brightness falls through the pass — approach bright, recede dark
+    f.frequency.setValueAtTime(700 + 900 * u, t);
+    f.frequency.exponentialRampToValueAtTime(260, t + dur);
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.07);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    const pn = c.createStereoPanner();
+    const side = clampRange(lateral / 6, -1, 1);
+    // small outward sweep: the car is beside you, then past your shoulder
+    pn.pan.setValueAtTime(side * 0.45, t);
+    pn.pan.linearRampToValueAtTime(side * 0.9, t + dur);
+    src.connect(f).connect(g).connect(pn).connect(this.sfxBus);
+    src.start(t);
+    src.stop(t + dur + 0.05);
   }
 
   /**

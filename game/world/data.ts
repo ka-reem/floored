@@ -69,7 +69,22 @@ export interface WorldData {
       wires every consumer, so the old world builder keeps compiling */
   routes?: RouteGraph;
   exits: ExitInfo[];
-  chunks: { group: THREE.Group; cx: number; cz: number }[];
+  /** Distance-culled groups (Game.chunksUpdate). `r` is the group's content
+      circumradius: culling compares nearest-edge distance (d − r) so a
+      coarse bucket doesn't hide members that are still inside drawDist. */
+  chunks: { group: THREE.Group; cx: number; cz: number; r?: number }[];
+  /** Set by anything that lands async content in the scene AFTER the load's
+      compileAsync stage (the toll's photoscan props). The engine notices at
+      its slow tick and precompiles, so the new materials' programs link in
+      the background instead of stalling the frame the toll first swings into
+      view (measured: +9 programs mid-drive at the plaza). */
+  compileDirty?: boolean;
+  /** Live draw-distance uniform for chunked dressing that FADES rather than
+      pops (roadside.ts vegetation): chunksUpdate() writes the same scaled
+      distance it culls world.chunks at, and every dissolve shader reads it —
+      so the fade always finishes inside the cull radius, whatever the tier
+      or the perf cap are doing to it this frame. */
+  fadeFar?: { value: number };
   // weather-dimmable references
   neonMats: THREE.Material[];
   glowPts?: THREE.Points;

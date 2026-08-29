@@ -5,7 +5,9 @@ import {
 } from "./loading";
 import {
   fogMultiplier, speedInUnits, unitLabel, resolveRenderTier, TIER_CAPS,
-  type GameSettings, type Profile, type RenderTier, type TierCaps,
+  defaultLifetimeStats,
+  type GameSettings, type LifetimeStats, type Profile, type RenderTier,
+  type TierCaps,
 } from "./settings";
 import { getCar, PAINTS, testDriveSpec, type CarSpec, type PhysicsSpec } from "./carspecs";
 import { pollGamepad, type PadEdge } from "./gamepad";
@@ -18,7 +20,7 @@ import { buildTown } from "./world/townmesh";
 import { buildScenery } from "./world/scenery";
 import { buildSky, type Sky } from "./world/sky";
 import { ColliderIndex, signalPhase, type WorldData } from "./world/data";
-import { getCorridor, TUNNEL, PITCH, PHASE } from "./world/corridor";
+import { getCorridor, TUNNEL, PITCH, PHASE, OVERPASSES } from "./world/corridor";
 import {
   getRouteGraph, BYPASS_EDGE, MOUNTAIN_EDGE, type PolyRouteEdge,
 } from "./world/routegraph";
@@ -32,9 +34,10 @@ import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
 import { MusicPlayer } from "./music";
 import { hitScreen, type ScreenAction, type ScreenView } from "./carscreen";
+import { bindGameTally, gameClick, gameTally } from "./consolegame";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
-import { drawMiniMap } from "./minimap";
+import { drawMiniMap, type MiniMapOpts } from "./minimap";
 
 const WX_SVG = (body: string) =>
   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">${body}</svg>`;
@@ -53,6 +56,12 @@ export interface UiBridge {
   exitHint(text: string | null): void;
   pauseRequest(): void;
   helpRequest(): void;
+  /** Enter/leave photo mode. Owned by the UI for the same reason pauseRequest
+      is: photo mode IS a pause (setRunning(false), the sim frozen) plus a
+      screen change (every piece of HUD chrome is gated on `playing`), and
+      both of those live in GameApp. The engine only asks; photoEnter/photoExit
+      are what the UI calls back into once the screen has flipped. */
+  photoRequest(): void;
 }
 
 /** How many NPCs are fed to the audio doppler pool each frame — its pool size.
@@ -82,6 +91,28 @@ const NOHESI = {
       toward the combo, but not every one is worth a popup */
   pulseGrade: 0.45,
   pulseBase: 250, pulseCd: 1.1,
+};
+
+/** Drive statistics (see statsUpdate / the STATS panel in GameApp.tsx). One
+    accumulator object folded from values the frame already computes — the
+    car state, the No Hesi feed, the crash gates — so the whole feature costs
+    a handful of compares per frame, no listeners, no allocation. */
+const STATS = {
+  /** below this |u| (m/s) the car is standing, not driving — time driven and
+      distance both gate on it so idling at a menu-adjacent red light doesn't
+      pad the clock */
+  moveFloor: 0.5,
+  /** seconds between route-graph probes for the mountain-pass run detection.
+      surfaceAt() is bbox-rejected and cheap, but it allocates its hit — at
+      2 Hz that is noise; per frame it would not be. */
+  routeEvery: 0.5,
+  /** fraction of the pass's arclength a visit must span to count as a run —
+      loose enough that probe quantisation at the gore tapers can't eat a
+      genuine full traversal, tight enough that a U-turn halfway can't count */
+  mtnSpan: 0.85,
+  /** seconds off the pass pavement before a visit closes — one probe landing
+      on the runoff apron mid-drift must not split a run into two halves */
+  mtnGrace: 1.5,
 };
 
 /* The v2 art (procedural canvas textures + hex palettes) was tuned under
@@ -245,6 +276,12 @@ const BEAM_FLOOR = 0.13;
     flashing. Long enough that no flash-to-pass reaches it — a pass flash is a
     few hundred ms — and short enough to be a deliberate press, not a wait. */
 const HI_HOLD = 2;
+
+/* touchHolds key for the steering-wheel hub horn. Not an element id — the hub
+   is a painted disc with pointer-events:none and no listeners of its own; the
+   wheel's existing handlers do the hit test — so it needs a name that cannot
+   collide with a real puck's getElementById id. */
+const WHEEL_HORN_HOLD = "swheelHub";
 
 /* Camera modes. CAM_POV is the hard-mounted dashcam: it shares the cockpit's
    rendering (interior shell visible, mirror and gauges live) but none of its
@@ -710,6 +747,27 @@ const HOOD = { on: 1, dy: 0, dz: 0 };
 /* How fast the wipers lay down once the rain stops, as an exponential time
    constant per second — about 0.5 s to arrive. See the park block in frame(). */
 const WIPER_PARK_EASE = 6;
+/* Wiper drive. The mode cycles OFF → INT → LO → HI, and three ways in step
+   it — the U key, the stalk click zone beside the head unit, and the touch
+   drawer's WIPERS row (uiKeyTap "u") — all through cycleWipers(), so they
+   can never disagree.
+
+   RATE is sweep travel per second for a half-stroke (park→raised or back),
+   so a full LO wipe takes 2/1.15 ≈ 1.74 s — deliberately the period of the
+   old always-on rain wiper (sin at 3.6 rad/s), which is the pace the whole
+   droplet overlay was tuned against. HI is roughly double. INT sweeps at LO
+   pace and then sits parked for PAUSE seconds: the classic intermittent
+   rhythm, one confident stroke and a wait just long enough to make the next
+   one read as an event. Indexed by mode; index 0 is unused (OFF animates in
+   the park branch, not here). */
+export const WIPER_MODE_NAMES = ["OFF", "INT", "LO", "HI"] as const;
+const WIPER_RATE = [0, 1.15, 1.15, 2.2];
+const WIPER_INT_PAUSE = 2.6;
+/* How fast the rear-view's electrochromic dim arrives, same exponential form
+   as the park ease — a real auto-dim cell takes a second or two, and an
+   instant step on a surface that bright reads as the render target
+   glitching, not as a control answering. */
+const MIRROR_DIM_EASE = 2.2;
 /* How the loading bar creeps through a wait it cannot measure — see
    Game.creepAwait. CREEP_CAP is deliberately short of 1: the stage's own
    completion is what finishes it, and a bar that reaches the end of a stage
@@ -940,6 +998,47 @@ const FOV_SLIDER_REF = 67;
    number at all, and a projection matrix is not the place to find that out. */
 const CONSOLE_FOV_MAX = 130;
 
+/* Photo mode. A TEMPORARY camera of its own — it never writes to the gameplay
+   camera, camMode, settings or the FOV pipeline, so leaving the mode cannot
+   fail to restore the view: there is nothing to restore. The sim is paused
+   under it through the same setRunning(false) the pause menu uses (GameApp's
+   photoRequest), and every piece of HUD chrome hides because the screen state
+   leaves "playing" — no per-element hiding to forget.
+
+   The lens is a FIXED 55-degree vertical. Deliberately not the FOV slider and
+   not lensFov()/povFov(): those are the driving views' contract (AGENTS.md),
+   and a photo wants a longer lens than a windscreen does — 55 at 16:9 is
+   ~84 horizontal, about what a 24 mm walk-around on full frame gives, wide
+   enough to frame the whole car at 6 m without the barrel-stretch a 100-degree
+   gameplay FOV would smear across the paintwork. */
+const PHOTO = {
+  fov: 55,
+  /** orbit radius, metres from the car's origin. distMin keeps the lens out of
+      the bodywork (the longest shell is ~2.6 m half-length, diagonal ~2.9);
+      dist0 gets `+ shell.L * 0.35` at enter so both cars open at the same
+      framing, the way CHASE_CAM.dist does. */
+  distMin: 3.4, distMax: 16, dist0: 4.6,
+  /** orbit elevation, radians. The floor is a hair below level for the
+      low-angle hero shot; going lower has nothing to see — the camera-height
+      clamp below already stops the lens short of the deck. The ceiling is
+      just shy of top-down, where a polar orbit turns into gimbal soup. */
+  pitchMin: -0.08, pitchMax: 1.25, pitch0: 0.2,
+  /** the orbit's aim point sits this far above car origin — roughly the beltline,
+      so the default frame is car-with-some-road rather than car-in-the-sky */
+  aimY: 0.9,
+  /** metres of air kept between the lens and whatever surface is under it
+      (deck, ramp, town street) — the "don't clip under the deck" clamp */
+  clearance: 0.35,
+  /** rad/s of gentle self-orbit until the first drag/wheel input — the mode
+      opens as a slow dolly around the car rather than a frozen frame */
+  autoRate: 0.09,
+  /** radians of orbit per px of drag, and the wheel's zoom response */
+  dragSens: 0.0062, wheelZoom: 0.0012,
+  /** where the orbit opens relative to the car's heading: ~35 degrees off the
+      nose — the front-three-quarter, the angle every car is photographed at */
+  yaw0: 0.6,
+};
+
 export class Game {
   // public state the UI reads
   settings: GameSettings;
@@ -950,6 +1049,12 @@ export class Game {
   started = false;
   running = false; // simulation advancing (menus closed)
   rain = false;
+  /** Wiper mode, an index into WIPER_MODE_NAMES (OFF/INT/LO/HI). Public
+      because the touch drawer's WIPERS row shows it, same as `rain` beside
+      it; stepped only through cycleWipers(). Session-only on purpose — rain
+      itself decides the default (see setRain), so persisting the mode would
+      just let a profile come back with dry-weather wipers running. */
+  wiperMode = 0;
   grade = false; // set from settings.dashcam in the constructor
   /* THERE IS NO `dashImported` ANY MORE, and its absence is the point.
 
@@ -984,6 +1089,29 @@ export class Game {
       persist() to copy into the profile alongside carId/seed/camMode. */
   get noHesiScore() { return this.noHesi.score; }
   get noHesiBest() { return this.noHesi.best; }
+  get tttTally() { return gameTally(); }
+
+  /** This session's drive statistics, live — the STATS panel reads fields
+      straight off it (the mtn* detector scratch rides along; UI ignores it). */
+  get sessionStats(): Readonly<LifetimeStats> { return this.stats; }
+  /** Lifetime statistics: the profile's totals plus this session, combined
+      the way each field means (sums, except the two records). Allocates a
+      fresh object per call — menu/persist cadence only, never per frame.
+      Idempotent because statsSeed is a construction-time copy, so persist()
+      can write it back as often as it likes without double counting. */
+  lifetimeStats(): LifetimeStats {
+    const s = this.stats, L = this.statsSeed;
+    return {
+      dist: L.dist + s.dist,
+      topSpeed: Math.max(L.topSpeed, s.topSpeed),
+      driveT: L.driveT + s.driveT,
+      nearMisses: L.nearMisses + s.nearMisses,
+      bestCombo: Math.max(L.bestCombo, s.bestCombo),
+      crashes: L.crashes + s.crashes,
+      laps: L.laps + s.laps,
+      mtnRuns: L.mtnRuns + s.mtnRuns,
+    };
+  }
 
   /* Lens OFFSET for the interior currently on screen, all three axes — see
      povMount(), which this describes. Read live rather than cached because the
@@ -1064,6 +1192,36 @@ export class Game {
     const c = this.cabinKnob();
     c.on = ((c.on + 1) % DOME_LEVELS.length) as typeof c.on;
     this.ui.toast("INTERIOR LIGHT " + (c.on === 0 ? "OFF" : c.on === 1 ? "DIM" : "ON"));
+  }
+
+  /** Step the wiper mode around OFF → INT → LO → HI. One body for the U key,
+      the stalk click zone (onPointerDown) and the drawer's WIPERS row
+      (uiKeyTap "u"), same policy as toggleCabinLight above. The stalk click
+      sound is the feedback the stalk itself would give; the arms crossing
+      the windscreen are the real confirmation. */
+  private cycleWipers() {
+    this.wiperMode = (this.wiperMode + 1) % WIPER_MODE_NAMES.length;
+    if (this.wiperMode === 0) this.wipeDir = 0; // let the park ease take it home
+    else if (this.wipeDir === 0) this.wipeWait = 0; // sweep NOW, not after a stale INT pause
+    this.audio.stalkClick();
+    this.ui.toast("WIPERS " + WIPER_MODE_NAMES[this.wiperMode]);
+  }
+
+  /** Toggle the rear-view's electrochromic dim (clicking the glass itself).
+      Only the flag flips here — mirrorDimUpdate() eases the glass toward it
+      on the frame clock, same shape as the dome light's hover ease. */
+  private toggleMirrorDim() {
+    this.mirrorDim = !this.mirrorDim;
+    this.audio.stalkClick();
+    this.ui.toast("MIRROR DIM " + (this.mirrorDim ? "ON" : "OFF"));
+  }
+
+  private mirrorDimUpdate(dt: number) {
+    const t = this.mirrorDim ? 1 : 0;
+    this.mirrorDimE = lerp(this.mirrorDimE, t, 1 - Math.exp(-MIRROR_DIM_EASE * dt));
+    // snap the last fraction so the material write settles on exact endpoints
+    if (Math.abs(this.mirrorDimE - t) < 0.002) this.mirrorDimE = t;
+    this.rig.cockpit.setMirrorDim(this.mirrorDimE);
   }
 
   /** Push the cabin-light level into both interiors, every frame.
@@ -1231,6 +1389,12 @@ export class Game {
       the POV beam-carpet widening, the cockpit head springs) deliberately do
       not use this. */
   private inCar(): boolean {
+    /* Photo mode is outdoors whatever camMode is waiting behind it: the orbit
+       camera needs the exterior shell visible (updateCarVisual reads this) and
+       none of the in-car machinery — mirror RT, cabin hotspots, the interior
+       hood. camMode itself is untouched, so the answer snaps back the frame
+       the mode ends. */
+    if (this.photo.on) return false;
     return (
       this.camMode === CAM_COCKPIT || this.camMode === CAM_POV || this.camMode === CAM_CONSOLE
     );
@@ -1321,6 +1485,8 @@ export class Game {
   }
   mirror = true;
   mmap = true;
+  /** HUD map framing (Z / map click / drawer row): true = whole-loop overview */
+  mmapZoom = false;
   time = 21.4;
   timeSpeed = 150;
   perfMode = false;
@@ -1401,6 +1567,24 @@ export class Game {
   /* chase cam lateral lag: trails the yaw-driven offset then eases to it,
      giving the classic GT "camera catches up out of the corner" feel */
   private chaseLag = { x: 0, vx: 0 };
+  /* Photo mode state — see the PHOTO block. `on` is only ever flipped by
+     photoEnter/photoExit, which GameApp calls around the same setRunning(false)
+     the pause menu uses, so `on` implies the sim is frozen. `shot` is armed by
+     the capture key and consumed at the end of loop(), AFTER post.process has
+     drawn the frame — canvas.toBlob has to read the drawing buffer in the same
+     task as the render or it reads a cleared one. `auto` is the gentle
+     self-orbit; the first drag or wheel tick takes the camera over. */
+  private photo = {
+    on: false, yaw: 0, pitch: PHOTO.pitch0, dist: PHOTO.dist0,
+    auto: true, shot: false, pinch0: 0,
+  };
+  /** Lazily built on first enter, never handed to any gameplay path: the
+      whole restore-on-exit guarantee is that the gameplay camera is not
+      touched while this one is on duty. */
+  private photoCam: THREE.PerspectiveCamera | null = null;
+  private photoPtrs = new Map<number, { x: number; y: number }>();
+  /** captures completed this session (toBlob landed) — read by the smoke test */
+  photoShots = 0;
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private last = 0;
@@ -1410,6 +1594,25 @@ export class Game {
   private slowT = 0;
   private gaugeT = 0;
   private dropT = 0;
+  /* Wiper sweep state: travel (0 parked .. 1 raised), stroke direction
+     (0 = at rest between INT strokes / parked), and the INT pause timer.
+     The park branch of updateCarVisual mirrors the eased arm back into
+     wipeT, so a mode turned on mid-park resumes from where the arm really
+     is instead of teleporting it. */
+  private wipeT = 0;
+  private wipeDir: -1 | 0 | 1 = 0;
+  private wipeWait = 0;
+  /** Rear-view electrochromic dim: the toggle, and its eased level (what the
+      glass actually shows — see MIRROR_DIM_EASE). Session-only, like the
+      dome light: the clear mirror is the shipped look. */
+  private mirrorDim = false;
+  private mirrorDimE = 0;
+  /** Head-unit night-dim (the map view's ☾ pill) — a shade drawn over the
+      panel canvas by carscreen.ts. Session-only, same reasoning. */
+  private screenDim = false;
+  /** Odometer reading at the last trip reset; the trip pane shows
+      car.odo - tripBase. 0 = never reset, i.e. the whole session. */
+  private tripBase = 0;
   private hudT = 0;
   private chunkT = 0;
   /** No Hesi scoring state (see noHesiUpdate). `best` is seeded from the
@@ -1417,6 +1620,20 @@ export class Game {
       persist()) reads it back out through the noHesiBest getter alongside
       carId/seed/camMode. */
   private noHesi = { score: 0, best: 0, combo: 1, sinceAction: 0, pulseCd: 0 };
+  /** Session drive statistics (see the STATS block / statsUpdate). Engine
+      units throughout — metres, m/s, seconds — converted at display time.
+      The mtn* fields are the mountain-run detector's scratch: whether the
+      last probe found the car on the pass, the s-span the visit has covered,
+      and the off-pavement grace clock. */
+  private stats = {
+    dist: 0, topSpeed: 0, driveT: 0, nearMisses: 0, bestCombo: 1,
+    crashes: 0, laps: 0, mtnRuns: 0,
+    routeT: 0, mtnOn: false, mtnLo: 0, mtnHi: 0, mtnOffT: 0,
+  };
+  /** Lifetime stats as loaded from the profile — a COPY, never the profile's
+      own object, so lifetimeStats() (seed + session, recomputed per call) is
+      idempotent however many times persist() writes it back. */
+  private statsSeed: LifetimeStats = defaultLifetimeStats();
   private raf = 0;
   private disposed = false;
   private isTouch: boolean;
@@ -1464,6 +1681,9 @@ export class Game {
     x: 0, z: 0, vx: 0, vz: 0, heavy: false,
   }));
   private npcFeed: { x: number; z: number; vx: number; vz: number; heavy: boolean }[] = [];
+  /** last relative-longitudinal position per tracked npc, for the pass-by
+      whoosh's sign-flip detection — see npcAudioFeed() */
+  private passbyPrev = new WeakMap<object, number>();
   /** last state pushed to mats.setPbrDetail; the call recompiles materials, so
       it must only ever fire on a real transition */
   private pbrDetail = true;
@@ -1491,13 +1711,26 @@ export class Game {
        load() runs, and setRain toasts — a restored profile must not fire a
        "RAIN — grip down" popup at startup. */
     this.rain = profile.settings.rain;
+    /* A profile restored WITH rain gets its wipers running the same way a
+       live rain toggle would bring them on (see setRain) — before modes
+       existed, rain always wiped, and a wet load must not regress into a
+       blinded windscreen. */
+    this.wiperMode = this.rain ? 2 : 0;
     this.time = profile.settings.time;
     this.mmap = profile.settings.mmap;
+    this.mmapZoom = profile.settings.mmapZoom;
     this.carId = profile.carId;
     this.paintIx = profile.paintIx;
     this.seed = profile.seed;
     this.camMode = profile.camMode;
     this.noHesi.best = Number.isFinite(profile.noHesiBest) ? profile.noHesiBest : 0;
+    // loadProfile scrubbed every field; the copy is what makes lifetimeStats()
+    // idempotent (see statsSeed)
+    this.statsSeed = { ...defaultLifetimeStats(), ...profile.stats };
+    /* Head-unit tic-tac-toe tally, same persistence contract as settings:
+       the profile's own object is handed over and mutated in place, and
+       GameApp's persist() reads it back out through the getter below. */
+    bindGameTally(profile.ttt);
     this.isTouch = "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
     if (this.isTouch) document.body.classList.add("touch");
 
@@ -1668,11 +1901,15 @@ export class Game {
           (n) => n.active && n.route === MOUNTAIN_EDGE && n.dir < 0).length,
         onBypass: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === BYPASS_EDGE,
         onMountain: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === MOUNTAIN_EDGE,
+        stats: { ...this.stats },
+        lifetime: this.lifetimeStats(),
         wrecks: this.traffic.activeWrecks().length,
         chunksVisible: this.world.chunks.filter((c) => c.group.visible).length,
         chunksTotal: this.world.chunks.length,
         perfMode: this.perfMode,
         renderTier: this.renderTier,
+        photo: this.photo.on,
+        photoShots: this.photoShots,
         errors: this.debug.errors,
         frames: this.debug.frames,
       }),
@@ -1702,6 +1939,10 @@ export class Game {
           });
           this.loopSplice();
           collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
+          // the stats integrator is part of the car simulation this mirrors
+          // (distance/time/top-speed and the mountain-run probe track sim
+          // driving too); the traffic-fed stats stay loop-only, like traffic
+          this.statsUpdate(1 / 120);
         }
       },
       setRain: (on: boolean) => this.setRain(on),
@@ -2211,6 +2452,27 @@ export class Game {
       this.ui.pauseRequest();
       return;
     }
+    /* Photo mode owns the keyboard while it is up, the same way the pause
+       menu does (the `!running` gate below) — but two keys still work, and
+       they are photo mode's own: the shutter, and the way out. Everything
+       else falls dead here so a stray C or R cannot mutate game state under
+       a frozen sim. Esc is already handled above: pauseRequest lands in
+       GameApp, which treats it as "leave photo mode" while this screen is up. */
+    if (this.photo.on) {
+      if (k === " " || k === "enter") this.photo.shot = true;
+      else if (k === "o") this.ui.photoRequest();
+      return;
+    }
+    /* O — photo mode. O because P is the music transport and O is the free key
+       beside it (the CONTROLS screen documents it); also routed through the
+       touch drawer's PHOTO row via uiKeyTap. Before the `!running` gate on
+       purpose-adjacent grounds to the photo branch above, but still gated on
+       running+loaded itself: from the pause or main menu there is nothing
+       sensible to photograph and the screen machinery is mid-transition. */
+    if (k === "o") {
+      if (this.running && this.loaded) this.ui.photoRequest();
+      return;
+    }
     if (!this.running) return;
     if (k === "c") {
       this.camMode = nextCam(this.camMode);
@@ -2220,13 +2482,19 @@ export class Game {
       this.car.lightsUser = !this.car.lightsUser;
       this.ui.toast("LIGHTS " + (this.car.lightsUser ? "ON" : "AUTO"));
     }
+    /* Stalk click on the toggle edge, both engage and cancel — the click
+       volumes that used to give the signals their mechanical clunk are gone
+       (keyboard-only now, owner's call), but the stalk itself still moves.
+       The blink-rate tick in hud() is separate and untouched. */
     if (k === "q") {
       this.car.sigL = !this.car.sigL;
       this.car.sigR = false;
+      this.audio.stalkClick();
     }
     if (k === "e") {
       this.car.sigR = !this.car.sigR;
       this.car.sigL = false;
+      this.audio.stalkClick();
     }
     if (k === "r") this.setRain(!this.rain);
     if (k === "t") {
@@ -2246,6 +2514,11 @@ export class Game {
       this.rig.cockpit.setMirrorVis(this.mirror);
       this.ui.toast("MIRROR " + (this.mirror ? "ON" : "OFF"));
     }
+    /* Wipers. U because it is free (the handler below spends I, and the
+       retired J stays retired), and because the drawer's WIPERS row goes
+       through uiKeyTap with this same letter — the row IS this key. Works on
+       touch for exactly that reason: no isTouch gate, unlike I below. */
+    if (k === "u") this.cycleWipers();
     /* J IS RETIRED — deliberately, and it is not coming back as a debug key.
 
        It A/B'd the donor Volvo (interior and exterior body, off one flag)
@@ -2300,6 +2573,19 @@ export class Game {
       const cv = this.miniMap();
       if (cv) cv.style.display = this.mmap ? "block" : "none";
       this.ui.toast("MAP " + (this.mmap ? "ON" : "OFF"));
+    }
+    /* Map zoom — Z for its initial, and it was free (see the key inventory on
+       the I handler above; Z joins it). Cycles the HUD map between the
+       close-up follow and the whole-loop overview (minimap.ts `zoom`). Three
+       ways in, one body: this key, a click on the map itself (GameApp routes
+       the canvas's pointerdown through uiKeyTap("z") — desktop only, the
+       canvas keeps pointer-events:none on touch so it can't eat a throttle
+       tap), and the touch drawer's MAP ZOOM row. Next %4 frame repaints, so
+       no forced redraw is needed here. */
+    if (k === "z") {
+      this.mmapZoom = !this.mmapZoom;
+      this.settings.mmapZoom = this.mmapZoom;
+      this.ui.toast("MAP " + (this.mmapZoom ? "WHOLE LOOP" : "CLOSE-UP"));
     }
     /* In-dash music transport. P / , / . are the only free keys left that map
        to the convention people already have in their fingers (P for play-
@@ -2420,6 +2706,33 @@ export class Game {
     return this.rig?.cockpit?.navPanel() ?? null;
   }
 
+  /** The wiper stalk zone (console side of the head unit), or null. Desktop
+      only, for the click as well as the hover: the drawer's WIPERS row is
+      the touch way in — a fat finger hunting an invisible box beside the
+      screen is not a control, and the roof band already spends the one
+      screen-space tap region worth having. Same inCar gate as cabinTarget:
+      the raycast ignores `visible`. */
+  private wiperStalkTarget(): THREE.Object3D | null {
+    if (this.isTouch) return null;
+    if (!this.running || !this.loaded || !this.inCar()) return null;
+    const ck = this.rig?.cockpit;
+    if (!ck) return null;
+    return ck.wiperSwitch(!!this.rig.cockpitModel);
+  }
+
+  /** The rear-view glass, when clicking it can toggle the dim — or null.
+      A real visible mesh, not a proxy volume: the glass hangs in the
+      dashcam frame's top rows by design (cockpit.ts MIR), so it is its own
+      target in both cabins (a donor keeps the procedural glass — its own
+      mirror is paint). Gated on the mirror being on show at all (M hides
+      it), or the dim would answer from an empty patch of headliner. */
+  private mirrorTarget(): THREE.Object3D | null {
+    if (this.isTouch) return null;
+    if (!this.running || !this.loaded || !this.inCar()) return null;
+    if (!this.mirror) return null;
+    return this.rig?.cockpit?.mirrorGlass ?? null;
+  }
+
   /** Which pane the head unit is showing, and what the cursor is over on it.
       Session state, deliberately not persisted: the map is what the panel is
       FOR, so every session opens on it however the last one was left. */
@@ -2450,7 +2763,9 @@ export class Game {
     this.hoverY = e.clientY;
     const sw = this.cabinTarget(true);
     const panel = this.screenTarget();
-    if (!sw && !panel) {
+    const stalk = this.wiperStalkTarget();
+    const mir = this.mirrorTarget();
+    if (!sw && !panel && !stalk && !mir) {
       this.cabinHover = 0;
       this.screenHover = null;
       this.renderer.domElement.style.cursor = "";
@@ -2468,11 +2783,16 @@ export class Game {
     const hit = panel ? this.clickRay.intersectObject(panel, false)[0] : undefined;
     this.screenHover =
       hit && hit.uv ? hitScreen(hit.uv.x, hit.uv.y, this.screenView) : null;
+    /* The stalk zone and the mirror glass have no state to preview — the
+       cursor change is their hover channel (round 1's precedent for targets
+       with no lamp to ease toward), so a boolean each is all this needs. */
+    const overStalk = !!stalk && this.clickRay.intersectObject(stalk, false).length > 0;
+    const overMir = !overStalk && !!mir && this.clickRay.intersectObject(mir, false).length > 0;
     /* One cursor for every cabin target, new and old alike — none of them had
        one before this lane; a control that only reveals itself once you have
        already clicked it is not discoverable. */
     this.renderer.domElement.style.cursor =
-      this.cabinHover || this.screenHover ? "pointer" : "";
+      this.cabinHover || this.screenHover || overStalk || overMir ? "pointer" : "";
   };
   /* Leaving the canvas is a real event and gets a real listener: the last
      pointermove inside the window can easily be one that was still over the
@@ -2519,6 +2839,23 @@ export class Game {
       return;
     }
 
+    /* The wiper stalk zone and the rear-view glass — both desktop-mouse
+       (their targets are null on touch; wipers reach a phone through the
+       drawer row instead). Tested before the head unit so the ORDER between
+       the two 3D targets and the panel is fixed here rather than by
+       accident of depth; none of the three volumes overlap in space, so the
+       order is only about who reads first. */
+    const stalk = this.wiperStalkTarget();
+    if (stalk && this.clickRay.intersectObject(stalk, false).length) {
+      this.cycleWipers();
+      return;
+    }
+    const mir = this.mirrorTarget();
+    if (mir && this.clickRay.intersectObject(mir, false).length) {
+      this.toggleMirrorDim();
+      return;
+    }
+
     /* The head unit is a CanvasTexture on a plane, so this hands the hit UV to
        carscreen.ts, which owns the layout and therefore the button rects.
        Desktop only, via screenTarget()/music.enabled, which is false on touch:
@@ -2529,7 +2866,7 @@ export class Game {
     if (!hit || !hit.uv) return;
     const action = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
     if (!action) return;
-    if (action === "music" || action === "map" || action === "trip") {
+    if (action === "music" || action === "map" || action === "trip" || action === "game") {
       this.screenView = action;
       /* The hover is stale the instant the view flips — the cursor has not
          moved, but what is under it has. Re-ask with the ray already aimed. */
@@ -2541,8 +2878,36 @@ export class Game {
       if (msg) this.ui.toast(msg);
       return;
     }
-    const msg = this.music.click(action);
-    if (msg) this.ui.toast(msg);
+    /* Trip reset: all a reset ever is — remember where the odometer stood.
+       The pane subtracts (carscreen.ts drawTrip), so the readout zeroes on
+       the very next repaint. */
+    if (action === "tripReset") {
+      this.tripBase = this.car.odo;
+      this.audio.stalkClick();
+      this.ui.toast("TRIP RESET");
+      return;
+    }
+    if (action === "dimScr") {
+      this.screenDim = !this.screenDim;
+      this.audio.stalkClick();
+      this.ui.toast("SCREEN DIM " + (this.screenDim ? "ON" : "OFF"));
+      return;
+    }
+    if (action === "prev" || action === "toggle" || action === "next") {
+      const msg = this.music.click(action);
+      if (msg) this.ui.toast(msg);
+      return;
+    }
+    /* Everything left is the games pane's (consolegame.ts) — the ordering
+       above is what narrows the type down to GameAction. The blip rides the
+       "it actually did something" edge, through the same master chain as
+       every other UI sound, so volume and mute apply unchanged. The hover
+       re-ask matches the view-switch above: a landed mark changes what is
+       under the still-parked cursor. */
+    if (gameClick(action)) {
+      this.audio.tick();
+      this.screenHover = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
+    }
   };
 
   /** Did this pointer hit the overhead console? A mouse gets the one ray it
@@ -2673,6 +3038,39 @@ export class Game {
     }
   }
 
+  /** Is `key` still held by some OTHER live touch hold? Two controls now
+      share "f" — the HORN puck and the steering-wheel hub (setWheelHorn) —
+      and either may be released while the other is still pressed. Without
+      this, letting go of one zeroes the key under the other and the horn
+      cuts out with a finger still on it. Holds whose ids are empty are
+      already released (bindPointerHold clears the set before calling onUp,
+      and the blur reset clears every set), so size is the live test. */
+  private keyStillHeld(key: string) {
+    for (const h of this.touchHolds.values()) if (h.key === key && h.ids.size) return true;
+    return false;
+  }
+
+  /** Horn from the steering-wheel hub — see SteerWheel in GameApp, which owns
+      the tap/drag discrimination. Writes the same keydown["f"] the HORN puck
+      and the keyboard write, so there is exactly one horn path downstream.
+
+      `pointerId` non-null registers the press in touchHolds under a synthetic
+      id, which buys the hub the identical third release path every puck has:
+      watchdogTouchInput drops it the frame that pointer leaves livePointers,
+      so a gesture hijack that eats the touch stream cannot leave the horn
+      blaring. Null is the tap-stab — its finger is already off the glass, so
+      it must NOT be watchdogged (that would kill the stab on the next frame);
+      the caller's own timer releases it. */
+  setWheelHorn(on: boolean, pointerId: number | null) {
+    if (on) {
+      this.keydown["f"] = 1;
+      if (pointerId !== null) this.touchHolds.set(WHEEL_HORN_HOLD, { key: "f", ids: new Set([pointerId]) });
+      return;
+    }
+    this.touchHolds.delete(WHEEL_HORN_HOLD);
+    if (!this.keyStillHeld("f")) this.keydown["f"] = 0;
+  }
+
   private bindInput() {
     addEventListener("keydown", this.onKeyDown);
     this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown);
@@ -2698,7 +3096,11 @@ export class Game {
       const ids = this.bindPointerHold(
         el,
         () => (this.keydown[key] = 1),
-        () => (this.keydown[key] = 0),
+        () => {
+          // "f" is shared with the wheel hub; never zero it out from under
+          // a control that is still pressed (see keyStillHeld).
+          if (!this.keyStillHeld(key)) this.keydown[key] = 0;
+        },
       );
       this.touchHolds.set(id, { key, ids });
     };
@@ -2781,10 +3183,15 @@ export class Game {
       camera looks straight down the tunnel at that screen, so it is the last
       one that wants a second map pasted over it. */
   private mmapVisible() {
-    return this.mmap && !this.inCar();
+    // photo mode reads as "not in car", but the map canvas is HUD chrome and
+    // photo mode hides ALL chrome — without this it would pop up over the shot
+    return this.mmap && !this.inCar() && !this.photo.on;
   }
   /** last mmapVisible(), so the reveal can repaint before it is shown */
   private mmapWasOn = false;
+  /** the overview framing's opts, held so the per-frame draw allocates
+      nothing; the follow framing is drawMiniMap's default (undefined) */
+  private mmapLoopOpts: MiniMapOpts = { zoom: "loop" };
 
   /* Held on the Game rather than rebuilt per frame: readInput runs at frame
      rate and these two closures never change. Bodies are deliberately the
@@ -2891,6 +3298,10 @@ export class Game {
     this.input.st += clamp(sTarget - this.input.st, -sRate * dt, sRate * dt);
     if (!sL && !sR && !analog) this.input.st *= Math.max(0, 1 - 6.5 * dt);
     this.input.hb = kd[" "] ? 1 : 0;
+    /* One horn path for all three inputs: the F key, the HORN puck (bindHold)
+       and the steering-wheel hub (setWheelHorn) all write keydown["f"], so the
+       mix, the NPC reaction and the release edge behave identically whichever
+       one honked. */
     this.input.horn = kd["f"] ? 1 : 0;
   }
 
@@ -2913,6 +3324,7 @@ export class Game {
        would fight the day/night cycle. */
     this.grade = s.dashcam;
     this.mmap = s.mmap;
+    this.mmapZoom = s.mmapZoom;
     if (this.rain !== s.rain) this.setRain(s.rain);
     // re-resolve the tier: the manual override lives in these settings, and a
     // change has to land on the same frame the settings panel applies it
@@ -2996,6 +3408,18 @@ export class Game {
   setRain(on: boolean) {
     this.rain = on;
     this.settings.rain = on;
+    /* The wipers follow the weather so an untouched game behaves exactly as
+       it did before modes existed: rain arriving with the wipers OFF brings
+       them on at LO, rain leaving parks them whatever mode was running. The
+       driver can still cycle to OFF *in* the rain — that is the whole
+       droplet-accumulation feature — and rain stays the reset switch either
+       way. No toast and no stalk click for these: they are the weather
+       moving the stalk, not the driver. */
+    if (on && this.wiperMode === 0) this.wiperMode = 2;
+    if (!on && this.wiperMode !== 0) {
+      this.wiperMode = 0;
+      this.wipeDir = 0;
+    }
     // settable from the pre-Drive settings panel: `rain` is read back by the
     // load's applySettings pass, so the world comes up wet either way
     if (this.loaded) {
@@ -3053,6 +3477,7 @@ export class Game {
 
   destroy() {
     this.disposed = true;
+    this.photoExit(); // no-op unless mid-photo; drops the mode's canvas listeners
     cancelAnimationFrame(this.raf);
     removeEventListener("keydown", this.onKeyDown);
     this.renderer.domElement.removeEventListener("pointerdown", this.onPointerDown);
@@ -3265,6 +3690,9 @@ export class Game {
     if (!dz) return;
     car.z += dz;
     this.loops += dz < 0 ? 1 : -1;
+    /* Laps completed: the high-water of `loops`, so reversing back across the
+       seam and re-crossing it forward cannot bank the same lap twice. */
+    if (this.loops > this.stats.laps) this.stats.laps = this.loops;
     this.chasePos.z += dz;
     this.lookPos.z += dz;
     this.camera.position.z += dz;
@@ -3286,8 +3714,54 @@ export class Game {
       whole town would be badly wrong. */
   private tunnelAmount() {
     const car = this.car;
-    if (this.cor.heightAt(car.x, car.z, 14) === null) return 0;
-    return clamp(this.cor.tunnelBlend(this.cor.zAt(car.x, car.z)), 0, 1);
+    if (this.cor.heightAt(car.x, car.z, 14) === null) {
+      /* Off the deck. The mountain pass climbs through a rock cut (uphill
+         face west, jittered rock both sides mid-route) — a one-sided canyon,
+         so it gets a PARTIAL enclosure, never a tunnel's. The fade envelope
+         is the same sstep window highway.ts's rockK() uses for the rock
+         HEIGHT, so what you hear closing in is exactly what is drawn closing
+         in, and both ends fade over ~50m — no hard cuts, the audio fade rule
+         is the light fade rule. 0.32 peak stays under the tunnel thump/
+         shimmer gates (0.5+), so the pass can never fire portal effects. */
+      const hit = this.world.routes?.surfaceAt(car.x, car.z, 2);
+      if (hit && hit.edgeId === MOUNTAIN_EDGE && this.world.routes) {
+        const len = this.world.routes.mtn.len;
+        const ss = (v: number) => {
+          const x = clamp(v, 0, 1);
+          return x * x * (3 - 2 * x);
+        };
+        return 0.32 * ss((hit.s - 18) / 50) * ss((len - 22 - hit.s) / 50);
+      }
+      return 0; // bypass viaduct and anywhere else off-deck: open air
+    }
+    const zc = this.cor.zAt(car.x, car.z);
+    let v = clamp(this.cor.tunnelBlend(zc), 0, 1);
+    /* Crossings overhead get a brief reverb kiss, faded in and out — the
+       girder overpasses (corridor.OVERPASSES) and the bypass deck where it
+       crosses the main route (routes.crossings). A slab 9m up does add a
+       real early reflection for the ~25m you are under it; 0.2-0.22 peak is
+       an audible flick of the tail, nowhere near the growl/thump territory
+       (those gate at 0.5+), and the 14m shoulder fade at 30m/s is ~half a
+       second each side — a swell, not a switch. */
+    for (const o of OVERPASSES) {
+      const half = o.girderW / 2, fade = 14;
+      const d = Math.abs(zc - o.z);
+      if (d < half + fade) {
+        const x = clamp(1 - (d - half) / fade, 0, 1);
+        v = Math.max(v, 0.22 * x * x * (3 - 2 * x));
+      }
+    }
+    const crossings = this.world.routes?.crossings;
+    if (crossings)
+      for (const cr of crossings) {
+        const mid = (cr.z0 + cr.z1) / 2, half = (cr.z1 - cr.z0) / 2, fade = 14;
+        const d = Math.abs(zc - mid);
+        if (d < half + fade) {
+          const x = clamp(1 - (d - half) / fade, 0, 1);
+          v = Math.max(v, 0.2 * x * x * (3 - 2 * x));
+        }
+      }
+    return v;
   }
 
   private tunnelUpdate(dt: number, now: number) {
@@ -3405,6 +3879,26 @@ export class Game {
       feed.push(e);
     }
     this.audio.updateNpcs(feed, car.x, car.z, car.wvx, car.wvz, car.h);
+    /* Pass-by whoosh: fire the one-shot at the exact frame an NPC's
+       longitudinal position relative to the player's heading changes sign —
+       the moment it crosses the player's ears, in either direction (the
+       unpassable rival re-passing the player is the loud case). Keyed on the
+       Npc object itself (WeakMap — dead cars just fall out), with a jump
+       guard so a spawn, despawn-reuse or seam splice teleporting a car
+       across the plane cannot read as a pass. */
+    const sh = Math.sin(car.h), ch = Math.cos(car.h);
+    for (const s of samples) {
+      if (!s.npc) continue;
+      const dx = s.x - car.x, dz = s.z - car.z;
+      const relLong = dx * sh + dz * ch;
+      const prev = this.passbyPrev.get(s.npc);
+      this.passbyPrev.set(s.npc, relLong);
+      if (prev === undefined) continue;
+      if ((prev > 0) === (relLong > 0)) continue;
+      if (Math.abs(relLong - prev) > 15) continue; // teleport, not a pass
+      const closing = Math.abs((s.vx - car.wvx) * sh + (s.vz - car.wvz) * ch);
+      this.audio.npcPassby(closing, dx * ch - dz * sh);
+    }
     for (const n of this.traffic.closeCalls()) {
       if (n.ccKind === "chirp") this.audio.npcChirp(n.x, n.z);
       else this.audio.npcHorn(n.x, n.z, n.type === "truck" || n.type === "bus");
@@ -4089,7 +4583,9 @@ export class Game {
     const dd = this.perfMode ? Math.min(scaled, 520) : scaled;
     for (const c of this.world.chunks) {
       const d = Math.hypot(c.cx - this.camera.position.x, c.cz - this.camera.position.z);
-      c.group.visible = d < dd;
+      // r: coarse buckets (the town light layers) cull on nearest-edge
+      // distance, so members near the cell's rim don't pop while lit
+      c.group.visible = d - (c.r ?? 0) < dd;
     }
     // the town lamp/pool shader fade (tintLampsSodium) tracks the SAME
     // distance the chunks just culled at, so a chunk's lamps finish fading
@@ -4098,6 +4594,17 @@ export class Game {
       this.lampFade.uFadeFar.value = dd;
       this.lampFade.uFadeNear.value = dd * 0.55;
     }
+    /* Async content landed since the load's compile pass (world.compileDirty
+       in data.ts): link its programs now, in the background where the driver
+       allows it, instead of on the frame the content first enters the view.
+       Riding this 6.25 Hz tick batches several arrivals into one walk. */
+    if (this.world.compileDirty && this.loaded) {
+      this.world.compileDirty = false;
+      this.renderer.compileAsync(this.scene, this.camera).catch(() => {});
+    }
+    // the roadside vegetation's screen-door dissolve tracks the same cull
+    // distance for the same reason (see WorldData.fadeFar)
+    if (this.world.fadeFar) this.world.fadeFar.value = dd;
   }
 
   private blinkOnNow(now: number) {
@@ -4132,6 +4639,7 @@ export class Game {
     this.hoodUpdate();
     this.lampWash(inside);
     this.cabinLightUpdate(dt);
+    this.mirrorDimUpdate(dt);
     /* Both in-car views now carry their own nav screen (drawScreen above), so
        the external HUD minimap is redundant in either — hide it. POV is the
        view the game is played in, and the head unit reads clearly there, so
@@ -4147,7 +4655,8 @@ export class Game {
          now is a map of somewhere else entirely. Drawing before the display
          flip means a stale frame is never on screen for even one frame. */
       if (mmapOn && !this.mmapWasOn)
-        drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
+        drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now,
+          this.mmapZoom ? this.mmapLoopOpts : undefined);
       mmapCv.style.display = mmapOn ? "block" : "none";
     }
     this.mmapWasOn = mmapOn;
@@ -4166,12 +4675,48 @@ export class Game {
     rig.sigMatL.emissiveIntensity = car.sigL && bOn ? 3 : 0;
     rig.sigMatR.emissiveIntensity = car.sigR && bOn ? 3 : 0;
     let wiping = false;
-    if (this.rain) {
-      const ph = Math.sin(now * 3.6) * 0.5 + 0.5;
-      const z = WIPER.rest - ph * WIPER.sweep;
+    if (this.wiperMode > 0) {
+      /* Mode-driven sweep (was: always-on sin while raining). The state
+         machine advances only while the sim runs, so a pause freezes the
+         arms mid-stroke instead of playing wiper audio under the menu —
+         updateCarVisual itself still runs while paused (the paused branch of
+         the frame loop calls it), which is also why the pose write below is
+         outside the `running` gate: the arms must HOLD their pose, not
+         vanish. */
+      if (this.running) {
+        const rate = WIPER_RATE[this.wiperMode];
+        if (this.wipeDir === 0) {
+          this.wipeWait -= dt;
+          // LO/HI never wait; INT waits out its pause parked
+          if (this.wiperMode !== 1 || this.wipeWait <= 0) {
+            this.wipeDir = 1;
+            // in-cabin sound only, like the trim creaks: from CHASE/HOOD the
+            // arms are hidden with the interior, and a swish with no arm on
+            // screen reads as a glitch rather than as weather
+            if (inside) this.audio.wiperSwipe(1 / rate, true);
+          }
+        }
+        if (this.wipeDir !== 0) {
+          this.wipeT += this.wipeDir * rate * dt;
+          if (this.wipeT >= 1) {
+            // reverse at the top — a wiper has no dwell up there
+            this.wipeT = 1;
+            this.wipeDir = -1;
+            if (inside) this.audio.wiperSwipe(1 / rate, false);
+          } else if (this.wipeT <= 0) {
+            this.wipeT = 0;
+            this.wipeDir = 0;
+            this.wipeWait = WIPER_INT_PAUSE;
+          }
+        }
+      }
+      const z = WIPER.park + this.wipeT * WIPER.sweep;
       rig.cockpit.wiperA.rotation.z = rig.cockpit.wiperB.rotation.z = z;
-      rig.cockpit.wiperA.visible = rig.cockpit.wiperB.visible = true;
-      wiping = true;
+      /* Hidden only while actually parked (INT sitting out its pause) — the
+         same buried-in-the-donor-dash reasoning as the dry branch below. */
+      const parked = this.wipeDir === 0 && this.wipeT < 0.02;
+      rig.cockpit.wiperA.visible = rig.cockpit.wiperB.visible = !parked;
+      wiping = this.wipeDir !== 0;
     } else {
       /* PARK, not rest. This used to ease to WIPER.rest, which is the RAISED
          end of the sweep — so switching the rain off left both arms standing
@@ -4188,6 +4733,10 @@ export class Game {
         rig.cockpit.wiperA.rotation.z, WIPER.park, 1 - Math.exp(-WIPER_PARK_EASE * dt)
       );
       rig.cockpit.wiperA.rotation.z = rig.cockpit.wiperB.rotation.z = z;
+      /* Mirror the eased pose back into the sweep state, so a mode switched
+         on mid-park resumes the arm from where it visibly is. */
+      this.wipeT = Math.max(0, (z - WIPER.park) / WIPER.sweep);
+      this.wipeDir = 0;
       /* HIDDEN once parked, and that is a decision rather than the missing
          half of the `visible = true` above.
 
@@ -4249,6 +4798,8 @@ export class Game {
           view: this.screenView,
           hover: this.screenHover,
           clickable: !this.isTouch && this.music.enabled,
+          dim: this.screenDim,
+          tripBase: this.tripBase,
         }
       );
     }
@@ -4398,6 +4949,162 @@ export class Game {
       Game.vnoise(z * 5.3 + seed * 1.7 + 91.7) * 0.3 +
       Game.vnoise(z * 11.7 + seed * 2.3 + 401.3) * 0.15
     );
+  }
+
+  /* ---------------- photo mode ---------------- */
+
+  /** Read by GameApp (the photo screen's hint) and the smoke test. */
+  get photoOn() {
+    return this.photo.on;
+  }
+
+  /** Called by GameApp's photoRequest right after setRunning(false) — the
+      pause is the UI's, this is only the camera and its listeners. Listeners
+      are bound here and removed in photoExit rather than living in
+      bindInput(), so outside the mode the canvas carries exactly the
+      listeners it always did and the drag/wheel handlers cannot leak input
+      into driving. */
+  photoEnter() {
+    if (this.photo.on || !this.loaded) return;
+    const ph = this.photo;
+    ph.on = true;
+    ph.yaw = this.car.h + PHOTO.yaw0;
+    ph.pitch = PHOTO.pitch0;
+    // + shell length so both cars open at the same framing, not the same radius
+    ph.dist = clamp(PHOTO.dist0 + this.spec.shell.L * 0.35, PHOTO.distMin, PHOTO.distMax);
+    ph.auto = true;
+    ph.shot = false;
+    ph.pinch0 = 0;
+    if (!this.photoCam) {
+      // near/far mirror the gameplay camera so the world culls identically
+      this.photoCam = new THREE.PerspectiveCamera(PHOTO.fov, this.camera.aspect, 0.08, 3400);
+      this.photoCam.layers.enable(LAYER_NOREF);
+    }
+    const el = this.renderer.domElement;
+    el.addEventListener("pointerdown", this.onPhotoPointerDown);
+    el.addEventListener("pointermove", this.onPhotoPointerMove);
+    el.addEventListener("pointerup", this.onPhotoPointerEnd);
+    el.addEventListener("pointercancel", this.onPhotoPointerEnd);
+    el.addEventListener("lostpointercapture", this.onPhotoPointerEnd);
+    el.addEventListener("wheel", this.onPhotoWheel, { passive: false });
+    this.photoUpdate(0);
+    this.ui.toast("PHOTO MODE");
+  }
+
+  photoExit() {
+    if (!this.photo.on) return;
+    this.photo.on = false;
+    this.photoPtrs.clear();
+    const el = this.renderer.domElement;
+    el.removeEventListener("pointerdown", this.onPhotoPointerDown);
+    el.removeEventListener("pointermove", this.onPhotoPointerMove);
+    el.removeEventListener("pointerup", this.onPhotoPointerEnd);
+    el.removeEventListener("pointercancel", this.onPhotoPointerEnd);
+    el.removeEventListener("lostpointercapture", this.onPhotoPointerEnd);
+    el.removeEventListener("wheel", this.onPhotoWheel);
+  }
+
+  private onPhotoPointerDown = (e: PointerEvent) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    this.photo.auto = false;
+    this.photo.pinch0 = 0; // re-measured on the first two-finger move
+    this.photoPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // keep the orbit alive when a drag leaves the window edge
+    try {
+      this.renderer.domElement.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+  private onPhotoPointerMove = (e: PointerEvent) => {
+    const p = this.photoPtrs.get(e.pointerId);
+    if (!p) return;
+    const ph = this.photo;
+    if (this.photoPtrs.size === 1) {
+      // grab-the-world: drag right, the car turns right in frame
+      ph.yaw -= (e.clientX - p.x) * PHOTO.dragSens;
+      ph.pitch = clamp(
+        ph.pitch + (e.clientY - p.y) * PHOTO.dragSens, PHOTO.pitchMin, PHOTO.pitchMax
+      );
+    }
+    p.x = e.clientX;
+    p.y = e.clientY;
+    if (this.photoPtrs.size === 2) {
+      // pinch zoom — the wheel's job, for the fingers the drawer routed here
+      const [a, b] = [...this.photoPtrs.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (ph.pinch0 > 0 && d > 0)
+        ph.dist = clamp(ph.dist * (ph.pinch0 / d), PHOTO.distMin, PHOTO.distMax);
+      ph.pinch0 = d;
+    }
+  };
+  private onPhotoPointerEnd = (e: PointerEvent) => {
+    this.photoPtrs.delete(e.pointerId);
+    this.photo.pinch0 = 0;
+  };
+  private onPhotoWheel = (e: WheelEvent) => {
+    e.preventDefault(); // the page has nothing to scroll; keep ctrl+wheel from zooming it
+    this.photo.auto = false;
+    this.photo.dist = clamp(
+      this.photo.dist * Math.exp(e.deltaY * PHOTO.wheelZoom), PHOTO.distMin, PHOTO.distMax
+    );
+  };
+
+  /** Runs in place of updateCamera() while the mode is up (loop()'s paused
+      branch) — the gameplay camera is deliberately not advanced, which is the
+      whole restoration story: it is bit-identical on exit because nothing
+      wrote to it. */
+  private photoUpdate(dt: number) {
+    const ph = this.photo, car = this.car, cam = this.photoCam!;
+    if (ph.auto) ph.yaw += PHOTO.autoRate * dt;
+    // track viewport changes through the gameplay camera's aspect, which
+    // onResize already maintains — one resize path, not two
+    if (cam.aspect !== this.camera.aspect) {
+      cam.aspect = this.camera.aspect;
+      cam.updateProjectionMatrix();
+    }
+    const tx = car.x, ty = car.y + PHOTO.aimY, tz = car.z;
+    const cp = Math.cos(ph.pitch);
+    cam.position.set(
+      tx + Math.sin(ph.yaw) * cp * ph.dist,
+      ty + Math.sin(ph.pitch) * ph.dist,
+      tz + Math.cos(ph.yaw) * cp * ph.dist
+    );
+    /* The deck clamp. Same heightAt call the chase camera floors itself with:
+       referenced to the car's own y, so on the elevated deck it reads the
+       deck, not the town street 12 m under it — a low orbit angle slides the
+       lens along just above the surface instead of through it. */
+    const floorY =
+      this.terrain.heightAt(cam.position.x, cam.position.z, car.y) + PHOTO.clearance;
+    if (cam.position.y < floorY) cam.position.y = floorY;
+    cam.lookAt(tx, ty, tz);
+  }
+
+  /** Arm-and-fire lives in loop(): the flag is consumed right after
+      post.process so toBlob reads the just-drawn buffer (no
+      preserveDrawingBuffer — the read must happen in the render's own task). */
+  private captureShot() {
+    let n = 1;
+    try {
+      n = (parseInt(localStorage.getItem("neonx-shot-n") || "0", 10) || 0) + 1;
+      localStorage.setItem("neonx-shot-n", String(n));
+    } catch {
+      n = this.photoShots + 1; // private mode etc. — session-local numbering
+    }
+    const name = `neon-expressway-${n}.png`;
+    this.renderer.domElement.toBlob((blob) => {
+      if (!blob) {
+        this.ui.toast("CAPTURE FAILED");
+        return;
+      }
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      // long enough for any browser to have opened the blob; not a leak either
+      // way, the next capture makes a new one
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      this.photoShots++;
+      this.ui.toast("SAVED " + name);
+    }, "image/png");
   }
 
   private updateCamera(dt: number) {
@@ -4751,6 +5458,9 @@ export class Game {
     } else {
       const grades = this.traffic.scoreEvents();
       if (grades.length) {
+        // stats ride the same feed — counted regardless of the score display
+        // setting, same as the combo itself is
+        this.stats.nearMisses += grades.length;
         nh.sinceAction = 0;
         let best = 0;
         for (const g of grades) {
@@ -4772,6 +5482,51 @@ export class Game {
     if (on && Math.abs(this.car.u) > NOHESI.speedFloor)
       nh.score += Math.abs(this.car.u) * nh.combo * NOHESI.pointsScale * dt;
     if (nh.score > nh.best) nh.best = nh.score;
+  }
+
+  /** Drive statistics — see the STATS block. One in-place accumulator fed
+      from values this frame already computed; near misses, crashes and laps
+      are banked at their own sources (noHesiUpdate, the crash gates,
+      loopSplice), so what's left here is the per-frame integration and the
+      2 Hz mountain-run probe. Runs only inside the `running` branch: paused
+      time is nobody's drive time. */
+  private statsUpdate(dt: number) {
+    const st = this.stats;
+    const sp = Math.abs(this.car.u);
+    if (sp > STATS.moveFloor) {
+      st.dist += sp * dt;
+      st.driveT += dt;
+      if (sp > st.topSpeed) st.topSpeed = sp;
+    }
+    if (this.noHesi.combo > st.bestCombo) st.bestCombo = this.noHesi.combo;
+
+    /* Mountain-pass runs: watch which route-graph edge is under the car (the
+       same surfaceAt() read the debug hook and resetCar already use — the
+       traffic and the graph itself are never touched) and bank a run when a
+       visit to the pass has spanned nearly its whole arclength. The span is
+       a min/max of sampled s, so it counts a traversal in either direction
+       and a U-turn halfway counts nothing. */
+    st.routeT -= dt;
+    if (st.routeT > 0) return;
+    st.routeT = STATS.routeEvery;
+    const hit = this.world.routes?.surfaceAt(this.car.x, this.car.z, 2);
+    if (hit && hit.edgeId === MOUNTAIN_EDGE) {
+      if (!st.mtnOn) {
+        st.mtnOn = true;
+        st.mtnLo = st.mtnHi = hit.s;
+      } else {
+        if (hit.s < st.mtnLo) st.mtnLo = hit.s;
+        if (hit.s > st.mtnHi) st.mtnHi = hit.s;
+      }
+      st.mtnOffT = 0;
+    } else if (st.mtnOn) {
+      st.mtnOffT += STATS.routeEvery;
+      if (st.mtnOffT > STATS.mtnGrace) {
+        st.mtnOn = false;
+        const mt = this.world.routes?.mtn;
+        if (mt && st.mtnHi - st.mtnLo >= mt.len * STATS.mtnSpan) st.mtnRuns++;
+      }
+    }
   }
 
   private hud(now: number, dt: number) {
@@ -4907,6 +5662,9 @@ export class Game {
         if (hitInfo.relSpeed > 2.5 && this.crashCooldown <= 0) {
           this.crashCooldown = 0.4;
           this.audio.crash(hitInfo.relSpeed);
+          // stats: "a crash" is a hit worth the crash sound, and the same
+          // cooldown that stops a chorus stops one scrape counting as five
+          this.stats.crashes++;
           this.car.damage += hitInfo.relSpeed * 0.5;
           // dashcam impact glitch: gated on POV here (not inside dashcamHit)
           // so a hit taken in another camera doesn't arm a burst that fires
@@ -4918,6 +5676,7 @@ export class Game {
       if (res.wallImpact > 4 && this.crashCooldown <= 0) {
         this.crashCooldown = 0.4;
         this.audio.crash(res.wallImpact);
+        this.stats.crashes++;
         if (this.camMode === CAM_POV) this.post.dashcamHit(res.wallImpact);
       }
       this.camera.getWorldDirection(this.tmpV);
@@ -4929,6 +5688,8 @@ export class Game {
       this.hiFlashPulse = false; // one press, one gesture — consumed here
       // after traffic.update() — scoreEvents() reads this frame's feed
       this.noHesiUpdate(dt, noHesiHit);
+      // after noHesiUpdate so the frame's combo is what bestCombo sees
+      this.statsUpdate(dt);
       /* Per SECOND, not per rendered frame. This gate was a flat 0.35 chance
          every frame, so a 120 Hz display made four times the smoke a 30 Hz one
          did — everything inside fx.ts is dt-scaled and this was the last term
@@ -4974,7 +5735,8 @@ export class Game {
       }
       if (this.mmapVisible() && this.frameN % 4 === 0) {
         const mmapCv = this.miniMap();
-        if (mmapCv) drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
+        if (mmapCv) drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now,
+          this.mmapZoom ? this.mmapLoopOpts : undefined);
       }
     } else {
       this.acc = 0;
@@ -4982,7 +5744,12 @@ export class Game {
       // was sounding at the moment the pause landed
       this.scrapeUpdate(dt, false, 0, 0);
       this.updateCarVisual(now, dt);
-      this.updateCamera(dt);
+      /* Photo mode replaces the camera update, not the camera: the gameplay
+         camera keeps the exact state the last driving frame left it with
+         (photoUpdate never touches it), so exiting restores the view by
+         construction. Everything else in this branch runs as any pause. */
+      if (this.photo.on) this.photoUpdate(dt);
+      else this.updateCamera(dt);
       this.weather(0, now);
       // keep the tunnel look correct while paused; the thump stays gated on
       // `running` so unpausing inside a tunnel can't fire one
@@ -5003,10 +5770,13 @@ export class Game {
        one quarter-res pass. reflectionsOn still folds in the tier, and setWet
        has zeroed uRefStr to match, so `false` costs nothing on either side. */
     this.post.setReflect(this.reflectionsOn);
-    this.camera.updateMatrixWorld();
+    // photo mode renders through its own camera; the gameplay one is not
+    // advanced or drawn while the mode is up (see photoUpdate)
+    const cam = this.photo.on && this.photoCam ? this.photoCam : this.camera;
+    cam.updateMatrixWorld();
     this.renderer.setRenderTarget(this.post.sceneRT);
     this.renderer.clear();
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.render(this.scene, cam);
     const f = this.dayFactor();
     this.post.setSpeed(Math.abs(this.car.u) * 3.6);
     // the extreme degrade is a property of the camera, not a user filter — the
@@ -5018,7 +5788,11 @@ export class Game {
     // hard-mounted view instead; that has not been true since the cap was
     // opened up, and reasoning about the mobile POV frame from it leads
     // straight to the wrong conclusion.
-    this.post.setDashcamPov(this.camMode === CAM_POV && this.tierCaps.dashcam);
+    // in photo mode the dashcam's degrade must not stamp itself on the shot —
+    // the lens on duty is the photo camera, whatever camMode is waiting behind it
+    this.post.setDashcamPov(
+      !this.photo.on && this.camMode === CAM_POV && this.tierCaps.dashcam
+    );
     this.post.process({
       // inside the tunnel the eye adapts to a much darker box: lift exposure
       // so the sodium strip and the walls read, instead of crushing to black
@@ -5054,6 +5828,12 @@ export class Game {
       // frame delta to stay 40 ms at any frame rate (post.ts POV_MB_TAU).
       dt,
     });
+    // after post.process: the composite just drew this frame to the canvas,
+    // and toBlob must read it in the same task (no preserveDrawingBuffer)
+    if (this.photo.on && this.photo.shot) {
+      this.photo.shot = false;
+      this.captureShot();
+    }
     this.perfCheck(performance.now() - t0, dt);
   };
 }
