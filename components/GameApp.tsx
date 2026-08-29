@@ -452,7 +452,7 @@ export default function GameApp() {
               <b>W / S</b><span>throttle · brake &amp; reverse</span>
               <b>A / D</b><span>steer</span>
               <b>Space</b><span>handbrake (drift)</span>
-              <b>C</b><span>camera: chase → cockpit → hood → console → dashcam</span>
+              <b>C</b><span>camera: chase → cockpit → hood → console → backseat → dashcam</span>
               <b>B</b><span>look back (chase &amp; cockpit)</span>
               <b>Q / E</b><span>turn signals</span>
               <b>F</b><span>horn (traffic speeds up)</span>

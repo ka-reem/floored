@@ -254,8 +254,9 @@ const HI_HOLD = 2;
 
    These are NOT in cycle order any more; see CAM_CYCLE below. */
 const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3, CAM_CONSOLE = 4;
-const CAM_COUNT = 5;
-const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE"];
+const CAM_BACKSEAT = 5;
+const CAM_COUNT = 6;
+const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE", "BACKSEAT"];
 /* CYCLE ORDER IS NOT NUMERIC ORDER, and the split is deliberate.
 
    AGENTS.md requires the dashcam to be LAST in the cycle — it is the view the
@@ -265,11 +266,13 @@ const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE"];
    every existing player into whatever took index 3. CAM_CONSOLE therefore takes
    the free index at the end and the cycle walks this table instead of
    incrementing, which keeps both promises at once. CAM_NAMES stays indexed by
-   camMode, not by cycle position.
+   camMode, not by cycle position. CAM_BACKSEAT takes the next free index for
+   the same reason, and slots into the cycle just before the dashcam so the
+   walk still ends on the view that ships.
 
    Anything not in the table (a hand-edited profile) falls to CHASE on the next
    press rather than sticking. */
-const CAM_CYCLE = [CAM_CHASE, CAM_COCKPIT, CAM_HOOD, CAM_CONSOLE, CAM_POV];
+const CAM_CYCLE = [CAM_CHASE, CAM_COCKPIT, CAM_HOOD, CAM_CONSOLE, CAM_BACKSEAT, CAM_POV];
 const nextCam = (m: number) => CAM_CYCLE[(CAM_CYCLE.indexOf(m) + 1) % CAM_CYCLE.length];
 
 /* Dashcam mount, as an offset from the driver's eye (see cockpit.ts EYE): high
@@ -434,6 +437,49 @@ const CHASE_SHAKE = 0;
    = -0.1` re-frames on the next frame — because this is the view whose whole
    point is being moved around. Settled values come back here. */
 const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
+
+/* Backseat camera (CAM_BACKSEAT): a passenger's phone held up from the rear
+   bench, looking forward past the front headrests and out the windscreen —
+   the "night drive vlog" frame. Player-facing (AGENTS.md 2026-08-28: every
+   camera ships), so it is framed to be looked at, not to debug from.
+
+   The rear bench is real geometry in BOTH interiors: cockpit.ts builds it
+   (squab z -1.02, backrest z -1.24, headrests x ±0.36 / y 1.22, parcel shelf
+   z -1.5) outside any merge region, so the donor swap keeps it, and the donor
+   brings its own rear doors/roof back to z -1.95 on top. Nothing here is
+   framing a hollow shell.
+
+   Like the other two in-car brackets this is a rigid mount — body motion
+   only, no head springs, no look-back. Every number below was picked off
+   real frames (headless night runs, tunnel/bypass/town), not computed:
+
+   - x 0: the MIDDLE seat. Behind either outer seat the seatback in front
+     owns most of the frame as an unreadable black mass (measured: at
+     x -0.30 the passenger seatback covered two thirds of the shot), and a
+     yaw big enough to see past it points the lens at a door card. From the
+     centre the two seatbacks become bookends instead of obstructions, and
+     the lit console runs a leading line down the middle of the frame.
+   - y 1.30: OVER the front seat shoulders, under the headliner (1.375).
+     At passenger chest height (1.18) the windscreen is a slot a few
+     degrees tall between the seats; at 1.30 the lens clears the seatback
+     tops, and road, mirror and both headrests compose in one band across
+     the frame. The rear headrests (y ~1.28, z -1.3) stay just behind and
+     below the lens.
+   - z -1.10: knee line of the bench (squab z -1.02, backrest z -1.24) —
+     far enough back that both headrests stay in frame as silhouettes,
+     far enough forward that the C-pillars do not crowd the sides.
+   - fov 72: a phone main lens, a hair wider than the dashcam's 67 default,
+     read the same additive way — see backseatFov().
+   - tilt 0.04 of nose-down settles the horizon and keeps the road band
+     under the mirror rather than behind it.
+   - yaw 0: shipped straight. The field exists because this is the one
+     bracket whose whole point is a framed COMPOSITION, and off-axis
+     variants (the "phone aimed across the cabin" look) are one knob write
+     away for anyone tuning — positive yaw looks toward the passenger side.
+
+   Live knob, same pattern as __consoleCam — `window.__backseatCam.y = 1.2`
+   re-frames on the next frame. Settled values come back here. */
+const BACKSEAT_CAM = { x: 0, y: 1.30, z: -1.10, fov: 72, tilt: 0.04, yaw: 0 };
 
 /* ---------------------------------------------------------- cabin lighting --
 
@@ -851,6 +897,7 @@ declare global {
     __cockpitEye?: { dy: number; dz: number };
     __chaseShake?: number;
     __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number };
+    __backseatCam?: { x: number; y: number; z: number; fov: number; tilt: number; yaw: number };
     __roofTap?: { top: number; half: number };
     __hood?: { on: number; dy: number; dz: number };
     __cabinVibe?: { amp: number; pow: number; slip: number };
@@ -934,8 +981,8 @@ const POV_FOV_MAX = 100;
    shipped. If settings.ts's default ever moves, this moves with it or the
    console camera silently re-frames for everyone. */
 const FOV_SLIDER_REF = 67;
-/* Sanity bound on the console lens, well clear of the 116 the top of the
-   slider asks for. Same job as POV_FOV_MAX and nothing more: settings.ts
+/* Sanity bound on the console and backseat lenses, well clear of the 116 the
+   top of the slider asks for. Same job as POV_FOV_MAX and nothing more: settings.ts
    type-checks fovBase but does not range-check it, so a profile can carry any
    number at all, and a projection matrix is not the place to find that out. */
 const CONSOLE_FOV_MAX = 130;
@@ -1218,6 +1265,16 @@ export class Game {
     return window.__consoleCam;
   }
 
+  /** Mount, lens, cant and aim for the backseat camera — see BACKSEAT_CAM for
+      where every number comes from. Not split by interior for the same reason
+      consoleCam() is not: the view is aimed out the windscreen over geometry
+      (the bench, the front seatbacks) that both cabins place, and a knob that
+      moved under the J toggle would be useless for tuning. */
+  private backseatCam(): { x: number; y: number; z: number; fov: number; tilt: number; yaw: number } {
+    if (!window.__backseatCam) window.__backseatCam = { ...BACKSEAT_CAM };
+    return window.__backseatCam;
+  }
+
   /** Is the camera inside the cabin? Interior shell on, exterior body off, HUD
       minimap suppressed (every in-car view carries the head unit's own map),
       nav panel clickable, cabin trim audible, rear view rendered.
@@ -1232,7 +1289,8 @@ export class Game {
       not use this. */
   private inCar(): boolean {
     return (
-      this.camMode === CAM_COCKPIT || this.camMode === CAM_POV || this.camMode === CAM_CONSOLE
+      this.camMode === CAM_COCKPIT || this.camMode === CAM_POV || this.camMode === CAM_CONSOLE ||
+      this.camMode === CAM_BACKSEAT
     );
   }
 
@@ -1315,6 +1373,21 @@ export class Game {
   private consoleFov(aspect: number): number {
     const base = clamp(
       this.consoleCam().fov + (clamp(this.settings.fovBase, 58, POV_FOV_MAX) - FOV_SLIDER_REF),
+      40, CONSOLE_FOV_MAX
+    );
+    return this.lensFov(base, aspect);
+  }
+
+  /** The backseat camera's lens: same contract as consoleFov(), same reasons.
+      BACKSEAT_CAM.fov is the framing at the slider's default, MOVED BY the
+      slider's degrees from there (additive — the multiplicative form is what
+      gave the console its stretch report), then through the shared aspect
+      machinery so a phone rotation keeps the framing. Own baseline rather
+      than povFov()'s because a phone main lens is a touch wider than the
+      dashcam, and the two should be free to disagree. */
+  private backseatFov(aspect: number): number {
+    const base = clamp(
+      this.backseatCam().fov + (clamp(this.settings.fovBase, 58, POV_FOV_MAX) - FOV_SLIDER_REF),
       40, CONSOLE_FOV_MAX
     );
     return this.lensFov(base, aspect);
@@ -4572,6 +4645,33 @@ export class Game {
       this.camera.rotation.y = car.h + Math.PI;
       this.camera.rotation.x = -this.rig.bodyG.rotation.x - k.tilt;
       this.camera.rotation.z = -this.rig.bodyG.rotation.z;
+    } else if (this.camMode === CAM_BACKSEAT) {
+      /* Passenger's phone on the rear bench — see BACKSEAT_CAM. Same rigid
+         treatment as the console bracket (body motion only, head parked on
+         entry so COCKPIT re-enters centred), plus the one thing a phone has
+         that a bracket does not: a fixed off-axis yaw toward the road. */
+      if (this.lastCamMode !== CAM_BACKSEAT) {
+        this.head.x = this.head.y = this.head.z = this.head.roll = 0;
+        this.head.vx = this.head.vy = this.head.vz = this.head.vroll = 0;
+        this.lookaheadYaw = 0;
+        this.lbLean = 0;
+      }
+      const P = this.spec.shell;
+      const k = this.backseatCam();
+      this.camera.position.copy(
+        this.rig.bodyG.localToWorld(
+          this.tmpV.set(
+            // x scaled with the shell so the lens stays behind the passenger
+            // seat, not behind a door card, on a narrower car
+            k.x * (P.W / COCKPIT_REF.W),
+            P.belt - COCKPIT_REF.belt + k.y,
+            k.z
+          )
+        )
+      );
+      this.camera.rotation.y = car.h + Math.PI + k.yaw;
+      this.camera.rotation.x = -this.rig.bodyG.rotation.x - k.tilt;
+      this.camera.rotation.z = -this.rig.bodyG.rotation.z;
     } else {
       const back = this.lookBack ? Math.PI : 0;
       this.head.vx += (-car.ayS * 0.006 - this.head.x * 46) * dt;
@@ -4705,7 +4805,9 @@ export class Game {
         ? this.povFov(this.camera.aspect)
         : this.camMode === CAM_CONSOLE
           ? this.consoleFov(this.camera.aspect)
-          : this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
+          : this.camMode === CAM_BACKSEAT
+            ? this.backseatFov(this.camera.aspect)
+            : this.settings.fovBase + clamp(Math.abs(car.u) * 0.21, 0, 19) * kickM;
     if (Math.abs(this.camera.fov - fovT) > 0.25) {
       this.camera.fov = fovT;
       this.camera.updateProjectionMatrix();
