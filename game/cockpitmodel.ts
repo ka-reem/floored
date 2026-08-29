@@ -569,6 +569,26 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
     }
     // the donor's own rim replaces ours; the moulded hands go with it
     for (const c of proceduralWheel) c.visible = false;
+
+    /* Seat the wheel a column-adjustment lower than the donor authored it.
+       From the dashcam the rim's upper arc crossed the cluster mid-face: it
+       buried the gear digit and the digital speed at center, and the spokes
+       swept over the tacho needle at half lock ("the wheel covers the dash").
+       Geometry of the sightline: the lens sits ~0.29 m behind the rim and
+       ~0.54 m ahead of the cluster face, so the arc's shadow on the cluster
+       moves ~1.86x any wheel move — 28 mm down here walks the arc ~52 mm down
+       the 154 mm cluster face, from mid-dial to below the dial numbers. The
+       3% shrink (a 37 cm rim instead of 38) buys the last ~6 mm. Both are
+       within a real car's column/trim spread, and the hub stays below the
+       frame edge in POV, so nothing reads as floating.
+
+       Applied AFTER the re-parenting above, deliberately: the locals were
+       taken against the un-nudged axisG matrix, so the rim sits exactly on
+       the fitted pivot and the whole assembly — pivot and rim together —
+       drops and shrinks as one. Nudging before that inverse would bake the
+       offset into the locals and move nothing while un-centering the spin. */
+    axisG.position.y -= 0.028;
+    axisG.scale.setScalar(0.97);
   }
 
   /* --- fill light --------------------------------------------------------- */
