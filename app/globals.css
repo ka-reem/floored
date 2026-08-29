@@ -302,13 +302,21 @@ html.cursor-idle * {
   border-radius: var(--r-md);
   border: 1px solid var(--border);
   background: rgba(8, 10, 18, 0.78);
-  /* Engine only ever draws to this canvas, never reads input from it — and on
-     phones it sits (see body.touch #mmap below) directly above the throttle
-     puck, so a double-tap aimed at the pedal that lands a few px high used to
-     hit a plain default-gesture canvas instead: double-tap zoom, the loupe,
-     the lot. pointer-events:none drops the touch straight through to
-     canvas.game underneath, which already carries touch-action:manipulation. */
+  /* On phones this canvas sits (see body.touch #mmap below) directly above
+     the throttle puck, so a double-tap aimed at the pedal that lands a few px
+     high used to hit a plain default-gesture canvas instead: double-tap zoom,
+     the loupe, the lot. pointer-events:none drops the touch straight through
+     to canvas.game underneath, which already carries touch-action:
+     manipulation. */
   pointer-events: none;
+}
+/* Desktop is the one place the map takes input: a click cycles its zoom
+   (GameApp routes pointerdown through the Z key's handler). Scoped off
+   body.touch so the pedal protection above is untouched on phones — there
+   the drawer's MAP ZOOM row is the way in. */
+body:not(.touch) #mmap {
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 /* ---------- Menu ---------- */

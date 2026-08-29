@@ -316,9 +316,17 @@ export default function GameApp() {
       </div>
       <div id="toast" style={{ opacity: toast ? 1 : 0 }}>{toast}</div>
       <div id="exitHint" style={{ opacity: exitHint && playing ? 1 : 0 }}>{exitHint}</div>
+      {/* Desktop only: a click on the map cycles its zoom, routed through the
+          Z key's own handler so the two can never drift (same uiKeyTap path
+          the touch drawer uses). On touch the canvas keeps pointer-events:none
+          (globals.css) — it sits over the throttle puck — so this handler is
+          unreachable there and the drawer's MAP ZOOM row stands in. */}
       <canvas
         id="mmap" width={172} height={172}
         style={{ display: playing && g?.mmap ? "block" : "none" }}
+        onPointerDown={(e) => {
+          if (e.button === 0) g?.uiKeyTap("z");
+        }}
       />
       {playing && (
         <div
@@ -489,6 +497,7 @@ export default function GameApp() {
               <b>T</b><span>time-lapse</span>
               <b>V</b><span>dashcam grade (the DASHCAM view forces its own, harder)</span>
               <b>X</b><span>minimap</span>
+              <b>Z</b><span>map zoom: close-up ↔ whole loop (or click the map)</span>
               <b>N</b><span>reset to nearest road</span>
               <b>H</b><span>this help screen</span>
               <b>I</b><span>interior light (off by default — the cabin is meant to be dark)</span>
@@ -690,6 +699,7 @@ function QuickDrawer({
   const rows: { k: string; en: string; jp: string; state: string; on: boolean }[] = [
     { k: "l", en: "HEADLIGHTS", jp: "ライト", state: game.car.lightsUser ? "ON" : "AUTO", on: game.car.lightsUser },
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
+    { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
     { k: "r", en: "RAIN", jp: "雨", state: game.rain ? "ON" : "OFF", on: game.rain },
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },

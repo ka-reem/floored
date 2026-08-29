@@ -458,6 +458,11 @@ export interface GameSettings {
   rain: boolean;
   /** HUD minimap visible (X in game) */
   mmap: boolean;
+  /** HUD minimap framing (Z in game, or clicking the map on desktop, or the
+      touch drawer's MAP ZOOM row): false = close-up follow, true = the whole
+      loop in one fixed frame (minimap.ts `zoom`). The head unit's nav pane is
+      not covered — it keeps its own follow framing. */
+  mmapZoom: boolean;
   /** manual render-tier override; "auto" defers to device detection */
   tierOverride: TierOverride;
   /** the imported (donor) interior for cars that have one — "auto" defers to
@@ -528,6 +533,9 @@ export const defaultSettings = (): GameSettings => ({
   time: 21.4,
   rain: false,
   mmap: true,
+  // close-up follow: the framing the map has always had, and the one that
+  // reads at a glance while driving — the overview is the opt-in
+  mmapZoom: false,
   tierOverride: "auto",
   /* Auto, which now means "load it unless this device visibly cannot" rather
      than the old "only on hardware we recognised". */
@@ -594,7 +602,7 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
  *  turn them off instead of ignoring the bad value. */
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
-  "autoTime", "rain", "mmap", "rival", "rivalSignals", "testMode",
+  "autoTime", "rain", "mmap", "mmapZoom", "rival", "rivalSignals", "testMode",
   "noHesiScore",
 ] as const;
 

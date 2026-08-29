@@ -34,7 +34,7 @@ import { MusicPlayer } from "./music";
 import { hitScreen, type ScreenAction, type ScreenView } from "./carscreen";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
-import { drawMiniMap } from "./minimap";
+import { drawMiniMap, type MiniMapOpts } from "./minimap";
 
 const WX_SVG = (body: string) =>
   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">${body}</svg>`;
@@ -1374,6 +1374,8 @@ export class Game {
   }
   mirror = true;
   mmap = true;
+  /** HUD map framing (Z / map click / drawer row): true = whole-loop overview */
+  mmapZoom = false;
   time = 21.4;
   timeSpeed = 150;
   perfMode = false;
@@ -1567,6 +1569,7 @@ export class Game {
     this.rain = profile.settings.rain;
     this.time = profile.settings.time;
     this.mmap = profile.settings.mmap;
+    this.mmapZoom = profile.settings.mmapZoom;
     this.carId = profile.carId;
     this.paintIx = profile.paintIx;
     this.seed = profile.seed;
@@ -2404,6 +2407,19 @@ export class Game {
       if (cv) cv.style.display = this.mmap ? "block" : "none";
       this.ui.toast("MAP " + (this.mmap ? "ON" : "OFF"));
     }
+    /* Map zoom — Z for its initial, and it was free (see the key inventory on
+       the I handler above; Z joins it). Cycles the HUD map between the
+       close-up follow and the whole-loop overview (minimap.ts `zoom`). Three
+       ways in, one body: this key, a click on the map itself (GameApp routes
+       the canvas's pointerdown through uiKeyTap("z") — desktop only, the
+       canvas keeps pointer-events:none on touch so it can't eat a throttle
+       tap), and the touch drawer's MAP ZOOM row. Next %4 frame repaints, so
+       no forced redraw is needed here. */
+    if (k === "z") {
+      this.mmapZoom = !this.mmapZoom;
+      this.settings.mmapZoom = this.mmapZoom;
+      this.ui.toast("MAP " + (this.mmapZoom ? "WHOLE LOOP" : "CLOSE-UP"));
+    }
     /* In-dash music transport. P / , / . are the only free keys left that map
        to the convention people already have in their fingers (P for play-
        pause, and the , . pair which carry < > as their shifted glyphs, i.e.
@@ -2890,6 +2906,9 @@ export class Game {
   }
   /** last mmapVisible(), so the reveal can repaint before it is shown */
   private mmapWasOn = false;
+  /** the overview framing's opts, held so the per-frame draw allocates
+      nothing; the follow framing is drawMiniMap's default (undefined) */
+  private mmapLoopOpts: MiniMapOpts = { zoom: "loop" };
 
   /* Held on the Game rather than rebuilt per frame: readInput runs at frame
      rate and these two closures never change. Bodies are deliberately the
@@ -3018,6 +3037,7 @@ export class Game {
        would fight the day/night cycle. */
     this.grade = s.dashcam;
     this.mmap = s.mmap;
+    this.mmapZoom = s.mmapZoom;
     if (this.rain !== s.rain) this.setRain(s.rain);
     // re-resolve the tier: the manual override lives in these settings, and a
     // change has to land on the same frame the settings panel applies it
@@ -4332,7 +4352,8 @@ export class Game {
          now is a map of somewhere else entirely. Drawing before the display
          flip means a stale frame is never on screen for even one frame. */
       if (mmapOn && !this.mmapWasOn)
-        drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
+        drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now,
+          this.mmapZoom ? this.mmapLoopOpts : undefined);
       mmapCv.style.display = mmapOn ? "block" : "none";
     }
     this.mmapWasOn = mmapOn;
@@ -5315,7 +5336,8 @@ export class Game {
       }
       if (this.mmapVisible() && this.frameN % 4 === 0) {
         const mmapCv = this.miniMap();
-        if (mmapCv) drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now);
+        if (mmapCv) drawMiniMap(mmapCv, this.world, this.car, this.traffic.npcs, now,
+          this.mmapZoom ? this.mmapLoopOpts : undefined);
       }
     } else {
       this.acc = 0;
