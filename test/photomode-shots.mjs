@@ -35,14 +35,38 @@ async function startDev() {
   });
   await new Promise((resolve, reject) => {
     const to = setTimeout(() => reject(new Error("next dev timeout")), 120000);
-    child.stdout.on("data", (d) => {
-      if (/Ready|started server/.test(d.toString())) {
+    /* Next 16 prints "Ready" and THEN bows out if another dev server holds
+       this directory (a previous run's server surviving its SIGTERM does it),
+       so "Ready" alone is a lie — watch both streams for the refusal and say
+       which server to reuse instead of dying later on ERR_CONNECTION_REFUSED. */
+    const watch = (d) => {
+      const s = d.toString();
+      if (/already running/.test(s)) {
+        clearTimeout(to);
+        reject(new Error(
+          "another `next dev` owns this dir — rerun with --url pointing at it:\n" + s
+        ));
+      } else if (/Ready|started server/.test(s)) {
         clearTimeout(to);
         resolve();
       }
-    });
+    };
+    child.stdout.on("data", watch);
+    child.stderr.on("data", watch);
     child.on("exit", (c) => reject(new Error("next dev exited " + c)));
   });
+  /* "Ready" can print BEFORE the already-running refusal (observed order:
+     Ready → refusal → exit), so only an answered request proves the server
+     is really this one. */
+  for (let i = 0; ; i++) {
+    try {
+      await fetch(URL);
+      break;
+    } catch {
+      if (i > 60) throw new Error("next dev reported Ready but never served " + URL);
+      await sleep(1000);
+    }
+  }
   return child;
 }
 
