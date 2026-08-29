@@ -4098,6 +4098,9 @@ export class Game {
       this.lampFade.uFadeFar.value = dd;
       this.lampFade.uFadeNear.value = dd * 0.55;
     }
+    // the roadside vegetation's screen-door dissolve tracks the same cull
+    // distance for the same reason (see WorldData.fadeFar)
+    if (this.world.fadeFar) this.world.fadeFar.value = dd;
   }
 
   private blinkOnNow(now: number) {

@@ -70,6 +70,12 @@ export interface WorldData {
   routes?: RouteGraph;
   exits: ExitInfo[];
   chunks: { group: THREE.Group; cx: number; cz: number }[];
+  /** Live draw-distance uniform for chunked dressing that FADES rather than
+      pops (roadside.ts vegetation): chunksUpdate() writes the same scaled
+      distance it culls world.chunks at, and every dissolve shader reads it —
+      so the fade always finishes inside the cull radius, whatever the tier
+      or the perf cap are doing to it this frame. */
+  fadeFar?: { value: number };
   // weather-dimmable references
   neonMats: THREE.Material[];
   glowPts?: THREE.Points;
