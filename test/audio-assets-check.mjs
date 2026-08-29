@@ -64,7 +64,7 @@ function sniffWav(path) {
 }
 
 // Loops that must keep their original 44.1k data (seam-exact playback).
-const MUST_44K = new Set(['eng0', 'eng1', 'eng2', 'eng3', 'skid']);
+const MUST_44K = new Set(['eng0', 'eng1', 'eng2', 'eng3', 'eng4', 'skid']);
 
 let failed = false;
 let total = 0;

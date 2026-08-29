@@ -5,33 +5,56 @@ obtained under. Most assets are CC0 / public domain; assets requiring credit
 are identified explicitly below so the provenance of every shipped asset is
 auditable.
 
-## NPC vehicle bodyshells — `public/models/cars/*.glb` + `public/models/cars-hd/*.glb`
+## NPC vehicle bodyshells — `public/models/cars/*.glb`
 
-The 2026-08-28 hi-fi fleet. Eight of the nine styles are baked by
-`tools/build-hifi-models.mjs` from five CC-BY Sketchfab donors (the ninth,
-`truck`, still ships from the Orchids pack below). Each donor's interiors
-and occluded geometry are removed by a multi-view visibility pass, hero
-wheels are removed as connected components (the shared instanced wheels
-take over; the civil-pack styles keep their authored wheels, welded to the
-shell), the remainder is rear-bias simplified, and every style is packed
-onto a single 512px (BASE) or 1024px (HD, desktop-only lazy upgrade)
-JPEG atlas with quantized vertex attributes.
+**Current state (2026-08-29): eight of the nine styles ship from the Orchids
+pack below; only `bus` ships from the 2026-08-28 hi-fi bake.** The hi-fi
+fleet lasted one evening on the road: the owner sent taxi/police/van back to
+the Orchids bakes the same day (`fc4fda1` — the civil-pack versions read
+"glitched and angled"), then sedan/hybrid/compact/suv (`8f85877` — "the old
+bakes read better"), and the desktop HD upgrade parked with them
+(`public/models/cars-hd/` deleted, `HD_STYLES` emptied in
+`game/npcmodels.ts`; the pipeline and tier gate remain for a future bake).
 
 | Style | Donor | Author | Licence | Source |
 |---|---|---|---|---|
-| sedan | Toyota Camry 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/236a5a6e2fa6420fbdf641f4800cd544 |
+| sedan | Hyundai Accent 2013 | I95XP | **CC BY 4.0** | https://sketchfab.com/3d-models (uid via docs/handoff — owner pick #23) |
+| suv | Toyota Fortuner 2021 | Asadawut.Kaewma | **CC BY 4.0** | owner pick #3 |
+| compact | Honda Civic Type R '98 | tiedtke | **CC BY 4.0** | owner pick #99 |
+| (prior heroes, superseded) Toyota Camry 2020 etc. | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/236a5a6e2fa6420fbdf641f4800cd544 |
 | hybrid | Toyota Prius 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/ad0d925cb51040798d96f166db8c7f80 |
 | compact | Volkswagen Golf GTI 2021 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/82a55610817646539ce699a6aaa5dda0 |
 | suv | Toyota Highlander 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/ff144d062f244a3ebfae71bc2a41564b |
 | taxi, police, van, bus | Generic civil service vehicles pack | comrade1280 | **CC BY 4.0** | https://sketchfab.com/3d-models/8ff2a13f30914932a70c7950cfa58465 |
 
+| | |
+|---|---|
+| Asset | Generic civil service vehicles pack (the bus) |
+| Author | comrade1280 |
+| Licence | **CC BY 4.0** — commercial use and modification permitted with credit |
+| Source | https://sketchfab.com/3d-models/8ff2a13f30914932a70c7950cfa58465 |
+
+Baked by `tools/build-hifi-models.mjs`: interiors and occluded geometry
+removed by a multi-view visibility pass, authored wheels kept welded to the
+shell, packed onto a 512px JPEG atlas with quantized vertex attributes.
 Rebuild (donor .gltf exports unzipped one-per-directory, not in the repo):
 
     node tools/build-hifi-models.mjs --dl <donor-dir>          # BASE fleet
     node tools/build-hifi-models.mjs --dl <donor-dir> --hd \
-        sedan hybrid compact suv                               # HD upgrade
+        sedan hybrid compact suv                               # HD upgrade (parked)
 
-## Previous NPC bodyshells (truck still ships) — `public/models/cars/truck.glb`
+### Baked 2026-08-28, no longer shipped (kept for provenance — the files
+remain in git history)
+
+| Style | Donor | Author | Licence | Source |
+|---|---|---|---|---|
+| sedan | Toyota Camry 2020 | ItsDiyor | CC BY 4.0 | https://sketchfab.com/3d-models/236a5a6e2fa6420fbdf641f4800cd544 |
+| hybrid | Toyota Prius 2020 | ItsDiyor | CC BY 4.0 | https://sketchfab.com/3d-models/ad0d925cb51040798d96f166db8c7f80 |
+| compact | Volkswagen Golf GTI 2021 | ItsDiyor | CC BY 4.0 | https://sketchfab.com/3d-models/82a55610817646539ce699a6aaa5dda0 |
+| suv | Toyota Highlander 2020 | ItsDiyor | CC BY 4.0 | https://sketchfab.com/3d-models/ff144d062f244a3ebfae71bc2a41564b |
+| taxi, police, van | Generic civil service vehicles pack | comrade1280 | CC BY 4.0 | https://sketchfab.com/3d-models/8ff2a13f30914932a70c7950cfa58465 |
+
+## The Orchids fleet (eight of nine styles) — `public/models/cars/*.glb`
 
 | | |
 |---|---|
@@ -40,8 +63,8 @@ Rebuild (donor .gltf exports unzipped one-per-directory, not in the repo):
 | Licence | **CC BY 4.0** — commercial use and modification permitted with credit |
 | Source | https://sketchfab.com/3d-models/orchids-simulator-traffic-car-pack-2fc5970d5ba2415fa98ec98b8801e794 |
 
-The entire NPC roster ships from this one pack — nine styles: `hybrid`,
-`sedan`, `compact`, `suv`, `taxi`, `police`, `van`, `truck`, `bus`. The 26 MB
+Eight of the nine roster styles ship from this one pack — `hybrid`, `sedan`,
+`compact`, `suv`, `taxi`, `police`, `van`, `truck` (`bus` is above). The 26 MB
 source scene is not shipped. The offline `tools/build-orchids-models.mjs` bake
 selects the nine unnamed source nodes by index, removes their wheel geometry
 in favor of the fleet's shared instanced wheels, resizes each source 1K color
@@ -52,9 +75,9 @@ actual red lens regions; the other five use configured anchors. The taxi is
 the pack's red sedan with a hue rotation baked into its texture. Each style
 is a single instanced draw call.
 
-The nine baked models total about 1.3 MB on disk. Their base-colour and
-metallic-roughness maps occupy roughly 14 MB of uncompressed GPU memory at
-runtime including mipmaps.
+The nine shipped models (these eight plus the hi-fi bus) total about 1.4 MB
+on disk. Their base-colour and metallic-roughness maps occupy roughly 14 MB
+of uncompressed GPU memory at runtime including mipmaps.
 
 An earlier fleet used six additional bodyshells from rgsdev's CC0 "Free Low
 Poly Vehicles Pack" (https://opengameart.org/content/free-low-poly-vehicles-pack,
@@ -117,6 +140,39 @@ opacity maps.
 | `corrugated/` | CorrugatedSteel009 | https://ambientcg.com/a/CorrugatedSteel009 | albedo, normal, rough, metal | toll canopy roof |
 | `plates/` | MetalPlates003 | https://ambientcg.com/a/MetalPlates003 | albedo, normal, rough, metal | toll canopy fascia |
 | `walkway/` | MetalWalkway012 | https://ambientcg.com/a/MetalWalkway012 | albedo, alpha, normal, rough | gantry catwalk decking (alphaTest cutout) |
+
+## Road-realism photo decals — `public/assets/decals/*`
+
+All sourced from **ambientCG.com**, **CC0 1.0 (Public Domain)** — no
+attribution legally required; provenance recorded (added to this file
+2026-08-29 — the assets shipped earlier without an entry). Each ships as a
+colour JPG plus a separate grayscale opacity JPG (JPG carries no alpha; the
+pair costs a fraction of one PNG), loaded by `game/world/decaltex.ts` and
+scattered by `game/world/decals.ts`.
+
+| Files | ambientCG asset | Item page | Used for |
+|---|---|---|---|
+| `asphalt_damage_{col,a}.jpg` | AsphaltDamage001 | https://ambientcg.com/a/AsphaltDamage001 | cracked/patched asphalt |
+| `leak_streak_{col,a}.jpg` | Leaking004 | https://ambientcg.com/a/Leaking004 | moisture streaks — tunnel walls, barrier faces |
+| `oil_stain_{col,a}.jpg` | Leaking009 | https://ambientcg.com/a/Leaking009 | oil/grime pooling on asphalt |
+| `manhole_{col,a}.jpg` | ManholeCover005/009/011 (one of the three — the bake is unlabelled, all CC0) | https://ambientcg.com/a/ManholeCover005 | shoulder manhole/drainage covers |
+
+The full shortlist (including covers and road lines downloaded but not
+shipped) is in `public/assets-staging/CATALOG.md` §14.
+
+## Lens-dirt sprite — `public/assets/lens/dirt_02.png`
+
+From **Kenney's Particle Pack** (https://kenney.nl/assets/particle-pack),
+**CC0** — the pack's own `License.txt` ships alongside the file. Used as the
+lens-dirt overlay layer in the post-processing composite. The rest of the
+pack's evaluated sprites stayed in staging (`CATALOG.md` §15).
+
+## Display typeface — Space Grotesk (self-hosted via `next/font`)
+
+`app/layout.tsx` loads **Space Grotesk** (Florian Karsten, **SIL Open Font
+License 1.1**) through `next/font/google`, which downloads it at build time
+and self-hosts the subset — no request to Google at runtime. OFL permits
+bundling; no attribution required, provenance recorded.
 
 ## Cockpit interior leather PBR textures — `public/assets/pbr/leather*`
 
@@ -199,7 +255,7 @@ catalogued in `public/assets-staging/CATALOG.md` §18–24.
 
 | Files | Asset / Author | Source |
 |---|---|---|
-| `engine/loop_0.wav` … `loop_3.wav` | Racing car engine sound loops, by domasx2 | https://opengameart.org/content/racing-car-engine-sound-loops |
+| `engine/loop_0.wav` … `loop_4.wav` | auto5.wav ("Driving my Ford Escort Mk3 1985. Full acceleration from traffic light"), by escortmarius (freesound) | https://freesound.org/people/escortmarius/sounds/141459/ |
 | `engine/idle.wav` | Elantra Engine Idle and Rev, by microman502 (freesound) | https://freesound.org/people/microman502/sounds/865228/ |
 | `reverb/tunnel_ir.wav` | 13.7s Boca Underpass (impulse response), by djericmark (freesound) | https://freesound.org/people/djericmark/sounds/724019/ |
 | `crash/debris.wav` | crash, by Feed_ (freesound) | https://freesound.org/people/Feed_/sounds/545692/ |
@@ -210,7 +266,41 @@ catalogued in `public/assets-staging/CATALOG.md` §18–24.
 | `horns/npc_b.wav` | Car horn beep beep, by AmishRob (freesound) | https://freesound.org/people/AmishRob/sounds/423990/ |
 | `horns/truck.wav` | Truck_horns, by ikbenraar (freesound) | https://freesound.org/people/ikbenraar/sounds/570603/ |
 
+### The engine rpm ladder — how `loop_0` … `loop_4` were made
+
+All five rungs are cut from **one continuous 55-second take**: a 1985 Ford
+Escort Mk3 accelerating away from a traffic light through several gears, with
+the microphone inside the cabin. Licence verified CC0 on the sound's own page
+(2026-08-21); the author is escortmarius, and the file is mono 44.1kHz 16-bit
+at source. Fetched as the public HQ preview (freesound's original downloads
+are login-gated), decoded once to WAV and cut without re-encoding.
+
+Using a single take is the point of the set, not a convenience. An rpm ladder
+only works if the loops differ in engine SPEED and nothing else — same engine,
+same microphone, same cabin, so the resonances stay put and the crossfade
+changes rpm rather than changing car. The rungs sit at 761 / 1732 / 2032 /
+2425 / 2991rpm, spanning 3.93× in firing frequency.
+
+Each loop is a whole number of engine cycles, cut at the position where the
+recording splices most cleanly, with an equal-power crossfade (14–47ms, longer
+where the revs were climbing fastest) fed from material before the loop start
+so the fade cannot alter the loop's length — and therefore its pitch. Measured
+seam discontinuity is 0.79–1.08× the loop's own interior, i.e. the wrap is
+indistinguishable from anywhere else in the loop. Every loop is normalised to
+equal RMS, because the game does its own level shaping and any difference
+between rungs would read as a lurch at the crossfade.
+
+**Superseded:** the previous four loops came from
+[racing car engine sound loops](https://opengameart.org/content/racing-car-engine-sound-loops)
+by domasx2 (CC0). They were not four rpm points — that page states plainly
+that "difference between the files is pitch only", i.e. one recording
+pitch-shifted four ways — so the set spanned just 1.63× and had to be
+resampled far outside its range to cover an 8.7× rev range. That is what made
+the engine sound like a motorbike at the top and a bus at idle. Those files
+are still staged in `public/assets-staging/audio/engine/`.
+
 ## Player cockpit dashboard — `public/models/cockpits/volvo-s90.glb`
+## Player cockpit dashboard — `public/models/cockpits/volvo-s90-full.glb`
 
 | | |
 |---|---|
@@ -219,21 +309,24 @@ catalogued in `public/assets-staging/CATALOG.md` §18–24.
 | Licence | **CC BY 4.0** — commercial use and modification permitted with credit |
 | Source | https://sketchfab.com/3d-models/volvo-s90-recharge-free-9462b07c10244fd4a28d86846dc9e3a9 |
 
-The dashboard the player looks at in the DASHCAM POV view. The source is a
-complete car — 3,273,670 triangles across 45 textures, 3.50 GB of decoded
-texture — and none of it ships as authored. `tools/build-cockpit.mjs` keeps
-only what that camera can physically see and discards the rest: the bodywork,
-wheels, seats, rear cabin and every material that went with them, then the
-remaining geometry is clipped triangle-by-triangle to the POV frustum and the
-surviving textures are resized to 512 px and packed down (Uint16 indices, no
-tangents, byte normals, mozjpeg maps). What ships is 406,874 triangles and 18
-textures — 12.4% of the source geometry and under 1% of its texture memory.
+The cabin the player sits in (the DASHCAM POV view and the other interior
+cameras). The source is a complete car — 3,273,670 triangles across 45
+textures, 3.50 GB of decoded texture — and none of it ships as authored.
+`tools/build-cockpit.mjs` with `--no-clip --full-cabin --simplify` keeps
+whole donor NODES: every node the widest legal camera frustum can reach is
+kept entire and decimated with meshoptimizer, and nodes no legal frustum can
+reach (rear bench, rear door cards, all bodywork) are dropped whole, along
+with every material that went with them. Nothing is sliced, so the
+Field-of-view slider is clean to its maximum. What ships is 356,880 triangles
+and 21 images, 5.68 MB on disk plus a JSON sidecar of per-role bounding
+boxes.
 
-The clip frustum is sized to the WIDEST view the Field of view slider can ask
-for (119.6 deg horizontal, 110 deg vertical, plus margin), not to one fixed lens,
-because the dashcam now honours that slider. The `mirror` role is deliberately
-exempt and stays cut to the old 105 deg frame: it is never rendered, only used
-as the bounding box that anchors the live mirror glass.
+An earlier cut of the same donor (`volvo-s90.glb`, per-vertex frustum-clipped
+to the dashcam lens) shipped until it printed sliced edges at wide FOV; it is
+retired and recoverable per `docs/DISABLED.md` §11. Inside the tool the clip
+survives for one job: the `mirror` role is still frozen to the old cut's
+frustum — never rendered, only the bounding box that anchors the live mirror
+glass.
 
 Modified further at runtime (`game/cockpitmodel.ts`): the model's painted-on
 instrument cluster is hidden in favour of a live one, and its centre screen is
@@ -241,10 +334,11 @@ re-textured with the game's own navigation canvas.
 
 The 386 MB source download is not in this repository. It is listed in
 `public/assets-staging/CATALOG.md` with the URL and licence above; rebuild the
-shipped GLB with:
+shipped GLB with (the command recorded in `.gitignore`):
 
-    node --max-old-space-size=12288 tools/build-cockpit.mjs <source.glb> \
-      --out volvo-s90 --tex 512
+    node tools/build-cockpit.mjs public/assets-staging/volvo_s90_recharge_free.glb \
+      --out volvo-s90-full --no-clip --full-cabin --simplify --meshopt \
+      --tex 2048 --jpeg-q 82
 
 Sibling asset from the same author's page: the description links a Google
 Drive `.blend` bundle offered as a higher-quality alternative to Sketchfab's

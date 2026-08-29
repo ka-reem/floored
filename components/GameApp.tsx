@@ -7,11 +7,11 @@ import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
-  syncRivalMode, syncCabinMode, cabinAutoLabel,
-  type Profile, type GameSettings,
+  speedInUnits, syncRivalMode, syncCabinMode, cabinAutoLabel,
+  type Profile, type GameSettings, type SpeedUnits,
 } from "@/game/settings";
 
-type Screen = "main" | "garage" | "settings" | "controls" | "loading" | "playing" | "paused";
+type Screen = "main" | "garage" | "settings" | "controls" | "stats" | "loading" | "playing" | "paused" | "photo";
 
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
@@ -86,6 +86,31 @@ export default function GameApp() {
         } else if (s === "paused") {
           gameRef.current?.setRunning(true);
           setScreen("playing");
+        } else if (s === "photo") {
+          /* Esc in photo mode backs out of photo mode, it does not stack the
+             pause menu on top of it — same two calls as photoRequest's exit
+             branch, because leaving photo mode IS an unpause. */
+          gameRef.current?.photoExit();
+          gameRef.current?.setRunning(true);
+          setScreen("playing");
+        }
+      },
+      /* Photo mode is a pause that swaps which camera the frozen frame is
+         rendered through, so this mirrors pauseRequest exactly: setRunning is
+         the same sim freeze the pause menu uses, and the screen leaving
+         "playing" is what hides every piece of HUD chrome (all of it is
+         gated on `playing` below — nothing is hidden piecemeal). The engine's
+         photoEnter/photoExit only move the camera and its listeners. */
+      photoRequest: () => {
+        const s = screenRef.current;
+        if (s === "playing") {
+          gameRef.current?.setRunning(false);
+          gameRef.current?.photoEnter();
+          setScreen("photo");
+        } else if (s === "photo") {
+          gameRef.current?.photoExit();
+          gameRef.current?.setRunning(true);
+          setScreen("playing");
         }
       },
       /* H TOGGLES. It used to only open: the guard was `=== "playing"`, so the
@@ -131,6 +156,10 @@ export default function GameApp() {
     p.seed = g.seed;
     p.camMode = g.camMode;
     p.noHesiBest = g.noHesiBest;
+    /* Lifetime totals: construction-time seed + this session, recomputed on
+       every call (see Game.lifetimeStats) — writing it repeatedly is safe. */
+    p.stats = g.lifetimeStats();
+    p.ttt = g.tttTally;
     saveProfile(p);
   }, []);
 
@@ -181,6 +210,10 @@ export default function GameApp() {
   const backToMenu = () => {
     setFromPause(false);
     setScreen("main");
+    /* Leaving for the menu is how a drive ends — bank it. resume() and
+       drive() already persist; this was the one exit that didn't, and it is
+       the natural end of a session for the lifetime stats (and noHesiBest). */
+    persist();
   };
   const backFrom = (sub: boolean) => {
     if (fromPause && sub) setScreen("paused");
@@ -291,9 +324,17 @@ export default function GameApp() {
       </div>
       <div id="toast" style={{ opacity: toast ? 1 : 0 }}>{toast}</div>
       <div id="exitHint" style={{ opacity: exitHint && playing ? 1 : 0 }}>{exitHint}</div>
+      {/* Desktop only: a click on the map cycles its zoom, routed through the
+          Z key's own handler so the two can never drift (same uiKeyTap path
+          the touch drawer uses). On touch the canvas keeps pointer-events:none
+          (globals.css) — it sits over the throttle puck — so this handler is
+          unreachable there and the drawer's MAP ZOOM row stands in. */}
       <canvas
         id="mmap" width={172} height={172}
         style={{ display: playing && g?.mmap ? "block" : "none" }}
+        onPointerDown={(e) => {
+          if (e.button === 0) g?.uiKeyTap("z");
+        }}
       />
       {playing && (
         <div
@@ -332,6 +373,7 @@ export default function GameApp() {
         </div>
       )}
       {playing && g && <QuickDrawer game={g} open={drawer} onClose={() => setDrawer(false)} />}
+      {screen === "photo" && g && <PhotoHint game={g} />}
       {/* Touch controls. These stay mounted on every screen — bindInput()
           grabs them by id once, in the Game constructor — so the menus hide
           them with an inline display instead of unmounting them. */}
@@ -395,6 +437,7 @@ export default function GameApp() {
           <h1 className="menuTitle sm">PAUSED</h1>
           <div className="menuBtns">
             <button className="menuBtn primary" onClick={resume}>RESUME</button>
+            <button className="menuBtn" onClick={() => setScreen("stats")}>STATS</button>
             <button className="menuBtn" onClick={() => setScreen("garage")}>GARAGE</button>
             <button className="menuBtn" onClick={() => setScreen("settings")}>SETTINGS</button>
             <button className="menuBtn" onClick={() => setScreen("controls")}>CONTROLS</button>
@@ -412,6 +455,9 @@ export default function GameApp() {
         </div>
       )}
 
+      {screen === "stats" && g && (
+        <StatsPanel game={g} onBack={() => backFrom(true)} />
+      )}
       {screen === "garage" && g && (
         <GaragePanel
           game={g}
@@ -463,10 +509,12 @@ export default function GameApp() {
               <b>T</b><span>time-lapse</span>
               <b>V</b><span>dashcam grade (the DASHCAM view forces its own, harder)</span>
               <b>X</b><span>minimap</span>
+              <b>Z</b><span>map zoom: close-up ↔ whole loop (or click the map)</span>
               <b>N</b><span>reset to nearest road</span>
               <b>H</b><span>this help screen</span>
               <b>I</b><span>interior light (off by default — the cabin is meant to be dark)</span>
               <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
+              <b>O</b><span>photo mode: orbit the car, Space captures a PNG</span>
               <b>P</b><span>in-dash music: play / pause</span>
               <b>, / .</b><span>previous / next piece</span>
               <b>Esc</b><span>pause menu (music pauses with it)</span>
@@ -549,21 +597,90 @@ function analogSteerLive() {
   return "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
 }
 
+/* Hub horn geometry and timing. HUB_R is the painted #swheelHub disc's radius
+   (keep in step with globals.css); DRAG_PX is how far a finger may wander and
+   still count as a press rather than a steering input; HOLD_MS is how long it
+   must rest before the horn sounds, which is what makes STEERING ALWAYS WIN —
+   a drag that starts on the hub has crossed DRAG_PX long before HOLD_MS is up,
+   so it steers in silence. A tap that lifts before HOLD_MS never sustained
+   anything, so it is answered on release with a STAB_MS blip: real horns
+   answer a stab, and without this the most natural gesture on a horn button
+   would be the one gesture that made no sound. */
+const HUB_R = 27, DRAG_PX = 10, HOLD_MS = 70, STAB_MS = 130;
+
 function SteerWheel({ game }: { game: Game }) {
   const [rot, setRot] = useState(0);
   const active = useRef(false);
   const pid = useRef<number | null>(null);
   const cx = useRef(0);
+  /* Hub-horn intent, tracked entirely alongside the steering state above and
+     never gating it: every steering line in the handlers below runs exactly as
+     it did before the hub existed. The worst a bug in here can do is honk or
+     fail to honk — it cannot cost the player a corner. */
+  const hornPend = useRef<{ id: number; x: number; y: number; timer: number } | null>(null);
+  const hornOn = useRef(false);
+  const stabTimer = useRef(0);
+  // Mirrors hornOn for the hub's lit state — a ref alone would not re-render.
+  const [hornLit, setHornLit] = useState(false);
+  const hornRelease = useCallback(() => {
+    const hp = hornPend.current;
+    if (!hp) return;
+    clearTimeout(hp.timer);
+    hornPend.current = null;
+    if (hornOn.current) {
+      hornOn.current = false;
+      setHornLit(false);
+      game.setWheelHorn(false, null);
+      return;
+    }
+    // Lifted inside HOLD_MS: a deliberate stab. Unwatchdogged (the finger is
+    // already gone) and released by this timer, which the unmount effect
+    // below also clears so a pause mid-stab cannot leave it sounding.
+    game.setWheelHorn(true, null);
+    setHornLit(true);
+    clearTimeout(stabTimer.current);
+    stabTimer.current = window.setTimeout(() => {
+      game.setWheelHorn(false, null);
+      setHornLit(false);
+    }, STAB_MS);
+  }, [game]);
+  /* Movement past DRAG_PX means the player is steering, not honking: drop the
+     intent and silence a horn that had already started. */
+  const hornCancel = useCallback(() => {
+    const hp = hornPend.current;
+    if (hp) clearTimeout(hp.timer);
+    hornPend.current = null;
+    if (hornOn.current) {
+      hornOn.current = false;
+      setHornLit(false);
+      game.setWheelHorn(false, null);
+    }
+  }, [game]);
   const end = useCallback(() => {
     active.current = false;
     pid.current = null;
     game.setWheelVal(0);
     game.setWheelPointer(null);
     setRot(0);
-  }, [game]);
+    hornRelease();
+  }, [game, hornRelease]);
   /* Pausing unmounts this widget mid-drag; without zeroing here the last
      deflection keeps feeding readInput and the car resumes at hard lock. */
-  useEffect(() => () => { game.setWheelVal(0); game.setWheelPointer(null); }, [game]);
+  useEffect(
+    () => () => {
+      game.setWheelVal(0);
+      game.setWheelPointer(null);
+      // Same reason, for the horn: a pause mid-honk (or mid-stab) unmounts
+      // this widget, and neither timer would otherwise ever fire its release.
+      const hp = hornPend.current;
+      if (hp) clearTimeout(hp.timer);
+      clearTimeout(stabTimer.current);
+      hornPend.current = null;
+      hornOn.current = false;
+      game.setWheelHorn(false, null);
+    },
+    [game],
+  );
   /* Belt-and-braces: a gesture the browser hijacks outright (an edge-swipe,
      the loupe the mobile-input work elsewhere is closing) can end a touch
      without ever delivering pointerup/pointercancel/lostpointercapture to
@@ -601,12 +718,40 @@ function SteerWheel({ game }: { game: Game }) {
         try {
           (e.target as HTMLElement).setPointerCapture(e.pointerId);
         } catch {}
+        /* Hub horn, armed only. Deliberately does NOT sound yet: the honk is
+           on a HOLD_MS timer so that a steering drag beginning on the hub —
+           which crosses DRAG_PX in a few ms — is silent. Hit-tested against
+           the wheel's own rect rather than a child element, so the hub owns
+           no pointers and cannot steal the capture set up two lines above. */
+        const r = e.currentTarget.getBoundingClientRect();
+        const dx = e.clientX - (r.left + r.width / 2);
+        const dy = e.clientY - (r.top + r.height / 2);
+        if (Math.hypot(dx, dy) > HUB_R) return;
+        const id = e.pointerId;
+        hornPend.current = {
+          id,
+          x: e.clientX,
+          y: e.clientY,
+          timer: window.setTimeout(() => {
+            // The press outlived HOLD_MS without becoming a drag: honk, and
+            // register the live pointer so the frame watchdog owns the release.
+            if (hornPend.current?.id !== id) return;
+            hornOn.current = true;
+            setHornLit(true);
+            game.setWheelHorn(true, id);
+          }, HOLD_MS),
+        };
       }}
       onPointerMove={(e) => {
         if (!active.current || e.pointerId !== pid.current) return;
         const v = Math.max(-1, Math.min(1, (e.clientX - cx.current) / 58));
         game.setWheelVal(v);
         setRot(v * 110);
+        // Steering wins, always: past DRAG_PX this is a drag, so the horn
+        // intent dies and a honk already sounding is cut.
+        const hp = hornPend.current;
+        if (hp && e.pointerId === hp.id && Math.hypot(e.clientX - hp.x, e.clientY - hp.y) > DRAG_PX)
+          hornCancel();
       }}
       onPointerUp={(e) => {
         if (e.pointerId === pid.current) end();
@@ -620,6 +765,14 @@ function SteerWheel({ game }: { game: Game }) {
     >
       <div id="swheelInner" style={{ transform: `rotate(${rot}deg)` }}>
         ◠<br />│
+      </div>
+      {/* The horn boss. Purely painted — pointer-events:none, no listeners —
+          because the wheel above already hit-tests HUB_R against its own rect;
+          a real element here would take the capture and break the drag that
+          starts on it. Sibling of swheelInner, not a child, so it stays put
+          while the spoke rotates. */}
+      <div id="swheelHub" className={hornLit ? "on" : undefined} aria-hidden="true">
+        HORN
       </div>
     </div>
   );
@@ -663,6 +816,7 @@ function QuickDrawer({
   const rows: { k: string; en: string; jp: string; state: string; on: boolean }[] = [
     { k: "l", en: "HEADLIGHTS", jp: "ライト", state: game.car.lightsUser ? "ON" : "AUTO", on: game.car.lightsUser },
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
+    { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
     { k: "r", en: "RAIN", jp: "雨", state: game.rain ? "ON" : "OFF", on: game.rain },
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
@@ -696,7 +850,153 @@ function QuickDrawer({
         </span>
         <span className="qdState">↺</span>
       </div>
+      {/* Photo mode — the touch route to the O key. One-shot like RESET: the
+          screen leaves "playing", which unmounts this drawer anyway; the
+          explicit onClose just keeps the session drawer-state honest. Shutter
+          and exit live on the photo screen itself (PhotoHint), because this
+          sheet is gone once the mode is up. */}
+      <div
+        className="qdRow"
+        onPointerDown={() => {
+          tap("o");
+          onClose();
+        }}
+      >
+        <span className="qdLabel">
+          PHOTO MODE <i>フォト</i>
+        </span>
+        <span className="qdState">◉</span>
+      </div>
     </div>
+  );
+}
+
+/* ================= photo mode hint ================= */
+
+/* The one piece of UI photo mode keeps: a corner chip naming the controls,
+   plus — on touch, where there is no keyboard to name — the shutter and exit
+   as real buttons. Both route through Game.uiKeyTap, the same single door the
+   drawer rows use, so a tapped shutter and a pressed Space are literally the
+   same code path. The container is pointer-events:none (globals.css): a drag
+   that starts over the hint must still orbit the camera, only the buttons
+   themselves swallow their taps. */
+function PhotoHint({ game }: { game: Game }) {
+  const touch = typeof window !== "undefined" && "ontouchstart" in window;
+  return (
+    <div id="photoHint">
+      <div className="phTitle">
+        PHOTO MODE <span>フォト</span>
+      </div>
+      <div className="phKeys">
+        {touch
+          ? "drag to orbit · pinch to zoom"
+          : "drag to orbit · scroll to zoom · SPACE shutter · O / ESC exit"}
+      </div>
+      {touch && (
+        <div className="phBtns">
+          <button className="phBtn shutter" onPointerDown={() => game.uiKeyTap(" ")}>
+            ◉ SHUTTER
+          </button>
+          <button className="phBtn" onPointerDown={() => game.uiKeyTap("o")}>
+            ✕ EXIT
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= drive stats ================= */
+
+/* The pause menu's STATS panel: this session beside the lifetime record,
+   read straight off the engine's accumulator (Game.sessionStats /
+   Game.lifetimeStats — see the STATS block in engine.ts). A snapshot, not a
+   ticker: the game is paused under it, so nothing here needs to re-render.
+   Formatting follows the profile's speed-units setting — the stored numbers
+   are engine units (m, m/s, s) and only the display converts. */
+
+const fmtDist = (m: number, u: SpeedUnits) =>
+  u === "mph" ? (m / 1609.344).toFixed(1) + " mi" : (m / 1000).toFixed(1) + " km";
+
+const fmtSpeed = (v: number, u: SpeedUnits) =>
+  Math.round(speedInUnits(v, u)) + " " + unitLabel(u);
+
+function fmtDur(s: number) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = Math.floor(s % 60);
+  const p = (n: number) => (n < 10 ? "0" : "") + n;
+  return h > 0 ? `${h}:${p(m)}:${p(ss)}` : `${m}:${p(ss)}`;
+}
+
+function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
+  const s = game.sessionStats;
+  const l = game.lifetimeStats();
+  const u = game.settings.units;
+  /* rec: the session value IS the lifetime record — the record rows warm to
+     the accent (same restraint as .combo-hot: a colour shift, not a badge) */
+  const rows: { en: string; jp: string; sv: string; lv: string; rec?: boolean }[] = [
+    { en: "DISTANCE", jp: "走行距離", sv: fmtDist(s.dist, u), lv: fmtDist(l.dist, u) },
+    { en: "TIME DRIVEN", jp: "走行時間", sv: fmtDur(s.driveT), lv: fmtDur(l.driveT) },
+    {
+      en: "TOP SPEED", jp: "最高速度",
+      sv: fmtSpeed(s.topSpeed, u), lv: fmtSpeed(l.topSpeed, u),
+      rec: s.topSpeed > 0 && s.topSpeed >= l.topSpeed,
+    },
+    {
+      en: "NEAR MISSES", jp: "ニアミス",
+      sv: String(s.nearMisses), lv: String(l.nearMisses),
+    },
+    {
+      en: "NO HESI SCORE", jp: "スコア",
+      sv: String(Math.round(game.noHesiScore)), lv: String(Math.round(game.noHesiBest)),
+      rec: game.noHesiScore > 0 && Math.round(game.noHesiScore) >= Math.round(game.noHesiBest),
+    },
+    {
+      en: "BEST COMBO", jp: "最高コンボ",
+      sv: "×" + s.bestCombo.toFixed(1), lv: "×" + l.bestCombo.toFixed(1),
+      rec: s.bestCombo > 1 && s.bestCombo >= l.bestCombo,
+    },
+    { en: "CRASHES", jp: "クラッシュ", sv: String(s.crashes), lv: String(l.crashes) },
+    { en: "LAPS", jp: "周回", sv: String(s.laps), lv: String(l.laps) },
+    { en: "TOUGE RUNS", jp: "峠走破", sv: String(s.mtnRuns), lv: String(l.mtnRuns) },
+  ];
+  return (
+    <div className="menuRoot">
+      <div className="panel">
+        <h2>STATS</h2>
+        <div className="jp2">記録 — drive statistics</div>
+        <div className="statsGrid">
+          <span />
+          <span className="shead">SESSION 今回</span>
+          <span className="shead">LIFETIME 通算</span>
+          {rows.map((r) => (
+            <StatsRow key={r.en} {...r} />
+          ))}
+        </div>
+        <div className="btnrow">
+          <button onClick={onBack}>BACK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatsRow({
+  en, jp, sv, lv, rec,
+}: {
+  en: string;
+  jp: string;
+  sv: string;
+  lv: string;
+  rec?: boolean;
+}) {
+  return (
+    <>
+      <span className="slabel">
+        {en} <i>{jp}</i>
+      </span>
+      <span className={"sval" + (rec ? " rec" : "")}>{sv}</span>
+      <span className="sval">{lv}</span>
+    </>
   );
 }
 
@@ -783,15 +1083,16 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
             );
           })}
         </div>
-        {/* PAINT. Honest limitation, worth knowing before it reads as a bug:
-            a card showing an IMPORTED exterior does not respond to these. The
-            donor GLB carries its own baked paint and the game does not retint
-            it either, so the swatch is telling the truth — the Volvo is that
-            colour in the chase cameras too. It still selects the paint for
-            every card that is drawn from its ShellParams, and it still
-            persists. Retinting the donor's Car_Paint material would make the
-            swatch mean something for both cars, but that is a change to how
-            the CAR looks, not to how the card does, and belongs with the car. */}
+        {/* PAINT. The swatches repaint BOTH bodies now: the procedural shell
+            through the rig rebuild (engine.ts setCar), and the imported Volvo
+            exterior through player.ts tintDonorPaint, which writes the chosen
+            colour onto the donor's Car_Paint material when the GLB lands — the
+            garage card's real-bodywork shot and the chase cameras agree with
+            the dot. (The old comment here was an honest admission that the
+            donor kept its baked silver; that limitation is gone.) The caption
+            names the selection because eight anonymous dots at 22px is a
+            colour test, not a menu — and the finish word is what tells you
+            why two similar dots drive differently at night. */}
         <div className="paintRow">
           {PAINTS.map((p, i) => (
             <div
@@ -802,6 +1103,10 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
               onClick={() => sel(carId, i)}
             />
           ))}
+        </div>
+        <div className="paintName">
+          {PAINTS[paintIx % PAINTS.length].name}
+          <i>{PAINTS[paintIx % PAINTS.length].finish}</i>
         </div>
         <div className="btnrow">
           <button onClick={onBack}>DONE</button>

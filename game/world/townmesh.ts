@@ -193,13 +193,20 @@ export function buildTown(
     if (!c) chunkMap.set(k, (c = { win: [[], [], []], sf: [], clutter: [], neon: [] }));
     return c;
   };
-  /* Every chunk GROUP that has reached the scene, keyed the same way as
-     chunkMap — the light layers below (streetlamp glow points, ground pools)
-     bucket into these SAME groups so their visibility rides the existing
-     distance cull in Game.chunksUpdate() (c.group.visible) with no new
-     per-frame work. A cell with a street but no building (e.g. inside a ramp
-     clearance zone) still needs a group for its lamps, so chunkGroupFor()
-     below creates one lazily. */
+  /* Distance-cull groups for the LIGHT layers below (streetlamp glow points,
+     ground pools), riding the same Game.chunksUpdate() toggle the building
+     chunks use — but bucketed 3×3 building cells per group (288 m), not per
+     building chunk. Per-96 m buckets made the cull maximally fine-grained
+     and maximally expensive the other way: two extra draw calls for every
+     visible cell, ~100-140 calls/frame from most of the deck (the whole town
+     fits inside a desktop drawDist), for content that is two point clouds
+     and a quad batch. At 288 m the same layers are ≤ ~24 calls. The groups
+     register their cell circumradius so the cull compares nearest-edge
+     distance — a lamp at the rim of a coarse cell can't pop while its own
+     fade (tintLampsSodium tracks drawDist) still has it lit. */
+  const LCELL = CHUNK * 3;
+  const lightKeyOf = (x: number, z: number) =>
+    Math.floor(x / LCELL) + "_" + Math.floor(z / LCELL);
   const groupByKey = new Map<string, THREE.Group>();
   const chunkGroupFor = (key: string): THREE.Group => {
     let g = groupByKey.get(key);
@@ -207,7 +214,12 @@ export function buildTown(
       g = new THREE.Group();
       scene.add(g);
       const [kx, kz] = key.split("_").map(Number);
-      world.chunks.push({ group: g, cx: kx * CHUNK + CHUNK / 2, cz: kz * CHUNK + CHUNK / 2 });
+      world.chunks.push({
+        group: g,
+        cx: kx * LCELL + LCELL / 2,
+        cz: kz * LCELL + LCELL / 2,
+        r: (LCELL / 2) * Math.SQRT2,
+      });
       groupByKey.set(key, g);
     }
     return g;
@@ -437,13 +449,13 @@ export function buildTown(
       size: 7, map: mats.glowTex, color: 0xffd9a0, transparent: true,
       opacity: 1, sizeAttenuation: false, depthWrite: false,
     });
-    /* Town lamps bucket into the SAME 96 m chunk groups the buildings use,
+    /* Town lamps bucket into the coarse light cells (chunkGroupFor above),
        so their glow rides chunksUpdate()'s existing distance toggle instead
        of rendering un-culled out to the 3400 m far plane in both the main
        and mirror passes — see brief-world-lights.json. */
     const byChunk = new Map<string, number[]>();
     for (let i = 0; i < nTownLamps; i++) {
-      const k = chunkKeyOf(lightPts[i][0], lightPts[i][2]);
+      const k = lightKeyOf(lightPts[i][0], lightPts[i][2]);
       let arr = byChunk.get(k);
       if (!arr) byChunk.set(k, (arr = []));
       arr.push(i);

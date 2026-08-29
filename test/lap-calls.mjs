@@ -100,45 +100,57 @@ const sample = (page) =>
   });
 
 /* Scripted drive through a route transition: full throttle from a teleport,
-   recording every rAF delta and the program count on both sides. */
-const driveThrough = async (page, name, seconds, place) => {
+   recording every rAF delta and the program count on both sides.
+
+   Frame-counted, not wall-clocked: under SwiftShader a driving frame takes
+   on the order of a second, so a seconds-long tape would catch almost no
+   frames at all. Physics advances at most 0.05 s of sim per rendered frame
+   (engine loop, 6 substeps), so at 140 km/h each frame covers ~2 m and 60
+   frames cross ~120 m of road — the start points sit ~60 m before each
+   boundary so the tape straddles it. Absolute ms are SwiftShader numbers;
+   the signal is the worst/median RATIO paired with the program delta. */
+const driveThrough = async (page, name, place, kmh = 140) => {
   await page.evaluate(place);
   await sleep(1500); // culling + any deferred fetch settles before the tape rolls
-  const r = await page.evaluate(async (secs) => {
+  const r = await page.evaluate(async () => {
     const nx = window.__neonx;
     const p0 = nx.game.renderer.info.programs.length;
     nx.setInput({ th: 1, br: 0 });
+    const N = 60;
     const deltas = [];
-    let last = performance.now();
-    let stop = false;
+    let last;
+    let done;
+    const filled = new Promise((res) => (done = res));
     const tick = () => {
       const now = performance.now();
-      deltas.push(now - last);
+      if (last !== undefined) deltas.push(now - last);
       last = now;
-      if (!stop) requestAnimationFrame(tick);
+      if (deltas.length >= N) done();
+      else requestAnimationFrame(tick);
     };
-    requestAnimationFrame(() => { last = performance.now(); requestAnimationFrame(tick); });
-    await new Promise((res) => setTimeout(res, secs * 1000));
-    stop = true;
+    requestAnimationFrame(tick);
+    await Promise.race([filled, new Promise((res) => setTimeout(res, 150000))]);
     nx.setInput({ th: 0, br: 1 });
     const p1 = nx.game.renderer.info.programs.length;
-    deltas.sort((a, b) => a - b);
-    const q = (f) => deltas[Math.min(deltas.length - 1, Math.floor(deltas.length * f))];
+    const sorted = [...deltas].sort((a, b) => a - b);
+    const q = (f) =>
+      sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * f))] : NaN;
     return {
       frames: deltas.length,
       p50: +q(0.5).toFixed(1),
       p95: +q(0.95).toFixed(1),
-      worst: deltas.slice(-5).map((d) => Math.round(d)),
+      worst: sorted.slice(-5).map((d) => Math.round(d)),
       programsBefore: p0,
       programsAfter: p1,
     };
-  }, seconds);
+  });
+  const ratio = r.worst.length ? (r.worst[r.worst.length - 1] / r.p50).toFixed(1) : "?";
   console.log(
-    `  hitch ${name}: p50=${r.p50}ms p95=${r.p95}ms worst=[${r.worst}] ` +
-    `programs ${r.programsBefore}→${r.programsAfter}` +
+    `  hitch ${name}: ${r.frames}f p50=${r.p50}ms p95=${r.p95}ms worst=[${r.worst}] ` +
+    `worst/p50=${ratio}x programs ${r.programsBefore}→${r.programsAfter}` +
     (r.programsAfter > r.programsBefore ? "  ← compiles mid-drive" : "")
   );
-  emit({ label: LABEL, tier: page.__tier, kind: "hitch", name, ...r });
+  emit({ label: LABEL, tier: page.__tier, kind: "hitch", name, kmh, ...r });
 };
 
 for (const tier of TIERS) {
@@ -193,12 +205,12 @@ for (const tier of TIERS) {
        and a stuck accumulator makes the per-frame numbers above nonsense if
        anything later reads them without resetting. */
     await page.evaluate(() => { window.__neonx.game.renderer.info.autoReset = true; });
-    await driveThrough(page, "tunnel-entry", 7, () => window.__neonx.toCorridor(670, 140));
-    await driveThrough(page, "toll-splice", 8, () => window.__neonx.toCorridor(1180, 140));
-    await driveThrough(page, "district-east", 7, () => window.__neonx.toCorridor(-760, 140));
-    await driveThrough(page, "mountain-entry", 8, () => window.__neonx.toMountain(10, 70));
-    await driveThrough(page, "mountain-exit", 8, () => window.__neonx.toMountain(
-      window.__neonx.game.world.routes.mtn.len - 260, 70));
+    await driveThrough(page, "tunnel-entry", () => window.__neonx.toCorridor(860, 140));
+    await driveThrough(page, "toll-splice", () => window.__neonx.toCorridor(1330, 140));
+    await driveThrough(page, "district-east", () => window.__neonx.toCorridor(-620, 140));
+    await driveThrough(page, "mountain-entry", () => window.__neonx.toMountain(10, 70), 70);
+    await driveThrough(page, "mountain-exit", () => window.__neonx.toMountain(
+      window.__neonx.game.world.routes.mtn.len - 100, 70), 70);
   }
   await page.close();
 }

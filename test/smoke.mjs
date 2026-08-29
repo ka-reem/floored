@@ -379,6 +379,79 @@ async function main() {
   await sleep(1500);
   await shot(page, "08-day-hood");
 
+  /* ---- photo mode: enter, orbit, capture, exit — and prove the dashcam came
+     back bit-identical. The restoration claim is structural (photo mode never
+     writes to the gameplay camera), so the assertion is strict: the camera's
+     world matrix, fov and camMode before O and after exit must match to
+     floating-point noise. The car is parked first so the recomputed frames on
+     the far side are deterministic. */
+  {
+    // shot captures download into ART rather than wherever headless defaults
+    const cdp = await page.createCDPSession();
+    await cdp
+      .send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: ART })
+      .catch(() => {});
+    await page.evaluate(() => {
+      window.__neonx.setInput(null);
+      window.__neonx.setCam(3); // the dashcam — the state that must survive
+      window.__neonx.setTime(21.5);
+      const g = window.__neonx.game;
+      window.__neonx.teleport(g.car.x, g.car.z, undefined, g.car.h, 0);
+    });
+    await sleep(1800); // let the visual pitch/yaw springs settle on the parked car
+    const camSnap = () =>
+      page.evaluate(() => {
+        const g = window.__neonx.game;
+        return {
+          camMode: g.camMode,
+          fov: g.camera.fov,
+          m: [...g.camera.matrixWorld.elements],
+          running: g.running,
+        };
+      });
+    const pre = await camSnap();
+    await page.keyboard.press("o");
+    await sleep(800);
+    const inPhoto = await page.evaluate(() => ({
+      on: window.__neonx.state().photo,
+      running: window.__neonx.game.running,
+      hud: getComputedStyle(document.getElementById("hud")).display,
+      topbar: getComputedStyle(document.getElementById("topbar")).display,
+      mmap: getComputedStyle(document.getElementById("mmap")).display,
+    }));
+    if (!inPhoto.on) errors.push("photo mode did not engage on O");
+    if (inPhoto.running) errors.push("photo mode left the sim running");
+    if (inPhoto.hud !== "none" || inPhoto.topbar !== "none" || inPhoto.mmap !== "none")
+      errors.push(
+        `HUD chrome visible in photo mode (hud ${inPhoto.hud}, topbar ${inPhoto.topbar}, mmap ${inPhoto.mmap})`
+      );
+    await shot(page, "08b-photo-enter");
+    // orbit by mouse drag, zoom by wheel — the mode's whole input surface
+    await page.mouse.move(640, 400);
+    await page.mouse.down();
+    await page.mouse.move(780, 330, { steps: 8 });
+    await page.mouse.up();
+    await page.mouse.wheel({ deltaY: -420 });
+    await sleep(600);
+    await shot(page, "08c-photo-orbit");
+    await page.keyboard.press("Space");
+    await page
+      .waitForFunction(() => window.__neonx.state().photoShots >= 1, { timeout: 30000 })
+      .catch(() => errors.push("photo capture did not produce a PNG blob"));
+    await page.keyboard.press("o");
+    await sleep(800);
+    const post = await camSnap();
+    if (!post.running) errors.push("exiting photo mode did not resume the sim");
+    if (post.camMode !== pre.camMode)
+      errors.push(`photo exit changed camMode ${pre.camMode} → ${post.camMode}`);
+    if (post.fov !== pre.fov)
+      errors.push(`photo exit changed dashcam fov ${pre.fov} → ${post.fov}`);
+    const dm = pre.m.reduce((w, v, i) => Math.max(w, Math.abs(v - post.m[i])), 0);
+    console.log(`  photo mode: dashcam matrix delta after exit = ${dm.toExponential(2)}`);
+    if (dm > 1e-6)
+      errors.push(`dashcam moved across photo enter/exit (max matrix delta ${dm})`);
+  }
+
   // fps estimate
   const f0 = await page.evaluate(() => window.__neonx.state().frames);
   await sleep(3000);

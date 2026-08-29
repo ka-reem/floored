@@ -106,6 +106,13 @@ export interface TierCaps {
       bare parapet the BEFORE contact sheet diagnosed. 0 disables. */
   districts?: number;
 
+  /** Density level (0..1) for the full-lap roadside pass (roadside.ts
+      FX_ROADSIDE: clumped tree lines, imposter ranks, undergrowth, gutter
+      weeds). A LEVEL like districts: everything is merged or instanced, so
+      thinning trades silhouette continuity, not draw calls — mobile keeps
+      the same lap with sparser clumps. 0 disables the whole layer. */
+  vegetation?: number;
+
   /** Procedural concrete decimetre detail on parapets, deck fascia and the
       tunnel crown — the grit atlas fetch plus the surface-gradient normal
       perturbation it and the contraction joints drive (mats.weatherSurface).
@@ -186,6 +193,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
     lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
     wheelTracks: false, deckDressing: 0.35, districts: 0.55, mtnDetail: 0.5, hdFleet: false,
+    vegetation: 0.55,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -197,6 +205,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
     wheelTracks: true, deckDressing: 0.7, districts: 0.8, mtnDetail: 0.75, hdFleet: false,
+    vegetation: 0.8,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -208,6 +217,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
     wheelTracks: true, deckDressing: 1, districts: 1, mtnDetail: 1, hdFleet: true,
+    vegetation: 1,
   },
 };
 
@@ -448,6 +458,11 @@ export interface GameSettings {
   rain: boolean;
   /** HUD minimap visible (X in game) */
   mmap: boolean;
+  /** HUD minimap framing (Z in game, or clicking the map on desktop, or the
+      touch drawer's MAP ZOOM row): false = close-up follow, true = the whole
+      loop in one fixed frame (minimap.ts `zoom`). The head unit's nav pane is
+      not covered — it keeps its own follow framing. */
+  mmapZoom: boolean;
   /** manual render-tier override; "auto" defers to device detection */
   tierOverride: TierOverride;
   /** the imported (donor) interior for cars that have one — "auto" defers to
@@ -471,6 +486,38 @@ export interface GameSettings {
   noHesiScore: boolean;
 }
 
+/** Lifetime drive statistics, accumulated across every session on this
+ *  profile — see the DRIVE STATS block in game/engine.ts. Sums except where
+ *  noted; every field is a plain non-negative number so the scrub in
+ *  loadProfile can treat them uniformly (STAT_KEYS below, the same key-list
+ *  pattern NUM_KEYS/BOOL_KEYS use). Units are the engine's own — metres,
+ *  m/s, seconds — and converted at display time, so a units-setting change
+ *  never rewrites history. */
+export interface LifetimeStats {
+  /** metres driven */
+  dist: number;
+  /** fastest speed ever held, m/s (a max, not a sum) */
+  topSpeed: number;
+  /** seconds actually moving (|u| above walking pace), not seconds unpaused */
+  driveT: number;
+  /** near misses as the No Hesi scoring feed counts them (traffic.ts
+      scoreEvents — counted whether or not the score display is on) */
+  nearMisses: number;
+  /** highest No Hesi combo ever reached (a max, not a sum) */
+  bestCombo: number;
+  /** crashes hard enough for the crash sound — same thresholds */
+  crashes: number;
+  /** full circuits of the endless expressway (loop splices, forward) */
+  laps: number;
+  /** complete traversals of the mountain pass (route-graph edge runs) */
+  mtnRuns: number;
+}
+
+export const defaultLifetimeStats = (): LifetimeStats => ({
+  dist: 0, topSpeed: 0, driveT: 0, nearMisses: 0,
+  bestCombo: 1, crashes: 0, laps: 0, mtnRuns: 0,
+});
+
 export interface Profile {
   settings: GameSettings;
   carId: string;
@@ -480,6 +527,13 @@ export interface Profile {
   /** best-ever No Hesi score, across every drive on this profile — see
       game/engine.ts's noHesiUpdate. Only ever grows. */
   noHesiBest: number;
+  /** lifetime drive statistics — see the DRIVE STATS block in engine.ts.
+      Written by GameApp.tsx's persist() the same way noHesiBest is. */
+  stats: LifetimeStats;
+  /** head-unit tic-tac-toe record, the player's side (game/consolegame.ts).
+      Bound into the pane at engine construction and mutated in place there,
+      so persist() saving the profile carries it with no extra plumbing. */
+  ttt: { w: number; l: number; d: number };
 }
 
 export const defaultSettings = (): GameSettings => ({
@@ -518,6 +572,9 @@ export const defaultSettings = (): GameSettings => ({
   time: 21.4,
   rain: false,
   mmap: true,
+  // close-up follow: the framing the map has always had, and the one that
+  // reads at a glance while driving — the overview is the opt-in
+  mmapZoom: false,
   tierOverride: "auto",
   /* Auto, which now means "load it unless this device visibly cannot" rather
      than the old "only on hardware we recognised". */
@@ -544,6 +601,8 @@ export const defaultProfile = (): Profile => ({
      profile keeps whatever camera it was last left on. */
   camMode: 3,
   noHesiBest: 0,
+  stats: defaultLifetimeStats(),
+  ttt: { w: 0, l: 0, d: 0 },
 });
 
 /** Preset side-effects (ported from legacy applyPreset). */
@@ -584,8 +643,16 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
  *  turn them off instead of ignoring the bad value. */
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
-  "autoTime", "rain", "mmap", "rival", "rivalSignals", "testMode",
+  "autoTime", "rain", "mmap", "mmapZoom", "rival", "rivalSignals", "testMode",
   "noHesiScore",
+] as const;
+
+/** Lifetime-stats fields, all "non-negative finite number or the default" —
+ *  the same scrub noHesiBest gets, driven off a key list like NUM_KEYS so a
+ *  new statistic is one entry here rather than a hand-written guard. */
+const STAT_KEYS = [
+  "dist", "topSpeed", "driveT", "nearMisses", "bestCombo", "crashes",
+  "laps", "mtnRuns",
 ] as const;
 
 /** Non-negative integer, or the fallback. For the persisted array indices whose
@@ -705,6 +772,26 @@ export function loadProfile(): Profile {
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     if (typeof prof.noHesiBest !== "number" || !Number.isFinite(prof.noHesiBest) || prof.noHesiBest < 0)
       prof.noHesiBest = base.noHesiBest;
+    /* Lifetime stats: rebuilt field-by-field off the defaults, the same
+       shape as the settings spread above — a stored non-object would spread
+       its characters/indices into the profile otherwise, and any single
+       mangled number falls back alone instead of voiding the rest. */
+    const rawStats =
+      prof.stats && typeof prof.stats === "object" && !Array.isArray(prof.stats)
+        ? (prof.stats as unknown as Record<string, unknown>)
+        : {};
+    const stats = { ...base.stats };
+    for (const k of STAT_KEYS) {
+      const v = rawStats[k];
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) stats[k] = v;
+    }
+    prof.stats = stats;
+    /* The tic-tac-toe tally is mutated in place by game/consolegame.ts (see
+       bindGameTally), so what leaves here must be a well-formed object even
+       when the stored profile predates it or someone hand-edited a count into
+       a string — normIx floors each field back to a non-negative integer. */
+    const t = (prof.ttt ?? {}) as Record<string, unknown>;
+    prof.ttt = { w: normIx(t.w, 0), l: normIx(t.l, 0), d: normIx(t.d, 0) };
     return prof;
   } catch {
     return base;

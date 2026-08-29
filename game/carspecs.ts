@@ -198,6 +198,12 @@ export interface Paint {
   pearlHex?: number;
 }
 
+/* APPEND-ONLY. Profiles persist `paintIx` as an index into this table
+   (settings.ts normIx / engine.ts `% PAINTS.length`), so reordering or
+   removing a row silently repaints every saved car. The roster is the owner's
+   showroom row: silvers, deep blues, reds, black, white, and the odd louder
+   accent — all colours that read at night, where the env is nearly the only
+   light on the bodywork (see carenv.ts). */
 export const PAINTS: Paint[] = [
   { name: "Midnight Indigo", hex: 0x2b4a8f, finish: "metallic" },
   { name: "Panda White", hex: 0xe8ecf2, finish: "pearl", pearlHex: 0x9fb6e6 },
@@ -205,6 +211,12 @@ export const PAINTS: Paint[] = [
   { name: "Gunmetal", hex: 0x3c4048, finish: "metallic" },
   { name: "Cherry Red", hex: 0x8f1a22, finish: "pearl", pearlHex: 0xe0603a },
   { name: "Wasabi", hex: 0x5a7a3c, finish: "solid" },
+  /* Bright flake, so the sodium lamps streak along it — the classic
+     night-highway silver. */
+  { name: "Moonlight Silver", hex: 0xb6bcc6, finish: "metallic" },
+  /* Not a flat black: a faint blue mica sheen is what separates the roofline
+     from the night sky instead of dissolving into it. */
+  { name: "Onyx Black", hex: 0x111319, finish: "pearl", pearlHex: 0x3d4f78 },
 ];
 
 /** Look a paint up by its colour, which is all most call sites carry. */

@@ -260,11 +260,16 @@ export abstract class RouteEdge {
   abstract halfWidth(s: number): number;
   /** surface height under a world point, or null off this edge's pavement */
   abstract heightAt(x: number, z: number, pad?: number): number | null;
-  /** inverse mapping onto this edge, or null when beyond `maxLat` of it */
+  /** inverse mapping onto this edge, or null when beyond `maxLat` of it.
+      `out`, when given, receives the hit and is returned instead of a fresh
+      object — the poseAt/worldOf discipline, for the per-frame callers
+      (physics substeps hit this up to 18×/frame; a fresh {s,lat} each was
+      steady GC churn on exactly the wrong path). */
   abstract project(
     x: number,
     z: number,
     maxLat?: number,
+    out?: { s: number; lat: number },
   ): { s: number; lat: number } | null;
 
   lanes(s: number) {
@@ -382,12 +387,18 @@ export class MainRouteEdge extends RouteEdge {
     if (y === null) return null;
     return this.sAtZ(this.cor.zAt(x, z)) === null ? null : y;
   }
-  project(x: number, z: number, maxLat = 60) {
+  project(x: number, z: number, maxLat = 60, out?: { s: number; lat: number }) {
     const zc = this.cor.zAt(x, z);
     const lat = this.cor.latAt(x, z);
     if (Math.abs(lat) > maxLat) return null;
     const s = this.sAtZ(zc);
-    return s === null ? null : { s, lat };
+    if (s === null) return null;
+    if (out) {
+      out.s = s;
+      out.lat = lat;
+      return out;
+    }
+    return { s, lat };
   }
 }
 
@@ -520,28 +531,39 @@ export class PolyRouteEdge extends RouteEdge {
     const a = st[i], b = st[i + 1] ?? a, t = this.segT;
     return Math.min(a.hwL + (b.hwL - a.hwL) * t, a.hwR + (b.hwR - a.hwR) * t);
   }
-  /** asymmetric half-widths, for mesh sweeping through the gore wedges */
-  halfWidths(s: number): { hwL: number; hwR: number } {
+  /** asymmetric half-widths, for mesh sweeping through the gore wedges.
+      `out` follows the project() discipline for the per-frame callers; the
+      build-time sweeps that hold two results at once keep allocating. */
+  halfWidths(s: number, out?: { hwL: number; hwR: number }): { hwL: number; hwR: number } {
     const st = this.stations;
     const i = this.locate(s);
     const a = st[i], b = st[i + 1] ?? a, t = this.segT;
-    return {
-      hwL: a.hwL + (b.hwL - a.hwL) * t,
-      hwR: a.hwR + (b.hwR - a.hwR) * t,
-    };
+    const hwL = a.hwL + (b.hwL - a.hwL) * t;
+    const hwR = a.hwR + (b.hwR - a.hwR) * t;
+    if (out) {
+      out.hwL = hwL;
+      out.hwR = hwR;
+      return out;
+    }
+    return { hwL, hwR };
   }
   /** Which edges here are shared with the neighbouring carriageway (see
       RouteStation.shL). A boolean cannot be interpolated, so it steps at the
       midpoint of the segment — the same place the sweep that reads it would
       have to put the join anyway. Parapet meshes and the wall clamp both ask
       this instead of guessing from the width. */
-  sharedSides(s: number): { shL: boolean; shR: boolean } {
+  sharedSides(s: number, out?: { shL: boolean; shR: boolean }): { shL: boolean; shR: boolean } {
     const st = this.stations;
     const i = this.locate(s);
     const p = this.segT < 0.5 ? st[i] : st[i + 1] ?? st[i];
+    if (out) {
+      out.shL = p.shL;
+      out.shR = p.shR;
+      return out;
+    }
     return { shL: p.shL, shR: p.shR };
   }
-  project(x: number, z: number, maxLat = 30) {
+  project(x: number, z: number, maxLat = 30, out?: { s: number; lat: number }) {
     if (
       x < this.x0 - maxLat || x > this.x1 + maxLat ||
       z < this.zb0 - maxLat || z > this.zb1 + maxLat
@@ -581,10 +603,18 @@ export class PolyRouteEdge extends RouteEdge {
         bl = px * a.nx + pz * a.nz;
       }
     }
-    return bs < 0 ? null : { s: bs, lat: bl };
+    if (bs < 0) return null;
+    if (out) {
+      out.s = bs;
+      out.lat = bl;
+      return out;
+    }
+    return { s: bs, lat: bl };
   }
+  /** heightAt's own project target — never escapes this method */
+  private _hh = { s: 0, lat: 0 };
   heightAt(x: number, z: number, pad = 0) {
-    const hit = this.project(x, z, Math.max(this.maxHalf, RAMP_W / 2) + pad + 2);
+    const hit = this.project(x, z, Math.max(this.maxHalf, RAMP_W / 2) + pad + 2, this._hh);
     if (!hit) return null;
     const st = this.stations;
     const i = this.locate(hit.s);
@@ -814,9 +844,10 @@ export class RouteGraph {
       this into terrain.heightAt cannot double-report a surface that is
       already there. The attached edges are geographically disjoint, so the
       first that answers is the answer. */
-  surfaceAt(x: number, z: number, pad = 0): SurfaceHit | null {
+  private _sp = { s: 0, lat: 0 };
+  surfaceAt(x: number, z: number, pad = 0, out?: SurfaceHit): SurfaceHit | null {
     for (const e of this.attached) {
-      const hit = e.project(x, z, e.maxHalf + pad + 2);
+      const hit = e.project(x, z, e.maxHalf + pad + 2, this._sp);
       if (!hit) continue;
       const st = e.stations;
       const i = e.locate(hit.s);
@@ -825,13 +856,16 @@ export class RouteGraph {
       const hwR = a.hwR + (b.hwR - a.hwR) * t;
       if (hit.lat > hwL + pad || hit.lat < -(hwR + pad)) continue;
       const bank = a.bank + (b.bank - a.bank) * t;
-      return {
-        y: a.y + (b.y - a.y) * t + hit.lat * bank,
-        edgeId: e.id,
-        s: hit.s,
-        lat: hit.lat,
-        bank,
-      };
+      const y = a.y + (b.y - a.y) * t + hit.lat * bank;
+      if (out) {
+        out.y = y;
+        out.edgeId = e.id;
+        out.s = hit.s;
+        out.lat = hit.lat;
+        out.bank = bank;
+        return out;
+      }
+      return { y, edgeId: e.id, s: hit.s, lat: hit.lat, bank };
     }
     return null;
   }
