@@ -2057,6 +2057,57 @@ export class GameAudio {
   }
   /* ---- end stalk click (lane O) ---- */
 
+  /* ---- wiper sweep (cabin-wipers lane) — synthesized, no samples ----
+     One half-stroke of the wiper: a soft servo/rubber swish. Fired by
+     engine.ts at the START of each stroke (up and return each get one), with
+     `dur` the stroke's real travel time so the sound and the arm arrive
+     together at every mode speed. Two layers:
+       1. the wet-rubber drag: lowpassed noise with a slow rise-and-fall
+          envelope filling ~85% of the stroke — this is most of the sound;
+       2. the motor under it: a quiet ~90Hz hum with a slight pitch sag,
+          which is what separates "wiper" from "cloth on glass".
+     Level sits well under the rain bed it will always play against (rG runs
+     ~0.1+; this peaks ~0.035). Routed into `master`, so volume/duck/mute and
+     the cabin EQ apply unchanged — same policy as stalkClick above. */
+  private wiperSwipeCount = 0;
+  getWiperSwipeCount() {
+    return this.wiperSwipeCount;
+  }
+  wiperSwipe(dur: number, up: boolean) {
+    if (!this.ok) return;
+    const c = this.ctx, t = c.currentTime;
+    this.wiperSwipeCount++;
+    const d = Math.min(1.4, Math.max(0.25, dur)) * 0.85;
+    const n = this.noiseNode();
+    const lp = c.createBiquadFilter();
+    lp.type = "lowpass";
+    /* The return stroke reads slightly darker — the blade drags rather than
+       pushes — which is what keeps an endless LO cycle from sounding like a
+       loop of one sample. */
+    lp.frequency.setValueAtTime(up ? 950 : 780, t);
+    lp.frequency.linearRampToValueAtTime(up ? 620 : 520, t + d);
+    lp.Q.value = 0.9;
+    const g = c.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.032, t + d * 0.35);
+    g.gain.setValueAtTime(0.032, t + d * 0.7);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    n.connect(lp).connect(g).connect(this.master);
+    n.stop(t + d + 0.02);
+    const o = c.createOscillator();
+    o.type = "triangle";
+    o.frequency.setValueAtTime(92, t);
+    o.frequency.linearRampToValueAtTime(78, t + d);
+    const og = c.createGain();
+    og.gain.setValueAtTime(0.0001, t);
+    og.gain.exponentialRampToValueAtTime(0.012, t + d * 0.3);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(og).connect(this.master);
+    o.start(t);
+    o.stop(t + d + 0.02);
+  }
+  /* ---- end wiper sweep ---- */
+
   /* ---- interior trim creaks (lane U) ----
      Research notes (automotive: when does cabin trim actually creak?):
      Interior plastic creaks are stick-slip friction at trim interfaces —

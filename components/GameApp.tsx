@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Game } from "@/game/engine";
+import { Game, WIPER_MODE_NAMES } from "@/game/engine";
 import type { LoadReport } from "@/game/loading";
 import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
@@ -506,6 +506,7 @@ export default function GameApp() {
               <b>G</b><span>high beams: tap to flash, hold 2s to latch on / off</span>
               <b>M</b><span>cockpit mirrors</span>
               <b>R</b><span>rain</span>
+              <b>U</b><span>wipers: off / int / lo / hi (rain auto-starts lo; also clickable beside the head unit)</span>
               <b>T</b><span>time-lapse</span>
               <b>V</b><span>dashcam grade (the DASHCAM view forces its own, harder)</span>
               <b>X</b><span>minimap</span>
@@ -819,6 +820,12 @@ function QuickDrawer({
     { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
     { k: "r", en: "RAIN", jp: "雨", state: game.rain ? "ON" : "OFF", on: game.rain },
+    /* The touch way into the wiper modes — the stalk click zone is
+       desktop-mouse only (see engine.ts wiperStalkTarget). Same key the
+       keyboard uses (U), through the same uiKeyTap route. Below RAIN because
+       the two are one thought: rain auto-starts LO, this row is for
+       choosing INT/HI or going OFF to watch the glass bead up. */
+    { k: "u", en: "WIPERS", jp: "ワイパー", state: WIPER_MODE_NAMES[game.wiperMode], on: game.wiperMode > 0 },
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
     { k: "v", en: "DASHCAM FX", jp: "映像", state: game.grade ? "ON" : "OFF", on: game.grade },
     { k: "k", en: "TEST MODE", jp: "テスト", state: game.testMode ? "ON" : "OFF", on: game.testMode },
