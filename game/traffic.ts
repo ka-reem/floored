@@ -1149,6 +1149,9 @@ export interface Npc {
   laneK: number; offCur: number; offT: number;
   /** target lane once the pre-signal delay elapses; -1 when not changing */
   pendK: number;
+  /** this blink is a zipper merge out of a dying lane (not a courtesy or
+      comfort change) — the case whose crossing widens forward perception */
+  zipCross: boolean;
   /** lateral m/s this driver crosses a lane at, once committed (2-4s/lane) */
   laneRate: number;
   /** Nonzero while a FORCED taper merge is wanted but blocked: the driver
@@ -1925,7 +1928,8 @@ export class Traffic {
         wheelOffs: [[d.wz, hw2], [d.wz, -hw2], [-d.wz, hw2], [-d.wz, -hw2]],
         hw: true, edge: null, eDir: 1, segHint: { i: 0 }, nextEdgeId: -1,
         dir: 1, route: -1, wantBypass: 0,
-        laneK: 1, offCur: 0, offT: 0, pendK: -1, laneRate: this.cor.lanePitch(0) / 3,
+        laneK: 1, offCur: 0, offT: 0, pendK: -1, zipCross: false,
+        laneRate: this.cor.lanePitch(0) / 3,
         mergeLean: 0, s: 0,
         v: 0, v0: 10,
         drv: {
@@ -2137,6 +2141,7 @@ export class Traffic {
     n.pendK = -1;
     n.mergeLean = 0;
     n.blink = 0;
+    n.zipCross = false;
     n.ccKind = null;
     n.route = -1;
     n.wantBypass = 0;
@@ -2715,6 +2720,7 @@ export class Traffic {
     n.wreck = null;
     n.fade = 1;
     n.blink = 0;
+    n.zipCross = false;
     n.pendK = -1;
     n.mergeLean = 0;
     n.nudgeCur = 0;
@@ -4102,14 +4108,30 @@ export class Traffic {
           const dx = m.x - n.x, dz = m.z - n.z;
           const ahead = dx * fx + dz * fz;
           if (ahead <= 0 || ahead > 70) continue;
-          const side = Math.abs(dx * fz - dz * fx);
+          const sideS = dx * fz - dz * fx;
           /* a signalling car reads wider: the follower sees the blinker and
              the nose easing over (mergeLean carries a blocked merger to its
              lane edge, ~2.8 m off the neighbour's centre) and yields BEFORE
              the body is in-lane — that early give is what makes a zipper
              merge close cleanly instead of two cars discovering each other
              mid-crossing */
-          if (side > (m.wreck ? 2.6 : m.hw && m.blink !== 0 ? 2.9 : 1.9)) continue;
+          let lim = m.wreck ? 2.6 : m.hw && m.blink !== 0 ? 2.9 : 1.9;
+          /* ...and a ZIPPER crossing works the other way round too: a car
+             merging out of a dying lane must see the lane it is sweeping
+             INTO, not only the strip its body is still on. Without this, a
+             fast merger accepts a legitimately clear gap, spends the
+             crossing blind to a slow leader in the surviving lane, and
+             discovers it at bumper range — the residual the
+             traffic-merge-sim's gap-box note pins on acceptance not being
+             re-checked. Zipper merges only (`zipCross`): a courtesy move
+             for a hail must not brake mid-crossing in front of the car it
+             is yielding to. Signed, so the window widens only toward the
+             target; the rival keeps its own rules. */
+          if (!n.rival && n.hw && n.zipCross && n.blink !== 0) {
+            const sweep = n.offT - n.offCur;
+            if (sweep * sideS > 0) lim += Math.min(3.8, Math.abs(sweep));
+          }
+          if (Math.abs(sideS) > lim) continue;
           if (n.hw && m.hw && !m.wreck && m.dir !== n.dir) continue;
           const d = Math.max(ahead - (m.L + n.L) / 2, 0.1);
           if (d < ds) {
@@ -4918,9 +4940,21 @@ export class Traffic {
     const wasLean = n.mergeLean !== 0;
     n.mergeLean = 0;
     if (n.pendK < 0 && (n.blink === 0 || wasLean) && n.laneK <= nl - 1 && n.laneK > 0) {
-      const aheadZ = cor.wrapZ(n.s + clamp(n.v, 15, 32) * 9);
-      const nlAhead = cor.lanes(aheadZ);
-      if (n.laneK > nlAhead - 1) {
+      /* The lane has to survive the WHOLE lookahead, not just its far end.
+         Sampling one z at s+look was fine while every shrink was monotone,
+         but the playground can re-widen the deck a couple of hundred metres
+         past a drop: the count at s+look is back to "my lane exists" while
+         the pavement in between still dips, the merge block never engages,
+         and the car meets the snap net at full speed. 32 m sampling cannot
+         miss a dip: the narrowest one is a 120 m drop taper against a 24 m
+         flat gap, ~140 m of road that rounds below the dying lane. */
+      const look = clamp(n.v, 15, 32) * 9;
+      let dipAt = -1;
+      for (let d = 32; d - 32 < look; d += 32) {
+        const q = Math.min(d, look);
+        if (cor.lanes(cor.wrapZ(n.s + q)) - 1 < n.laneK) { dipAt = q; break; }
+      }
+      if (dipAt >= 0) {
         /* ONE lane per hop, always — never min(laneK−1, nlAhead−1): across a
            multi-step drop that shortcut targets a lane two over and the car
            cuts a continuous diagonal through the lane between, which was
@@ -4928,7 +4962,10 @@ export class Traffic {
         const k2 = n.laneK - 1;
         const off2 = cor.laneOffset(k2, n.s);
         {
-          // lane gone within ~3 s of travel → zipper urgency
+          /* Lane gone within ~3 s of travel → zipper urgency. A direct
+             probe, not the quantized dipAt: the scan's 32 m grain sits
+             above a crawling car's whole 24 m horizon, and a probe this
+             short cannot jump a dip anyway (the narrowest is ~140 m). */
           const urgent =
             cor.lanes(cor.wrapZ(n.s + Math.max(n.v, 8) * 3)) - 1 < n.laneK;
           /* the urgent gap requirement scales with speed: at 25 m/s it wants
@@ -4949,6 +4986,7 @@ export class Traffic {
                whole highway-speed approach window in which to rot */
             const brisk = urgent || n.v < 15;
             n.pendK = k2;
+            n.zipCross = true;
             n.blink = off2 < n.offCur ? -1 : 1;
             n.blinkT = brisk ? rand(0.2, 0.5) : rand(1, 2);
             // the local lane pitch, not the nominal LANE_W — the toll plaza
@@ -4978,6 +5016,7 @@ export class Traffic {
               n.mergeLean =
                 (off2 < n.offCur ? -1 : 1) * (this.maxBias(n, n.s) + 0.2);
               n.blink = off2 < n.offCur ? -1 : 1;
+              n.zipCross = true;
               n.laneRate = Math.max(n.laneRate, LANE_FOLLOW_RATE);
               /* Still no slot and the pavement is running out: place a
                  VIRTUAL STOPPED LEADER a few metres short of where lanes()
@@ -4990,6 +5029,8 @@ export class Traffic {
                  occupied lane — which is exactly the pileup glitch. A car
                  that WAITS at the end of a closing lane zippers in cleanly
                  as soon as the yielding follower alongside leaves it room. */
+              // probe and bisection stay direct: a ≤ ~100 m window holds at
+              // most one boundary of the dip, so monotonicity is safe here
               let lo = 0, hi = Math.max(n.v, 4) * 3;
               if (cor.lanes(cor.wrapZ(n.s + hi)) - 1 < n.laneK) {
                 for (let i = 0; i < 5; i++) {
@@ -5014,6 +5055,7 @@ export class Traffic {
       const k2 = Math.max(0, nl - 1);
       const off2 = cor.laneOffset(k2, n.s);
       n.blink = off2 < n.offCur ? -1 : 1;
+      n.zipCross = true;
       n.laneRate = Math.max(n.laneRate, cor.lanePitch(n.s) / 1.4);
       n.laneK = k2;
       n.pendK = -1;
@@ -5152,6 +5194,7 @@ export class Traffic {
       if (n.blink !== 0 && n.pendK < 0 && n.mergeLean === 0 && n.wantBypass !== 1)
         n.blink = 0;
     }
+    if (n.blink === 0) n.zipCross = false;
   }
 
   /* bypass driving: two lanes, finite arclength (no wrap — the edge ends at
