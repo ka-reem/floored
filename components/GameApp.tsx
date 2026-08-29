@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Game, WIPER_MODE_NAMES } from "@/game/engine";
+import { HINT_SHOW_MS, type HintMsg } from "@/game/hints";
 import type { LoadReport } from "@/game/loading";
 import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
@@ -40,6 +41,12 @@ export default function GameApp() {
   const [fromPause, setFromPause] = useState(false);
   const [toast, setToast] = useState("");
   const [exitHint, setExitHint] = useState<string | null>(null);
+  /* First-run hints: text and visibility are separate so the fade-out has
+     something to fade — clearing the text with the flag would empty the pill
+     mid-transition. The text just stays behind opacity 0 until the next tip. */
+  const [hint, setHint] = useState<HintMsg | null>(null);
+  const [hintOn, setHintOn] = useState(false);
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [load, setLoad] = useState<LoadReport>({ label: "", frac: 0 });
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [, force] = useState(0);
@@ -77,6 +84,14 @@ export default function GameApp() {
     const game = new Game(hostRef.current, profile, {
       toast: showToast,
       exitHint: (t) => setExitHint(t),
+      /* game/hints.ts fires each tip once ever and never overlaps two, so this
+         only has to show, hold and let the CSS fade take it back down. */
+      hint: (h) => {
+        setHint(h);
+        setHintOn(true);
+        if (hintTimer.current) clearTimeout(hintTimer.current);
+        hintTimer.current = setTimeout(() => setHintOn(false), HINT_SHOW_MS);
+      },
       pauseRequest: () => {
         const s = screenRef.current;
         if (s === "playing") {
@@ -329,6 +344,17 @@ export default function GameApp() {
           the touch drawer uses). On touch the canvas keeps pointer-events:none
           (globals.css) — it sits over the throttle puck — so this handler is
           unreachable there and the drawer's MAP ZOOM row stands in. */}
+      {/* First-run hint pill — engine fires via ui.hint, at most one at a
+          time; sits below the exit board so the EXIT 4 tip can share the
+          frame with the navigation hint it is explaining. */}
+      <div id="hint" style={{ opacity: hint && hintOn && playing ? 1 : 0 }}>
+        {hint && (
+          <>
+            {hint.en}
+            <i>{hint.jp}</i>
+          </>
+        )}
+      </div>
       <canvas
         id="mmap" width={172} height={172}
         style={{ display: playing && g?.mmap ? "block" : "none" }}
@@ -494,9 +520,13 @@ export default function GameApp() {
           <div className="panel">
             <h2>CONTROLS</h2>
             <div className="jp2">操作方法</div>
+            {/* Audited against engine.ts (onKeyDown/onKeyUp/readInput,
+                bindInput, onPointerDown, gamepad.ts) — every binding listed
+                here exists there, and everything bound there is listed. Keep
+                the two in step when adding a key. */}
             <div className="ctrlGrid">
-              <b>W / S</b><span>throttle · brake &amp; reverse</span>
-              <b>A / D</b><span>steer</span>
+              <b>W / S · ↑ / ↓</b><span>throttle · brake &amp; reverse</span>
+              <b>A / D · ← / →</b><span>steer</span>
               <b>Space</b><span>handbrake (drift)</span>
               <b>C</b><span>camera: chase → cockpit → hood → console → backseat → dashcam</span>
               <b>B</b><span>look back (chase &amp; cockpit)</span>
@@ -508,22 +538,42 @@ export default function GameApp() {
               <b>R</b><span>rain</span>
               <b>U</b><span>wipers: off / int / lo / hi (rain auto-starts lo; also clickable beside the head unit)</span>
               <b>T</b><span>time-lapse</span>
+              <b>T</b><span>time-lapse: ×150 → ×1500 → off</span>
               <b>V</b><span>dashcam grade (the DASHCAM view forces its own, harder)</span>
               <b>X</b><span>minimap</span>
               <b>Z</b><span>map zoom: close-up ↔ whole loop (or click the map)</span>
               <b>N</b><span>reset to nearest road</span>
               <b>H</b><span>this help screen</span>
-              <b>I</b><span>interior light (off by default — the cabin is meant to be dark)</span>
               <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
               <b>O</b><span>photo mode: orbit the car, Space captures a PNG</span>
               <b>P</b><span>in-dash music: play / pause</span>
+              <b>I</b><span>interior light — desktop only (off by default; the cabin is meant to be dark)</span>
+              <b>P</b><span>in-dash music: play / pause — desktop only</span>
               <b>, / .</b><span>previous / next piece</span>
               <b>Esc</b><span>pause menu (music pauses with it)</span>
             </div>
+            <div className="sectionHead">Mouse · in the cabin</div>
+            <div className="ctrlGrid">
+              <b>Dash screen</b><span>click to switch panes — map / music / trip (desktop)</span>
+              <b>Roof console</b><span>click the overhead panel — interior light</span>
+            </div>
+            <div className="sectionHead">Touch 触れる</div>
+            <div className="ctrlGrid">
+              <b>Pucks</b><span>steer · pedals · CAM · LTS (high beams) · HORN</span>
+              <b>⋯</b><span>quick controls drawer: lights, map, mirrors, rain, time-lapse, dashcam FX, test mode, reset</span>
+              <b>Top of frame</b><span>tap the middle — interior light</span>
+              <b>Steering</b><span>buttons / touch wheel / tilt — pick in settings</span>
+            </div>
+            <div className="sectionHead">Gamepad</div>
+            <div className="ctrlGrid">
+              <b>Sticks / triggers</b><span>left stick steers · RT throttle · LT brake</span>
+              <b>Buttons</b><span>A handbrake · B horn · Y lights · RB or D-pad up camera</span>
+            </div>
             <p className="ctrlNote">
               Follow the green EXIT boards on the expressway — each numbered exit has a lit
-              off-ramp down into the town on both sides. Crashed cars keep their hazards on,
-              smoke, and get towed away shortly.
+              off-ramp down into the town on both sides, and EXIT 4 峠 leads onto the two-way
+              mountain road. Crashed cars keep their hazards on, smoke, and get towed away
+              shortly.
             </p>
             <div className="btnrow">
               <button onClick={() => backFrom(true)}>BACK</button>
@@ -1314,6 +1364,14 @@ function SettingsPanel({
           label="No Hesi score (speed + near misses)"
           checked={s.noHesiScore}
           onChange={(v) => upd((x) => (x.noHesiScore = v))}
+        />
+        {/* Gates game/hints.ts wholesale. Which tips have already fired is
+            stored separately from the settings (see settings.ts), so DEFAULTS
+            re-enabling this does not replay them. */}
+        <Check
+          label="First-run hints (one-time tips)"
+          checked={s.hints}
+          onChange={(v) => upd((x) => (x.hints = v))}
         />
         <Row label={`Field of view — ${s.fovBase}°`}>
           <input

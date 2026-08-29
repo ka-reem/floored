@@ -11,6 +11,7 @@ import {
 } from "./settings";
 import { getCar, PAINTS, testDriveSpec, type CarSpec, type PhysicsSpec } from "./carspecs";
 import { pollGamepad, type PadEdge } from "./gamepad";
+import { Hints, type HintMsg } from "./hints";
 import { buildMats, type Mats } from "./world/mats";
 import { primeCarEnv, setCarEnvLift } from "./carenv";
 import { makeTerrain, buildGround, type Terrain } from "./world/terrain";
@@ -54,6 +55,9 @@ const WX_ICONS: Record<string, string> = {
 export interface UiBridge {
   toast(msg: string): void;
   exitHint(text: string | null): void;
+  /** a first-run discovery hint fired (game/hints.ts). Fire-and-forget: the
+      UI owns the element, the HINT_SHOW_MS timer and the fade. */
+  hint(msg: HintMsg): void;
   pauseRequest(): void;
   helpRequest(): void;
   /** Enter/leave photo mode. Owned by the UI for the same reason pauseRequest
@@ -1688,6 +1692,8 @@ export class Game {
   private tripBase = 0;
   private hudT = 0;
   private chunkT = 0;
+  /** first-run discovery hints — pacing and once-ever memory (game/hints.ts) */
+  private hints = new Hints();
   /** No Hesi scoring state (see noHesiUpdate). `best` is seeded from the
       profile at construction and only ever grows; the caller (GameApp.tsx's
       persist()) reads it back out through the noHesiBest getter alongside
@@ -5672,14 +5678,26 @@ export class Game {
         } else enh.textContent = "";
       }
       /* exit navigation hint */
+      let exOn: { no: number; dist: number } | null = null;
       if (car.y > 4 && Math.abs(car.u) > 1) {
         const ex = nearestExitAhead(this.world, car.z, Math.cos(car.h));
         if (ex && ex.dist < 400 && ex.dist > -5) {
+          exOn = ex;
           this.ui.exitHint(
             `EXIT ${ex.no} ${ex.name} ▸ ${Math.max(0, Math.round(ex.dist / 10) * 10)} m`
           );
         } else this.ui.exitHint(null);
       } else this.ui.exitHint(null);
+      /* First-run discovery hints, on the same cadence the rest of the HUD
+         text moves at. Only ever reads frame state; game/hints.ts owns the
+         once-ever memory and the pacing, GameApp owns the element. */
+      const hint = this.hints.update(now, {
+        enabled: this.settings.hints,
+        touch: this.isTouch,
+        consoleCam: this.camMode === CAM_CONSOLE,
+        exit4Ahead: !!exOn && exOn.no === 4,
+      });
+      if (hint) this.ui.hint(hint);
     }
     const bOn = this.blinkOnNow(now);
     const il = this.dom("indL"), ir = this.dom("indR");

@@ -484,6 +484,11 @@ export interface GameSettings {
       as `rival`: it costs nothing while driving clean and reads immediately
       as this game's version of the reference title's vibe bar. */
   noHesiScore: boolean;
+  /** first-run discovery hints (game/hints.ts): one-shot in-context tips.
+      This toggle gates the whole system; WHICH tips have already fired is
+      not a setting and lives separately (hintSeen below), so "Reset all
+      settings" turning this back on does not also replay seen tips. */
+  hints: boolean;
 }
 
 /** Lifetime drive statistics, accumulated across every session on this
@@ -586,6 +591,7 @@ export const defaultSettings = (): GameSettings => ({
   rivalSignals: false,
   testMode: false,
   noHesiScore: true,
+  hints: true,
 });
 
 export const defaultProfile = (): Profile => ({
@@ -644,7 +650,7 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
   "autoTime", "rain", "mmap", "mmapZoom", "rival", "rivalSignals", "testMode",
-  "noHesiScore",
+  "noHesiScore", "hints",
 ] as const;
 
 /** Lifetime-stats fields, all "non-negative finite number or the default" —
@@ -854,5 +860,42 @@ export function saveProfile(p: Profile) {
     localStorage.setItem(KEY, JSON.stringify(p));
   } catch {
     /* private mode etc — non-fatal */
+  }
+}
+
+/* ---------------- first-run hint memory ----------------
+ *
+ * Which one-shot discovery hints (game/hints.ts) have already fired, ever, in
+ * this browser. Deliberately NOT a field of the Profile: persist() copies the
+ * whole settings object out on every menu exit and the panel's DEFAULTS
+ * button rewrites it wholesale, and neither of those should be able to replay
+ * or eat "you have already seen this". Same storage prefix and the same
+ * failure posture as the profile itself — a browser that refuses the write
+ * repeats a tip next session, which is the harmless direction to fail in.
+ */
+const HINT_SEEN_KEY = KEY + ".hintsSeen";
+let hintSeenCache: Record<string, 1> | null = null;
+function hintSeenMap(): Record<string, 1> {
+  if (hintSeenCache) return hintSeenCache;
+  try {
+    const raw = JSON.parse(localStorage.getItem(HINT_SEEN_KEY) || "{}");
+    hintSeenCache =
+      raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  } catch {
+    hintSeenCache = {};
+  }
+  return hintSeenCache!;
+}
+
+export const hintSeen = (id: string): boolean => hintSeenMap()[id] === 1;
+
+export function markHintSeen(id: string) {
+  const m = hintSeenMap();
+  if (m[id] === 1) return;
+  m[id] = 1;
+  try {
+    localStorage.setItem(HINT_SEEN_KEY, JSON.stringify(m));
+  } catch {
+    /* see above — repeating a tip beats crashing over one */
   }
 }
