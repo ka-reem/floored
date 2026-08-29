@@ -28,7 +28,7 @@ import { collidePlayer } from "./collide";
 import { buildPlayerCar, type PlayerRig } from "./player";
 import type { CockpitModelHandle, MirrorFraming } from "./cockpitmodel";
 import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, WIPER, type GaugeFlags } from "./cockpit";
-import { Traffic } from "./traffic";
+import { Traffic, setNpcDaylight } from "./traffic";
 import { GameAudio } from "./audio";
 import { MusicPlayer } from "./music";
 import { hitScreen, type ScreenAction, type ScreenView } from "./carscreen";
@@ -3668,6 +3668,7 @@ export class Game {
   private hemiD = new THREE.Color(0x3948a8);
   private beamPos = new THREE.Vector3();
   private beamDir = new THREE.Vector3();
+  private sunDirW = new THREE.Vector3();
   private ambBase = new THREE.Color(0x222233);
   private ambTun = new THREE.Color(0x3a3128);
   private hemiGN = new THREE.Color(0x04040a);
@@ -5353,6 +5354,14 @@ export class Game {
     // advanced or drawn while the mode is up (see photoUpdate)
     const cam = this.photo.on && this.photoCam ? this.photoCam : this.camera;
     cam.updateMatrixWorld();
+    /* NPC daylight fill (see setNpcDaylight in traffic.ts) needs the sun
+       direction in view space, so it is fed here where the drawing camera's
+       matrices are fresh — Camera.updateMatrixWorld refreshes
+       matrixWorldInverse too, and photo mode's own camera counts: its
+       daytime shots light the fleet from its view, not the gameplay one's.
+       Zero at night; this is the day pass's one hook into the fleet. */
+    this.sunDirW.copy(this.sun.position).sub(this.sun.target.position).normalize();
+    setNpcDaylight(this.dayFactor(), this.sunDirW, cam);
     this.renderer.setRenderTarget(this.post.sceneRT);
     this.renderer.clear();
     this.renderer.render(this.scene, cam);
