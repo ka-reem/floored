@@ -28,9 +28,12 @@ const walk = (d) => readdirSync(d).flatMap((f) => {
 for (const p of walk(out))
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 const dir = path.join(out, "game", "world");
-const { getCorridor, setRoadSeed, tunnels, signPlan, TOLL, PITCH, MTN } =
-  await import(path.join(dir, "corridor.js"));
-const { buildRamps, parapetGap } = await import(path.join(dir, "ramps.js"));
+const {
+  getCorridor, setRoadSeed, tunnels, signPlan, TOLL, PITCH, MTN,
+  playground, WIDE_PIN, NO_TAPER, PORTAL_PAD, TAPER_BAND, PLAY_PEAK_MIN,
+} = await import(path.join(dir, "corridor.js"));
+const { buildRamps, parapetGap, placeable } = await import(path.join(dir, "ramps.js"));
+const { CONNECT_Z, MAX_LANES } = await import(path.join(dir, "const.js"));
 
 const args = process.argv.slice(2);
 const showIx = args.indexOf("--show");
@@ -64,6 +67,10 @@ if (showIx >= 0) {
   const seed = +args[showIx + 1];
   const { c, runs: rs, tun } = lap(seed);
   console.log(`seed ${seed} — lane runs over one 4 km lap:`);
+  const pg = playground();
+  console.log(pg
+    ? `playground: z ${Math.round(pg.z0)} .. ${Math.round(pg.z1)}  +${pg.gain} lane(s), peaks at ${pg.lanes}`
+    : "playground: none fits this road");
   for (const r of rs) {
     const t = tun.find((q) => r.z0 < q.z1 && r.z1 > q.z0);
     console.log(`  z ${String(Math.round(r.z0)).padStart(6)} .. ${String(Math.round(r.z1)).padStart(6)}` +
@@ -85,6 +92,8 @@ const N = +(args[0] || 200);
 const pool = {}, tunLen = [], tunLanes = {}, tunPerLap = [];
 let trans = 0, worstSlide = 0, fail = 0, tollNot3 = 0, maxRun = 0;
 const fiveRuns = [], laps = [];
+const pgPeak = {}, pgGain = {}, pgHolds = [];
+let pgHave = 0;
 for (let i = 0; i < N; i++) {
   const seed = i === 0 ? 1987 : ((i * 2654435761) >>> 0) % 100000;
   const { c, runs: rs, tun, hist } = lap(seed);
@@ -189,6 +198,61 @@ for (let i = 0; i < N; i++) {
   for (const z of c.lattice(PITCH.gantry))
     if (!c.inTunnel(z) && !c.inToll(z) && Math.min(9, (c.halfWidth(z) + 0.32) * 2 - 1.4) > c.halfWidth(z) * 2 + 1)
       say(`gantry z=${z}: sign wider than the deck`);
+
+  /* The taper law, per seed: every mid-taper z — base plan and playground
+     overlay alike — inside TAPER_BAND, clear of every NO_TAPER window and
+     of both tunnels' padded portals. corridor-check asserts this for the
+     one default road; the planner has to keep it on every road it makes. */
+  for (let z = c.Z0; z <= c.Z1; z += 1) {
+    if (Math.abs(c.laneCount(z + 0.5) - c.laneCount(z - 0.5)) <= 1e-9) continue;
+    if (z < TAPER_BAND[0] || z > TAPER_BAND[1] ||
+      NO_TAPER.some(([a, b]) => z > a && z < b) || c.inTunnel(z, PORTAL_PAD - 1)) {
+      say(`a taper stands in forbidden road at z=${z}`);
+      break;
+    }
+  }
+  /* The playground window, when this seed rolled one. */
+  {
+    const pg = playground();
+    if (pg) {
+      pgHave++;
+      pgPeak[pg.lanes] = (pgPeak[pg.lanes] || 0) + 1;
+      pgGain[pg.gain] = (pgGain[pg.gain] || 0) + 1;
+      pgHolds.push(pg.z1 - pg.z0);
+      let peak = 0, peakRun = 0, cur = 0;
+      for (let z = pg.z0; z <= pg.z1; z += 1) peak = Math.max(peak, c.lanes(z));
+      for (let z = pg.z0; z <= pg.z1; z += 1) {
+        cur = c.lanes(z) === peak ? cur + 1 : 0;
+        peakRun = Math.max(peakRun, cur);
+      }
+      if (peak !== pg.lanes) say(`playground spec says ${pg.lanes} lanes, deck peaks at ${peak}`);
+      // a peak you cannot sit in is a lane that appears and vanishes
+      if (peakRun < PLAY_PEAK_MIN - 10) say(`the ${peak}-lane stretch lasts only ${peakRun} m`);
+      if (pg.lanes > MAX_LANES) say("playground exceeds MAX_LANES");
+      if (pg.z0 < TAPER_BAND[0] || pg.z1 > TAPER_BAND[1]) say("playground leaves the taper band");
+      for (const t2 of tunnels())
+        if (pg.z0 < t2.z1 && pg.z1 > t2.z0) say(`playground overlaps ${t2.nameEn}`);
+      if (pg.z0 < WIDE_PIN[1] && pg.z1 > WIDE_PIN[0]) say("playground overlaps WIDE_PIN");
+      if (pg.z0 < TOLL.z1 && pg.z1 > TOLL.plazaZ0) say("playground reaches the toll plaza");
+    }
+    // whether or not a window rolled, the width ceilings hold: the ramps'
+    // grade budget at the gores, and the deck const.ts sizes RW for
+    for (const gz of CONNECT_Z)
+      if (c.lanes(gz) > 5) say(`${c.lanes(gz)} lanes at the gore z=${gz}`);
+    if (Math.max(...Object.keys(hist).map(Number)) > MAX_LANES)
+      say("lane count exceeds MAX_LANES");
+  }
+  /* A car still needs somewhere to be placed: the spawn band between the
+     gores survives whatever width the playground holds over them. */
+  {
+    const gaps2 = buildRamps(() => 0).map(parapetGap);
+    let best = 0, run = 0;
+    for (let z = CONNECT_Z[0]; z <= CONNECT_Z[1]; z += 1) {
+      run = placeable(z, gaps2) ? run + 1 : 0;
+      best = Math.max(best, run);
+    }
+    if (best < 200) say(`the spawn band is down to ${best} m`);
+  }
 }
 
 /* Variety ACROSS seeds, which matters as much as variety within a lap: two
@@ -228,6 +292,24 @@ for (const k of Object.keys(pool).sort())
   console.log(`  ${k} lanes: ${((100 * pool[k]) / tot).toFixed(1).padStart(5)} %` +
     `  ${(pool[k] / N).toFixed(0).padStart(5)} m per lap`);
 console.log(`  4 or 5:   ${((100 * ((pool[4] || 0) + (pool[5] || 0))) / tot).toFixed(1)} %`);
+/* The playground: how often a lap gets its wide window, how wide it peaks
+   and how long it holds. Presence is a STAT, not an assertion — a lap too
+   packed to widen legally is allowed to stay as it is (the alternative is
+   weakening a taper rule to force one in) — but a collapse in the rate is
+   the first sign a corridor change ate the playground's room. */
+pgHolds.sort((a, b) => a - b);
+console.log(`\nplayground: ${pgHave}/${N} laps roll one (${((100 * pgHave) / N).toFixed(0)}%)`);
+if (pgHave) {
+  console.log(`  peak lanes: ${Object.keys(pgPeak).sort().map((k) =>
+    `${k}→${((100 * pgPeak[k]) / pgHave).toFixed(0)}%`).join("  ")}` +
+    `   gain: ${Object.keys(pgGain).sort().map((k) =>
+      `+${k}→${((100 * pgGain[k]) / pgHave).toFixed(0)}%`).join("  ")}`);
+  console.log(`  hold: min ${pgHolds[0].toFixed(0)}` +
+    ` median ${pgHolds[pgHolds.length >> 1].toFixed(0)}` +
+    ` max ${pgHolds[pgHolds.length - 1].toFixed(0)} m`);
+}
+if (pgHave / N < 0.5) { console.log("  FAIL fewer than half the laps get a playground"); fail++; }
+
 console.log(`\ntransitions per lap: min ${Math.min(...laps)}, mean ${avg(laps).toFixed(1)}, max ${Math.max(...laps)}`);
 console.log(`separate 5-lane runs per lap: min ${Math.min(...fiveRuns)}, mean ${avg(fiveRuns).toFixed(1)}`);
 console.log(`longest single-count run seen: ${maxRun.toFixed(0)} m`);

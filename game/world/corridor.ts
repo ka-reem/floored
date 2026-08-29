@@ -729,6 +729,13 @@ export const playground = () => PLAYGROUND;
 const WIDE_HOLD_MIN = 200;
 const WIDE_HOLD_MAX = 900;
 const WIDE_HOLD_LOOSE = 1300;
+/** Shortest stretch the window's PEAK count may hold — the widest the deck
+    gets must last at least as long as the drop that ends it (~2.2 s at
+    speed), or the extra lane appears and vanishes. MIN_RUN would be the
+    stricter bar, but it prices six-lane peaks out of existence: the only
+    runs long enough to carry six for 160 m are the ones the tunnels and
+    WIDE_PIN already own. Exported so the checks hold the planner to it. */
+export const PLAY_PEAK_MIN = 120;
 /** How wide the window peaks, weighted; top-heavy toward MAX_LANES for the
     same reason LANE_WEIGHTS leans five — the ask is a WIDE section. Only
     peaks a spot can legally reach are in play, so "+2" happens exactly
@@ -793,6 +800,10 @@ function planPlayground(
     z0: number;
     /** index of the base step retargeted/absorbed, -1 for a rise */
     step: number;
+    /** metres past the window start before the deck is fully open — only a
+        two-lane absorb has any: the absorbed drop spends its length as a
+        single-lane widen first */
+    flatOff: number;
   }
   const openers: Opener[] = [];
   for (const s of spans)
@@ -800,6 +811,7 @@ function planPlayground(
       if (s.b - s.a < stepLen(g)) continue;
       openers.push({
         kind: "rise", g, run: s.run, lo: s.a + stepLen(g), hi: s.b, z0: s.a, step: -1,
+        flatOff: 0,
       });
     }
   steps.forEach((st, k) => {
@@ -809,7 +821,10 @@ function planPlayground(
         // absorb: the window starts just shy of the step so the bump below
         // catches it; nothing new is built here
         const z = st.z0 - 0.5;
-        openers.push({ kind: "absorb", g, run: k + 1, lo: z, hi: z, z0: z, step: k });
+        openers.push({
+          kind: "absorb", g, run: k + 1, lo: z, hi: z, z0: z, step: k,
+          flatOff: g === 1 ? 0 : st.z1 - z,
+        });
         continue;
       }
       if (st.to === pre) continue;
@@ -817,7 +832,9 @@ function planPlayground(
       const z0 = st.z1 - stepLen(st.to - pre + g);
       if (z0 < before) continue;
       if (holes.some(([h0, h1]) => h0 < st.z0 && h1 > z0)) continue;
-      openers.push({ kind: "retarget", g, run: k + 1, lo: st.z1, hi: st.z1, z0, step: k });
+      openers.push({
+        kind: "retarget", g, run: k + 1, lo: st.z1, hi: st.z1, z0, step: k, flatOff: 0,
+      });
     }
   });
 
@@ -861,12 +878,18 @@ function planPlayground(
 
   /** a legal spot: an opener and a closer with a hold in
       [WIDE_HOLD_MIN, WIDE_HOLD_MAX] between them, no hard hole inside the
-      window, and the peak on the deck const.ts sizes */
+      window, the peak on the deck const.ts sizes, and the peak GUARANTEED
+      to survive for a MIN_RUN — a six-lane deck that lasts 80 m before a
+      base drop inside the window takes it back is a lane that appears and
+      vanishes, the exact shape MIN_RUN exists to prevent */
   interface Spot {
     o: Opener;
     c: Closer;
     peak: number;
     dLo: number; dHi: number; // drop START (window end) range
+    /** window-start cap that keeps the peak stretch ≥ MIN_RUN when the
+        opening run is what carries the peak */
+    wCap: number;
   }
   /* The ramps are the one consumer with a real width ceiling: their sweep
      re-reads halfWidth per sample, but the descent's grade budget is spent
@@ -893,12 +916,32 @@ function planPlayground(
         let maxBase = 0;
         for (let k = o.run; k <= c.run; k++) maxBase = Math.max(maxBase, runs[k].n);
         if (maxBase + o.g > MAX_LANES) continue;
-        const dLo = Math.max(c.lo, o.lo), dHi = c.hi - c.dLen(o.g);
+        let dLo = Math.max(c.lo, o.lo), dHi = c.hi - c.dLen(o.g);
+        let wCap = o.hi;
+        /* The peak must have a run to live on. A one-run window's peak IS
+           the hold (≥ WIDE_HOLD_MIN); otherwise some run at maxBase must
+           keep ≥ PLAY_PEAK_MIN inside the window — an interior run
+           outright, or a boundary run with the window's end held back far
+           enough. */
+        if (o.run < c.run) {
+          let ok = false;
+          for (let k = o.run + 1; k < c.run && !ok; k++)
+            ok = runs[k].n === maxBase && runs[k].z1 - runs[k].z0 >= PLAY_PEAK_MIN;
+          if (!ok && runs[o.run].n === maxBase) {
+            const cap = steps[o.run].z0 - PLAY_PEAK_MIN - o.flatOff;
+            if (o.lo <= cap) { wCap = Math.min(wCap, cap); ok = true; }
+          }
+          if (!ok && runs[c.run].n === maxBase) {
+            const floor = steps[c.run - 1].z1 + PLAY_PEAK_MIN;
+            if (dHi >= floor) { dLo = Math.max(dLo, floor); ok = true; }
+          }
+          if (!ok) continue;
+        }
         if (dHi < dLo) continue;
         // some pair (window start, window end) must leave a legal hold
         if (dHi - o.lo < WIDE_HOLD_MIN) continue;
-        if (dLo - o.hi > holdMax) continue;
-        out.push({ o, c, peak: maxBase + o.g, dLo, dHi });
+        if (dLo - wCap > holdMax) continue;
+        out.push({ o, c, peak: maxBase + o.g, dLo, dHi, wCap });
       }
     return out;
   };
@@ -923,11 +966,11 @@ function planPlayground(
 
   /* Place the window inside the spot: hold first, then where it opens.
      Fixed ends (a retarget or an absorb) just collapse their range. */
-  const holdLo = Math.max(WIDE_HOLD_MIN, pick.dLo - pick.o.hi);
+  const holdLo = Math.max(WIDE_HOLD_MIN, pick.dLo - pick.wCap);
   const holdHi = Math.min(holdMax, pick.dHi - pick.o.lo);
   const hold = holdLo + rng() * (holdHi - holdLo);
   const wLo = Math.max(pick.o.lo, pick.dLo - hold);
-  const wHi = Math.min(pick.o.hi, pick.dHi - hold);
+  const wHi = Math.min(pick.wCap, pick.dHi - hold);
   const w1 = wLo + rng() * (wHi - wLo); // window start: fully wide from here
   const d0 = w1 + hold; // window end: where the extra lanes start to go
 

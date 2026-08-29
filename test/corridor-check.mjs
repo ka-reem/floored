@@ -30,11 +30,13 @@ for (const f of ["corridor.js", "ramps.js"]) {
   const p = path.join(dir, f);
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 }
-const { getCorridor, assertPitches, signPlan, tunnels, SIGN, PITCH, PHASE, TUNNEL, TOLL, TOLL_PLAZA, BRIDGE } =
-  await import(path.join(dir, "corridor.js"));
+const {
+  getCorridor, assertPitches, signPlan, tunnels, SIGN, PITCH, PHASE, TUNNEL, TOLL,
+  TOLL_PLAZA, BRIDGE, playground, WIDE_PIN, NO_TAPER, PORTAL_PAD, TAPER_BAND, PLAY_PEAK_MIN,
+} = await import(path.join(dir, "corridor.js"));
 const { buildRamps, parapetGap, spawnWindow, spawnZ, RAMP_PLAN } =
   await import(path.join(dir, "ramps.js"));
-const { CONNECT_Z, RAMP_W, RAMP_RUN } = await import(path.join(dir, "const.js"));
+const { CONNECT_Z, RAMP_W, RAMP_RUN, MAX_LANES } = await import(path.join(dir, "const.js"));
 
 const c = getCorridor();
 /** numbers that live in highway.ts and have no home in the corridor yet */
@@ -221,6 +223,8 @@ for (let z = c.ZB0; z <= c.ZB1; z += 2) {
 console.log(`lanes: ${minLanes}–${maxLanes} across the lap,` +
   ` lane pitch ${f(c.lanePitch(0))}–${f(c.lanePitch((TOLL.plazaZ0 + TOLL.plazaZ1) / 2))} m,` +
   ` worst lane-centre slide ${f(maxSlide * 100)} cm per 2 m (lane ${slideK} at z=${slideAt})`);
+// const.ts sizes the deck (RW) for MAX_LANES; a wider schedule overruns it
+if (maxLanes > MAX_LANES) bad(`the schedule reaches ${maxLanes} lanes — RW is sized for ${MAX_LANES}`);
 /* A car merely holding its lane follows the sliding centreline at
    LANE_FOLLOW_RATE (traffic.ts, 3.4 m/s) and runs at up to ~60 m/s, so a lane
    centre steeper than ~0.057 is one it visibly lags. Checked at 0.053 to keep
@@ -253,6 +257,68 @@ if (0.053 > LANE_FOLLOW_RATE / TOP_SPEED)
   }
   console.log(`tapers: ${runs} transitions, ${bad0} reversal(s) inside a transition`);
   if (bad0 > 0) bad("two lane steps overlap and fight each other");
+}
+
+/* Every taper — the base plan's and the playground overlay's alike — must
+   respect the same law: inside TAPER_BAND (the splice needs matching
+   overrun), clear of every NO_TAPER window (the gores and WIDE_PIN), and
+   clear of both tunnels' padded portals (a mouth built on a moving deck
+   edge). The placement windows are imported from corridor.ts, so this is
+   the law the planner actually enforces, not a copy of it. */
+{
+  let n = 0, first = null;
+  const midTaper = (z) => Math.abs(c.laneCount(z + 0.5) - c.laneCount(z - 0.5)) > 1e-9;
+  for (let z = c.Z0; z <= c.Z1; z += 1) {
+    if (!midTaper(z)) continue;
+    const outlaw =
+      z < TAPER_BAND[0] || z > TAPER_BAND[1] ||
+      NO_TAPER.some(([a, b]) => z > a && z < b) ||
+      c.inTunnel(z, PORTAL_PAD - 1);
+    if (outlaw) {
+      n++;
+      if (first === null) first = z;
+    }
+  }
+  console.log(`taper law: every mid-taper z inside TAPER_BAND [${TAPER_BAND[0]}, ${TAPER_BAND[1]}],` +
+    ` clear of ${NO_TAPER.length} no-taper windows and both tunnels`);
+  if (n) bad(`${n} mid-taper metres in forbidden road, first at z=${first}`);
+}
+
+/* ---- the playground: the seeded wide window -----------------------------
+   One overlay window per lap may run the schedule up to MAX_LANES. Its spec
+   is exported so the invariants that make it safe are asserted against the
+   real numbers: it must live inside the taper band, never contain a tunnel
+   bore or WIDE_PIN (the bypass reads halfWidth at a single z there), never
+   put more than five lanes at a town gore (the ramps' grade budget), and
+   its peak must actually exist on the deck it claims. */
+{
+  const pg = playground();
+  if (!pg) {
+    /* The shipped default seed (1987) rolls a playground today; losing it
+       silently would mean the feature regressed for the road every player
+       starts on. */
+    bad("the default road seed no longer rolls a wide playground window");
+  } else {
+    let peak = 0, peakRun = 0, cur = 0;
+    for (let z = pg.z0; z <= pg.z1; z += 1) peak = Math.max(peak, c.lanes(z));
+    for (let z = pg.z0; z <= pg.z1; z += 1) {
+      cur = c.lanes(z) === peak ? cur + 1 : 0;
+      peakRun = Math.max(peakRun, cur);
+    }
+    console.log(`playground: z ∈ [${f(pg.z0)}, ${f(pg.z1)}]  ${f(pg.z1 - pg.z0)} m` +
+      `, +${pg.gain} lane(s), peaks at ${peak} for ${peakRun} m`);
+    if (peak !== pg.lanes) bad(`playground spec says ${pg.lanes} lanes, the deck peaks at ${peak}`);
+    /* a peak you cannot sit in is a lane that appears and vanishes */
+    if (peakRun < PLAY_PEAK_MIN - 10) bad(`the ${peak}-lane stretch lasts only ${peakRun} m`);
+    if (pg.lanes > MAX_LANES) bad("playground exceeds MAX_LANES");
+    if (pg.z0 < TAPER_BAND[0] || pg.z1 > TAPER_BAND[1]) bad("playground leaves the taper band");
+    for (const t of tunnels())
+      if (pg.z0 < t.z1 && pg.z1 > t.z0) bad(`playground overlaps ${t.nameEn}`);
+    if (pg.z0 < WIDE_PIN[1] && pg.z1 > WIDE_PIN[0]) bad("playground overlaps WIDE_PIN");
+    if (pg.z0 < TOLL.z1 && pg.z1 > TOLL.plazaZ0) bad("playground reaches the toll plaza");
+    for (const gz of CONNECT_Z)
+      if (c.lanes(gz) > 5) bad(`${c.lanes(gz)} lanes at the gore z=${gz} — the ramp grade budget covers five`);
+  }
 }
 
 /* ---- cantilever signs -------------------------------------------------- */
