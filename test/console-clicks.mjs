@@ -35,6 +35,9 @@ const URL = externalUrl || `http://localhost:${PORT}`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** the spawned dev server, for the failure-path cleanup below */
+let devChild = null;
+
 async function startDev() {
   if (externalUrl) return null;
   const child = spawn("npx", ["next", "dev", "-p", String(PORT)], {
@@ -42,6 +45,7 @@ async function startDev() {
     env: { ...process.env },
     detached: true,
   });
+  devChild = child;
   await new Promise((resolve, reject) => {
     const to = setTimeout(() => reject(new Error("next dev timeout")), 120000);
     child.stdout.on("data", (d) => {
@@ -313,5 +317,8 @@ async function main() {
 
 main().catch((e) => {
   console.error(e);
+  /* Take the detached dev server down with us — a dev process left holding
+     the port turns the next run's failure into EADDRINUSE noise. */
+  if (devChild) try { process.kill(-devChild.pid, "SIGTERM"); } catch {}
   process.exit(1);
 });

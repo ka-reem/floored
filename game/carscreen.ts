@@ -64,9 +64,6 @@ import type { Npc } from "./traffic";
 /* ------------------------------------------------------------- geometry -- */
 
 const W = 256, H = 160;
-/** The panel's logical space, for the sibling pane modules (consolegame.ts)
-    that draw into the same canvas under the same base transform. */
-export const SCREEN_W = W, SCREEN_H = H;
 /* Map zoom, pixels per metre. The HUD overlay runs 0.4 on a 172 px canvas.
    The pane is now the full 256x160 and, in the DASHCAM frame it is tuned for,
    is read ~26 degrees off-normal, so it stays a notch tighter than the

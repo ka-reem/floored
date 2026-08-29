@@ -1,4 +1,4 @@
-import { rr, drawBackPill, SCREEN_W, SCREEN_H } from "./carscreen";
+import { rr, drawBackPill } from "./carscreen";
 import type { ScreenAction } from "./carscreen";
 
 /* GAMES pane for the head unit — tic-tac-toe against the car.
@@ -28,7 +28,13 @@ import type { ScreenAction } from "./carscreen";
 
 /* ------------------------------------------------------------- geometry -- */
 
-const W = SCREEN_W, H = SCREEN_H;
+/* The panel's logical 256x160 space, stated locally rather than imported:
+   carscreen.ts imports this module, so a top-level read of its consts here
+   is a TDZ trap under the module cycle (the function imports above are
+   safe — they are hoisted declarations, called only at paint time). The
+   size is carscreen's W/H contract and does not drift: both painters map
+   through the same base transform on the same canvas. */
+const W = 256, H = 160;
 
 /* Board left, stats column right — the music view's album-art/controls split,
    so the two panes read as siblings. 34 px cells match the transport buttons:
