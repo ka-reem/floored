@@ -1489,8 +1489,17 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      above; the procedural box borrows the nav screen's proven depth, the
      donor's rides its screen-top row (screen bbox x -0.102..0.067,
      y 0.772..0.972 in volvo-s90-full.json — below y ~0.95 at dash depth the
-     dashcam sees nothing at all). */
-  const wiperHitProc = domeHit(0.15, 0.2, 0.14, [-0.37, 1.12, 0.72]);
+     dashcam sees nothing at all).
+
+     The procedural box sits UNDER the screen, not beside it — measured, not
+     preferred: the live projection puts the screen's own outboard edge at
+     NDC x ~0.9, so there is no in-frame band beside it, while below it the
+     frame runs on to NDC y -1 (the screen's bottom edge projects at only
+     ~-0.55). Reads as the button row under the head unit, which is where
+     this car would put a physical control anyway. The 17 mm gap up to the
+     screen's bottom edge (y 1.0175) keeps stalk clicks and screen clicks
+     from ever contesting a pixel — onPointerDown asks the stalk first. */
+  const wiperHitProc = domeHit(0.28, 0.11, 0.12, [-0.065, 0.945, 0.72]);
   interiorG.add(wiperHitProc);
   /* Its own counter-scale group, NOT donorSpace or donorWheelSpace: the
      console's hit test raycasts its group RECURSIVELY, so a sibling volume
