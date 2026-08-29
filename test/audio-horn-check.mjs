@@ -155,18 +155,39 @@ else fail(`horn stuck after key-up: ${JSON.stringify(h)}`);
 if (h.starts - startsBefore === 1) pass("release did not retrigger");
 else fail(`release path fired extra starts (${h.starts - startsBefore})`);
 
-/* ---- 5 rapid taps: 5 clean short honks, none stuck ---- */
+/* ---- 5 rapid taps: 5 clean short honks, none stuck ----
+   Counted in FRAMES, not milliseconds. input.horn is a per-frame read, and
+   the forced-frame rate here is whatever SwiftShader manages — measured at
+   well under 1 fps on a cold cloud sandbox, i.e. a tap sized in wall time can
+   contain no game frame at all, leaving the horn latched on across every
+   "tap" and asserting nothing about the product. So each tap holds until the
+   sim has actually seen the press, then until it has seen the release. */
+const forceUntil = async (page, pred, arg, budgetMs = 90000) => {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    await page.screenshot({ optimizeForSpeed: true });
+    if (await page.evaluate(pred, arg)) return true;
+    await sleep(40);
+  }
+  return false;
+};
 const tapsBase = h.starts;
+let tapsSeen = 0;
 for (let i = 0; i < 5; i++) {
   await page.evaluate(() => window.__neonx.setInput({ horn: 1 }));
-  await advance(page, 130);
+  const started = await forceUntil(
+    page, (n) => window.__audioDebug.hornDebug().starts >= n, tapsBase + i + 1);
   await page.evaluate(() => window.__neonx.setInput({ horn: 0 }));
-  await advance(page, 160);
+  const released = await forceUntil(page, () => {
+    const d = window.__audioDebug.hornDebug();
+    return !d.sampleActive && !d.synthActive;
+  });
+  if (!started || !released) break;
+  tapsSeen++;
 }
-await advance(page, 400);
 h = await horn(page);
-if (h.starts - tapsBase === 5) pass("5 rapid taps fired 5 distinct honks");
-else fail(`5 taps fired ${h.starts - tapsBase} starts (want 5)`);
+if (tapsSeen === 5 && h.starts - tapsBase === 5) pass("5 rapid taps fired 5 distinct honks");
+else fail(`5 taps fired ${h.starts - tapsBase} starts over ${tapsSeen} clean cycles (want 5)`);
 if (!h.sampleActive && !h.synthActive) pass("no stuck horn after rapid taps");
 else fail(`horn stuck after taps: ${JSON.stringify(h)}`);
 
