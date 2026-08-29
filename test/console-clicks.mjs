@@ -228,7 +228,18 @@ async function main() {
   if (pt) check("games→map (‹ MAP pill)", (await view(page)) === "map", `view=${await view(page)}`);
   await clickUV(page, "back into games", PILL_GAME);
 
-  /* ---- a full game of tic-tac-toe via synthetic clicks ------------------ */
+  /* ---- a full game of tic-tac-toe via synthetic clicks ------------------
+     The CPU's think timer only runs below a walking pace, and the spawn
+     leaves the car rolling at highway speed — under SwiftShader's frame
+     rate the braking input above may not bleed 23 m/s off inside the test's
+     patience, so park the car outright the way the corridor tours do. */
+  await page.evaluate(() => {
+    const g = window.__neonx.game;
+    g.car.u = 0;
+    g.car.v = 0;
+  });
+  const parked = await page.evaluate(() => Math.abs(window.__neonx.game.car.u));
+  check("car parked for the CPU's think gate", parked < 2, `u=${parked}`);
   const t0 = await ttt(page);
   check("board starts clean", t0.board.every((c) => c === 0) && t0.outcome === 0);
   const tallySum = (t) => t.tally.w + t.tally.l + t.tally.d;
@@ -255,15 +266,17 @@ async function main() {
       }
     } else {
       /* CPU's turn: its think timer only runs while the pane is drawn and
-         the car is slow — both true here — so the move lands inside ~1s. */
+         the car is slow — both true here. ~0.8s of game time, but the pane
+         only advances when the head unit repaints, and SwiftShader frames
+         can run whole seconds each, so the patience is generous. */
       const landed = await page
         .waitForFunction(
           () => window.__ttt.turn === 1 || window.__ttt.outcome !== 0,
-          { timeout: 8000 }
+          { timeout: 30000 }
         )
         .then(() => true)
         .catch(() => false);
-      check("CPU answered within 8s", landed);
+      check("CPU answered within 30s", landed);
       if (!landed) break;
     }
   }
