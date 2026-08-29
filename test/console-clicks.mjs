@@ -266,9 +266,14 @@ async function main() {
       }
     } else {
       /* CPU's turn: its think timer only runs while the pane is drawn and
-         the car is slow — both true here. ~0.8s of game time, but the pane
-         only advances when the head unit repaints, and SwiftShader frames
-         can run whole seconds each, so the patience is generous. */
+         the car is slow — both true here. The timer advances at most 120ms
+         per head-unit repaint and SwiftShader frames run whole seconds
+         each, so ~0.8s of thinking theatre could stretch past half a
+         minute of wall clock. The delay's LENGTH is presentation, not the
+         contract under test — collapse it and verify the gate + move. */
+      await page.evaluate(() => {
+        window.__ttt.aiWait = Math.min(window.__ttt.aiWait, 40);
+      });
       const landed = await page
         .waitForFunction(
           () => window.__ttt.turn === 1 || window.__ttt.outcome !== 0,
@@ -276,7 +281,7 @@ async function main() {
         )
         .then(() => true)
         .catch(() => false);
-      check("CPU answered within 30s", landed);
+      check("CPU answered", landed);
       if (!landed) break;
     }
   }
