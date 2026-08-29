@@ -415,6 +415,11 @@ export default function GameApp() {
         g.settings.steerMode === "wheel" &&
         typeof window !== "undefined" &&
         "ontouchstart" in window && <SteerWheel game={g} />}
+      {playing &&
+        g &&
+        g.settings.steerMode === "slider" &&
+        typeof window !== "undefined" &&
+        "ontouchstart" in window && <SteerSlider game={g} />}
 
       {/* ---------- menus ---------- */}
       {screen === "main" && (
@@ -825,6 +830,159 @@ function SteerWheel({ game }: { game: Game }) {
       <div id="swheelHub" className={hornLit ? "on" : undefined} aria-hidden="true">
         HORN
       </div>
+    </div>
+  );
+}
+
+/* ================= touch steering slider ================= */
+
+/* Half the painted nub's width (globals.css #sslider .ssNub is 44px — the two
+   must move together, same contract as HUB_R above). The usable half-range is
+   the strip's half-width minus this, so a thumb at either end parks the nub
+   flush inside the track at exactly full lock instead of poking past it. */
+const SLIDER_NUB_HALF = 22;
+
+/* The third steering mode: a wide, low-profile strip where the wheel normally
+   sits. ABSOLUTE mapping — the thumb's position ON the strip is the steering
+   angle (centre = straight, ends = full lock), which is the classic slider
+   feel and what makes it readable at a glance: the nub is always exactly
+   where your steering is. The very first touch adopts that position too, so
+   a press near an end IS an immediate lock, not a new origin to drag from.
+
+   Feeds the same wheelVal/wheelPointer channel as SteerWheel (readInput picks
+   whichever of the two widgets the mode mounted), so every recovery layer the
+   mobile-input lane built — clearLatchedInput on pause/blur, and the frame
+   watchdog against hijacked gestures — covers this control with no new engine
+   state. Pointer discipline is the wheel's, verbatim: one owning pointer id,
+   a second finger neither re-bases nor releases, state committed before a
+   try/caught setPointerCapture, and a window-level up/cancel fallback behind
+   lostpointercapture. On release the value snaps to 0 (the engine's analog
+   slew — sRate 7 in readInput — is the eased return the wheel already has)
+   while the nub glides back on a CSS transition that only exists while NOT
+   dragging, so letting go anywhere, pointercancel included, reads as a
+   smooth re-centre rather than a teleport. */
+function SteerSlider({ game }: { game: Game }) {
+  const [v, setV] = useState(0);
+  const [drag, setDrag] = useState(false);
+  const pid = useRef<number | null>(null);
+  /* px from centre to full lock, measured off the live rect on every event
+     rather than cached at mount: CSS (safe-area insets, a rotation) owns the
+     strip's width, and the nub render below needs the same number. */
+  const half = useRef(0);
+  const apply = useCallback(
+    (clientX: number, el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      half.current = Math.max(1, r.width / 2 - SLIDER_NUB_HALF);
+      const val = Math.max(-1, Math.min(1, (clientX - (r.left + r.width / 2)) / half.current));
+      game.setWheelVal(val);
+      setV(val);
+    },
+    [game],
+  );
+  const end = useCallback(() => {
+    pid.current = null;
+    setDrag(false);
+    game.setWheelVal(0);
+    game.setWheelPointer(null);
+    setV(0);
+  }, [game]);
+  /* Pausing unmounts this widget mid-drag; without zeroing here the last
+     deflection keeps feeding readInput and the car resumes at hard lock.
+     (clearLatchedInput also zeroes it engine-side — belt and braces, same
+     as the wheel.) */
+  useEffect(
+    () => () => {
+      game.setWheelVal(0);
+      game.setWheelPointer(null);
+    },
+    [game],
+  );
+  /* Same second line of defence the wheel carries: a gesture the browser
+     hijacks outright can end a touch without pointerup/pointercancel/
+     lostpointercapture ever reaching #sslider, but the window still sees it
+     go. Game.watchdogTouchInput() is the third line for the value itself;
+     this one also brings the nub home. Losing the document (tab switch,
+     app backgrounded) gets the same treatment — the engine clears its side
+     on blur, and without these the nub would sit at lock on return. */
+  useEffect(() => {
+    const release = (e: PointerEvent) => {
+      if (pid.current !== null && e.pointerId === pid.current) end();
+    };
+    const lost = () => {
+      if (pid.current !== null) end();
+    };
+    const vis = () => {
+      if (document.visibilityState === "hidden") lost();
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    window.addEventListener("blur", lost);
+    document.addEventListener("visibilitychange", vis);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+      window.removeEventListener("blur", lost);
+      document.removeEventListener("visibilitychange", vis);
+    };
+  }, [end]);
+  const a = Math.abs(v);
+  return (
+    <div
+      id="sslider"
+      className={drag ? "drag" : undefined}
+      onPointerDown={(e) => {
+        // One owning pointer: a second finger (a pedal press that wandered,
+        // a brushed knuckle) must neither re-base the mapping nor become the
+        // finger whose lift re-centres a still-held strip.
+        if (pid.current !== null) return;
+        pid.current = e.pointerId;
+        setDrag(true);
+        game.setWheelPointer(e.pointerId);
+        apply(e.clientX, e.currentTarget);
+        // State is already committed above, so a capture that throws (the
+        // pointer can be gone by the time this runs on a fast tap) loses
+        // only the drift-off-element case, never the press itself.
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {}
+      }}
+      onPointerMove={(e) => {
+        if (e.pointerId !== pid.current) return;
+        apply(e.clientX, e.currentTarget);
+      }}
+      onPointerUp={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
+      onPointerCancel={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
+      onLostPointerCapture={(e) => {
+        if (e.pointerId === pid.current) end();
+      }}
+    >
+      {/* Painted only, like the wheel's hub: every child is pointer-events:
+          none so the strip itself owns every pointer that lands anywhere in
+          its (deliberately taller-than-the-track) hit area. */}
+      <div className="ssTrack">
+        {/* centre-anchored fill, scaleX(v): negative v mirrors it left, so
+            one compositor-only transform draws both directions */}
+        <div
+          className="ssFill"
+          style={{ transform: `scaleX(${v})`, opacity: 0.2 + 0.5 * a }}
+        />
+        <div className="ssDetent" />
+      </div>
+      <div
+        className="ssNub"
+        style={{
+          transform: `translateX(${v * half.current}px)`,
+          // lights toward the accent as lock increases — the same palette
+          // the drawer's state chips use, driven by |v| instead of a class
+          borderColor: `rgba(140, 178, 255, ${0.3 + 0.5 * a})`,
+          background: `rgba(95, 141, 255, ${0.1 + 0.3 * a})`,
+          boxShadow: a > 0.02 ? `0 0 ${4 + 14 * a}px rgba(95, 141, 255, ${0.45 * a})` : "none",
+        }}
+      />
     </div>
   );
 }
@@ -1307,6 +1465,7 @@ function SettingsPanel({
           >
             <option value="buttons">Buttons</option>
             <option value="wheel">Touch wheel</option>
+            <option value="slider">Swipe slider</option>
             <option value="tilt">Tilt</option>
           </select>
         </Row>

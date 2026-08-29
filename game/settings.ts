@@ -445,7 +445,7 @@ export interface GameSettings {
   dashcam: boolean; // heavy degraded "DVR footage" filter (V in game)
   drawDist: number; // town chunk draw distance, meters
   units: SpeedUnits;
-  steerMode: "buttons" | "wheel" | "tilt";
+  steerMode: "buttons" | "wheel" | "tilt" | "slider";
   traffic: number; // 0.2..1
   fovBase: number;
   vol: number;
@@ -737,6 +737,15 @@ export function loadProfile(): Profile {
       settings.fog = n <= 0.05 ? "off" : n < 0.95 ? "light" : n < 1.8 ? "medium" : "heavy";
     }
     if (settings.units !== "mph" && settings.units !== "kmh") settings.units = "mph";
+    /* An unrecognised steer mode would still count as analog in readInput
+       (steerMode !== "buttons") and then feed off a value nothing writes —
+       a phone with no steering at all. Fall back to the mode that always
+       has controls on screen. */
+    if (
+      settings.steerMode !== "buttons" && settings.steerMode !== "wheel" &&
+      settings.steerMode !== "tilt" && settings.steerMode !== "slider"
+    )
+      settings.steerMode = "buttons";
     for (const k of BOOL_KEYS)
       if (typeof settings[k] !== "boolean") settings[k] = base.settings[k];
     if (settings.tierOverride !== "auto" && !isRenderTier(settings.tierOverride))
