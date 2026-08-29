@@ -50,6 +50,10 @@ export interface NpcModel {
   metalnessMap: THREE.Texture | null;
   lamps: NpcLamps;
   wheels: NpcWheel[];
+  /** the bake tagged real lens geometry (_LAMP has nonzero entries) — the
+      runtime can then let the shaped emissive lenses carry the light up
+      close instead of the round glow sprites */
+  hasLampGeo: boolean;
 }
 
 const BASE = "/models/cars/";
@@ -122,6 +126,12 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
     "lampKind",
     lamp ?? new THREE.BufferAttribute(new Float32Array(src.attributes.position.count), 1)
   );
+  let hasLampGeo = false;
+  if (lamp) {
+    const la = lamp.array as ArrayLike<number>;
+    for (let i = 0; i < la.length; i++)
+      if (la[i] > 0) { hasLampGeo = true; break; }
+  }
   if (src.index) geo.setIndex(src.index);
   geo.computeBoundingSphere();
 
@@ -138,12 +148,13 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
     metalnessMap: material?.metalnessMap ?? null,
     lamps: readLamps(extras.lamps),
     wheels: readWheels(extras.wheels),
+    hasLampGeo,
   };
 }
 
 /** The styles a desktop-only HD variant is baked for (1024px atlas, gentler
     decimation) — tools/build-hifi-models.mjs --hd writes exactly these. */
-export const HD_STYLES = ["sedan", "hybrid", "compact", "suv"];
+export const HD_STYLES = ["sedan", "compact", "suv"]; // owner-picked hero bakes (hybrid pending its Draco-donor rebake)
 export const HD_BASE = "/models/cars-hd/";
 
 /** Load a bodyshell per style, calling `onModel` as each one lands. Never

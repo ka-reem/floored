@@ -119,13 +119,15 @@ const TYRE_C = 0x0b0b0f;
 
    Taxi, police and bus are deliberately absent — their liveries are the
    point, and a lilac police cruiser is not traffic. */
+/* Only the truck still needs the texel recolour: the 2026-08-28 hi-fi fleet
+   ships a real `paintable` mask (white paint swatch, paintable=1), so its
+   per-instance colour comes from the mask path and running the texel
+   recolour on top double-painted the bodies into mush — the refLums here
+   were measured on the ORCHIDS bakes and mean nothing on the new atlases. */
 const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
-  sedan:   { hue: -1,    refLum: 0.675 },
-  compact: { hue: -1,    refLum: 0.636 },
   van:     { hue: -1,    refLum: 0.697 },
   truck:   { hue: -1,    refLum: 0.668 },
-  hybrid:  { hue: 0.311, refLum: 0.481 }, // authored green
-  suv:     { hue: 0.594, refLum: 0.106 }, // authored blue
+  hybrid:  { hue: 0.311, refLum: 0.481 }, // authored green (old bake, pending rebake)
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
@@ -1401,6 +1403,10 @@ export class Traffic {
   private styleOf: Record<string, number> = {};
   /** per style, the loaded model's real lamp clusters; null until one lands */
   private lampsOf: (NpcLamps | null)[] = [];
+  /** per style: the model carries real emissive lens geometry, so the round
+      tail/brake glow sprites hold back until distance shrinks the lenses to
+      sub-pixels (the owner: sprite blobs "make it look bad") */
+  private lampGeoOf: boolean[] = [];
   /** per style: its Orchids bodyshell has landed and the style may spawn.
       Nothing renders, spawns or sprites a style before this flips — there is
       no placeholder body to fall back to, by design. */
@@ -1664,6 +1670,7 @@ export class Traffic {
       m.geometry.setAttribute("washCol", wash);
       scene.add(m);
       this.lampsOf.push(null);
+      this.lampGeoOf.push(false);
       this.ready.push(false);
       this.styles.push({ mesh: m, paint, diss, lamp, wash, n: 0 });
     }
@@ -2003,6 +2010,7 @@ export class Traffic {
     old.dispose();
 
     this.lampsOf[si] = m.lamps;
+    this.lampGeoOf[si] = m.hasLampGeo;
     this.ready[si] = true;
 
     /* Put the shared wheels in this body's own arches. wr/wz are visual only
@@ -5548,10 +5556,18 @@ export class Traffic {
       const tx1 = tl ? tl[1][0] : hw2, ty1 = tl ? tl[1][1] : 0.74, tz1 = tl ? tl[1][2] : -hl;
       emit(SP.head, 0, hx0, hy0, hz0, running);
       emit(SP.head, 1, hx1, hy1, hz1, running);
-      emit(SP.tail, 0, tx0, ty0, tz0, running && !n.brake);
-      emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake);
-      emit(SP.brake, 0, tx0, ty0, tz0, !wrecked && n.brake);
-      emit(SP.brake, 1, tx1, ty1, tz1, !wrecked && n.brake);
+      /* A style with real lens geometry keeps its shaped emissive lamps up
+         close — the round sprite only joins past the range where the lens
+         is sub-pixel and something must carry the light. 70 m: the sprite
+         is a couple of pixels when it appears, so there is no pop. Styles
+         without lens tags (truck, and any pre-hifi bake) keep the sprites
+         at every range, as before. */
+      const gdx = n.x - player.x, gdz = n.z - player.z;
+      const tailSprite = !this.lampGeoOf[n.style] || gdx * gdx + gdz * gdz > 4900;
+      emit(SP.tail, 0, tx0, ty0, tz0, running && !n.brake && tailSprite);
+      emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake && tailSprite);
+      emit(SP.brake, 0, tx0, ty0, tz0, !wrecked && n.brake && tailSprite);
+      emit(SP.brake, 1, tx1, ty1, tz1, !wrecked && n.brake && tailSprite);
       /* Signals — both slots at once is a hazard flash: a wreck, or the
          two-blink acknowledgement a car gives when it takes a hint and speeds
          up rather than moving over (see HAIL.ackT). */
