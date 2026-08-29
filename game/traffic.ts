@@ -125,12 +125,9 @@ const TYRE_C = 0x0b0b0f;
    recolour on top double-painted the bodies into mush — the refLums here
    were measured on the ORCHIDS bakes and mean nothing on the new atlases. */
 const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
-  sedan:   { hue: -1,    refLum: 0.675 },
-  compact: { hue: -1,    refLum: 0.636 },
   van:     { hue: -1,    refLum: 0.697 },
   truck:   { hue: -1,    refLum: 0.668 },
-  hybrid:  { hue: 0.311, refLum: 0.481 }, // authored green
-  suv:     { hue: 0.594, refLum: 0.106 }, // authored blue
+  hybrid:  { hue: 0.311, refLum: 0.481 }, // authored green (old bake, pending rebake)
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`

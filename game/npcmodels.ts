@@ -154,7 +154,7 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
 
 /** The styles a desktop-only HD variant is baked for (1024px atlas, gentler
     decimation) — tools/build-hifi-models.mjs --hd writes exactly these. */
-export const HD_STYLES: string[] = []; // empty until the next hero bake lands — see brief-npc-fleet.md
+export const HD_STYLES = ["sedan", "compact", "suv"]; // owner-picked hero bakes (hybrid pending its Draco-donor rebake)
 export const HD_BASE = "/models/cars-hd/";
 
 /** Load a bodyshell per style, calling `onModel` as each one lands. Never

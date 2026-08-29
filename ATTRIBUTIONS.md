@@ -19,7 +19,10 @@ JPEG atlas with quantized vertex attributes.
 
 | Style | Donor | Author | Licence | Source |
 |---|---|---|---|---|
-| sedan | Toyota Camry 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/236a5a6e2fa6420fbdf641f4800cd544 |
+| sedan | Hyundai Accent 2013 | I95XP | **CC BY 4.0** | https://sketchfab.com/3d-models (uid via docs/handoff — owner pick #23) |
+| suv | Toyota Fortuner 2021 | Asadawut.Kaewma | **CC BY 4.0** | owner pick #3 |
+| compact | Honda Civic Type R '98 | tiedtke | **CC BY 4.0** | owner pick #99 |
+| (prior heroes, superseded) Toyota Camry 2020 etc. | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/236a5a6e2fa6420fbdf641f4800cd544 |
 | hybrid | Toyota Prius 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/ad0d925cb51040798d96f166db8c7f80 |
 | compact | Volkswagen Golf GTI 2021 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/82a55610817646539ce699a6aaa5dda0 |
 | suv | Toyota Highlander 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/ff144d062f244a3ebfae71bc2a41564b |

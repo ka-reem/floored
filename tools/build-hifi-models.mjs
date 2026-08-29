@@ -38,7 +38,14 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => (argv.includes(n) ? argv[argv.indexOf(n) + 1] : d);
 const DL = flag("--dl", null);
 const HD = argv.includes("--hd");
-const ONLY = argv.filter((a) => !a.startsWith("--") && a !== DL);
+const ONLY = [];
+const SRC_OVERRIDE = {};
+for (const a of argv) {
+  if (a.startsWith("--") || a === DL) continue;
+  const eq = a.indexOf("=");
+  if (eq > 0) SRC_OVERRIDE[a.slice(0, eq)] = a.slice(eq + 1);
+  else ONLY.push(a);
+}
 const OUT = path.resolve(
   import.meta.dirname,
   HD ? "../public/models/cars-hd" : "../public/models/cars"
@@ -58,7 +65,7 @@ if (!DL || !fs.existsSync(DL)) {
 const STYLES = {
   sedan: { kind: "hero", src: "camry", L: 4.44, W: 1.79, H: 1.45 },
   hybrid: { kind: "hero", src: "prius", L: 4.54, W: 1.76, H: 1.51 },
-  compact: { kind: "hero", src: "golf", L: 3.94, W: 1.71, H: 1.55 },
+  compact: { kind: "hero", src: "golf", L: 3.94, W: 1.71, H: 1.42 },
   suv: { kind: "hero", src: "highlander", L: 4.72, W: 1.9, H: 1.79 },
   taxi: { kind: "pack", src: "civil", node: "taxi", L: 4.44, W: 1.79, H: 1.45 },
   police: { kind: "pack", src: "civil", node: "police", L: 4.44, W: 1.79, H: 1.52,
@@ -872,6 +879,9 @@ function writeGlb(file, m) {
 
 /* ---------------- per-style bake ---------------------------------------- */
 async function build(style, cfg) {
+  /* --dl dir + `style=subdir` overrides point a style at a round-2 hero
+     donor; overridden styles are treated as heroes regardless of table. */
+  if (SRC_OVERRIDE[style]) cfg = { ...cfg, src: SRC_OVERRIDE[style], kind: "hero" };
   const doc = loadDoc(path.join(DL, cfg.src));
   let tris = collectTris(doc, cfg.kind === "pack" ? cfg.node : null);
   let b = bounds(tris);
@@ -889,6 +899,15 @@ async function build(style, cfg) {
       }
       b = bounds(tris);
     }
+  }
+
+  /* A 500k-2M donor would make the 46-view cull crawl; a quick uniform
+     pre-pass to ~200k loses nothing the rear-biased pass would keep. */
+  if (cfg.kind === "hero" && tris.length > 230000) {
+    const before = tris.length;
+    tris = await simplifyRearBiased(tris, b, [200000 / tris.length * 3, 200000 / tris.length * 3, 200000 / tris.length * 3].map((r) => Math.min(1, r / 3)));
+    console.log(`  pre-decimate ${before} -> ${tris.length}`);
+    b = bounds(tris);
   }
 
   const { kept, wheels, removed } = stripWheels(tris, b, cfg.kind === "pack");
