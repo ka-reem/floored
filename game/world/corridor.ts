@@ -348,10 +348,11 @@ const MIN_RUN = 160;
     "nothing is mid-taper here", not "there is road to settle on". */
 const EDGE_PAD = 24;
 /** Clearance a taper keeps from a tunnel portal, so the mouth is built at one
-    width and the headwall does not sit on a moving deck edge. */
-const PORTAL_PAD = 20;
+    width and the headwall does not sit on a moving deck edge. Exported for the
+    taper-legality scans in test/corridor-check.mjs and test/lane-plan.mjs. */
+export const PORTAL_PAD = 20;
 /** No taper outside this: the splice needs DECK_EXT of matching overrun. */
-const TAPER_BAND: [number, number] = [-HZ + DECK_EXT + 20, HZ - DECK_EXT - 20];
+export const TAPER_BAND: [number, number] = [-HZ + DECK_EXT + 20, HZ - DECK_EXT - 20];
 /** Lane count is pinned to BASE_LANES from here to the end of the band: the
     toll plaza's pitch widening owns the deck through it. */
 const TOLL_PIN_Z = PITCH_STEPS[0].z0 - 6;
@@ -367,11 +368,12 @@ const TOLL_PIN_Z = PITCH_STEPS[0].z0 - 6;
     gore nose still sits 0.60 m off the deck edge, the flyover keeps 9.17 m
     over the deck against the 7.6 m lamp masts, and bypass-attach-sim is
     clean — so the wide section is now a place the seed can change. */
-const WIDE_PIN: [number, number] = [300, 620];
+export const WIDE_PIN: [number, number] = [300, 620];
 const WIDE_WEIGHTS: readonly [number, number][] = [[4, 0.25], [5, 0.75]];
 /** Stretches no taper may overlap. The gore windows cover the nose, the
-    pavement peel-off and the parapet gap either side of it. */
-const NO_TAPER: readonly (readonly [number, number])[] = [
+    pavement peel-off and the parapet gap either side of it. Exported so the
+    checks assert against the real windows instead of a copy. */
+export const NO_TAPER: readonly (readonly [number, number])[] = [
   [-580, -250], // exit gore (CONNECT_Z[0]) + ramp peel-off + spawn band
   [-210, 70], // entrance gore (CONNECT_Z[1]) + its approach
   WIDE_PIN,
@@ -653,6 +655,309 @@ function varied(steps: readonly LaneStep[], tunnels: readonly TunnelSpec[]) {
   );
 }
 
+/* ---- the playground -----------------------------------------------------
+
+   "add some sections where we get wider lanes … make it a bit random": one
+   stretch per lap where the deck opens out PAST what the base plan rolls —
+   up to MAX_LANES, a count the machinery has always carried (const.ts sizes
+   RW for six) and the planner has never used — purely to give the player
+   room to play. It is laid down AFTER the base plan, from a FORKED rng
+   stream, and that is load-bearing twice over: the base plan's own draws
+   (tunnels, steps, names) see exactly the sequence they saw before this
+   existed, so a seed's road does not reshuffle under anyone; and `varied()`
+   still scores the base plan alone, so the same re-roll attempt passes per
+   seed as before. The window closes back onto the base schedule's own
+   counts, so everything downstream of it is byte-identical to the road
+   without it.
+
+   MECHANISM: an overlay window, not an insert. The window opens (a rise of
+   its own, a lengthened base widen, or a base drop that simply does not
+   happen — see the Opener/Closer notes below), holds `gain` extra lanes,
+   and closes (its own chained drop, or a base widen that absorbs the
+   extra); any base steps INSIDE the window keep their z and their length
+   and simply run `gain` lanes higher (`to + gain`). That is legal by
+   construction: a
+   single-lane base drop stays a single-lane drop of the same 120 m, and the
+   slide budget is gain-invariant — a taper's lane-centre slide depends on
+   how many lanes it CHANGES, not on how many it starts from. Overlaying
+   rather than inserting is what makes room: the corridor's taper-free real
+   estate comes in ~100–180 m fragments (map-overhaul's report proved the
+   long stretches are all claimed), so demanding a whole wide section in one
+   fragment strands most seeds with none.
+
+   Placement rules, all inherited rather than invented:
+   - the overlay's own two tapers obey stepLen/changeLen and live inside
+     TAPER_BAND, clear of every NO_TAPER window and both tunnels' padded
+     extents — the same taper law as the base plan, through the same
+     freeSpans();
+   - the window may span a town-gore window (holding a count over a gore is
+     what the base plan does routinely; the ramp sweep re-reads halfWidth
+     per sample) but never contains a tunnel (a bore holds its spec'd count
+     end to end, and the spec is rolled before this exists) and never
+     WIDE_PIN (the bypass takes its gore wedge from halfWidth at a single
+     z — four and five lanes are verified there, six is not);
+   - when the window sheds its lanes itself, the drop is chained one lane
+     at a time, like every drop;
+   - the splice band stays untouched: runs start MIN_RUN/2 inside
+     TAPER_BAND, which also keeps the mountain-road merge (corridor.MTN,
+     z −1644) the settled three-lane road its report verified. */
+
+export interface PlaygroundSpec {
+  /** the overlay holds over the whole of [z0, z1] (its own taper ends);
+      the base schedule keeps stepping inside it, `gain` lanes higher */
+  z0: number;
+  z1: number;
+  /** the widest the deck gets inside the window */
+  lanes: number;
+  /** lanes added over the base plan, 1 or 2 */
+  gain: number;
+}
+
+let PLAYGROUND: PlaygroundSpec | null = null;
+/** The wide playground stretch this seed rolled, or null when no run had
+    room for one — test/lane-plan.mjs reports how often that happens. */
+export const playground = () => PLAYGROUND;
+
+/** A hold you actually get to play in — ~3.6 s at 200 km/h — and a cap so
+    one feature does not own a quarter of the lap. The cap is sized to admit
+    the one long spot most seeds have: a hold spanning BOTH town-gore windows
+    (their outer edges are 650 m apart, so a hold that clears them both is
+    ≥ ~650 m by construction). When a road's ONLY legal windows are longer
+    than the cap — both ends absorbed into base steps that happen to sit far
+    apart — the cap yields up to LOOSE rather than costing the lap its
+    playground. */
+const WIDE_HOLD_MIN = 200;
+const WIDE_HOLD_MAX = 900;
+const WIDE_HOLD_LOOSE = 1300;
+/** How wide the window peaks, weighted; top-heavy toward MAX_LANES for the
+    same reason LANE_WEIGHTS leans five — the ask is a WIDE section. Only
+    peaks a spot can legally reach are in play, so "+2" happens exactly
+    where a two-lane jump fits its chained drop, and a lap whose only room
+    sits beside a three-lane run still gets its playground. */
+const PLAY_WEIGHTS: readonly (readonly [number, number])[] = [
+  [6, 0.66], [5, 0.24], [4, 0.1],
+];
+
+/** Lay the playground over the finished base plan; returns the merged,
+    sorted schedule and the spec the checks assert against. */
+function planPlayground(
+  seed: number, steps: readonly LaneStep[], tuns: readonly TunnelSpec[]
+): { steps: LaneStep[]; spec: PlaygroundSpec | null } {
+  /* Forked stream: nothing here may consume a draw the base plan sees. */
+  const rng = mulberry32((seed ^ 0x85ebca6b) >>> 0);
+  /* Tapers avoid both lists; the window itself may span `soft` (the town
+     gores) but never `hard` (a tunnel, or the bypass's pinned section). */
+  const hard: [number, number][] = [
+    ...tuns.map((t) => [t.z0 - PORTAL_PAD, t.z1 + PORTAL_PAD] as [number, number]),
+    [WIDE_PIN[0], WIDE_PIN[1]],
+  ];
+  const holes: [number, number][] = [
+    ...hard,
+    ...NO_TAPER.filter((w) => w !== WIDE_PIN).map(([a, b]) => [a, b] as [number, number]),
+  ];
+  /* The base plan's constant-count runs, padded off its tapers. */
+  const runs: { z0: number; z1: number; n: number }[] = [];
+  let z = TAPER_BAND[0] + MIN_RUN * 0.5, n = BASE_LANES;
+  for (const st of steps) {
+    runs.push({ z0: z, z1: st.z0 - EDGE_PAD, n });
+    z = st.z1 + EDGE_PAD;
+    n = st.to;
+  }
+  runs.push({ z0: z, z1: TOLL_PIN_Z, n });
+  /* Taper-legal fragments, each remembering which run it belongs to. */
+  const spans: { a: number; b: number; run: number }[] = [];
+  runs.forEach((r, ri) => {
+    for (const [a, b] of freeSpans(r.z0, r.z1, holes)) spans.push({ a, b, run: ri });
+  });
+
+  /* Three ways to OPEN the window, in rising order of how little room they
+     need. A standalone RISE wants a ≥ stepLen(g) fragment of its own.
+     RETARGETING a base widen — the same taper carried `gain` lanes further,
+     over the properly lengthened run-up — only wants the lengthening
+     (stepLen grows by 48–120 m) clear behind the step it already has. And
+     ABSORBING a base drop needs no room at all: bumped by `gain`, the
+     falling step's delta becomes `gain − 1` — inert for one extra lane, a
+     legal 120 m single-lane widen for two — so the road simply declines to
+     narrow, and the window opens where the drop would have been. The last
+     two doors are what keep the hit rate honest: the corridor's taper-free
+     fragments cluster just under the standalone minimums. */
+  interface Opener {
+    kind: "rise" | "retarget" | "absorb";
+    g: number;
+    /** run the window interior starts in */
+    run: number;
+    /** window-start (fully-`gain`-wide) range; lo === hi unless a rise */
+    lo: number;
+    hi: number;
+    /** earliest z the opener occupies, for the hard-hole test */
+    z0: number;
+    /** index of the base step retargeted/absorbed, -1 for a rise */
+    step: number;
+  }
+  const openers: Opener[] = [];
+  for (const s of spans)
+    for (let g = 1; g <= 2; g++) {
+      if (s.b - s.a < stepLen(g)) continue;
+      openers.push({
+        kind: "rise", g, run: s.run, lo: s.a + stepLen(g), hi: s.b, z0: s.a, step: -1,
+      });
+    }
+  steps.forEach((st, k) => {
+    const pre = k === 0 ? BASE_LANES : steps[k - 1].to;
+    for (let g = 1; g <= 2; g++) {
+      if (st.to < pre) {
+        // absorb: the window starts just shy of the step so the bump below
+        // catches it; nothing new is built here
+        const z = st.z0 - 0.5;
+        openers.push({ kind: "absorb", g, run: k + 1, lo: z, hi: z, z0: z, step: k });
+        continue;
+      }
+      if (st.to === pre) continue;
+      const before = k === 0 ? TAPER_BAND[0] + MIN_RUN * 0.5 : steps[k - 1].z1 + EDGE_PAD;
+      const z0 = st.z1 - stepLen(st.to - pre + g);
+      if (z0 < before) continue;
+      if (holes.some(([h0, h1]) => h0 < st.z0 && h1 > z0)) continue;
+      openers.push({ kind: "retarget", g, run: k + 1, lo: st.z1, hi: st.z1, z0, step: k });
+    }
+  });
+
+  /* Two ways to CLOSE it: a chained drop of our own in a taper-legal
+     fragment, or ABSORBING into a base widen of d ≥ gain lanes — entering
+     `gain` high, that step's delta becomes d − gain (a gentler widen, or
+     inert), so the overlay hands its extra lanes to the base plan's own
+     widening and nothing new is built. d < gain would turn the widen into
+     a drop shorter than DROP_LEN, so it is not offered. */
+  interface Closer {
+    kind: "chain" | "absorb";
+    /** run the window closes in (its count is what the window returns to) */
+    run: number;
+    /** drop-start / window-end range; lo === hi for an absorb */
+    lo: number;
+    hi: number;
+    /** z past which nothing of the closer reaches, for the hard-hole test */
+    z1: number;
+    dLen: (g: number) => number;
+    legal: (g: number) => boolean;
+  }
+  const closers: Closer[] = [];
+  for (const s of spans) {
+    const nJ = runs[s.run].n;
+    closers.push({
+      kind: "chain", run: s.run, lo: s.a, hi: s.b, z1: s.b,
+      dLen: (g) => changeLen(nJ + g, nJ),
+      legal: (g) => s.b - s.a >= changeLen(nJ + g, nJ),
+    });
+  }
+  steps.forEach((st, k) => {
+    const pre = k === 0 ? BASE_LANES : steps[k - 1].to;
+    if (st.to <= pre) return;
+    const z = st.z0 - 0.5;
+    closers.push({
+      kind: "absorb", run: k, lo: z, hi: z, z1: z,
+      dLen: () => 0,
+      legal: (g) => st.to - pre >= g,
+    });
+  });
+
+  /** a legal spot: an opener and a closer with a hold in
+      [WIDE_HOLD_MIN, WIDE_HOLD_MAX] between them, no hard hole inside the
+      window, and the peak on the deck const.ts sizes */
+  interface Spot {
+    o: Opener;
+    c: Closer;
+    peak: number;
+    dLo: number; dHi: number; // drop START (window end) range
+  }
+  /* The ramps are the one consumer with a real width ceiling: their sweep
+     re-reads halfWidth per sample, but the descent's grade budget is spent
+     against the deck edge at the gore, and at six lanes the edge sits far
+     enough out that the drop to the frontage road crosses the 11.5% limit
+     test/lane-plan.mjs holds it to. Five lanes at a gore is base-verified
+     (the plan rolls it); six is not — so a gain that would push a gore past
+     five makes that gore's whole no-taper hole uncrossable for the window. */
+  const hardFor = (g: number): [number, number][] => [
+    ...hard,
+    ...CONNECT_Z.flatMap((gz, i) =>
+      Math.round(countAt(steps, gz)) + g > 5
+        ? [[NO_TAPER[i][0], NO_TAPER[i][1]] as [number, number]]
+        : []
+    ),
+  ];
+  const hardG = [hardFor(1), hardFor(2)];
+  const findSpots = (holdMax: number) => {
+    const out: Spot[] = [];
+    for (const o of openers)
+      for (const c of closers) {
+        if (c.run < o.run || !c.legal(o.g)) continue;
+        if (hardG[o.g - 1].some(([h0, h1]) => h0 < c.z1 && h1 > o.z0)) continue;
+        let maxBase = 0;
+        for (let k = o.run; k <= c.run; k++) maxBase = Math.max(maxBase, runs[k].n);
+        if (maxBase + o.g > MAX_LANES) continue;
+        const dLo = Math.max(c.lo, o.lo), dHi = c.hi - c.dLen(o.g);
+        if (dHi < dLo) continue;
+        // some pair (window start, window end) must leave a legal hold
+        if (dHi - o.lo < WIDE_HOLD_MIN) continue;
+        if (dLo - o.hi > holdMax) continue;
+        out.push({ o, c, peak: maxBase + o.g, dLo, dHi });
+      }
+    return out;
+  };
+  let holdMax = WIDE_HOLD_MAX;
+  let spots = findSpots(holdMax);
+  if (!spots.length) spots = findSpots((holdMax = WIDE_HOLD_LOOSE));
+  if (!spots.length) return { steps: [...steps], spec: null };
+
+  /* Peak width first — the seed's headline roll — then the spot among those
+     that reach it, leaning roomy so the section lands generous. */
+  const have = new Set(spots.map((s) => s.peak));
+  const opts = PLAY_WEIGHTS.filter(([t]) => have.has(t));
+  let r2 = rng() * opts.reduce((s, [, w]) => s + w, 0);
+  let peak = opts[opts.length - 1][0];
+  for (const [t, w] of opts) if ((r2 -= w) <= 0) { peak = t; break; }
+  const pool = spots.filter((s) => s.peak === peak);
+  const weight = (s: Spot) => s.o.hi - s.o.lo + s.dHi - s.dLo + 60;
+  let r3 = rng() * pool.reduce((s, q) => s + weight(q), 0);
+  let pick = pool[pool.length - 1];
+  for (const s of pool) if ((r3 -= weight(s)) <= 0) { pick = s; break; }
+  const g = pick.o.g;
+
+  /* Place the window inside the spot: hold first, then where it opens.
+     Fixed ends (a retarget or an absorb) just collapse their range. */
+  const holdLo = Math.max(WIDE_HOLD_MIN, pick.dLo - pick.o.hi);
+  const holdHi = Math.min(holdMax, pick.dHi - pick.o.lo);
+  const hold = holdLo + rng() * (holdHi - holdLo);
+  const wLo = Math.max(pick.o.lo, pick.dLo - hold);
+  const wHi = Math.min(pick.o.hi, pick.dHi - hold);
+  const w1 = wLo + rng() * (wHi - wLo); // window start: fully wide from here
+  const d0 = w1 + hold; // window end: where the extra lanes start to go
+
+  const extra: LaneStep[] = [];
+  /* Base steps inside the window run `gain` lanes higher — same z, same
+     length, so every budget they were sized for still holds: a single-lane
+     drop stays a single-lane drop, and a taper's slide depends on the lanes
+     it CHANGES, not on the count it starts from. Cloned, not mutated:
+     rollRoad's plan must stay what it rolled. */
+  const merged = steps.map((st, k) => {
+    if (pick.o.kind === "retarget" && k === pick.o.step) {
+      const pre = k === 0 ? BASE_LANES : steps[k - 1].to;
+      return { z0: st.z1 - stepLen(st.to - pre + g), z1: st.z1, to: st.to + g };
+    }
+    return st.z0 > w1 && st.z0 < d0 ? { ...st, to: st.to + g } : st;
+  });
+  if (pick.o.kind === "rise") {
+    const nI = runs[pick.o.run].n;
+    emitChange(extra, w1 - stepLen(g), nI, nI + g);
+  }
+  if (pick.c.kind === "chain") {
+    const nJ = runs[pick.c.run].n;
+    emitChange(extra, d0, nJ + g, nJ);
+  }
+  return {
+    steps: [...merged, ...extra].sort((a, b) => a.z0 - b.z0),
+    spec: { z0: w1, z1: d0, lanes: pick.peak, gain: g },
+  };
+}
+
 const DEFAULT_ROAD_SEED = 1987; // settings.ts defaultProfile().seed
 
 /** The world seed, read the way aurora.ts reads it — except that this file
@@ -704,7 +1009,11 @@ export function setRoadSeed(seed: number) {
      beats no road. test/lane-plan.mjs reports how many seeds fall through. */
   for (let i = 1; i < 300 && !varied(plan.steps, plan.tunnels); i++)
     plan = rollRoad((s ^ Math.imul(i, 0x9e3779b1)) >>> 0);
-  LANE_STEPS = plan.steps;
+  /* The playground rides on top of the settled base plan — always from the
+     ORIGINAL seed, so the fork does not depend on which re-roll passed. */
+  const play = planPlayground(s, plan.steps, plan.tunnels);
+  LANE_STEPS = play.steps;
+  PLAYGROUND = play.spec;
   TUNNELS.length = 0;
   TUNNELS.push(...plan.tunnels);
   Object.assign(TUNNEL, TUNNELS[0]);
