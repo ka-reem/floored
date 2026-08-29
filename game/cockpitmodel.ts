@@ -106,6 +106,126 @@ function alignZ(axis: THREE.Vector3): THREE.Quaternion {
   return new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), axis.clone().normalize());
 }
 
+/** True spin center + axis of the donor wheel, fitted to the RIM.
+
+    The manifest's `steering.hub` is the wheel cloud's raw vertex CENTROID
+    (build-cockpit.mjs), and a steering wheel's vertices are not spread evenly
+    about its axle: spokes, thumb buttons and the airbag shroud all sit low, so
+    the centroid lands below the axle — on the shipped Volvo by 19 mm, which
+    swings the rim ~37 mm sideways at 180° of steer. The reported "wheel isn't
+    turning at true center".
+
+    A rim, unlike the cloud, is a genuine circle about the axle, so this fits
+    THAT: take the outermost vertex per angular bin around a provisional
+    center (72 bins — the outer contour, immune to everything inboard of the
+    rim), drop bins off the median radius (spoke gaps, the flat of a grip),
+    least-squares the surviving ring to a circle, and re-derive the axis as the
+    smallest principal axis of only the vertices near that circle. Iterated a
+    few times so center and axis converge together; seeded from the manifest so
+    one pass is nearly converged already.
+
+    Returns null when the fit cannot be trusted (degenerate geometry, or a
+    result far from the seed), in which case the caller stays on the manifest
+    values — misplaced spin beats no wheel. */
+function fitWheelPivot(
+  wheelParts: THREE.Object3D[],
+  seedHub: THREE.Vector3,
+  seedAxis: THREE.Vector3,
+): { hub: THREE.Vector3; axis: THREE.Vector3 } | null {
+  const pts: THREE.Vector3[] = [];
+  const v = new THREE.Vector3();
+  for (const p of wheelParts) {
+    const g = (p as THREE.Mesh).geometry;
+    const a = g?.getAttribute("position");
+    if (!a) continue;
+    const step = Math.max(1, Math.floor(a.count / 6000));
+    for (let i = 0; i < a.count; i += step)
+      pts.push(v.fromBufferAttribute(a, i).applyMatrix4(p.matrix).clone());
+  }
+  if (pts.length < 300) return null;
+
+  /** Smallest principal axis of a cloud — the disc normal. Same inverse power
+      iteration as the build tool, on (trace·I − C). */
+  const smallestAxis = (cloud: THREE.Vector3[], c: THREE.Vector3): THREE.Vector3 => {
+    const C = [0, 0, 0, 0, 0, 0]; // xx, yy, zz, xy, xz, yz
+    for (const p of cloud) {
+      const dx = p.x - c.x, dy = p.y - c.y, dz = p.z - c.z;
+      C[0] += dx * dx; C[1] += dy * dy; C[2] += dz * dz;
+      C[3] += dx * dy; C[4] += dx * dz; C[5] += dy * dz;
+    }
+    const tr = C[0] + C[1] + C[2];
+    const M = [tr - C[0], -C[3], -C[4], -C[3], tr - C[1], -C[5], -C[4], -C[5], tr - C[2]];
+    let ax = 0.3, ay = 0.5, az = 0.81;
+    for (let it = 0; it < 60; it++) {
+      const wx = M[0] * ax + M[1] * ay + M[2] * az;
+      const wy = M[3] * ax + M[4] * ay + M[5] * az;
+      const wz = M[6] * ax + M[7] * ay + M[8] * az;
+      const n = Math.hypot(wx, wy, wz) || 1;
+      ax = wx / n; ay = wy / n; az = wz / n;
+    }
+    return new THREE.Vector3(ax, ay, az);
+  };
+
+  const center = seedHub.clone();
+  const axis = seedAxis.clone().normalize();
+  let R = 0;
+  const d = new THREE.Vector3();
+  for (let iter = 0; iter < 4; iter++) {
+    // in-plane basis
+    const u = new THREE.Vector3().crossVectors(axis, Math.abs(axis.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)).normalize();
+    const w = new THREE.Vector3().crossVectors(axis, u);
+    // outer contour: max-radius vertex per angular bin
+    const BINS = 72;
+    const ring: { x: number; y: number; z: number; r: number }[] = [];
+    for (const p of pts) {
+      d.subVectors(p, center);
+      const qx = d.dot(u), qy = d.dot(w), qz = d.dot(axis);
+      const r = Math.hypot(qx, qy);
+      const b = Math.floor(((Math.atan2(qy, qx) + Math.PI) / (2 * Math.PI)) * BINS) % BINS;
+      if (!ring[b] || r > ring[b].r) ring[b] = { x: qx, y: qy, z: qz, r };
+    }
+    let bins = ring.filter(Boolean);
+    if (bins.length < 24) return null;
+    const med = bins.map((c) => c.r).sort((a, b) => a - b)[bins.length >> 1];
+    bins = bins.filter((c) => Math.abs(c.r - med) / med < 0.06);
+    if (bins.length < 18) return null;
+    // least-squares circle (Kåsa) in the plane
+    let Sx = 0, Sy = 0, Sxx = 0, Syy = 0, Sxy = 0, Sxz = 0, Syz = 0, Sz = 0;
+    const n = bins.length;
+    for (const c of bins) {
+      const z2 = c.x * c.x + c.y * c.y;
+      Sx += c.x; Sy += c.y; Sxx += c.x * c.x; Syy += c.y * c.y; Sxy += c.x * c.y;
+      Sxz += c.x * z2; Syz += c.y * z2; Sz += z2;
+    }
+    const A00 = 2 * (Sxx - (Sx * Sx) / n), A01 = 2 * (Sxy - (Sx * Sy) / n), A11 = 2 * (Syy - (Sy * Sy) / n);
+    const B0 = Sxz - (Sx * Sz) / n, B1 = Syz - (Sy * Sz) / n;
+    const det = A00 * A11 - A01 * A01;
+    if (Math.abs(det) < 1e-12) return null;
+    const cx = (B0 * A11 - B1 * A01) / det, cy = (A00 * B1 - A01 * B0) / det;
+    R = Math.sqrt((Sz - 2 * (cx * Sx + cy * Sy)) / n + cx * cx + cy * cy);
+    const zMean = bins.reduce((s, c) => s + c.z, 0) / n;
+    center.addScaledVector(u, cx).addScaledVector(w, cy).addScaledVector(axis, zMean);
+    // axis from the rim band only — the part of the cloud that IS a circle
+    const band = pts.filter((p) => {
+      d.subVectors(p, center);
+      const along = d.dot(axis);
+      const rad = Math.sqrt(Math.max(0, d.lengthSq() - along * along));
+      return Math.abs(rad - R) / R < 0.12;
+    });
+    if (band.length > 200) {
+      const bc = band.reduce((s, p) => s.add(p), new THREE.Vector3()).divideScalar(band.length);
+      const na = smallestAxis(band, bc);
+      if (na.dot(axis) < 0) na.negate(); // keep pointing back toward the driver
+      axis.copy(na);
+    }
+  }
+  // trust gates: a real car's rim radius, near the seed, near the seed's rake
+  if (R < 0.1 || R > 0.35) return null;
+  if (center.distanceTo(seedHub) > 0.15) return null;
+  if (axis.angleTo(seedAxis) > 0.2) return null;
+  return { hub: center, axis };
+}
+
 export function attachCockpitModel(
   cockpit: Cockpit,
   name: string,
@@ -403,10 +523,24 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
 
   if (wheelParts.length && man.steering) {
     const { hub, axis } = man.steering;
+    /* The manifest hub is a centroid and the centroid of THIS wheel sits ~19 mm
+       below the axle (see fitWheelPivot) — spin about it and the rim orbits
+       instead of turning in place. Re-fit the pivot to the rim circle of the
+       geometry actually loaded; the manifest stays the seed and the fallback. */
+    const fitted = fitWheelPivot(
+      wheelParts,
+      new THREE.Vector3(hub[0], hub[1], hub[2]),
+      new THREE.Vector3(axis[0], axis[1], axis[2]),
+    );
     axisG = new THREE.Group();
     axisG.name = "donorSteeringAxis";
-    axisG.position.set(hub[0], hub[1], hub[2]);
-    axisG.quaternion.copy(alignZ(new THREE.Vector3(axis[0], axis[1], axis[2])));
+    if (fitted) {
+      axisG.position.copy(fitted.hub);
+      axisG.quaternion.copy(alignZ(fitted.axis));
+    } else {
+      axisG.position.set(hub[0], hub[1], hub[2]);
+      axisG.quaternion.copy(alignZ(new THREE.Vector3(axis[0], axis[1], axis[2])));
+    }
     /* Hung inside the donor scene, not beside it, so the hub and the rim share
        one space and the width fitting above applies to both. It also keeps the
        rotation clear of shear: cockpit.group's (sx,1,1) and the scene's
