@@ -283,6 +283,39 @@ html.cursor-idle * {
   pointer-events: none;
   text-shadow: 0 0 10px rgba(90, 255, 160, 0.6);
 }
+/* First-run hint pill (game/hints.ts fires it; GameApp owns the timer).
+   Below the exit board so the EXIT 4 tip can share the frame with the
+   navigation hint it is explaining. The long fade is the point — same
+   fade-not-stop rule as the world's lights; GameApp flips only opacity, and
+   the text stays mounted behind opacity 0 so there is something to fade. */
+#hint {
+  position: fixed;
+  top: 134px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--ink);
+  background: var(--surface-3);
+  border: 1px solid var(--accent-line);
+  padding: 7px 16px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-base);
+  letter-spacing: 0.05em;
+  z-index: var(--z-toast);
+  opacity: 0;
+  transition: opacity 0.7s var(--ease);
+  pointer-events: none;
+  backdrop-filter: blur(var(--blur-sm));
+  white-space: nowrap;
+  box-shadow: 0 0 18px var(--accent-glow);
+}
+#hint i {
+  font-style: normal;
+  color: var(--jp);
+  font-size: var(--fs-xs);
+  margin-left: 10px;
+  letter-spacing: 0.14em;
+}
+
 #mmap {
   position: fixed;
   right: 12px;
