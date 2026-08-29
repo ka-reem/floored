@@ -486,6 +486,38 @@ export interface GameSettings {
   noHesiScore: boolean;
 }
 
+/** Lifetime drive statistics, accumulated across every session on this
+ *  profile — see the DRIVE STATS block in game/engine.ts. Sums except where
+ *  noted; every field is a plain non-negative number so the scrub in
+ *  loadProfile can treat them uniformly (STAT_KEYS below, the same key-list
+ *  pattern NUM_KEYS/BOOL_KEYS use). Units are the engine's own — metres,
+ *  m/s, seconds — and converted at display time, so a units-setting change
+ *  never rewrites history. */
+export interface LifetimeStats {
+  /** metres driven */
+  dist: number;
+  /** fastest speed ever held, m/s (a max, not a sum) */
+  topSpeed: number;
+  /** seconds actually moving (|u| above walking pace), not seconds unpaused */
+  driveT: number;
+  /** near misses as the No Hesi scoring feed counts them (traffic.ts
+      scoreEvents — counted whether or not the score display is on) */
+  nearMisses: number;
+  /** highest No Hesi combo ever reached (a max, not a sum) */
+  bestCombo: number;
+  /** crashes hard enough for the crash sound — same thresholds */
+  crashes: number;
+  /** full circuits of the endless expressway (loop splices, forward) */
+  laps: number;
+  /** complete traversals of the mountain pass (route-graph edge runs) */
+  mtnRuns: number;
+}
+
+export const defaultLifetimeStats = (): LifetimeStats => ({
+  dist: 0, topSpeed: 0, driveT: 0, nearMisses: 0,
+  bestCombo: 1, crashes: 0, laps: 0, mtnRuns: 0,
+});
+
 export interface Profile {
   settings: GameSettings;
   carId: string;
@@ -495,6 +527,9 @@ export interface Profile {
   /** best-ever No Hesi score, across every drive on this profile — see
       game/engine.ts's noHesiUpdate. Only ever grows. */
   noHesiBest: number;
+  /** lifetime drive statistics — see the DRIVE STATS block in engine.ts.
+      Written by GameApp.tsx's persist() the same way noHesiBest is. */
+  stats: LifetimeStats;
 }
 
 export const defaultSettings = (): GameSettings => ({
@@ -562,6 +597,7 @@ export const defaultProfile = (): Profile => ({
      profile keeps whatever camera it was last left on. */
   camMode: 3,
   noHesiBest: 0,
+  stats: defaultLifetimeStats(),
 });
 
 /** Preset side-effects (ported from legacy applyPreset). */
@@ -604,6 +640,14 @@ const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
   "autoTime", "rain", "mmap", "mmapZoom", "rival", "rivalSignals", "testMode",
   "noHesiScore",
+] as const;
+
+/** Lifetime-stats fields, all "non-negative finite number or the default" —
+ *  the same scrub noHesiBest gets, driven off a key list like NUM_KEYS so a
+ *  new statistic is one entry here rather than a hand-written guard. */
+const STAT_KEYS = [
+  "dist", "topSpeed", "driveT", "nearMisses", "bestCombo", "crashes",
+  "laps", "mtnRuns",
 ] as const;
 
 /** Non-negative integer, or the fallback. For the persisted array indices whose
@@ -723,6 +767,20 @@ export function loadProfile(): Profile {
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     if (typeof prof.noHesiBest !== "number" || !Number.isFinite(prof.noHesiBest) || prof.noHesiBest < 0)
       prof.noHesiBest = base.noHesiBest;
+    /* Lifetime stats: rebuilt field-by-field off the defaults, the same
+       shape as the settings spread above — a stored non-object would spread
+       its characters/indices into the profile otherwise, and any single
+       mangled number falls back alone instead of voiding the rest. */
+    const rawStats =
+      prof.stats && typeof prof.stats === "object" && !Array.isArray(prof.stats)
+        ? (prof.stats as unknown as Record<string, unknown>)
+        : {};
+    const stats = { ...base.stats };
+    for (const k of STAT_KEYS) {
+      const v = rawStats[k];
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0) stats[k] = v;
+    }
+    prof.stats = stats;
     return prof;
   } catch {
     return base;

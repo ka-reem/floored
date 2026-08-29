@@ -805,6 +805,50 @@ body:not(.touch) #mmap {
   margin-top: var(--sp-4);
 }
 
+/* ---------- STATS panel (pause menu — drive statistics) ---------- */
+/* Label + two numeric columns (session / lifetime). Values sit on the
+   display face with tabular numerals, same as the speedo and the HUD score,
+   so the panel reads as part of the same instrument set. */
+.statsGrid {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 7px var(--sp-4);
+  align-items: baseline;
+  margin-top: var(--sp-2);
+  font-size: var(--fs-base);
+}
+.statsGrid .shead {
+  /* column heads borrow the sectionHead voice */
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-align: right;
+}
+.statsGrid .slabel {
+  color: var(--ink-dim);
+}
+.statsGrid .slabel i {
+  /* EN + jp, the drawer rows' qdLabel pattern */
+  font-style: normal;
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+  margin-left: 5px;
+}
+.statsGrid .sval {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 64px;
+  color: var(--ink);
+}
+/* A session value that IS the lifetime record warms to the accent — the
+   same fade-not-pop restraint as #hud .noHesi.combo-hot. */
+.statsGrid .sval.rec {
+  color: var(--accent-2);
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
 /* controls table */
 .ctrlGrid {
   display: grid;

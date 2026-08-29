@@ -7,11 +7,11 @@ import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
-  syncRivalMode, syncCabinMode, cabinAutoLabel,
-  type Profile, type GameSettings,
+  speedInUnits, syncRivalMode, syncCabinMode, cabinAutoLabel,
+  type Profile, type GameSettings, type SpeedUnits,
 } from "@/game/settings";
 
-type Screen = "main" | "garage" | "settings" | "controls" | "loading" | "playing" | "paused" | "photo";
+type Screen = "main" | "garage" | "settings" | "controls" | "stats" | "loading" | "playing" | "paused" | "photo";
 
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
@@ -156,6 +156,9 @@ export default function GameApp() {
     p.seed = g.seed;
     p.camMode = g.camMode;
     p.noHesiBest = g.noHesiBest;
+    /* Lifetime totals: construction-time seed + this session, recomputed on
+       every call (see Game.lifetimeStats) — writing it repeatedly is safe. */
+    p.stats = g.lifetimeStats();
     saveProfile(p);
   }, []);
 
@@ -206,6 +209,10 @@ export default function GameApp() {
   const backToMenu = () => {
     setFromPause(false);
     setScreen("main");
+    /* Leaving for the menu is how a drive ends — bank it. resume() and
+       drive() already persist; this was the one exit that didn't, and it is
+       the natural end of a session for the lifetime stats (and noHesiBest). */
+    persist();
   };
   const backFrom = (sub: boolean) => {
     if (fromPause && sub) setScreen("paused");
@@ -429,6 +436,7 @@ export default function GameApp() {
           <h1 className="menuTitle sm">PAUSED</h1>
           <div className="menuBtns">
             <button className="menuBtn primary" onClick={resume}>RESUME</button>
+            <button className="menuBtn" onClick={() => setScreen("stats")}>STATS</button>
             <button className="menuBtn" onClick={() => setScreen("garage")}>GARAGE</button>
             <button className="menuBtn" onClick={() => setScreen("settings")}>SETTINGS</button>
             <button className="menuBtn" onClick={() => setScreen("controls")}>CONTROLS</button>
@@ -446,6 +454,9 @@ export default function GameApp() {
         </div>
       )}
 
+      {screen === "stats" && g && (
+        <StatsPanel game={g} onBack={() => backFrom(true)} />
+      )}
       {screen === "garage" && g && (
         <GaragePanel
           game={g}
@@ -786,6 +797,100 @@ function PhotoHint({ game }: { game: Game }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ================= drive stats ================= */
+
+/* The pause menu's STATS panel: this session beside the lifetime record,
+   read straight off the engine's accumulator (Game.sessionStats /
+   Game.lifetimeStats — see the STATS block in engine.ts). A snapshot, not a
+   ticker: the game is paused under it, so nothing here needs to re-render.
+   Formatting follows the profile's speed-units setting — the stored numbers
+   are engine units (m, m/s, s) and only the display converts. */
+
+const fmtDist = (m: number, u: SpeedUnits) =>
+  u === "mph" ? (m / 1609.344).toFixed(1) + " mi" : (m / 1000).toFixed(1) + " km";
+
+const fmtSpeed = (v: number, u: SpeedUnits) =>
+  Math.round(speedInUnits(v, u)) + " " + unitLabel(u);
+
+function fmtDur(s: number) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = Math.floor(s % 60);
+  const p = (n: number) => (n < 10 ? "0" : "") + n;
+  return h > 0 ? `${h}:${p(m)}:${p(ss)}` : `${m}:${p(ss)}`;
+}
+
+function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
+  const s = game.sessionStats;
+  const l = game.lifetimeStats();
+  const u = game.settings.units;
+  /* rec: the session value IS the lifetime record — the record rows warm to
+     the accent (same restraint as .combo-hot: a colour shift, not a badge) */
+  const rows: { en: string; jp: string; sv: string; lv: string; rec?: boolean }[] = [
+    { en: "DISTANCE", jp: "走行距離", sv: fmtDist(s.dist, u), lv: fmtDist(l.dist, u) },
+    { en: "TIME DRIVEN", jp: "走行時間", sv: fmtDur(s.driveT), lv: fmtDur(l.driveT) },
+    {
+      en: "TOP SPEED", jp: "最高速度",
+      sv: fmtSpeed(s.topSpeed, u), lv: fmtSpeed(l.topSpeed, u),
+      rec: s.topSpeed > 0 && s.topSpeed >= l.topSpeed,
+    },
+    {
+      en: "NEAR MISSES", jp: "ニアミス",
+      sv: String(s.nearMisses), lv: String(l.nearMisses),
+    },
+    {
+      en: "NO HESI SCORE", jp: "スコア",
+      sv: String(Math.round(game.noHesiScore)), lv: String(Math.round(game.noHesiBest)),
+      rec: game.noHesiScore > 0 && Math.round(game.noHesiScore) >= Math.round(game.noHesiBest),
+    },
+    {
+      en: "BEST COMBO", jp: "最高コンボ",
+      sv: "×" + s.bestCombo.toFixed(1), lv: "×" + l.bestCombo.toFixed(1),
+      rec: s.bestCombo > 1 && s.bestCombo >= l.bestCombo,
+    },
+    { en: "CRASHES", jp: "クラッシュ", sv: String(s.crashes), lv: String(l.crashes) },
+    { en: "LAPS", jp: "周回", sv: String(s.laps), lv: String(l.laps) },
+    { en: "TOUGE RUNS", jp: "峠走破", sv: String(s.mtnRuns), lv: String(l.mtnRuns) },
+  ];
+  return (
+    <div className="menuRoot">
+      <div className="panel">
+        <h2>STATS</h2>
+        <div className="jp2">記録 — drive statistics</div>
+        <div className="statsGrid">
+          <span />
+          <span className="shead">SESSION 今回</span>
+          <span className="shead">LIFETIME 通算</span>
+          {rows.map((r) => (
+            <StatsRow key={r.en} {...r} />
+          ))}
+        </div>
+        <div className="btnrow">
+          <button onClick={onBack}>BACK</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatsRow({
+  en, jp, sv, lv, rec,
+}: {
+  en: string;
+  jp: string;
+  sv: string;
+  lv: string;
+  rec?: boolean;
+}) {
+  return (
+    <>
+      <span className="slabel">
+        {en} <i>{jp}</i>
+      </span>
+      <span className={"sval" + (rec ? " rec" : "")}>{sv}</span>
+      <span className="sval">{lv}</span>
+    </>
   );
 }
 
