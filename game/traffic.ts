@@ -4830,8 +4830,12 @@ export class Traffic {
         const k2 = n.laneK - 1;
         const off2 = cor.laneOffset(k2, n.s);
         {
-          // lane gone within ~3 s of travel → zipper urgency
-          const urgent = dipAt <= Math.max(n.v, 8) * 3;
+          /* Lane gone within ~3 s of travel → zipper urgency. A direct
+             probe, not the quantized dipAt: the scan's 32 m grain sits
+             above a crawling car's whole 24 m horizon, and a probe this
+             short cannot jump a dip anyway (the narrowest is ~140 m). */
+          const urgent =
+            cor.lanes(cor.wrapZ(n.s + Math.max(n.v, 8) * 3)) - 1 < n.laneK;
           /* the urgent gap requirement scales with speed: at 25 m/s it wants
              ~8 m of clear road behind and ~11 ahead, at a jam crawl a real
              zipper takes a slot with a couple of metres to spare */
@@ -4893,11 +4897,10 @@ export class Traffic {
                  occupied lane — which is exactly the pileup glitch. A car
                  that WAITS at the end of a closing lane zippers in cleanly
                  as soon as the yielding follower alongside leaves it room. */
-              if (dipAt <= Math.max(n.v, 4) * 3) {
-                // refine the lane end inside the sample that found the dip —
-                // bisecting the whole lookahead is only sound when the count
-                // is monotone, which a pocket road's is not
-                let lo = Math.max(0, dipAt - 32), hi = dipAt;
+              // probe and bisection stay direct: a ≤ ~100 m window holds at
+              // most one boundary of the dip, so monotonicity is safe here
+              let lo = 0, hi = Math.max(n.v, 4) * 3;
+              if (cor.lanes(cor.wrapZ(n.s + hi)) - 1 < n.laneK) {
                 for (let i = 0; i < 5; i++) {
                   const mid = (lo + hi) / 2;
                   if (cor.lanes(cor.wrapZ(n.s + mid)) - 1 < n.laneK) hi = mid;

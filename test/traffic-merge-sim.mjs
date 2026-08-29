@@ -236,7 +236,10 @@ function makeSim(mode, seed) {
           if (dipAt >= 0) {
             const k2 = n.laneK - 1;
             const off2 = c.laneOffset(k2, n.s);
-            const urgent = dipAt <= Math.max(n.v, 8) * 3;
+            // direct probe, not the quantized dipAt: the scan's 32 m grain
+            // sits above a crawling car's whole ~24 m horizon, and a probe
+            // this short cannot jump a dip anyway (the narrowest is ~140 m)
+            const urgent = c.lanes(n.s + Math.max(n.v, 8) * 3) - 1 < n.laneK;
             const clear = urgent
               ? laneClearAt(n, n.s, off2, 1.2 + 0.25 * n.v, 2.5 + 0.35 * n.v)
               : laneClearAt(n, n.s, off2, 9, 16);
@@ -265,8 +268,8 @@ function makeSim(mode, seed) {
                 n.laneRate = Math.max(n.laneRate, LANE_FOLLOW_RATE);
                 // still blocked with the pavement running out: virtual
                 // stopped leader a few metres short of the lane end
-                if (dipAt <= Math.max(n.v, 4) * 3) {
-                  let lo = Math.max(0, dipAt - 32), hi = dipAt;
+                let lo = 0, hi = Math.max(n.v, 4) * 3;
+                if (c.lanes(n.s + hi) - 1 < n.laneK) {
                   for (let i = 0; i < 5; i++) {
                     const mid = (lo + hi) / 2;
                     if (c.lanes(n.s + mid) - 1 < n.laneK) hi = mid; else lo = mid;
