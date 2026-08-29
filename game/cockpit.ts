@@ -1706,6 +1706,10 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
     return g;
   }
   const handL = hand(-1), handR = hand(1);
+  /* Named so test/wheel-center-check.mjs can leave them out of its rim-circle
+     fit: the sleeves sit at rim radius but off the wheel plane, and including
+     them reads a hub-true wheel as wobbling. */
+  handL.name = handR.name = "hand";
   handL.position.set(-0.16, 0.055, 0.016);
   handL.rotation.z = 0.85;
   handR.position.set(0.16, 0.055, 0.016);
