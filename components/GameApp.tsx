@@ -846,7 +846,9 @@ function SteerWheel({ game }: { game: Game }) {
    settings/persistence write.
 
    Not here, on purpose: camera (the CAM puck has it), high beams and horn
-   (pucks), signals (the topbar telltales), music (MusicPlayer is
+   (pucks — and in wheel mode the horn is also the wheel's own hub, which is
+   where a driver's thumb already is), signals (the topbar telltales), music
+   (MusicPlayer is
    desktop-only by design — no phone headroom), interior light (owner ruled
    out a touch button; the roof-band tap covers it), look-back (dead in the
    shipped dashcam view). */

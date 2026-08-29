@@ -287,6 +287,15 @@ const HI_HOLD = 2;
    collide with a real puck's getElementById id. */
 const WHEEL_HORN_HOLD = "swheelHub";
 
+/* Minimum time a horn press stays audible, seconds. input.horn is a per-frame
+   sample of keydown["f"], so without a floor a press and release that both
+   land inside one frame is silent — and that is exactly the gesture "beep
+   beep" is made of. Armed on the press EDGE (which is why it lives at the
+   three places the key goes down, not in the per-frame read), it holds the
+   horn on just long enough to be a stab rather than a click. A held horn is
+   unaffected: the key is still down, so the floor changes nothing. */
+const HORN_MIN_S = 0.11;
+
 /* Camera modes. CAM_POV is the hard-mounted dashcam: it shares the cockpit's
    rendering (interior shell visible, mirror and gauges live) but none of its
    head physics — a bracket bolted over the dash does not lean into corners,
@@ -2425,6 +2434,7 @@ export class Game {
        still steering. */
     this.wheelVal = this.tiltVal = 0;
     this.wheelPointerId = null;
+    this.hornMinT = 0;
     for (const hold of this.touchHolds.values()) hold.ids.clear();
   }
 
@@ -2553,6 +2563,11 @@ export class Game {
       return;
     }
     if (!this.running) return;
+    /* The horn is read per-frame from keydown["f"] (readInput), not handled
+       here — this only arms the minimum-honk floor on the press edge, so a
+       stab too quick for the per-frame sample still sounds. `e.repeat` has
+       already returned above, so auto-repeat cannot keep re-arming it. */
+    if (k === "f") this.armHorn();
     if (k === "c") {
       this.camMode = nextCam(this.camMode);
       this.ui.toast(CAM_NAMES[this.camMode]);
@@ -3107,9 +3122,19 @@ export class Game {
   private watchdogTouchInput() {
     if (!this.isTouch) return;
     for (const hold of this.touchHolds.values()) {
+      /* A hold with no ids is not holding anything, and so has nothing to
+         recover — without this guard it instead ZEROES its key on every
+         frame the key is down, whoever put it down. That bites as soon as
+         two things can press one key: the idle HORN puck's empty hold was
+         cutting the wheel hub's honk within a frame of it starting. It also
+         means a physical keyboard on a touch device could never hold W, A,
+         S, D or F at all, since each has a puck sitting on it. */
+      if (hold.ids.size === 0) continue;
       if (this.keydown[hold.key] !== 1) continue;
       for (const id of hold.ids) if (!this.livePointers.has(id)) hold.ids.delete(id);
-      if (hold.ids.size === 0) this.keydown[hold.key] = 0;
+      // ...and when this hold's last finger is gone, the key is only released
+      // if no OTHER control is still holding it (the puck/hub pair).
+      if (hold.ids.size === 0 && !this.keyStillHeld(hold.key)) this.keydown[hold.key] = 0;
     }
     if (this.wheelPointerId !== null && !this.livePointers.has(this.wheelPointerId)) {
       this.wheelVal = 0;
@@ -3129,6 +3154,16 @@ export class Game {
     return false;
   }
 
+  /** Counts down HORN_MIN_S from the last horn press edge (see readInput). */
+  private hornMinT = 0;
+  /** Arm the minimum-honk floor. Called from all three press edges — the F
+      key, the HORN puck and the wheel hub — rather than from the per-frame
+      read, because the whole point is to catch a press the per-frame read
+      never sees. Idempotent: re-arming mid-honk just refreshes the floor. */
+  private armHorn() {
+    this.hornMinT = HORN_MIN_S;
+  }
+
   /** Horn from the steering-wheel hub — see SteerWheel in GameApp, which owns
       the tap/drag discrimination. Writes the same keydown["f"] the HORN puck
       and the keyboard write, so there is exactly one horn path downstream.
@@ -3143,6 +3178,7 @@ export class Game {
   setWheelHorn(on: boolean, pointerId: number | null) {
     if (on) {
       this.keydown["f"] = 1;
+      this.armHorn();
       if (pointerId !== null) this.touchHolds.set(WHEEL_HORN_HOLD, { key: "f", ids: new Set([pointerId]) });
       return;
     }
@@ -3174,7 +3210,10 @@ export class Game {
       if (!el) return;
       const ids = this.bindPointerHold(
         el,
-        () => (this.keydown[key] = 1),
+        () => {
+          this.keydown[key] = 1;
+          if (key === "f") this.armHorn();
+        },
         () => {
           // "f" is shared with the wheel hub; never zero it out from under
           // a control that is still pressed (see keyStillHeld).
@@ -3290,6 +3329,9 @@ export class Game {
   private readInput(dt: number) {
     this.watchdogTouchInput();
     const kd = this.keydown;
+    /* Ahead of both early returns below, so a floor armed just before a pause
+       or a debug override drains instead of being frozen and honking later. */
+    this.hornMinT = Math.max(0, this.hornMinT - dt);
     if (this.debug.override) {
       const o = this.debug.override;
       this.input.th = o.th ?? 0;
@@ -3380,8 +3422,9 @@ export class Game {
     /* One horn path for all three inputs: the F key, the HORN puck (bindHold)
        and the steering-wheel hub (setWheelHorn) all write keydown["f"], so the
        mix, the NPC reaction and the release edge behave identically whichever
-       one honked. */
-    this.input.horn = kd["f"] ? 1 : 0;
+       one honked. The HORN_MIN_S floor is OR'd in so a press too short to be
+       caught by this per-frame sample still sounds (see armHorn). */
+    this.input.horn = kd["f"] || this.hornMinT > 0 ? 1 : 0;
   }
 
   /* ---------------- settings ---------------- */
