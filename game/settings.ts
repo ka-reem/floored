@@ -106,6 +106,13 @@ export interface TierCaps {
       bare parapet the BEFORE contact sheet diagnosed. 0 disables. */
   districts?: number;
 
+  /** Density level (0..1) for the full-lap roadside pass (roadside.ts
+      FX_ROADSIDE: clumped tree lines, imposter ranks, undergrowth, gutter
+      weeds). A LEVEL like districts: everything is merged or instanced, so
+      thinning trades silhouette continuity, not draw calls — mobile keeps
+      the same lap with sparser clumps. 0 disables the whole layer. */
+  vegetation?: number;
+
   /** Procedural concrete decimetre detail on parapets, deck fascia and the
       tunnel crown — the grit atlas fetch plus the surface-gradient normal
       perturbation it and the contraction joints drive (mats.weatherSurface).
@@ -186,6 +193,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampPoolEvery: 2, wallDetail: 0, deckTexPx: 256, cabinPbrMaps: false,
     lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
     wheelTracks: false, deckDressing: 0.35, districts: 0.55, mtnDetail: 0.5, hdFleet: false,
+    vegetation: 0.55,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -197,6 +205,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampPoolEvery: 1, wallDetail: 0.5, deckTexPx: 512, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
     wheelTracks: true, deckDressing: 0.7, districts: 0.8, mtnDetail: 0.75, hdFleet: false,
+    vegetation: 0.8,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -208,6 +217,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampPoolEvery: 1, wallDetail: 1, deckTexPx: 1024, cabinPbrMaps: true,
     lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
     wheelTracks: true, deckDressing: 1, districts: 1, mtnDetail: 1, hdFleet: true,
+    vegetation: 1,
   },
 };
 

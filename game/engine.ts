@@ -4280,6 +4280,9 @@ export class Game {
       this.world.compileDirty = false;
       this.renderer.compileAsync(this.scene, this.camera).catch(() => {});
     }
+    // the roadside vegetation's screen-door dissolve tracks the same cull
+    // distance for the same reason (see WorldData.fadeFar)
+    if (this.world.fadeFar) this.world.fadeFar.value = dd;
   }
 
   private blinkOnNow(now: number) {

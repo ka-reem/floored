@@ -79,6 +79,12 @@ export interface WorldData {
       the background instead of stalling the frame the toll first swings into
       view (measured: +9 programs mid-drive at the plaza). */
   compileDirty?: boolean;
+  /** Live draw-distance uniform for chunked dressing that FADES rather than
+      pops (roadside.ts vegetation): chunksUpdate() writes the same scaled
+      distance it culls world.chunks at, and every dissolve shader reads it —
+      so the fade always finishes inside the cull radius, whatever the tier
+      or the perf cap are doing to it this frame. */
+  fadeFar?: { value: number };
   // weather-dimmable references
   neonMats: THREE.Material[];
   glowPts?: THREE.Points;

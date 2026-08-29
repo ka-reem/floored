@@ -6,6 +6,7 @@ import type { Mats } from "./mats";
 import type { WorldData } from "./data";
 import type { Terrain } from "./terrain";
 import { worldTierCaps } from "../settings";
+import { buildRoadside } from "./roadside";
 
 /* Roadside scenery zones: the stretches of world the corridor passes that are
    neither the town nor the backdrop rings. Before this file the map east of
@@ -83,8 +84,9 @@ const CANYON = { z0: 1580, z1: 2000 };
 /** Merge helper: bakes transformed template geometries (and per-part colour)
     into one non-indexed soup, one draw call per material. Templates must be
     uv-consistent within a bucket (they all are — box/cylinder/icosa carry
-    uv), or the attribute arrays would fall out of step. */
-class Merge {
+    uv), or the attribute arrays would fall out of step. Exported for
+    roadside.ts, which builds by the same rules. */
+export class Merge {
   pos: number[] = [];
   norm: number[] = [];
   uv: number[] = [];
@@ -1205,4 +1207,11 @@ export function buildScenery(
   taperCyl.dispose();
   blob.dispose();
   trunk.dispose();
+
+  /* Third pass — the full-lap roadside density layer (map-density lane):
+     continuous clumped tree lines, imposter ranks and near-road clutter
+     filling the space BETWEEN the districts above. Runs last and draws only
+     from its own forked stream (same contract as FX_DISTRICTS), so it can
+     never reshuffle anything rolled before it. */
+  buildRoadside(scene, mats, world, terrain);
 }
