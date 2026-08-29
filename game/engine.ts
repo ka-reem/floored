@@ -252,6 +252,12 @@ const BEAM_FLOOR = 0.13;
     few hundred ms — and short enough to be a deliberate press, not a wait. */
 const HI_HOLD = 2;
 
+/* touchHolds key for the steering-wheel hub horn. Not an element id — the hub
+   is a painted disc with pointer-events:none and no listeners of its own; the
+   wheel's existing handlers do the hit test — so it needs a name that cannot
+   collide with a real puck's getElementById id. */
+const WHEEL_HORN_HOLD = "swheelHub";
+
 /* Camera modes. CAM_POV is the hard-mounted dashcam: it shares the cockpit's
    rendering (interior shell visible, mirror and gauges live) but none of its
    head physics — a bracket bolted over the dash does not lean into corners,
@@ -2767,6 +2773,39 @@ export class Game {
     }
   }
 
+  /** Is `key` still held by some OTHER live touch hold? Two controls now
+      share "f" — the HORN puck and the steering-wheel hub (setWheelHorn) —
+      and either may be released while the other is still pressed. Without
+      this, letting go of one zeroes the key under the other and the horn
+      cuts out with a finger still on it. Holds whose ids are empty are
+      already released (bindPointerHold clears the set before calling onUp,
+      and the blur reset clears every set), so size is the live test. */
+  private keyStillHeld(key: string) {
+    for (const h of this.touchHolds.values()) if (h.key === key && h.ids.size) return true;
+    return false;
+  }
+
+  /** Horn from the steering-wheel hub — see SteerWheel in GameApp, which owns
+      the tap/drag discrimination. Writes the same keydown["f"] the HORN puck
+      and the keyboard write, so there is exactly one horn path downstream.
+
+      `pointerId` non-null registers the press in touchHolds under a synthetic
+      id, which buys the hub the identical third release path every puck has:
+      watchdogTouchInput drops it the frame that pointer leaves livePointers,
+      so a gesture hijack that eats the touch stream cannot leave the horn
+      blaring. Null is the tap-stab — its finger is already off the glass, so
+      it must NOT be watchdogged (that would kill the stab on the next frame);
+      the caller's own timer releases it. */
+  setWheelHorn(on: boolean, pointerId: number | null) {
+    if (on) {
+      this.keydown["f"] = 1;
+      if (pointerId !== null) this.touchHolds.set(WHEEL_HORN_HOLD, { key: "f", ids: new Set([pointerId]) });
+      return;
+    }
+    this.touchHolds.delete(WHEEL_HORN_HOLD);
+    if (!this.keyStillHeld("f")) this.keydown["f"] = 0;
+  }
+
   private bindInput() {
     addEventListener("keydown", this.onKeyDown);
     this.renderer.domElement.addEventListener("pointerdown", this.onPointerDown);
@@ -2792,7 +2831,11 @@ export class Game {
       const ids = this.bindPointerHold(
         el,
         () => (this.keydown[key] = 1),
-        () => (this.keydown[key] = 0),
+        () => {
+          // "f" is shared with the wheel hub; never zero it out from under
+          // a control that is still pressed (see keyStillHeld).
+          if (!this.keyStillHeld(key)) this.keydown[key] = 0;
+        },
       );
       this.touchHolds.set(id, { key, ids });
     };
@@ -2987,6 +3030,10 @@ export class Game {
     this.input.st += clamp(sTarget - this.input.st, -sRate * dt, sRate * dt);
     if (!sL && !sR && !analog) this.input.st *= Math.max(0, 1 - 6.5 * dt);
     this.input.hb = kd[" "] ? 1 : 0;
+    /* One horn path for all three inputs: the F key, the HORN puck (bindHold)
+       and the steering-wheel hub (setWheelHorn) all write keydown["f"], so the
+       mix, the NPC reaction and the release edge behave identically whichever
+       one honked. */
     this.input.horn = kd["f"] ? 1 : 0;
   }
 

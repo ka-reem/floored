@@ -576,21 +576,90 @@ function analogSteerLive() {
   return "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
 }
 
+/* Hub horn geometry and timing. HUB_R is the painted #swheelHub disc's radius
+   (keep in step with globals.css); DRAG_PX is how far a finger may wander and
+   still count as a press rather than a steering input; HOLD_MS is how long it
+   must rest before the horn sounds, which is what makes STEERING ALWAYS WIN —
+   a drag that starts on the hub has crossed DRAG_PX long before HOLD_MS is up,
+   so it steers in silence. A tap that lifts before HOLD_MS never sustained
+   anything, so it is answered on release with a STAB_MS blip: real horns
+   answer a stab, and without this the most natural gesture on a horn button
+   would be the one gesture that made no sound. */
+const HUB_R = 27, DRAG_PX = 10, HOLD_MS = 70, STAB_MS = 130;
+
 function SteerWheel({ game }: { game: Game }) {
   const [rot, setRot] = useState(0);
   const active = useRef(false);
   const pid = useRef<number | null>(null);
   const cx = useRef(0);
+  /* Hub-horn intent, tracked entirely alongside the steering state above and
+     never gating it: every steering line in the handlers below runs exactly as
+     it did before the hub existed. The worst a bug in here can do is honk or
+     fail to honk — it cannot cost the player a corner. */
+  const hornPend = useRef<{ id: number; x: number; y: number; timer: number } | null>(null);
+  const hornOn = useRef(false);
+  const stabTimer = useRef(0);
+  // Mirrors hornOn for the hub's lit state — a ref alone would not re-render.
+  const [hornLit, setHornLit] = useState(false);
+  const hornRelease = useCallback(() => {
+    const hp = hornPend.current;
+    if (!hp) return;
+    clearTimeout(hp.timer);
+    hornPend.current = null;
+    if (hornOn.current) {
+      hornOn.current = false;
+      setHornLit(false);
+      game.setWheelHorn(false, null);
+      return;
+    }
+    // Lifted inside HOLD_MS: a deliberate stab. Unwatchdogged (the finger is
+    // already gone) and released by this timer, which the unmount effect
+    // below also clears so a pause mid-stab cannot leave it sounding.
+    game.setWheelHorn(true, null);
+    setHornLit(true);
+    clearTimeout(stabTimer.current);
+    stabTimer.current = window.setTimeout(() => {
+      game.setWheelHorn(false, null);
+      setHornLit(false);
+    }, STAB_MS);
+  }, [game]);
+  /* Movement past DRAG_PX means the player is steering, not honking: drop the
+     intent and silence a horn that had already started. */
+  const hornCancel = useCallback(() => {
+    const hp = hornPend.current;
+    if (hp) clearTimeout(hp.timer);
+    hornPend.current = null;
+    if (hornOn.current) {
+      hornOn.current = false;
+      setHornLit(false);
+      game.setWheelHorn(false, null);
+    }
+  }, [game]);
   const end = useCallback(() => {
     active.current = false;
     pid.current = null;
     game.setWheelVal(0);
     game.setWheelPointer(null);
     setRot(0);
-  }, [game]);
+    hornRelease();
+  }, [game, hornRelease]);
   /* Pausing unmounts this widget mid-drag; without zeroing here the last
      deflection keeps feeding readInput and the car resumes at hard lock. */
-  useEffect(() => () => { game.setWheelVal(0); game.setWheelPointer(null); }, [game]);
+  useEffect(
+    () => () => {
+      game.setWheelVal(0);
+      game.setWheelPointer(null);
+      // Same reason, for the horn: a pause mid-honk (or mid-stab) unmounts
+      // this widget, and neither timer would otherwise ever fire its release.
+      const hp = hornPend.current;
+      if (hp) clearTimeout(hp.timer);
+      clearTimeout(stabTimer.current);
+      hornPend.current = null;
+      hornOn.current = false;
+      game.setWheelHorn(false, null);
+    },
+    [game],
+  );
   /* Belt-and-braces: a gesture the browser hijacks outright (an edge-swipe,
      the loupe the mobile-input work elsewhere is closing) can end a touch
      without ever delivering pointerup/pointercancel/lostpointercapture to
@@ -628,12 +697,40 @@ function SteerWheel({ game }: { game: Game }) {
         try {
           (e.target as HTMLElement).setPointerCapture(e.pointerId);
         } catch {}
+        /* Hub horn, armed only. Deliberately does NOT sound yet: the honk is
+           on a HOLD_MS timer so that a steering drag beginning on the hub —
+           which crosses DRAG_PX in a few ms — is silent. Hit-tested against
+           the wheel's own rect rather than a child element, so the hub owns
+           no pointers and cannot steal the capture set up two lines above. */
+        const r = e.currentTarget.getBoundingClientRect();
+        const dx = e.clientX - (r.left + r.width / 2);
+        const dy = e.clientY - (r.top + r.height / 2);
+        if (Math.hypot(dx, dy) > HUB_R) return;
+        const id = e.pointerId;
+        hornPend.current = {
+          id,
+          x: e.clientX,
+          y: e.clientY,
+          timer: window.setTimeout(() => {
+            // The press outlived HOLD_MS without becoming a drag: honk, and
+            // register the live pointer so the frame watchdog owns the release.
+            if (hornPend.current?.id !== id) return;
+            hornOn.current = true;
+            setHornLit(true);
+            game.setWheelHorn(true, id);
+          }, HOLD_MS),
+        };
       }}
       onPointerMove={(e) => {
         if (!active.current || e.pointerId !== pid.current) return;
         const v = Math.max(-1, Math.min(1, (e.clientX - cx.current) / 58));
         game.setWheelVal(v);
         setRot(v * 110);
+        // Steering wins, always: past DRAG_PX this is a drag, so the horn
+        // intent dies and a honk already sounding is cut.
+        const hp = hornPend.current;
+        if (hp && e.pointerId === hp.id && Math.hypot(e.clientX - hp.x, e.clientY - hp.y) > DRAG_PX)
+          hornCancel();
       }}
       onPointerUp={(e) => {
         if (e.pointerId === pid.current) end();
@@ -647,6 +744,14 @@ function SteerWheel({ game }: { game: Game }) {
     >
       <div id="swheelInner" style={{ transform: `rotate(${rot}deg)` }}>
         ◠<br />│
+      </div>
+      {/* The horn boss. Purely painted — pointer-events:none, no listeners —
+          because the wheel above already hit-tests HUB_R against its own rect;
+          a real element here would take the capture and break the drag that
+          starts on it. Sibling of swheelInner, not a child, so it stays put
+          while the spoke rotates. */}
+      <div id="swheelHub" className={hornLit ? "on" : undefined} aria-hidden="true">
+        HORN
       </div>
     </div>
   );

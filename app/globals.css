@@ -1049,6 +1049,41 @@ body.touch #mmap {
   pointer-events: none;
 }
 
+/* The horn boss in the middle of the wheel. 54px across — HUB_R in
+   GameApp.tsx is its 27px radius, and the two must move together, because the
+   wheel hit-tests that radius against its own rect rather than against this
+   element. Painted only: pointer-events:none keeps every pointer on #swheel,
+   which is what lets a drag that starts on the hub steer normally.
+
+   Centred by absolute inset rather than flow, so it neither disturbs
+   #swheelInner's centring nor inherits its rotation. */
+#swheelHub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  margin: -27px 0 0 -27px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(11, 14, 24, 0.66);
+  color: var(--ink-faint);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+/* Lit while the horn is actually sounding. The class is driven from the same
+   state that calls setWheelHorn, so it can never say HORN when nothing honked
+   — including the case where a drag cancelled the press mid-honk. */
+#swheelHub.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
 /* 44px on touch: this is the only on-screen way to reach the pause menu on a
    phone (Esc has no equivalent), and 38px is under the minimum tap target.
    Scoped to touch so the desktop chrome is unchanged. */
