@@ -5,7 +5,9 @@ import {
 } from "./loading";
 import {
   fogMultiplier, speedInUnits, unitLabel, resolveRenderTier, TIER_CAPS,
-  type GameSettings, type Profile, type RenderTier, type TierCaps,
+  defaultLifetimeStats,
+  type GameSettings, type LifetimeStats, type Profile, type RenderTier,
+  type TierCaps,
 } from "./settings";
 import { getCar, PAINTS, testDriveSpec, type CarSpec, type PhysicsSpec } from "./carspecs";
 import { pollGamepad, type PadEdge } from "./gamepad";
@@ -82,6 +84,28 @@ const NOHESI = {
       toward the combo, but not every one is worth a popup */
   pulseGrade: 0.45,
   pulseBase: 250, pulseCd: 1.1,
+};
+
+/** Drive statistics (see statsUpdate / the STATS panel in GameApp.tsx). One
+    accumulator object folded from values the frame already computes — the
+    car state, the No Hesi feed, the crash gates — so the whole feature costs
+    a handful of compares per frame, no listeners, no allocation. */
+const STATS = {
+  /** below this |u| (m/s) the car is standing, not driving — time driven and
+      distance both gate on it so idling at a menu-adjacent red light doesn't
+      pad the clock */
+  moveFloor: 0.5,
+  /** seconds between route-graph probes for the mountain-pass run detection.
+      surfaceAt() is bbox-rejected and cheap, but it allocates its hit — at
+      2 Hz that is noise; per frame it would not be. */
+  routeEvery: 0.5,
+  /** fraction of the pass's arclength a visit must span to count as a run —
+      loose enough that probe quantisation at the gore tapers can't eat a
+      genuine full traversal, tight enough that a U-turn halfway can't count */
+  mtnSpan: 0.85,
+  /** seconds off the pass pavement before a visit closes — one probe landing
+      on the runoff apron mid-drift must not split a run into two halves */
+  mtnGrace: 1.5,
 };
 
 /* The v2 art (procedural canvas textures + hex palettes) was tuned under
@@ -985,6 +1009,28 @@ export class Game {
   get noHesiScore() { return this.noHesi.score; }
   get noHesiBest() { return this.noHesi.best; }
 
+  /** This session's drive statistics, live — the STATS panel reads fields
+      straight off it (the mtn* detector scratch rides along; UI ignores it). */
+  get sessionStats(): Readonly<LifetimeStats> { return this.stats; }
+  /** Lifetime statistics: the profile's totals plus this session, combined
+      the way each field means (sums, except the two records). Allocates a
+      fresh object per call — menu/persist cadence only, never per frame.
+      Idempotent because statsSeed is a construction-time copy, so persist()
+      can write it back as often as it likes without double counting. */
+  lifetimeStats(): LifetimeStats {
+    const s = this.stats, L = this.statsSeed;
+    return {
+      dist: L.dist + s.dist,
+      topSpeed: Math.max(L.topSpeed, s.topSpeed),
+      driveT: L.driveT + s.driveT,
+      nearMisses: L.nearMisses + s.nearMisses,
+      bestCombo: Math.max(L.bestCombo, s.bestCombo),
+      crashes: L.crashes + s.crashes,
+      laps: L.laps + s.laps,
+      mtnRuns: L.mtnRuns + s.mtnRuns,
+    };
+  }
+
   /* Lens OFFSET for the interior currently on screen, all three axes — see
      povMount(), which this describes. Read live rather than cached because the
      donor cabin arrives ASYNCHRONOUSLY: the rig is on screen before the GLB
@@ -1417,6 +1463,20 @@ export class Game {
       persist()) reads it back out through the noHesiBest getter alongside
       carId/seed/camMode. */
   private noHesi = { score: 0, best: 0, combo: 1, sinceAction: 0, pulseCd: 0 };
+  /** Session drive statistics (see the STATS block / statsUpdate). Engine
+      units throughout — metres, m/s, seconds — converted at display time.
+      The mtn* fields are the mountain-run detector's scratch: whether the
+      last probe found the car on the pass, the s-span the visit has covered,
+      and the off-pavement grace clock. */
+  private stats = {
+    dist: 0, topSpeed: 0, driveT: 0, nearMisses: 0, bestCombo: 1,
+    crashes: 0, laps: 0, mtnRuns: 0,
+    routeT: 0, mtnOn: false, mtnLo: 0, mtnHi: 0, mtnOffT: 0,
+  };
+  /** Lifetime stats as loaded from the profile — a COPY, never the profile's
+      own object, so lifetimeStats() (seed + session, recomputed per call) is
+      idempotent however many times persist() writes it back. */
+  private statsSeed: LifetimeStats = defaultLifetimeStats();
   private raf = 0;
   private disposed = false;
   private isTouch: boolean;
@@ -1498,6 +1558,9 @@ export class Game {
     this.seed = profile.seed;
     this.camMode = profile.camMode;
     this.noHesi.best = Number.isFinite(profile.noHesiBest) ? profile.noHesiBest : 0;
+    // loadProfile scrubbed every field; the copy is what makes lifetimeStats()
+    // idempotent (see statsSeed)
+    this.statsSeed = { ...defaultLifetimeStats(), ...profile.stats };
     this.isTouch = "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
     if (this.isTouch) document.body.classList.add("touch");
 
@@ -1668,6 +1731,8 @@ export class Game {
           (n) => n.active && n.route === MOUNTAIN_EDGE && n.dir < 0).length,
         onBypass: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === BYPASS_EDGE,
         onMountain: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === MOUNTAIN_EDGE,
+        stats: { ...this.stats },
+        lifetime: this.lifetimeStats(),
         wrecks: this.traffic.activeWrecks().length,
         chunksVisible: this.world.chunks.filter((c) => c.group.visible).length,
         chunksTotal: this.world.chunks.length,
@@ -1702,6 +1767,10 @@ export class Game {
           });
           this.loopSplice();
           collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
+          // the stats integrator is part of the car simulation this mirrors
+          // (distance/time/top-speed and the mountain-run probe track sim
+          // driving too); the traffic-fed stats stay loop-only, like traffic
+          this.statsUpdate(1 / 120);
         }
       },
       setRain: (on: boolean) => this.setRain(on),
@@ -3265,6 +3334,9 @@ export class Game {
     if (!dz) return;
     car.z += dz;
     this.loops += dz < 0 ? 1 : -1;
+    /* Laps completed: the high-water of `loops`, so reversing back across the
+       seam and re-crossing it forward cannot bank the same lap twice. */
+    if (this.loops > this.stats.laps) this.stats.laps = this.loops;
     this.chasePos.z += dz;
     this.lookPos.z += dz;
     this.camera.position.z += dz;
@@ -4751,6 +4823,9 @@ export class Game {
     } else {
       const grades = this.traffic.scoreEvents();
       if (grades.length) {
+        // stats ride the same feed — counted regardless of the score display
+        // setting, same as the combo itself is
+        this.stats.nearMisses += grades.length;
         nh.sinceAction = 0;
         let best = 0;
         for (const g of grades) {
@@ -4772,6 +4847,51 @@ export class Game {
     if (on && Math.abs(this.car.u) > NOHESI.speedFloor)
       nh.score += Math.abs(this.car.u) * nh.combo * NOHESI.pointsScale * dt;
     if (nh.score > nh.best) nh.best = nh.score;
+  }
+
+  /** Drive statistics — see the STATS block. One in-place accumulator fed
+      from values this frame already computed; near misses, crashes and laps
+      are banked at their own sources (noHesiUpdate, the crash gates,
+      loopSplice), so what's left here is the per-frame integration and the
+      2 Hz mountain-run probe. Runs only inside the `running` branch: paused
+      time is nobody's drive time. */
+  private statsUpdate(dt: number) {
+    const st = this.stats;
+    const sp = Math.abs(this.car.u);
+    if (sp > STATS.moveFloor) {
+      st.dist += sp * dt;
+      st.driveT += dt;
+      if (sp > st.topSpeed) st.topSpeed = sp;
+    }
+    if (this.noHesi.combo > st.bestCombo) st.bestCombo = this.noHesi.combo;
+
+    /* Mountain-pass runs: watch which route-graph edge is under the car (the
+       same surfaceAt() read the debug hook and resetCar already use — the
+       traffic and the graph itself are never touched) and bank a run when a
+       visit to the pass has spanned nearly its whole arclength. The span is
+       a min/max of sampled s, so it counts a traversal in either direction
+       and a U-turn halfway counts nothing. */
+    st.routeT -= dt;
+    if (st.routeT > 0) return;
+    st.routeT = STATS.routeEvery;
+    const hit = this.world.routes?.surfaceAt(this.car.x, this.car.z, 2);
+    if (hit && hit.edgeId === MOUNTAIN_EDGE) {
+      if (!st.mtnOn) {
+        st.mtnOn = true;
+        st.mtnLo = st.mtnHi = hit.s;
+      } else {
+        if (hit.s < st.mtnLo) st.mtnLo = hit.s;
+        if (hit.s > st.mtnHi) st.mtnHi = hit.s;
+      }
+      st.mtnOffT = 0;
+    } else if (st.mtnOn) {
+      st.mtnOffT += STATS.routeEvery;
+      if (st.mtnOffT > STATS.mtnGrace) {
+        st.mtnOn = false;
+        const mt = this.world.routes?.mtn;
+        if (mt && st.mtnHi - st.mtnLo >= mt.len * STATS.mtnSpan) st.mtnRuns++;
+      }
+    }
   }
 
   private hud(now: number, dt: number) {
@@ -4907,6 +5027,9 @@ export class Game {
         if (hitInfo.relSpeed > 2.5 && this.crashCooldown <= 0) {
           this.crashCooldown = 0.4;
           this.audio.crash(hitInfo.relSpeed);
+          // stats: "a crash" is a hit worth the crash sound, and the same
+          // cooldown that stops a chorus stops one scrape counting as five
+          this.stats.crashes++;
           this.car.damage += hitInfo.relSpeed * 0.5;
           // dashcam impact glitch: gated on POV here (not inside dashcamHit)
           // so a hit taken in another camera doesn't arm a burst that fires
@@ -4918,6 +5041,7 @@ export class Game {
       if (res.wallImpact > 4 && this.crashCooldown <= 0) {
         this.crashCooldown = 0.4;
         this.audio.crash(res.wallImpact);
+        this.stats.crashes++;
         if (this.camMode === CAM_POV) this.post.dashcamHit(res.wallImpact);
       }
       this.camera.getWorldDirection(this.tmpV);
@@ -4929,6 +5053,8 @@ export class Game {
       this.hiFlashPulse = false; // one press, one gesture — consumed here
       // after traffic.update() — scoreEvents() reads this frame's feed
       this.noHesiUpdate(dt, noHesiHit);
+      // after noHesiUpdate so the frame's combo is what bestCombo sees
+      this.statsUpdate(dt);
       /* Per SECOND, not per rendered frame. This gate was a flat 0.35 chance
          every frame, so a 120 Hz display made four times the smoke a 30 Hz one
          did — everything inside fx.ts is dt-scaled and this was the last term
