@@ -127,7 +127,6 @@ const TYRE_C = 0x0b0b0f;
 const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
   van:     { hue: -1,    refLum: 0.697 },
   truck:   { hue: -1,    refLum: 0.668 },
-  hybrid:  { hue: 0.311, refLum: 0.481 }, // authored green (old bake, pending rebake)
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
@@ -1808,10 +1807,15 @@ export class Traffic {
          by eye is the whole trick here.
        sig/roof/police tints are deliberately untouched — no complaint about
        them, and the amber already clears the floor (luma 0.638). */
+    /* Sprite sizes tightened 2026-08-28 (owner: lamp glows "can't be blobs
+       — precisely on the lights"): the glow should halo a lens, not replace
+       it. The hifi styles already suppress these inside 70 m in favour of
+       their emissive lens pixels; these sizes are what the OLD bakes (and
+       everything past 70 m) show. */
     this.clouds = {
-      head: mkCloud(0xa9b7d1, 1.35),
-      tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.96),
-      brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.62),
+      head: mkCloud(0xa9b7d1, 1.0),
+      tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.68),
+      brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.1),
       sig: mkCloud(0xffa028, 1.05),
       roof: mkCloud(0xffb040, 0.95), polR: mkCloud(0xff3040, 1.5),
       polB: mkCloud(0x3d74ff, 1.5),
