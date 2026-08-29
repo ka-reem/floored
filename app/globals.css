@@ -1243,3 +1243,69 @@ body.touch #tcDrawer {
   border-color: var(--accent-line);
   background: var(--accent-soft);
 }
+
+/* Photo mode's corner hint — the ONE overlay the mode keeps (every other
+   piece of chrome hides because the screen leaves "playing"). Bottom-left:
+   clear of the toast (top-centre), and the frame's subject sits centre-right
+   under the opening three-quarter orbit. pointer-events:none on the container
+   is load-bearing: a drag that starts over the chip must fall through to the
+   canvas and orbit the camera — only the touch buttons take their own taps. */
+#photoHint {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: var(--z-toast);
+  padding: 10px 14px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  backdrop-filter: blur(var(--blur-sm));
+  pointer-events: none;
+  user-select: none;
+}
+#photoHint .phTitle {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+#photoHint .phTitle span {
+  color: var(--jp);
+  font-weight: 400;
+  letter-spacing: 0.2em;
+  margin-left: 6px;
+}
+#photoHint .phKeys {
+  margin-top: 4px;
+  color: var(--ink-dim);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+}
+#photoHint .phBtns {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+#photoHint .phBtn {
+  pointer-events: auto;
+  min-height: 44px; /* the same tap-target floor the drawer rows keep */
+  padding: 8px 16px;
+  color: var(--ink);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#photoHint .phBtn.shutter {
+  color: var(--accent-2);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+#photoHint .phBtn:active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}

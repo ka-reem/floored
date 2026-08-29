@@ -11,7 +11,7 @@ import {
   type Profile, type GameSettings,
 } from "@/game/settings";
 
-type Screen = "main" | "garage" | "settings" | "controls" | "loading" | "playing" | "paused";
+type Screen = "main" | "garage" | "settings" | "controls" | "loading" | "playing" | "paused" | "photo";
 
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
@@ -84,6 +84,31 @@ export default function GameApp() {
           setFromPause(true);
           setScreen("paused");
         } else if (s === "paused") {
+          gameRef.current?.setRunning(true);
+          setScreen("playing");
+        } else if (s === "photo") {
+          /* Esc in photo mode backs out of photo mode, it does not stack the
+             pause menu on top of it — same two calls as photoRequest's exit
+             branch, because leaving photo mode IS an unpause. */
+          gameRef.current?.photoExit();
+          gameRef.current?.setRunning(true);
+          setScreen("playing");
+        }
+      },
+      /* Photo mode is a pause that swaps which camera the frozen frame is
+         rendered through, so this mirrors pauseRequest exactly: setRunning is
+         the same sim freeze the pause menu uses, and the screen leaving
+         "playing" is what hides every piece of HUD chrome (all of it is
+         gated on `playing` below — nothing is hidden piecemeal). The engine's
+         photoEnter/photoExit only move the camera and its listeners. */
+      photoRequest: () => {
+        const s = screenRef.current;
+        if (s === "playing") {
+          gameRef.current?.setRunning(false);
+          gameRef.current?.photoEnter();
+          setScreen("photo");
+        } else if (s === "photo") {
+          gameRef.current?.photoExit();
           gameRef.current?.setRunning(true);
           setScreen("playing");
         }
@@ -332,6 +357,7 @@ export default function GameApp() {
         </div>
       )}
       {playing && g && <QuickDrawer game={g} open={drawer} onClose={() => setDrawer(false)} />}
+      {screen === "photo" && g && <PhotoHint game={g} />}
       {/* Touch controls. These stay mounted on every screen — bindInput()
           grabs them by id once, in the Game constructor — so the menus hide
           them with an inline display instead of unmounting them. */}
@@ -467,6 +493,7 @@ export default function GameApp() {
               <b>H</b><span>this help screen</span>
               <b>I</b><span>interior light (off by default — the cabin is meant to be dark)</span>
               <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
+              <b>O</b><span>photo mode: orbit the car, Space captures a PNG</span>
               <b>P</b><span>in-dash music: play / pause</span>
               <b>, / .</b><span>previous / next piece</span>
               <b>Esc</b><span>pause menu (music pauses with it)</span>
@@ -696,6 +723,58 @@ function QuickDrawer({
         </span>
         <span className="qdState">↺</span>
       </div>
+      {/* Photo mode — the touch route to the O key. One-shot like RESET: the
+          screen leaves "playing", which unmounts this drawer anyway; the
+          explicit onClose just keeps the session drawer-state honest. Shutter
+          and exit live on the photo screen itself (PhotoHint), because this
+          sheet is gone once the mode is up. */}
+      <div
+        className="qdRow"
+        onPointerDown={() => {
+          tap("o");
+          onClose();
+        }}
+      >
+        <span className="qdLabel">
+          PHOTO MODE <i>フォト</i>
+        </span>
+        <span className="qdState">◉</span>
+      </div>
+    </div>
+  );
+}
+
+/* ================= photo mode hint ================= */
+
+/* The one piece of UI photo mode keeps: a corner chip naming the controls,
+   plus — on touch, where there is no keyboard to name — the shutter and exit
+   as real buttons. Both route through Game.uiKeyTap, the same single door the
+   drawer rows use, so a tapped shutter and a pressed Space are literally the
+   same code path. The container is pointer-events:none (globals.css): a drag
+   that starts over the hint must still orbit the camera, only the buttons
+   themselves swallow their taps. */
+function PhotoHint({ game }: { game: Game }) {
+  const touch = typeof window !== "undefined" && "ontouchstart" in window;
+  return (
+    <div id="photoHint">
+      <div className="phTitle">
+        PHOTO MODE <span>フォト</span>
+      </div>
+      <div className="phKeys">
+        {touch
+          ? "drag to orbit · pinch to zoom"
+          : "drag to orbit · scroll to zoom · SPACE shutter · O / ESC exit"}
+      </div>
+      {touch && (
+        <div className="phBtns">
+          <button className="phBtn shutter" onPointerDown={() => game.uiKeyTap(" ")}>
+            ◉ SHUTTER
+          </button>
+          <button className="phBtn" onPointerDown={() => game.uiKeyTap("o")}>
+            ✕ EXIT
+          </button>
+        </div>
+      )}
     </div>
   );
 }

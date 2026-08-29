@@ -53,6 +53,12 @@ export interface UiBridge {
   exitHint(text: string | null): void;
   pauseRequest(): void;
   helpRequest(): void;
+  /** Enter/leave photo mode. Owned by the UI for the same reason pauseRequest
+      is: photo mode IS a pause (setRunning(false), the sim frozen) plus a
+      screen change (every piece of HUD chrome is gated on `playing`), and
+      both of those live in GameApp. The engine only asks; photoEnter/photoExit
+      are what the UI calls back into once the screen has flipped. */
+  photoRequest(): void;
 }
 
 /** How many NPCs are fed to the audio doppler pool each frame — its pool size.
@@ -940,6 +946,47 @@ const FOV_SLIDER_REF = 67;
    number at all, and a projection matrix is not the place to find that out. */
 const CONSOLE_FOV_MAX = 130;
 
+/* Photo mode. A TEMPORARY camera of its own — it never writes to the gameplay
+   camera, camMode, settings or the FOV pipeline, so leaving the mode cannot
+   fail to restore the view: there is nothing to restore. The sim is paused
+   under it through the same setRunning(false) the pause menu uses (GameApp's
+   photoRequest), and every piece of HUD chrome hides because the screen state
+   leaves "playing" — no per-element hiding to forget.
+
+   The lens is a FIXED 55-degree vertical. Deliberately not the FOV slider and
+   not lensFov()/povFov(): those are the driving views' contract (AGENTS.md),
+   and a photo wants a longer lens than a windscreen does — 55 at 16:9 is
+   ~84 horizontal, about what a 24 mm walk-around on full frame gives, wide
+   enough to frame the whole car at 6 m without the barrel-stretch a 100-degree
+   gameplay FOV would smear across the paintwork. */
+const PHOTO = {
+  fov: 55,
+  /** orbit radius, metres from the car's origin. distMin keeps the lens out of
+      the bodywork (the longest shell is ~2.6 m half-length, diagonal ~2.9);
+      dist0 gets `+ shell.L * 0.35` at enter so both cars open at the same
+      framing, the way CHASE_CAM.dist does. */
+  distMin: 3.4, distMax: 16, dist0: 4.6,
+  /** orbit elevation, radians. The floor is a hair below level for the
+      low-angle hero shot; going lower has nothing to see — the camera-height
+      clamp below already stops the lens short of the deck. The ceiling is
+      just shy of top-down, where a polar orbit turns into gimbal soup. */
+  pitchMin: -0.08, pitchMax: 1.25, pitch0: 0.2,
+  /** the orbit's aim point sits this far above car origin — roughly the beltline,
+      so the default frame is car-with-some-road rather than car-in-the-sky */
+  aimY: 0.9,
+  /** metres of air kept between the lens and whatever surface is under it
+      (deck, ramp, town street) — the "don't clip under the deck" clamp */
+  clearance: 0.35,
+  /** rad/s of gentle self-orbit until the first drag/wheel input — the mode
+      opens as a slow dolly around the car rather than a frozen frame */
+  autoRate: 0.09,
+  /** radians of orbit per px of drag, and the wheel's zoom response */
+  dragSens: 0.0062, wheelZoom: 0.0012,
+  /** where the orbit opens relative to the car's heading: ~35 degrees off the
+      nose — the front-three-quarter, the angle every car is photographed at */
+  yaw0: 0.6,
+};
+
 export class Game {
   // public state the UI reads
   settings: GameSettings;
@@ -1231,6 +1278,12 @@ export class Game {
       the POV beam-carpet widening, the cockpit head springs) deliberately do
       not use this. */
   private inCar(): boolean {
+    /* Photo mode is outdoors whatever camMode is waiting behind it: the orbit
+       camera needs the exterior shell visible (updateCarVisual reads this) and
+       none of the in-car machinery — mirror RT, cabin hotspots, the interior
+       hood. camMode itself is untouched, so the answer snaps back the frame
+       the mode ends. */
+    if (this.photo.on) return false;
     return (
       this.camMode === CAM_COCKPIT || this.camMode === CAM_POV || this.camMode === CAM_CONSOLE
     );
@@ -1401,6 +1454,24 @@ export class Game {
   /* chase cam lateral lag: trails the yaw-driven offset then eases to it,
      giving the classic GT "camera catches up out of the corner" feel */
   private chaseLag = { x: 0, vx: 0 };
+  /* Photo mode state — see the PHOTO block. `on` is only ever flipped by
+     photoEnter/photoExit, which GameApp calls around the same setRunning(false)
+     the pause menu uses, so `on` implies the sim is frozen. `shot` is armed by
+     the capture key and consumed at the end of loop(), AFTER post.process has
+     drawn the frame — canvas.toBlob has to read the drawing buffer in the same
+     task as the render or it reads a cleared one. `auto` is the gentle
+     self-orbit; the first drag or wheel tick takes the camera over. */
+  private photo = {
+    on: false, yaw: 0, pitch: PHOTO.pitch0, dist: PHOTO.dist0,
+    auto: true, shot: false, pinch0: 0,
+  };
+  /** Lazily built on first enter, never handed to any gameplay path: the
+      whole restore-on-exit guarantee is that the gameplay camera is not
+      touched while this one is on duty. */
+  private photoCam: THREE.PerspectiveCamera | null = null;
+  private photoPtrs = new Map<number, { x: number; y: number }>();
+  /** captures completed this session (toBlob landed) — read by the smoke test */
+  photoShots = 0;
   private tmpV = new THREE.Vector3();
   private tmpV2 = new THREE.Vector3();
   private last = 0;
@@ -1673,6 +1744,8 @@ export class Game {
         chunksTotal: this.world.chunks.length,
         perfMode: this.perfMode,
         renderTier: this.renderTier,
+        photo: this.photo.on,
+        photoShots: this.photoShots,
         errors: this.debug.errors,
         frames: this.debug.frames,
       }),
@@ -2209,6 +2282,27 @@ export class Game {
     if (!this.started) return;
     if (k === "escape") {
       this.ui.pauseRequest();
+      return;
+    }
+    /* Photo mode owns the keyboard while it is up, the same way the pause
+       menu does (the `!running` gate below) — but two keys still work, and
+       they are photo mode's own: the shutter, and the way out. Everything
+       else falls dead here so a stray C or R cannot mutate game state under
+       a frozen sim. Esc is already handled above: pauseRequest lands in
+       GameApp, which treats it as "leave photo mode" while this screen is up. */
+    if (this.photo.on) {
+      if (k === " " || k === "enter") this.photo.shot = true;
+      else if (k === "o") this.ui.photoRequest();
+      return;
+    }
+    /* O — photo mode. O because P is the music transport and O is the free key
+       beside it (the CONTROLS screen documents it); also routed through the
+       touch drawer's PHOTO row via uiKeyTap. Before the `!running` gate on
+       purpose-adjacent grounds to the photo branch above, but still gated on
+       running+loaded itself: from the pause or main menu there is nothing
+       sensible to photograph and the screen machinery is mid-transition. */
+    if (k === "o") {
+      if (this.running && this.loaded) this.ui.photoRequest();
       return;
     }
     if (!this.running) return;
@@ -2781,7 +2875,9 @@ export class Game {
       camera looks straight down the tunnel at that screen, so it is the last
       one that wants a second map pasted over it. */
   private mmapVisible() {
-    return this.mmap && !this.inCar();
+    // photo mode reads as "not in car", but the map canvas is HUD chrome and
+    // photo mode hides ALL chrome — without this it would pop up over the shot
+    return this.mmap && !this.inCar() && !this.photo.on;
   }
   /** last mmapVisible(), so the reveal can repaint before it is shown */
   private mmapWasOn = false;
@@ -3053,6 +3149,7 @@ export class Game {
 
   destroy() {
     this.disposed = true;
+    this.photoExit(); // no-op unless mid-photo; drops the mode's canvas listeners
     cancelAnimationFrame(this.raf);
     removeEventListener("keydown", this.onKeyDown);
     this.renderer.domElement.removeEventListener("pointerdown", this.onPointerDown);
@@ -4400,6 +4497,162 @@ export class Game {
     );
   }
 
+  /* ---------------- photo mode ---------------- */
+
+  /** Read by GameApp (the photo screen's hint) and the smoke test. */
+  get photoOn() {
+    return this.photo.on;
+  }
+
+  /** Called by GameApp's photoRequest right after setRunning(false) — the
+      pause is the UI's, this is only the camera and its listeners. Listeners
+      are bound here and removed in photoExit rather than living in
+      bindInput(), so outside the mode the canvas carries exactly the
+      listeners it always did and the drag/wheel handlers cannot leak input
+      into driving. */
+  photoEnter() {
+    if (this.photo.on || !this.loaded) return;
+    const ph = this.photo;
+    ph.on = true;
+    ph.yaw = this.car.h + PHOTO.yaw0;
+    ph.pitch = PHOTO.pitch0;
+    // + shell length so both cars open at the same framing, not the same radius
+    ph.dist = clamp(PHOTO.dist0 + this.spec.shell.L * 0.35, PHOTO.distMin, PHOTO.distMax);
+    ph.auto = true;
+    ph.shot = false;
+    ph.pinch0 = 0;
+    if (!this.photoCam) {
+      // near/far mirror the gameplay camera so the world culls identically
+      this.photoCam = new THREE.PerspectiveCamera(PHOTO.fov, this.camera.aspect, 0.08, 3400);
+      this.photoCam.layers.enable(LAYER_NOREF);
+    }
+    const el = this.renderer.domElement;
+    el.addEventListener("pointerdown", this.onPhotoPointerDown);
+    el.addEventListener("pointermove", this.onPhotoPointerMove);
+    el.addEventListener("pointerup", this.onPhotoPointerEnd);
+    el.addEventListener("pointercancel", this.onPhotoPointerEnd);
+    el.addEventListener("lostpointercapture", this.onPhotoPointerEnd);
+    el.addEventListener("wheel", this.onPhotoWheel, { passive: false });
+    this.photoUpdate(0);
+    this.ui.toast("PHOTO MODE");
+  }
+
+  photoExit() {
+    if (!this.photo.on) return;
+    this.photo.on = false;
+    this.photoPtrs.clear();
+    const el = this.renderer.domElement;
+    el.removeEventListener("pointerdown", this.onPhotoPointerDown);
+    el.removeEventListener("pointermove", this.onPhotoPointerMove);
+    el.removeEventListener("pointerup", this.onPhotoPointerEnd);
+    el.removeEventListener("pointercancel", this.onPhotoPointerEnd);
+    el.removeEventListener("lostpointercapture", this.onPhotoPointerEnd);
+    el.removeEventListener("wheel", this.onPhotoWheel);
+  }
+
+  private onPhotoPointerDown = (e: PointerEvent) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    this.photo.auto = false;
+    this.photo.pinch0 = 0; // re-measured on the first two-finger move
+    this.photoPtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // keep the orbit alive when a drag leaves the window edge
+    try {
+      this.renderer.domElement.setPointerCapture(e.pointerId);
+    } catch {}
+  };
+  private onPhotoPointerMove = (e: PointerEvent) => {
+    const p = this.photoPtrs.get(e.pointerId);
+    if (!p) return;
+    const ph = this.photo;
+    if (this.photoPtrs.size === 1) {
+      // grab-the-world: drag right, the car turns right in frame
+      ph.yaw -= (e.clientX - p.x) * PHOTO.dragSens;
+      ph.pitch = clamp(
+        ph.pitch + (e.clientY - p.y) * PHOTO.dragSens, PHOTO.pitchMin, PHOTO.pitchMax
+      );
+    }
+    p.x = e.clientX;
+    p.y = e.clientY;
+    if (this.photoPtrs.size === 2) {
+      // pinch zoom — the wheel's job, for the fingers the drawer routed here
+      const [a, b] = [...this.photoPtrs.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (ph.pinch0 > 0 && d > 0)
+        ph.dist = clamp(ph.dist * (ph.pinch0 / d), PHOTO.distMin, PHOTO.distMax);
+      ph.pinch0 = d;
+    }
+  };
+  private onPhotoPointerEnd = (e: PointerEvent) => {
+    this.photoPtrs.delete(e.pointerId);
+    this.photo.pinch0 = 0;
+  };
+  private onPhotoWheel = (e: WheelEvent) => {
+    e.preventDefault(); // the page has nothing to scroll; keep ctrl+wheel from zooming it
+    this.photo.auto = false;
+    this.photo.dist = clamp(
+      this.photo.dist * Math.exp(e.deltaY * PHOTO.wheelZoom), PHOTO.distMin, PHOTO.distMax
+    );
+  };
+
+  /** Runs in place of updateCamera() while the mode is up (loop()'s paused
+      branch) — the gameplay camera is deliberately not advanced, which is the
+      whole restoration story: it is bit-identical on exit because nothing
+      wrote to it. */
+  private photoUpdate(dt: number) {
+    const ph = this.photo, car = this.car, cam = this.photoCam!;
+    if (ph.auto) ph.yaw += PHOTO.autoRate * dt;
+    // track viewport changes through the gameplay camera's aspect, which
+    // onResize already maintains — one resize path, not two
+    if (cam.aspect !== this.camera.aspect) {
+      cam.aspect = this.camera.aspect;
+      cam.updateProjectionMatrix();
+    }
+    const tx = car.x, ty = car.y + PHOTO.aimY, tz = car.z;
+    const cp = Math.cos(ph.pitch);
+    cam.position.set(
+      tx + Math.sin(ph.yaw) * cp * ph.dist,
+      ty + Math.sin(ph.pitch) * ph.dist,
+      tz + Math.cos(ph.yaw) * cp * ph.dist
+    );
+    /* The deck clamp. Same heightAt call the chase camera floors itself with:
+       referenced to the car's own y, so on the elevated deck it reads the
+       deck, not the town street 12 m under it — a low orbit angle slides the
+       lens along just above the surface instead of through it. */
+    const floorY =
+      this.terrain.heightAt(cam.position.x, cam.position.z, car.y) + PHOTO.clearance;
+    if (cam.position.y < floorY) cam.position.y = floorY;
+    cam.lookAt(tx, ty, tz);
+  }
+
+  /** Arm-and-fire lives in loop(): the flag is consumed right after
+      post.process so toBlob reads the just-drawn buffer (no
+      preserveDrawingBuffer — the read must happen in the render's own task). */
+  private captureShot() {
+    let n = 1;
+    try {
+      n = (parseInt(localStorage.getItem("neonx-shot-n") || "0", 10) || 0) + 1;
+      localStorage.setItem("neonx-shot-n", String(n));
+    } catch {
+      n = this.photoShots + 1; // private mode etc. — session-local numbering
+    }
+    const name = `neon-expressway-${n}.png`;
+    this.renderer.domElement.toBlob((blob) => {
+      if (!blob) {
+        this.ui.toast("CAPTURE FAILED");
+        return;
+      }
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      // long enough for any browser to have opened the blob; not a leak either
+      // way, the next capture makes a new one
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      this.photoShots++;
+      this.ui.toast("SAVED " + name);
+    }, "image/png");
+  }
+
   private updateCamera(dt: number) {
     const car = this.car;
     const fx = Math.sin(car.h), fz = Math.cos(car.h);
@@ -4982,7 +5235,12 @@ export class Game {
       // was sounding at the moment the pause landed
       this.scrapeUpdate(dt, false, 0, 0);
       this.updateCarVisual(now, dt);
-      this.updateCamera(dt);
+      /* Photo mode replaces the camera update, not the camera: the gameplay
+         camera keeps the exact state the last driving frame left it with
+         (photoUpdate never touches it), so exiting restores the view by
+         construction. Everything else in this branch runs as any pause. */
+      if (this.photo.on) this.photoUpdate(dt);
+      else this.updateCamera(dt);
       this.weather(0, now);
       // keep the tunnel look correct while paused; the thump stays gated on
       // `running` so unpausing inside a tunnel can't fire one
@@ -5003,10 +5261,13 @@ export class Game {
        one quarter-res pass. reflectionsOn still folds in the tier, and setWet
        has zeroed uRefStr to match, so `false` costs nothing on either side. */
     this.post.setReflect(this.reflectionsOn);
-    this.camera.updateMatrixWorld();
+    // photo mode renders through its own camera; the gameplay one is not
+    // advanced or drawn while the mode is up (see photoUpdate)
+    const cam = this.photo.on && this.photoCam ? this.photoCam : this.camera;
+    cam.updateMatrixWorld();
     this.renderer.setRenderTarget(this.post.sceneRT);
     this.renderer.clear();
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.render(this.scene, cam);
     const f = this.dayFactor();
     this.post.setSpeed(Math.abs(this.car.u) * 3.6);
     // the extreme degrade is a property of the camera, not a user filter — the
@@ -5018,7 +5279,11 @@ export class Game {
     // hard-mounted view instead; that has not been true since the cap was
     // opened up, and reasoning about the mobile POV frame from it leads
     // straight to the wrong conclusion.
-    this.post.setDashcamPov(this.camMode === CAM_POV && this.tierCaps.dashcam);
+    // in photo mode the dashcam's degrade must not stamp itself on the shot —
+    // the lens on duty is the photo camera, whatever camMode is waiting behind it
+    this.post.setDashcamPov(
+      !this.photo.on && this.camMode === CAM_POV && this.tierCaps.dashcam
+    );
     this.post.process({
       // inside the tunnel the eye adapts to a much darker box: lift exposure
       // so the sodium strip and the walls read, instead of crushing to black
@@ -5054,6 +5319,12 @@ export class Game {
       // frame delta to stay 40 ms at any frame rate (post.ts POV_MB_TAU).
       dt,
     });
+    // after post.process: the composite just drew this frame to the canvas,
+    // and toBlob must read it in the same task (no preserveDrawingBuffer)
+    if (this.photo.on && this.photo.shot) {
+      this.photo.shot = false;
+      this.captureShot();
+    }
     this.perfCheck(performance.now() - t0, dt);
   };
 }
