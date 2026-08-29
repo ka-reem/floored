@@ -862,15 +862,16 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
             );
           })}
         </div>
-        {/* PAINT. Honest limitation, worth knowing before it reads as a bug:
-            a card showing an IMPORTED exterior does not respond to these. The
-            donor GLB carries its own baked paint and the game does not retint
-            it either, so the swatch is telling the truth — the Volvo is that
-            colour in the chase cameras too. It still selects the paint for
-            every card that is drawn from its ShellParams, and it still
-            persists. Retinting the donor's Car_Paint material would make the
-            swatch mean something for both cars, but that is a change to how
-            the CAR looks, not to how the card does, and belongs with the car. */}
+        {/* PAINT. The swatches repaint BOTH bodies now: the procedural shell
+            through the rig rebuild (engine.ts setCar), and the imported Volvo
+            exterior through player.ts tintDonorPaint, which writes the chosen
+            colour onto the donor's Car_Paint material when the GLB lands — the
+            garage card's real-bodywork shot and the chase cameras agree with
+            the dot. (The old comment here was an honest admission that the
+            donor kept its baked silver; that limitation is gone.) The caption
+            names the selection because eight anonymous dots at 22px is a
+            colour test, not a menu — and the finish word is what tells you
+            why two similar dots drive differently at night. */}
         <div className="paintRow">
           {PAINTS.map((p, i) => (
             <div
@@ -881,6 +882,10 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
               onClick={() => sel(carId, i)}
             />
           ))}
+        </div>
+        <div className="paintName">
+          {PAINTS[paintIx % PAINTS.length].name}
+          <i>{PAINTS[paintIx % PAINTS.length].finish}</i>
         </div>
         <div className="btnrow">
           <button onClick={onBack}>DONE</button>

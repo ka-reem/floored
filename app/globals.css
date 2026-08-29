@@ -929,6 +929,8 @@ html.cursor-idle * {
 }
 .paintRow {
   display: flex;
+  flex-wrap: wrap; /* eight dots + touch gaps overflow a 320px phone; see below */
+  justify-content: center;
   gap: var(--sp-2);
   margin-top: var(--sp-3);
 }
@@ -947,12 +949,31 @@ html.cursor-idle * {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+/* The selected paint's name + finish, under the dots. Same voice as the other
+   panel captions: dim body text, the finish set off in the JP pink the panels
+   already use for secondary glyphs. */
+.paintName {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--ink-dim);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center; /* under the centred dot row, not the panel's left edge */
+}
+.paintName i {
+  font-style: normal;
+  color: var(--jp);
+  margin-left: var(--sp-2);
+  letter-spacing: 0.2em;
+}
 /* A 22px dot is half a tap target. The dot keeps its size and the ::before
    carries the hit area instead — a pseudo-element's clicks dispatch on its
    parent, so the existing handler needs no change. 11px of bleed each way is
    44x44; the gap widens to 22px to match so neighbouring targets abut exactly
-   rather than overlapping (six dots at 44px = 242px, still inside the panel on
-   a 320px phone). Touch-only: the desktop garage keeps its 8px row. */
+   rather than overlapping. Eight dots at 44px is 352px — wider than a 320px
+   phone — which is what the row's flex-wrap above is for: it breaks into two
+   centred lines of four instead of clipping the last swatch. Touch-only: the
+   desktop garage keeps its 8px row. */
 body.touch .paintRow {
   gap: 22px;
 }
