@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node tools/build-pwa-icons.mjs",
     "build": "next build",
+    "icons": "node tools/build-pwa-icons.mjs",
     "start": "next start",
     "lint": "next lint",
     "smoke": "node test/smoke.mjs",

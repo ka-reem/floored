@@ -18,6 +18,18 @@ export const metadata: Metadata = {
   title: "NEON EXPRESSWAY — 首都高 Night Drive",
   description:
     "Night driving through a procedurally generated Japanese town and its elevated expressway. Sim-grade tire physics, dense AI traffic, rain, neon.",
+  /* iOS half of the install story (app/manifest.ts is the standard half —
+     modern iOS reads it, these tags cover what it still ignores). The title
+     matches the manifest short_name so the home-screen label agrees across
+     platforms; black-translucent lets the page own the pixels under the
+     status bar instead of stacking a black system strip on top of a
+     landscape game frame. The apple-touch-icon link comes from the
+     app/apple-icon.png file convention (a tools/build-pwa-icons.mjs
+     render), not from config here. */
+  appleWebApp: {
+    title: "首都高",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {
@@ -26,6 +38,12 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   themeColor: "#05060c",
+  /* Installed standalone (and with black-translucent above) the page runs
+     edge to edge, so claim the notch/home-indicator regions explicitly —
+     otherwise iOS letterboxes landscape with white bars. Every edge-anchored
+     HUD element pads itself back out with env(safe-area-inset-*) via the
+     --sa* tokens in app/globals.css. */
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
