@@ -259,11 +259,72 @@ function wheelGeo() {
      reaches the threshold and passes through untouched. */
 const SPEC_MAX = 1.0;
 const KNEE = 1.3, KNEE_MAX = 4.0;
+
+/* Daylight body fill. The fleet's baked MR atlas marks a large share of each
+   shell metallic (sedan: ~35% of texels at metalness ≈ 1, and applyModel sets
+   material.metalness = 1 wherever a bake ships a metalnessMap, so the texel
+   value applies unscaled), and a metal texel has no diffuse term — its whole
+   read is the envMap, which is the static NIGHT city cube (envFaceCanvas in
+   textures.ts peaks around 0.02 linear). At night nobody notices: the bodies
+   are carried by the emissive fakes below (streetlight wash, headlight wash,
+   lamps), all albedo-proportional and none of them touching the metalness
+   pipe. In daylight those fakes gate off and the real lights take over — and
+   the day rig cannot carry a car: the near-overhead sun misses every vertical
+   panel, the daytime hemi/ambient fills are night-tuned near-black (hemiD
+   0x3948a8, ground 0x0b0b14, amb 0x222233), and the metal texels reflect the
+   night cube ≈ 0. Net: every NPC rendered as a black cutout with brake lights.
+
+   This is the matching fake, same pattern as the washes: a sky fill biased
+   toward up-facing panels plus a sun-facing lambert, both proportional to
+   diffuseColor so they read as the paint colour, both riding inside
+   outgoingLight so the anti-blowout knee caps them with everything else.
+   Faded by dayFactor^0.7 — the same shaping the rig's own day intensities
+   use — so at night the uniforms are exactly zero and the shipped night
+   frame is bit-identical. The three uniform objects are module-shared:
+   every NPC material (base + per-style clones) binds these same instances,
+   so setNpcDaylight is one write per frame for the whole fleet.
+
+   Tuning (grade math at full day, exposure 0.9, manual ACES + POV crush):
+   a 0.25-linear paint rear panel gets fill 0.72·luma(DAY_FILL) ≈ 0.48 plus
+   sun·cos on the lit side → ~0.15-0.28 pre-grade radiance → ~0.2-0.3
+   display luma: clearly the paint colour, nowhere near the 0.72 clip.
+   Move DAY_FILL_* for the overall daytime read (shaded side included) and
+   DAY_SUN_* for lit/shaded contrast, in ~0.1 steps; the sun tint is the
+   rig's sunD 0xffe8c8 in linear, so the fake and the real sun agree. */
+const DAY_FILL_R = 0.60, DAY_FILL_G = 0.65, DAY_FILL_B = 0.74;
+const DAY_SUN_R = 0.85, DAY_SUN_G = 0.68, DAY_SUN_B = 0.49;
+const dayUni = {
+  fill: { value: new THREE.Vector3(0, 0, 0) },
+  sun: { value: new THREE.Vector3(0, 0, 0) },
+  dir: { value: new THREE.Vector3(0, 1, 0) },
+};
+
+/** Engine hook (called once per frame from render(), after the camera's
+    matrices are fresh — the sun direction is consumed in view space). */
+export function setNpcDaylight(dayF: number, sunWorld: THREE.Vector3, camera: THREE.Camera) {
+  const k = Math.pow(Math.min(1, Math.max(0, dayF)), 0.7);
+  dayUni.fill.value.set(DAY_FILL_R * k, DAY_FILL_G * k, DAY_FILL_B * k);
+  /* The lambert term exists for the HIGH sun, whose light misses vertical
+     panels; as the sun drops toward the horizon the real DirectionalLight
+     reaches those same panels itself, and near dusk the dayF<0.32 window
+     also wakes the night fakes (beam wash) on top. Without this fade the
+     three stack on a pale panel — the box truck's cargo side blew out to a
+     clipped white mass at 17:10. Scaling by elevation hands the verticals
+     back to the real sun exactly as fast as it can take them; the sky fill
+     above is unaffected, so dusk bodies stay readable. */
+  const ks = k * Math.min(1, Math.max(0, sunWorld.y * 1.6));
+  dayUni.sun.value.set(DAY_SUN_R * ks, DAY_SUN_G * ks, DAY_SUN_B * ks);
+  if (k > 0) dayUni.dir.value.copy(sunWorld).transformDirection(camera.matrixWorldInverse);
+}
+
 function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
   const tint = PAINT_TINT[style];
   const paintRef = new THREE.Vector2(tint ? tint.hue : 0, tint ? tint.refLum : 0);
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uPaintRef = { value: paintRef };
+    shader.uniforms.uDayFill = dayUni.fill;
+    shader.uniforms.uDaySun = dayUni.sun;
+    shader.uniforms.uDayDir = dayUni.dir;
     shader.vertexShader = shader.vertexShader
       .replace(
         "#include <common>",
@@ -301,7 +362,10 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
         varying float vLampKind;
         varying vec2 vLampLvl;
         varying vec3 vWashCol;
-        uniform vec2 uPaintRef;`
+        uniform vec2 uPaintRef;
+        uniform vec3 uDayFill;
+        uniform vec3 uDaySun;
+        uniform vec3 uDayDir;`
       )
       .replace(
         "#include <clipping_planes_fragment>",
@@ -359,7 +423,12 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
            exact, and is deliberately not done here because it cannot be
            verified without running the game. */
         totalEmissiveRadiance +=
-          vWashCol * diffuseColor.rgb * (0.72 + 0.28 * saturate(normal.y));`
+          vWashCol * diffuseColor.rgb * (0.72 + 0.28 * saturate(normal.y));
+        /* Daylight body fill — see the DAY_FILL/DAY_SUN block. Uniforms are
+           exactly zero at night, so these terms vanish from the night frame. */
+        totalEmissiveRadiance += diffuseColor.rgb *
+          (uDayFill * (0.72 + 0.28 * saturate(normal.y)) +
+           uDaySun * max(dot(normal, uDayDir), 0.0));`
       )
       .replace(
         "#include <aomap_fragment>",
