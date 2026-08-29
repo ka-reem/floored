@@ -131,6 +131,7 @@ export default function GameApp() {
     p.seed = g.seed;
     p.camMode = g.camMode;
     p.noHesiBest = g.noHesiBest;
+    p.ttt = g.tttTally;
     saveProfile(p);
   }, []);
 

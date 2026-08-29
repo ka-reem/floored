@@ -32,6 +32,7 @@ import { Traffic } from "./traffic";
 import { GameAudio } from "./audio";
 import { MusicPlayer } from "./music";
 import { hitScreen, type ScreenAction, type ScreenView } from "./carscreen";
+import { bindGameTally, gameClick, gameTally } from "./consolegame";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap } from "./minimap";
@@ -984,6 +985,7 @@ export class Game {
       persist() to copy into the profile alongside carId/seed/camMode. */
   get noHesiScore() { return this.noHesi.score; }
   get noHesiBest() { return this.noHesi.best; }
+  get tttTally() { return gameTally(); }
 
   /* Lens OFFSET for the interior currently on screen, all three axes — see
      povMount(), which this describes. Read live rather than cached because the
@@ -1498,6 +1500,10 @@ export class Game {
     this.seed = profile.seed;
     this.camMode = profile.camMode;
     this.noHesi.best = Number.isFinite(profile.noHesiBest) ? profile.noHesiBest : 0;
+    /* Head-unit tic-tac-toe tally, same persistence contract as settings:
+       the profile's own object is handed over and mutated in place, and
+       GameApp's persist() reads it back out through the getter below. */
+    bindGameTally(profile.ttt);
     this.isTouch = "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
     if (this.isTouch) document.body.classList.add("touch");
 
@@ -2529,7 +2535,7 @@ export class Game {
     if (!hit || !hit.uv) return;
     const action = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
     if (!action) return;
-    if (action === "music" || action === "map" || action === "trip") {
+    if (action === "music" || action === "map" || action === "trip" || action === "game") {
       this.screenView = action;
       /* The hover is stale the instant the view flips — the cursor has not
          moved, but what is under it has. Re-ask with the ray already aimed. */
@@ -2541,8 +2547,21 @@ export class Game {
       if (msg) this.ui.toast(msg);
       return;
     }
-    const msg = this.music.click(action);
-    if (msg) this.ui.toast(msg);
+    if (action === "prev" || action === "toggle" || action === "next") {
+      const msg = this.music.click(action);
+      if (msg) this.ui.toast(msg);
+      return;
+    }
+    /* Everything left is the games pane's (consolegame.ts) — the ordering
+       above is what narrows the type down to GameAction. The blip rides the
+       "it actually did something" edge, through the same master chain as
+       every other UI sound, so volume and mute apply unchanged. The hover
+       re-ask matches the view-switch above: a landed mark changes what is
+       under the still-parked cursor. */
+    if (gameClick(action)) {
+      this.audio.tick();
+      this.screenHover = hitScreen(hit.uv.x, hit.uv.y, this.screenView);
+    }
   };
 
   /** Did this pointer hit the overhead console? A mouse gets the one ray it

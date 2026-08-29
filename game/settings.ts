@@ -480,6 +480,10 @@ export interface Profile {
   /** best-ever No Hesi score, across every drive on this profile — see
       game/engine.ts's noHesiUpdate. Only ever grows. */
   noHesiBest: number;
+  /** head-unit tic-tac-toe record, the player's side (game/consolegame.ts).
+      Bound into the pane at engine construction and mutated in place there,
+      so persist() saving the profile carries it with no extra plumbing. */
+  ttt: { w: number; l: number; d: number };
 }
 
 export const defaultSettings = (): GameSettings => ({
@@ -544,6 +548,7 @@ export const defaultProfile = (): Profile => ({
      profile keeps whatever camera it was last left on. */
   camMode: 3,
   noHesiBest: 0,
+  ttt: { w: 0, l: 0, d: 0 },
 });
 
 /** Preset side-effects (ported from legacy applyPreset). */
@@ -705,6 +710,12 @@ export function loadProfile(): Profile {
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     if (typeof prof.noHesiBest !== "number" || !Number.isFinite(prof.noHesiBest) || prof.noHesiBest < 0)
       prof.noHesiBest = base.noHesiBest;
+    /* The tic-tac-toe tally is mutated in place by game/consolegame.ts (see
+       bindGameTally), so what leaves here must be a well-formed object even
+       when the stored profile predates it or someone hand-edited a count into
+       a string — normIx floors each field back to a non-negative integer. */
+    const t = (prof.ttt ?? {}) as Record<string, unknown>;
+    prof.ttt = { w: normIx(t.w, 0), l: normIx(t.l, 0), d: normIx(t.d, 0) };
     return prof;
   } catch {
     return base;
