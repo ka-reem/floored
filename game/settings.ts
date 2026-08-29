@@ -530,6 +530,10 @@ export interface Profile {
   /** lifetime drive statistics — see the DRIVE STATS block in engine.ts.
       Written by GameApp.tsx's persist() the same way noHesiBest is. */
   stats: LifetimeStats;
+  /** head-unit tic-tac-toe record, the player's side (game/consolegame.ts).
+      Bound into the pane at engine construction and mutated in place there,
+      so persist() saving the profile carries it with no extra plumbing. */
+  ttt: { w: number; l: number; d: number };
 }
 
 export const defaultSettings = (): GameSettings => ({
@@ -598,6 +602,7 @@ export const defaultProfile = (): Profile => ({
   camMode: 3,
   noHesiBest: 0,
   stats: defaultLifetimeStats(),
+  ttt: { w: 0, l: 0, d: 0 },
 });
 
 /** Preset side-effects (ported from legacy applyPreset). */
@@ -781,6 +786,12 @@ export function loadProfile(): Profile {
       if (typeof v === "number" && Number.isFinite(v) && v >= 0) stats[k] = v;
     }
     prof.stats = stats;
+    /* The tic-tac-toe tally is mutated in place by game/consolegame.ts (see
+       bindGameTally), so what leaves here must be a well-formed object even
+       when the stored profile predates it or someone hand-edited a count into
+       a string — normIx floors each field back to a non-negative integer. */
+    const t = (prof.ttt ?? {}) as Record<string, unknown>;
+    prof.ttt = { w: normIx(t.w, 0), l: normIx(t.l, 0), d: normIx(t.d, 0) };
     return prof;
   } catch {
     return base;

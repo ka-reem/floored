@@ -159,6 +159,7 @@ export default function GameApp() {
     /* Lifetime totals: construction-time seed + this session, recomputed on
        every call (see Game.lifetimeStats) — writing it repeatedly is safe. */
     p.stats = g.lifetimeStats();
+    p.ttt = g.tttTally;
     saveProfile(p);
   }, []);
 
