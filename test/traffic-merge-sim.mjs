@@ -195,7 +195,7 @@ function makeSim(mode, seed) {
       id: nextId++, hist: [],
       L, W: 1.87,
       s: z, v: 0, v0: (rand(24, 30) + laneK * 1.1) * spd,
-      laneK, pendK: -1, blink: 0, blinkT: 0, turnCd: rand(2, 8),
+      laneK, pendK: -1, zipCross: false, blink: 0, blinkT: 0, turnCd: rand(2, 8),
       offCur: off, offT: off,
       laneRate: c.lanePitch(z) / 3,
       drv: { lane: rng(), gap: rand(0.8, 1.4), acc: rand(0.8, 1.2), react: rand(0.12, 0.6) },
@@ -222,18 +222,28 @@ function makeSim(mode, seed) {
       n.mergeLean = 0;
       if (mode === "new") {
         if (n.pendK < 0 && (n.blink === 0 || wasLean) && n.laneK <= nl - 1 && n.laneK > 0) {
-          const aheadZ = n.s + clamp(n.v, 15, 32) * 9;
-          const nlAhead = c.lanes(aheadZ);
-          if (n.laneK > nlAhead - 1) {
+          /* the lane must survive the WHOLE lookahead: sample for a dip
+             rather than testing the far end, or a pocket road (drop, short
+             flat, the playground re-widen) reads as "my lane comes back"
+             while the pavement in between still dips (lockstep with
+             traffic.ts) */
+          const look = clamp(n.v, 15, 32) * 9;
+          let dipAt = -1;
+          for (let d = 32; d - 32 < look; d += 32) {
+            const q = Math.min(d, look);
+            if (c.lanes(n.s + q) - 1 < n.laneK) { dipAt = q; break; }
+          }
+          if (dipAt >= 0) {
             const k2 = n.laneK - 1;
             const off2 = c.laneOffset(k2, n.s);
-            const urgent = c.lanes(n.s + Math.max(n.v, 8) * 3) - 1 < n.laneK;
+            const urgent = dipAt <= Math.max(n.v, 8) * 3;
             const clear = urgent
               ? laneClearAt(n, n.s, off2, 1.2 + 0.25 * n.v, 2.5 + 0.35 * n.v)
               : laneClearAt(n, n.s, off2, 9, 16);
             if (clear) {
               const brisk = urgent || n.v < 15;
               n.pendK = k2;
+              n.zipCross = true;
               note(n, `accept ${n.laneK}->${k2} s=${n.s.toFixed(0)} off=${n.offCur.toFixed(2)} urgent=${urgent} v=${n.v.toFixed(1)}`);
               n.blink = off2 < n.offCur ? -1 : 1;
               n.blinkT = brisk ? rand(0.2, 0.5) : rand(1, 2);
@@ -251,11 +261,12 @@ function makeSim(mode, seed) {
                 const maxBias = Math.max(0, c.lanePitch(n.s) / 2 - n.W / 2 - 0.25);
                 n.mergeLean = (off2 < n.offCur ? -1 : 1) * (maxBias + 0.2);
                 n.blink = off2 < n.offCur ? -1 : 1;
+                n.zipCross = true;
                 n.laneRate = Math.max(n.laneRate, LANE_FOLLOW_RATE);
                 // still blocked with the pavement running out: virtual
                 // stopped leader a few metres short of the lane end
-                let lo = 0, hi = Math.max(n.v, 4) * 3;
-                if (c.lanes(n.s + hi) - 1 < n.laneK) {
+                if (dipAt <= Math.max(n.v, 4) * 3) {
+                  let lo = Math.max(0, dipAt - 32), hi = dipAt;
                   for (let i = 0; i < 5; i++) {
                     const mid = (lo + hi) / 2;
                     if (c.lanes(n.s + mid) - 1 < n.laneK) hi = mid; else lo = mid;
@@ -287,6 +298,7 @@ function makeSim(mode, seed) {
         n.blink = c.laneOffset(nl - 1, n.s) < n.offCur ? -1 : 1;
         n.laneRate = Math.max(n.laneRate, c.lanePitch(n.s) / 1.4);
         n.laneK = nl - 1;
+        n.zipCross = true;
         n.pendK = -1;
         n.snaps = (n.snaps || 0) + 1;
         if (mode === "new") mergeCap = Math.min(mergeCap, -2.6);
@@ -301,8 +313,15 @@ function makeSim(mode, seed) {
           const ahead = m.s - n.s;
           if (ahead <= 0 || ahead > 70) continue;
           // a signalling car reads wider — the follower yields to the nose
-          // easing over before the body is in-lane (new rules only)
-          const lim = mode === "new" && m.blink !== 0 ? 2.9 : 1.9;
+          // easing over before the body is in-lane — and a ZIPPER-crossing
+          // car sees the lane it sweeps INTO, so a merger cannot spend the
+          // crossing blind to a slow leader in the surviving lane (new
+          // rules only; keep in lockstep with traffic.ts perception)
+          let lim = mode === "new" && m.blink !== 0 ? 2.9 : 1.9;
+          if (mode === "new" && n.zipCross && n.blink !== 0) {
+            const sweep = n.offT - n.offCur;
+            if (sweep * (m.offCur - n.offCur) > 0) lim += Math.min(3.8, Math.abs(sweep));
+          }
           if (Math.abs(m.offCur - n.offCur) > lim) continue;
           const d = Math.max(ahead - (m.L + n.L) / 2, 0.1);
           if (d < ds) { ds = d; lv = m.v; }
@@ -348,6 +367,7 @@ function makeSim(mode, seed) {
         n.offCur = n.offT;
         if (n.blink !== 0 && n.pendK < 0 && !(n.mergeLean || 0)) n.blink = 0;
       }
+      if (n.blink === 0) n.zipCross = false;
     }
 
     /* overlap resolver (traffic.ts, reduced to corridor space) */
