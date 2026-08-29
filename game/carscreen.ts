@@ -2,6 +2,7 @@ import { getCorridor } from "./world/corridor";
 import { getRouteGraph } from "./world/routegraph";
 import { drawMiniMap } from "./minimap";
 import { TAU } from "./util";
+import { drawGamePane, hitGamePane, type GameAction } from "./consolegame";
 import type { WorldData } from "./world/data";
 import type { CarState } from "./physics";
 import type { Npc } from "./traffic";
@@ -52,6 +53,11 @@ import type { Npc } from "./traffic";
      flipping, or the cursor crossing a button. Per frame it costs one
      drawImage — and while the map is up it costs nothing at all, because the
      view is never painted until it is asked for.
+   - The GAMES VIEW (tic-tac-toe, consolegame.ts) follows the music view's
+     contract exactly: an offscreen canvas repainted only on visible change,
+     one drawImage per repaint while open, nothing at all while closed — its
+     whole update loop runs inside its draw call, so a closed pane's game
+     does not even advance.
    - The GLASS overlays (bezel, reflection, vignette) reuse cached gradients:
      three fills and a stroke per frame. */
 
@@ -112,6 +118,12 @@ const PILL = { x: W - 34, y: 6, w: 26, h: 16 };
    already lands top-left first (see BACK above) and this keeps both pills
    in the same sweep. */
 const PILL2 = { x: PILL.x - 32, y: PILL.y, w: PILL.w, h: PILL.h };
+/* Third of the row: the GAMES pane. Same size, same sweep, leftmost of the
+   three — still 30 px clear of the status strip (ends x 93). The glyph is a
+   tic-tac-toe grid rather than text: "GAMES" does not fit five characters
+   into a 26 px pill at a size that survives the dashcam angle, and the
+   noughts-and-crosses grid IS this pane's icon. */
+const PILL3 = { x: PILL2.x - 32, y: PILL.y, w: PILL.w, h: PILL.h };
 /* In-cabin volume +/- either side of the progress bar. Same row, so the
    knob reads as part of the transport rather than a second control bolted
    above it; BAR itself is narrowed (see below) to make room without
@@ -119,21 +131,23 @@ const PILL2 = { x: PILL.x - 32, y: PILL.y, w: PILL.w, h: PILL.h };
 const VOL_S = 16, VOL_Y = 90;
 const VOL_MINUS = { x: COL_X, y: VOL_Y, w: VOL_S, h: VOL_S };
 const VOL_PLUS = { x: COL_R - VOL_S, y: VOL_Y, w: VOL_S, h: VOL_S };
-/* Third of the pill row: the display's night-dim toggle. Same size, same
-   row, next leftward slot — the row grows toward the clock strip (which ends
-   at x 93; PILL3 starts at 158, so there is a full pill of clearance left). */
-const PILL3 = { x: PILL.x - 64, y: PILL.y, w: PILL.w, h: PILL.h };
+/* Fourth of the pill row: the display's night-dim toggle. Same size, same
+   row, next leftward slot after the GAMES pill — the row grows toward the
+   clock strip (ends x 93; this one starts at 126, still a pill of
+   clearance left). */
+const PILL4 = { x: PILL3.x - 32, y: PILL.y, w: PILL.w, h: PILL.h };
 /* The trip pane's distance readout box — shared by the painter and
    hitScreen, because the box IS the reset button (the classic trip-computer
    gesture: poke the readout to zero it). */
 const TRIP_BOX = { x: 40, y: 118, w: W - 80, h: 30 };
 
 /** Which pane the head unit is showing. */
-export type ScreenView = "map" | "music" | "trip";
-/** What a click on the panel does, and equally what the cursor is over. */
+export type ScreenView = "map" | "music" | "trip" | "game";
+/** What a click on the panel does, and equally what the cursor is over.
+    The g-prefixed members come from the games pane (consolegame.ts). */
 export type ScreenAction =
-  | "prev" | "toggle" | "next" | "music" | "map" | "trip" | "volDown" | "volUp"
-  | "tripReset" | "dimScr";
+  | "prev" | "toggle" | "next" | "music" | "map" | "trip" | "game"
+  | "volDown" | "volUp" | "tripReset" | "dimScr" | GameAction;
 
 /** Map a UV hit on the head-unit plane to what a click there does, or null if
     it landed on dead space. `v` is flipped because UV origin is bottom-left
@@ -148,6 +162,8 @@ export function hitScreen(u: number, v: number, view: ScreenView): ScreenAction 
     if (x >= PILL2.x && x <= PILL2.x + PILL2.w && y >= PILL2.y && y <= PILL2.y + PILL2.h)
       return "trip";
     if (x >= PILL3.x && x <= PILL3.x + PILL3.w && y >= PILL3.y && y <= PILL3.y + PILL3.h)
+      return "game";
+    if (x >= PILL4.x && x <= PILL4.x + PILL4.w && y >= PILL4.y && y <= PILL4.y + PILL4.h)
       return "dimScr";
     return "music"; // everywhere else on the map panel opens the player
   }
@@ -158,6 +174,7 @@ export function hitScreen(u: number, v: number, view: ScreenView): ScreenAction 
       return "tripReset";
     return null; // nothing else on this pane responds
   }
+  if (view === "game") return hitGamePane(x, y); // the pane owns its own rects
   if (y >= BTN_Y && y <= BTN_Y + BTN_S) {
     const ids: ScreenAction[] = ["prev", "toggle", "next"];
     for (let i = 0; i < 3; i++)
@@ -253,7 +270,7 @@ function stateFor(cv: HTMLCanvasElement): ScreenState {
   return s;
 }
 
-function rr(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+export function rr(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
   g.beginPath();
   g.moveTo(x + r, y);
   g.arcTo(x + w, y, x + w, y + h, r);
@@ -261,6 +278,23 @@ function rr(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: num
   g.arcTo(x, y + h, x, y, r);
   g.arcTo(x, y, x + w, y, r);
   g.closePath();
+}
+
+/** The shared ‹ MAP exit, identical on every non-map view (music, trip,
+    game) — one exit, in the same place, however you got there. Exported so
+    the games pane (consolegame.ts) draws the exact pill hitScreen answers
+    for, instead of keeping a copy of these numbers. */
+export function drawBackPill(g: CanvasRenderingContext2D, on: boolean) {
+  rr(g, BACK.x, BACK.y, BACK.w, BACK.h, 9);
+  g.fillStyle = on ? "rgba(111,178,255,.22)" : "rgba(255,255,255,.05)";
+  g.fill();
+  g.strokeStyle = on ? "rgba(150,200,255,.75)" : "rgba(255,255,255,.14)";
+  g.lineWidth = 1;
+  g.stroke();
+  g.fillStyle = on ? "#eaf3ff" : "#9aa6bc";
+  g.font = "700 8px sans-serif";
+  g.textAlign = "left";
+  g.fillText("‹  MAP", BACK.x + 9, BACK.y + 12.5);
 }
 
 /* ---------------------------------------------------------- music view -- */
@@ -345,17 +379,7 @@ function paintMusic(
   mg.fillRect(0, 0, W, H);
 
   /* --- back to the map -------------------------------------------------- */
-  const back = hover === "map";
-  rr(mg, BACK.x, BACK.y, BACK.w, BACK.h, 9);
-  mg.fillStyle = back ? "rgba(111,178,255,.22)" : "rgba(255,255,255,.05)";
-  mg.fill();
-  mg.strokeStyle = back ? "rgba(150,200,255,.75)" : "rgba(255,255,255,.14)";
-  mg.lineWidth = 1;
-  mg.stroke();
-  mg.fillStyle = back ? "#eaf3ff" : "#9aa6bc";
-  mg.font = "700 8px sans-serif";
-  mg.textAlign = "left";
-  mg.fillText("‹  MAP", BACK.x + 9, BACK.y + 12.5);
+  drawBackPill(mg, hover === "map");
 
   // header: generic note glyph + "Music" (no Apple marks anywhere)
   mg.fillStyle = "#8f98ab";
@@ -592,19 +616,38 @@ function drawNav(g: CanvasRenderingContext2D, st: ScreenState, world: WorldData,
     g.fillText("TRIP", PILL2.x + PILL2.w / 2, PILL2.y + PILL2.h / 2 + 2.5);
     g.textAlign = "left";
 
-    /* Third of the row: display night-dim. A crescent rather than text —
+    // and the third: the games pane, wearing its own board as the icon —
+    // a noughts-and-crosses grid, the one glyph that says "game" at 10 px
+    const gameOn = hover === "game";
+    rr(g, PILL3.x, PILL3.y, PILL3.w, PILL3.h, 8);
+    g.fillStyle = gameOn ? "rgba(111,178,255,.30)" : "rgba(8,11,18,.78)";
+    g.fill();
+    g.strokeStyle = gameOn ? "rgba(160,205,255,.85)" : "rgba(255,255,255,.10)";
+    g.lineWidth = 1;
+    g.stroke();
+    g.strokeStyle = gameOn ? "#ffffff" : "#9aa6bc";
+    g.lineWidth = 1.2;
+    const gx = PILL3.x + PILL3.w / 2, gy = PILL3.y + PILL3.h / 2;
+    g.beginPath();
+    g.moveTo(gx - 1.7, gy - 5); g.lineTo(gx - 1.7, gy + 5);
+    g.moveTo(gx + 1.7, gy - 5); g.lineTo(gx + 1.7, gy + 5);
+    g.moveTo(gx - 5, gy - 1.7); g.lineTo(gx + 5, gy - 1.7);
+    g.moveTo(gx - 5, gy + 1.7); g.lineTo(gx + 5, gy + 1.7);
+    g.stroke();
+
+    /* Fourth of the row: display night-dim. A crescent rather than text —
        "DIM" reads as an instruction, and the moon is what every real head
        unit puts on this button. The glyph, not the pill, carries the ON
        state (filled vs outline): the pill's fill is the hover channel on
        this row and doubling meanings on it would make hover look like ON. */
     const dimOn = hover === "dimScr";
-    rr(g, PILL3.x, PILL3.y, PILL3.w, PILL3.h, 8);
+    rr(g, PILL4.x, PILL4.y, PILL4.w, PILL4.h, 8);
     g.fillStyle = dimOn ? "rgba(111,178,255,.30)" : "rgba(8,11,18,.78)";
     g.fill();
     g.strokeStyle = dimOn ? "rgba(160,205,255,.85)" : "rgba(255,255,255,.10)";
     g.lineWidth = 1;
     g.stroke();
-    const cx = PILL3.x + PILL3.w / 2, cy = PILL3.y + PILL3.h / 2;
+    const cx = PILL4.x + PILL4.w / 2, cy = PILL4.y + PILL4.h / 2;
     g.fillStyle = g.strokeStyle = dimOn ? "#ffffff" : dim ? "#cfe2ff" : "#9aa6bc";
     g.beginPath();
     g.arc(cx - 0.5, cy, 4.6, 0.6, TAU - 0.6, false);
@@ -651,17 +694,7 @@ function drawTrip(
   g.fillStyle = "#070910";
   g.fillRect(0, 0, W, H);
 
-  const back = hover === "map";
-  rr(g, BACK.x, BACK.y, BACK.w, BACK.h, 9);
-  g.fillStyle = back ? "rgba(111,178,255,.22)" : "rgba(255,255,255,.05)";
-  g.fill();
-  g.strokeStyle = back ? "rgba(150,200,255,.75)" : "rgba(255,255,255,.14)";
-  g.lineWidth = 1;
-  g.stroke();
-  g.fillStyle = back ? "#eaf3ff" : "#9aa6bc";
-  g.font = "700 8px sans-serif";
-  g.textAlign = "left";
-  g.fillText("‹  MAP", BACK.x + 9, BACK.y + 12.5);
+  drawBackPill(g, hover === "map");
 
   g.fillStyle = "#8f98ab";
   g.font = "600 8px sans-serif";
@@ -786,6 +819,11 @@ export function drawCarScreen(
     g.drawImage(st.music, 0, 0, W, H);
   } else if (ui.view === "trip") {
     drawTrip(g, car, ui.hover, ui.tripBase ?? 0);
+  } else if (ui.view === "game") {
+    /* The games pane runs its whole life inside this call — see
+       consolegame.ts. |car.u| is what parks the CPU's think timer while the
+       car is moving faster than a walk. */
+    drawGamePane(g, st.scale, ui.hover, Math.abs(car.u), ms);
   } else {
     /* Map view: the whole panel. Nothing of the player is drawn or even
        advanced here — the mock rotation's timer picks up from wherever it left

@@ -28,3 +28,6 @@ public/assets-staging/
 #
 # Keep an eye on history weight if the build is re-tuned often: binaries do not
 # delta, so each rebuild adds another full copy permanently.
+
+# scratch files the audit/probe agents drop while running in this tree
+test/.probe*.tmp.mjs

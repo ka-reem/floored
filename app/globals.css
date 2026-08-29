@@ -86,6 +86,17 @@
   --z-gear: 30;
   --z-menu: 40;
   --z-load: 50;
+
+  /* safe-area insets — non-zero since app/layout.tsx sets viewport-fit=cover
+     (the home-screen install runs edge to edge): a notched phone in landscape
+     reports ~59px on the notch side and ~21px under the home indicator, and
+     every edge-anchored element below pads its offset with the matching
+     token. In a plain browser tab all four resolve to 0px and every calc()
+     collapses to the literal it wraps. */
+  --sa-top: env(safe-area-inset-top, 0px);
+  --sa-right: env(safe-area-inset-right, 0px);
+  --sa-bottom: env(safe-area-inset-bottom, 0px);
+  --sa-left: env(safe-area-inset-left, 0px);
 }
 
 html,
@@ -174,8 +185,8 @@ html.cursor-idle * {
 /* ---------- HUD ---------- */
 #hud {
   position: fixed;
-  left: 18px;
-  bottom: 16px;
+  left: calc(18px + var(--sa-left));
+  bottom: calc(16px + var(--sa-bottom));
   color: var(--ink);
   z-index: var(--z-hud);
   pointer-events: none;
@@ -222,7 +233,7 @@ html.cursor-idle * {
 }
 #topbar {
   position: fixed;
-  top: 14px;
+  top: calc(14px + var(--sa-top));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -248,7 +259,7 @@ html.cursor-idle * {
 }
 #toast {
   position: fixed;
-  top: 52px;
+  top: calc(52px + var(--sa-top));
   left: 50%;
   transform: translateX(-50%);
   color: var(--ink);
@@ -266,7 +277,7 @@ html.cursor-idle * {
 }
 #exitHint {
   position: fixed;
-  top: 90px;
+  top: calc(90px + var(--sa-top));
   left: 50%;
   transform: translateX(-50%);
   color: #eaffe9;
@@ -285,19 +296,27 @@ html.cursor-idle * {
 }
 #mmap {
   position: fixed;
-  right: 12px;
-  bottom: 12px;
+  right: calc(12px + var(--sa-right));
+  bottom: calc(12px + var(--sa-bottom));
   z-index: var(--z-mmap);
   border-radius: var(--r-md);
   border: 1px solid var(--border);
   background: rgba(8, 10, 18, 0.78);
-  /* Engine only ever draws to this canvas, never reads input from it — and on
-     phones it sits (see body.touch #mmap below) directly above the throttle
-     puck, so a double-tap aimed at the pedal that lands a few px high used to
-     hit a plain default-gesture canvas instead: double-tap zoom, the loupe,
-     the lot. pointer-events:none drops the touch straight through to
-     canvas.game underneath, which already carries touch-action:manipulation. */
+  /* On phones this canvas sits (see body.touch #mmap below) directly above
+     the throttle puck, so a double-tap aimed at the pedal that lands a few px
+     high used to hit a plain default-gesture canvas instead: double-tap zoom,
+     the loupe, the lot. pointer-events:none drops the touch straight through
+     to canvas.game underneath, which already carries touch-action:
+     manipulation. */
   pointer-events: none;
+}
+/* Desktop is the one place the map takes input: a click cycles its zoom
+   (GameApp routes pointerdown through the Z key's handler). Scoped off
+   body.touch so the pedal protection above is untouched on phones — there
+   the drawer's MAP ZOOM row is the way in. */
+body:not(.touch) #mmap {
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 /* ---------- Menu ---------- */
@@ -313,8 +332,9 @@ html.cursor-idle * {
      viewport instead of shrink-wrapping to its own max-content width and
      overflowing off-screen on a narrow phone — a fixed/inset:0 flex parent
      with align-items:center gives unconstrained children no width to wrap
-     against otherwise. */
-  padding: 0 var(--sp-5);
+     against otherwise. The --sa-* terms keep panel edges out of a landscape
+     notch now that the page runs edge to edge (see :root). */
+  padding: 0 calc(var(--sp-5) + var(--sa-right)) 0 calc(var(--sp-5) + var(--sa-left));
   text-align: center;
   background: var(--scrim-menu);
   backdrop-filter: blur(3px);
@@ -482,10 +502,10 @@ html.cursor-idle * {
   /* opaque, unlike the menu: there is nothing behind this worth showing, and
      a translucent layer over an unrendered canvas reads as a broken frame */
   background: var(--scrim-load);
-  /* The safe-area terms are zero today — app/layout.tsx does not set
-     viewport-fit=cover, so the UA already keeps the page clear of the notch —
-     and are here so this screen stays correct if it ever does. The 20px is
-     what actually does the work on a phone. */
+  /* The safe-area terms are live now — app/layout.tsx sets viewport-fit=cover
+     for the home-screen install, so on a notched phone these carry the frame
+     clear of the sensor housing. The 20px is what does the work everywhere
+     else. (Direct env() predates the :root --sa-* tokens; same values.) */
   padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
     calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
 }
@@ -785,6 +805,50 @@ html.cursor-idle * {
   margin-top: var(--sp-4);
 }
 
+/* ---------- STATS panel (pause menu — drive statistics) ---------- */
+/* Label + two numeric columns (session / lifetime). Values sit on the
+   display face with tabular numerals, same as the speedo and the HUD score,
+   so the panel reads as part of the same instrument set. */
+.statsGrid {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 7px var(--sp-4);
+  align-items: baseline;
+  margin-top: var(--sp-2);
+  font-size: var(--fs-base);
+}
+.statsGrid .shead {
+  /* column heads borrow the sectionHead voice */
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-align: right;
+}
+.statsGrid .slabel {
+  color: var(--ink-dim);
+}
+.statsGrid .slabel i {
+  /* EN + jp, the drawer rows' qdLabel pattern */
+  font-style: normal;
+  color: var(--ink-faint);
+  font-size: var(--fs-xs);
+  margin-left: 5px;
+}
+.statsGrid .sval {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 64px;
+  color: var(--ink);
+}
+/* A session value that IS the lifetime record warms to the accent — the
+   same fade-not-pop restraint as #hud .noHesi.combo-hot. */
+.statsGrid .sval.rec {
+  color: var(--accent-2);
+  text-shadow: 0 0 10px var(--accent-glow);
+}
+
 /* controls table */
 .ctrlGrid {
   display: grid;
@@ -917,6 +981,8 @@ html.cursor-idle * {
 }
 .paintRow {
   display: flex;
+  flex-wrap: wrap; /* eight dots + touch gaps overflow a 320px phone; see below */
+  justify-content: center;
   gap: var(--sp-2);
   margin-top: var(--sp-3);
 }
@@ -935,12 +1001,31 @@ html.cursor-idle * {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+/* The selected paint's name + finish, under the dots. Same voice as the other
+   panel captions: dim body text, the finish set off in the JP pink the panels
+   already use for secondary glyphs. */
+.paintName {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--ink-dim);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-align: center; /* under the centred dot row, not the panel's left edge */
+}
+.paintName i {
+  font-style: normal;
+  color: var(--jp);
+  margin-left: var(--sp-2);
+  letter-spacing: 0.2em;
+}
 /* A 22px dot is half a tap target. The dot keeps its size and the ::before
    carries the hit area instead — a pseudo-element's clicks dispatch on its
    parent, so the existing handler needs no change. 11px of bleed each way is
    44x44; the gap widens to 22px to match so neighbouring targets abut exactly
-   rather than overlapping (six dots at 44px = 242px, still inside the panel on
-   a 320px phone). Touch-only: the desktop garage keeps its 8px row. */
+   rather than overlapping. Eight dots at 44px is 352px — wider than a 320px
+   phone — which is what the row's flex-wrap above is for: it breaks into two
+   centred lines of four instead of clipping the last swatch. Touch-only: the
+   desktop garage keeps its 8px row. */
 body.touch .paintRow {
   gap: 22px;
 }
@@ -956,7 +1041,7 @@ body.touch .paintDot::before {
 /* ---------- Touch controls ---------- */
 .tc {
   position: fixed;
-  bottom: 18px;
+  bottom: calc(18px + var(--sa-bottom));
   z-index: var(--z-touch);
   width: 74px;
   height: 74px;
@@ -981,16 +1066,17 @@ body.touch .tc:active {
   border-color: var(--accent-line);
   background: rgba(30, 40, 75, 0.35);
 }
-#tcL { left: 16px; }
-#tcR { left: 104px; }
-#tcG { right: 16px; bottom: 104px; }
-#tcB { right: 16px; }
-#tcC { right: 104px; width: 56px; height: 56px; font-size: 16px; bottom: 26px; }
+#tcL { left: calc(16px + var(--sa-left)); }
+#tcR { left: calc(104px + var(--sa-left)); }
+#tcG { right: calc(16px + var(--sa-right)); bottom: calc(104px + var(--sa-bottom)); }
+#tcB { right: calc(16px + var(--sa-right)); }
+#tcC { right: calc(104px + var(--sa-right)); width: 56px; height: 56px; font-size: 16px; bottom: calc(26px + var(--sa-bottom)); }
 /* Flash sits directly above CAM, horn to their left — same 56px puck and the
    same 8px gutter, so the three read as one cluster under the right thumb and
-   none of them reach the ▲/▼ pedals on the far right. */
-#tcF { right: 104px; width: 56px; height: 56px; font-size: 16px; bottom: 90px; }
-#tcH { right: 168px; width: 56px; height: 56px; font-size: 13px; bottom: 26px; }
+   none of them reach the ▲/▼ pedals on the far right. (Every puck carries the
+   same --sa-* terms, so the cluster's internal geometry never changes.) */
+#tcF { right: calc(104px + var(--sa-right)); width: 56px; height: 56px; font-size: 16px; bottom: calc(90px + var(--sa-bottom)); }
+#tcH { right: calc(168px + var(--sa-right)); width: 56px; height: 56px; font-size: 13px; bottom: calc(26px + var(--sa-bottom)); }
 /* The speed + gear block is anchored bottom-left, which on a phone is exactly
    where the left-hand steering control lives: #tcL is a 74px puck at
    left:16/bottom:18 (so it covers left 16-90, bottom 18-92) and in wheel mode
@@ -999,23 +1085,23 @@ body.touch .tc:active {
    wheel, topping out at 148 — and leave desktop, which has no pucks at all,
    exactly where it was. */
 body.touch #hud {
-  left: 16px;
-  bottom: 160px;
+  left: calc(16px + var(--sa-left));
+  bottom: calc(160px + var(--sa-bottom));
 }
 
 /* phones: shrink the fixed 172px canvas to a small corner map above the pedals */
 body.touch #mmap {
   width: 84px;
   height: 84px;
-  bottom: 190px;
-  right: 12px;
+  bottom: calc(190px + var(--sa-bottom));
+  right: calc(12px + var(--sa-right));
   opacity: 0.85;
 }
 
 #swheel {
   position: fixed;
-  left: 14px;
-  bottom: 16px;
+  left: calc(14px + var(--sa-left));
+  bottom: calc(16px + var(--sa-bottom));
   width: 132px;
   height: 132px;
   z-index: var(--z-wheel);
@@ -1036,6 +1122,41 @@ body.touch #mmap {
   pointer-events: none;
 }
 
+/* The horn boss in the middle of the wheel. 54px across — HUB_R in
+   GameApp.tsx is its 27px radius, and the two must move together, because the
+   wheel hit-tests that radius against its own rect rather than against this
+   element. Painted only: pointer-events:none keeps every pointer on #swheel,
+   which is what lets a drag that starts on the hub steer normally.
+
+   Centred by absolute inset rather than flow, so it neither disturbs
+   #swheelInner's centring nor inherits its rotation. */
+#swheelHub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 54px;
+  height: 54px;
+  margin: -27px 0 0 -27px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(11, 14, 24, 0.66);
+  color: var(--ink-faint);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+/* Lit while the horn is actually sounding. The class is driven from the same
+   state that calls setWheelHorn, so it can never say HORN when nothing honked
+   — including the case where a drag cancelled the press mid-honk. */
+#swheelHub.on {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
 /* 44px on touch: this is the only on-screen way to reach the pause menu on a
    phone (Esc has no equivalent), and 38px is under the minimum tap target.
    Scoped to touch so the desktop chrome is unchanged. */
@@ -1046,8 +1167,8 @@ body.touch #gearBtn {
 
 #gearBtn {
   position: fixed;
-  top: 10px;
-  right: 12px;
+  top: calc(10px + var(--sa-top));
+  right: calc(12px + var(--sa-right));
   z-index: var(--z-gear);
   font-size: 20px;
   color: #cfd6e6;
@@ -1092,8 +1213,8 @@ body.touch #gearBtn {
    while driving and any touch wakes it — dimmed, never hidden. */
 #tcMore {
   position: fixed;
-  top: 10px;
-  right: 64px;
+  top: calc(10px + var(--sa-top));
+  right: calc(64px + var(--sa-right));
   z-index: var(--z-gear);
   width: 44px;
   height: 44px;
@@ -1136,11 +1257,11 @@ body.touch #tcMore {
    keeps that scroll from chaining into browser navigation. */
 #tcDrawer {
   position: fixed;
-  top: 64px;
-  right: 12px;
+  top: calc(64px + var(--sa-top));
+  right: calc(12px + var(--sa-right));
   z-index: var(--z-gear);
   width: min(248px, 66vw);
-  max-height: calc(100vh - 280px);
+  max-height: calc(100vh - 280px - var(--sa-top) - var(--sa-bottom));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--sp-2);
@@ -1229,4 +1350,70 @@ body.touch #tcDrawer {
   color: var(--accent-2);
   border-color: var(--accent-line);
   background: var(--accent-soft);
+}
+
+/* Photo mode's corner hint — the ONE overlay the mode keeps (every other
+   piece of chrome hides because the screen leaves "playing"). Bottom-left:
+   clear of the toast (top-centre), and the frame's subject sits centre-right
+   under the opening three-quarter orbit. pointer-events:none on the container
+   is load-bearing: a drag that starts over the chip must fall through to the
+   canvas and orbit the camera — only the touch buttons take their own taps. */
+#photoHint {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: var(--z-toast);
+  padding: 10px 14px;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  backdrop-filter: blur(var(--blur-sm));
+  pointer-events: none;
+  user-select: none;
+}
+#photoHint .phTitle {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+#photoHint .phTitle span {
+  color: var(--jp);
+  font-weight: 400;
+  letter-spacing: 0.2em;
+  margin-left: 6px;
+}
+#photoHint .phKeys {
+  margin-top: 4px;
+  color: var(--ink-dim);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.06em;
+}
+#photoHint .phBtns {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+#photoHint .phBtn {
+  pointer-events: auto;
+  min-height: 44px; /* the same tap-target floor the drawer rows keep */
+  padding: 8px 16px;
+  color: var(--ink);
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+#photoHint .phBtn.shutter {
+  color: var(--accent-2);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+#photoHint .phBtn:active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
 }

@@ -2,7 +2,9 @@ import type { CarState } from "./physics";
 import type { WorldData } from "./world/data";
 import { SURFACE_TOL } from "./world/const";
 import { parapetGap, type Ramp } from "./world/ramps";
-import { MOUNTAIN_EDGE, type RouteGraph, type RoutePose } from "./world/routegraph";
+import {
+  MOUNTAIN_EDGE, type RouteGraph, type RoutePose, type SurfaceHit,
+} from "./world/routegraph";
 
 /* Player collision: the corridor's parapets (analytic, from the same
    half-width the walls are swept from), static AABBs (piers, toll islands,
@@ -43,6 +45,12 @@ function rampGaps(ramps: Ramp[]) {
 const _byPose: RoutePose = {
   x: 0, y: 0, z: 0, tx: 0, tz: 1, nx: 1, nz: 0, h: 0, grade: 0, bank: 0,
 };
+/* per-frame query targets for the parapet clamps below — same discipline as
+   _byPose: read and dropped within the frame, never held across calls */
+const _bySurf: SurfaceHit = { y: 0, edgeId: 0, s: 0, lat: 0, bank: 0 };
+const _byHit = { s: 0, lat: 0 };
+const _byHw = { hwL: 0, hwR: 0 };
+const _bySh = { shL: false, shR: false };
 
 /* The analytic wall clamps below depenetrate by the full overlap in one frame.
    Against a wall you actually drove into that is at most v_lat·dt (~0.15 m at
@@ -235,7 +243,7 @@ export function collidePlayer(
         // …but a hit on MOUNTAIN pavement must not un-guard: through the
         // gore wedges that pavement lies inside the apron bulge, and turning
         // the moving wall off there is exactly the hugger hole again
-        const sf = world.routes.surfaceAt(car.x, car.z, 1.0);
+        const sf = world.routes.surfaceAt(car.x, car.z, 1.0, _bySurf);
         if (sf !== null && sf.edgeId !== MOUNTAIN_EDGE &&
           Math.abs(sf.y - car.y) < SURFACE_TOL) guarded = false;
       }
@@ -281,13 +289,13 @@ export function collidePlayer(
        road's rock face / stone parapet share one contract — an analytic wall
        at each FREE edge, none through the shared gore wedges */
     for (const e of world.routes.attached) {
-      const bHit = e.project(car.x, car.z, e.maxHalf + 6);
+      const bHit = e.project(car.x, car.z, e.maxHalf + 6, _byHit);
       if (!bHit) continue;
       const p = e.poseAt(bHit.s, _byPose);
       const surfY = p.y + bHit.lat * p.bank;
       if (Math.abs(car.y - surfY) < SURFACE_TOL) {
-        const { hwL, hwR } = e.halfWidths(bHit.s);
-        const { shL, shR } = e.sharedSides(bHit.s);
+        const { hwL, hwR } = e.halfWidths(bHit.s, _byHw);
+        const { shL, shR } = e.sharedSides(bHit.s, _bySh);
         const sgn = bHit.lat >= 0 ? 1 : -1;
         const hwSide = sgn > 0 ? hwL : hwR;
         const lim = hwSide + 0.06 - halfW;
