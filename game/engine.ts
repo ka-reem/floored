@@ -2778,9 +2778,19 @@ export class Game {
   private watchdogTouchInput() {
     if (!this.isTouch) return;
     for (const hold of this.touchHolds.values()) {
+      /* A hold with no ids is not holding anything, and so has nothing to
+         recover — without this guard it instead ZEROES its key on every
+         frame the key is down, whoever put it down. That bites as soon as
+         two things can press one key: the idle HORN puck's empty hold was
+         cutting the wheel hub's honk within a frame of it starting. It also
+         means a physical keyboard on a touch device could never hold W, A,
+         S, D or F at all, since each has a puck sitting on it. */
+      if (hold.ids.size === 0) continue;
       if (this.keydown[hold.key] !== 1) continue;
       for (const id of hold.ids) if (!this.livePointers.has(id)) hold.ids.delete(id);
-      if (hold.ids.size === 0) this.keydown[hold.key] = 0;
+      // ...and when this hold's last finger is gone, the key is only released
+      // if no OTHER control is still holding it (the puck/hub pair).
+      if (hold.ids.size === 0 && !this.keyStillHeld(hold.key)) this.keydown[hold.key] = 0;
     }
     if (this.wheelPointerId !== null && !this.livePointers.has(this.wheelPointerId)) {
       this.wheelVal = 0;

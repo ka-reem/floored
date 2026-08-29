@@ -32,15 +32,22 @@ const check = (name, ok, detail = "") => {
   else { fail++; console.log("  ✗", name, detail); }
 };
 
-/* Headless Chromium only runs rAF while the compositor produces frames, and
-   the horn is driven from the game loop (input.horn is a per-frame read), so
-   "waiting" has to force frames the way the audio checks do. */
-const advance = async (page, ms) => {
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
+/* Headless Chromium only runs rAF while the compositor produces frames, so
+   waiting has to force them — but it must also COUNT them. input.horn is a
+   per-frame read, and the forced-frame rate under SwiftShader on a cold cloud
+   sandbox measures well under 1 fps, so anything sized in wall time can
+   contain no game frame at all and assert nothing. Every wait below is
+   therefore denominated in game frames. */
+const frameNo = (page) => page.evaluate(() => window.__neonx.game.debug.frames);
+const advance = async (page, n = 2, budgetMs = 120000) => {
+  const from = await frameNo(page);
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
     await page.screenshot({ optimizeForSpeed: true });
-    await sleep(40);
+    if ((await frameNo(page)) - from >= n) return true;
+    await sleep(30);
   }
+  return false;
 };
 
 /* Synthetic PointerEvents on #swheel. Dispatched with bubbles:true so they
@@ -74,6 +81,18 @@ const wheelDragFrom = (page, id, dx0, dx1) =>
     ev("pointerdown", dx0);
     ev("pointermove", dx1);
   }, id, dx0, dx1);
+
+/* down+up in ONE evaluate, so the lift is guaranteed to land inside HOLD_MS
+   and this really is the stab path rather than a short sustained honk. */
+const wheelTap = (page, id) =>
+  page.evaluate((id) => {
+    const el = document.getElementById("swheel");
+    const r = el.getBoundingClientRect();
+    const o = { pointerId: id, bubbles: true, cancelable: true, pointerType: "touch",
+      isPrimary: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    el.dispatchEvent(new PointerEvent("pointerdown", o));
+    el.dispatchEvent(new PointerEvent("pointerup", o));
+  }, id);
 
 const puckPt = (page, id, type, pointerId) =>
   page.evaluate((id, type, pointerId) => {
@@ -122,7 +141,17 @@ try {
     () => window.__audioDebug?.getLevels?.()?.sampledEngineReady === true, { timeout: 60000 });
 } catch { check("sampled audio ready", false, "decode/wiring failed"); }
 await page.evaluate(() => window.__neonx.setCam(3)); // CAM_POV — the shipped dashcam
-await advance(page, 1200);
+await advance(page, 3);
+
+const shot = async (name, caption) => {
+  const raw = await page.screenshot({ type: "png" });
+  const out = path.join(OUT, `horn-${name}.jpg`);
+  await sharp(raw).resize({ width: 1200 }).jpeg({ quality: 80 }).toFile(out);
+  console.log("  📸", out, "—", caption);
+};
+
+await shot("01-wheel-idle",
+  "Dashcam, phone, wheel steer mode: the horn is the wheel's own hub — the authentic control, and the one already under the driver's thumbs.");
 
 check("wheel is mounted (steerMode=wheel)", await page.evaluate(
   () => !!document.getElementById("swheel")));
@@ -137,81 +166,78 @@ check("HORN puck still present for buttons/tilt users", await page.evaluate(
 /* ---- 1. press-and-hold the hub: honks, and does NOT steer ---- */
 let before = await state(page);
 await wheelPt(page, "pointerdown", 40);
-await advance(page, 500);
+await advance(page, 3);
 let s = await state(page);
 check("hub press honks", s.starts === before.starts + 1 && s.sounding, JSON.stringify(s));
 check("hub press did not steer", Math.abs(s.wheel) < 1e-6 && Math.abs(s.steer) < 1e-6,
   `wheelVal=${s.wheel} st=${s.steer}`);
-await page.screenshot({ type: "png" }).then(async (raw) => {
-  await sharp(raw).resize({ width: 1200 }).jpeg({ quality: 80 })
-    .toFile(path.join(OUT, "horn-01-hub-honking.jpg"));
-  console.log("  📸 horn-01-hub-honking.jpg — Dashcam, phone: the wheel's HORN boss lit while held.");
-});
+await shot("02-hub-honking",
+  "Held: the HORN boss lights while the horn sounds. The wheel has not moved — a press that never becomes a drag honks and does not steer.");
 await wheelPt(page, "pointerup", 40);
-await advance(page, 400);
+await advance(page, 3);
 s = await state(page);
 check("hub release stops the horn", !s.sounding && !s.key, JSON.stringify(s));
 
 /* ---- 2. STEERING ALWAYS WINS: a drag that starts on the hub is silent ---- */
 before = await state(page);
 await wheelDragFrom(page, 41, 0, 45); // starts on the hub, past DRAG_PX inside HOLD_MS
-await advance(page, 500);
+await advance(page, 3);
 s = await state(page);
 check("drag from the hub steers", Math.abs(s.wheel) > 0.5, `wheelVal=${s.wheel}`);
 check("drag from the hub never honked", s.starts === before.starts && !s.sounding,
   `starts +${s.starts - before.starts} sounding=${s.sounding}`);
+await shot("03-drag-from-hub-steers",
+  "The proof: the same finger, started on the hub, dragged. The wheel is deflected and steering, the HORN boss is dark — steering always wins.");
 await wheelPt(page, "pointerup", 41);
-await advance(page, 300);
+await advance(page, 3);
 check("drag release recentres the wheel", Math.abs((await state(page)).wheel) < 1e-6);
 
 /* ---- 3. a honk already sounding is cut the moment steering starts ---- */
 before = await state(page);
 await wheelPt(page, "pointerdown", 42);
-await advance(page, 400);
+await advance(page, 3);
 s = await state(page);
 check("hub honking before the drag", s.sounding, JSON.stringify(s));
 await wheelPt(page, "pointermove", 42, 50);
-await advance(page, 300);
+await advance(page, 3);
 s = await state(page);
 check("starting to steer cuts the horn", !s.sounding && !s.key, JSON.stringify(s));
 check("...and steering took over", Math.abs(s.wheel) > 0.5, `wheelVal=${s.wheel}`);
 await wheelPt(page, "pointerup", 42);
-await advance(page, 300);
+await advance(page, 3);
 
 /* ---- 4. a quick tap still beeps (the stab) ---- */
 before = await state(page);
-await wheelPt(page, "pointerdown", 43);
-await advance(page, 40); // lifts inside HOLD_MS: never sustained
-await wheelPt(page, "pointerup", 43);
-await advance(page, 60);
+await wheelTap(page, 43); // down+up in one task, inside HOLD_MS: never sustained
+await advance(page, 2);
 s = await state(page);
 check("a quick hub tap still beeps", s.starts === before.starts + 1, JSON.stringify(s));
-await advance(page, 500);
+await advance(page, 3);
 s = await state(page);
 check("the stab releases itself", !s.sounding && !s.key, JSON.stringify(s));
 
 /* ---- 5. pointercancel (the gesture hijack) leaves nothing stuck ---- */
 await wheelPt(page, "pointerdown", 44);
-await advance(page, 400);
+await advance(page, 3);
 check("honking before the cancel", (await state(page)).sounding);
 await wheelPt(page, "pointercancel", 44);
-await advance(page, 400);
+await advance(page, 3);
 s = await state(page);
 check("pointercancel releases the horn and the wheel",
   !s.sounding && !s.key && Math.abs(s.wheel) < 1e-6, JSON.stringify(s));
 
 /* ---- 6. the two controls share "f" without cutting each other off ---- */
 await puckPt(page, "tcH", "pointerdown", 45);
-await advance(page, 300);
+await advance(page, 3);
 check("HORN puck honks", (await state(page)).sounding);
 await wheelPt(page, "pointerdown", 46);
-await advance(page, 300);
+await advance(page, 3);
 await wheelPt(page, "pointerup", 46);
-await advance(page, 200);
+await advance(page, 2);
 s = await state(page);
 check("releasing the hub does not cut the still-held puck", s.sounding && s.key, JSON.stringify(s));
 await puckPt(page, "tcH", "pointerup", 45);
-await advance(page, 400);
+await advance(page, 3);
 s = await state(page);
 check("releasing the puck finally stops the horn", !s.sounding && !s.key, JSON.stringify(s));
 
@@ -225,21 +251,37 @@ await page.evaluate(() => {
   dispatchEvent(new KeyboardEvent("keydown", { key: "f" }));
   dispatchEvent(new KeyboardEvent("keyup", { key: "f" }));
 });
-await advance(page, 120);
+await advance(page, 2);
 s = await state(page);
 check("a sub-frame F stab still honks", s.starts === before.starts + 1, JSON.stringify(s));
-await advance(page, 500);
+await advance(page, 3);
 check("the sub-frame stab releases itself", !(await state(page)).sounding);
 
-/* ---- 8. a drag starting on the RIM is unchanged ---- */
+/* ---- 8. a HELD key survives the frame watchdog on a touch device ----
+   Regression guard for the watchdog bug this lane found: every puck registers
+   a touchHold on its key, and an idle hold's id set is empty. The watchdog
+   used to read "no ids" as "the finger is gone" and zero the key on the very
+   next frame — whoever had pressed it. That cut the hub's honk within a frame
+   and, on any touch device with a keyboard attached, made W/A/S/D/F
+   impossible to HOLD at all. */
+before = await state(page);
+await page.evaluate(() => dispatchEvent(new KeyboardEvent("keydown", { key: "f" })));
+await advance(page, 3);
+s = await state(page);
+check("a held F survives the touch watchdog", s.sounding && s.key, JSON.stringify(s));
+await page.evaluate(() => dispatchEvent(new KeyboardEvent("keyup", { key: "f" })));
+await advance(page, 3);
+check("...and releasing it stops the horn", !(await state(page)).sounding);
+
+/* ---- 9. a drag starting on the RIM is unchanged ---- */
 before = await state(page);
 await wheelDragFrom(page, 47, 50, 90); // starts on the rim, outside HUB_R
-await advance(page, 400);
+await advance(page, 3);
 s = await state(page);
 check("rim drag steers", Math.abs(s.wheel) > 0.5, `wheelVal=${s.wheel}`);
 check("rim drag is silent", s.starts === before.starts && !s.sounding, JSON.stringify(s));
 await wheelPt(page, "pointerup", 47);
-await advance(page, 300);
+await advance(page, 3);
 
 check("no page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
 await browser.close();
