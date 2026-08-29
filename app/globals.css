@@ -1190,6 +1190,102 @@ body.touch #mmap {
   color: var(--ink);
 }
 
+/* The swipe-slider steer mode (steerMode "slider" — SteerSlider in
+   GameApp.tsx). A wide, low-profile strip in the wheel's spot: anchored LEFT
+   to the same 14px edge the wheel uses and RIGHT to clear the puck cluster —
+   #tcH reaches 224px in from the right edge (168 + 56), so 236 leaves the
+   standard 12px gutter and the strip can never overlap a pedal/horn/cam hit
+   area at any viewport width; in landscape it simply grows wider (absolute
+   mapping just gets finer, never faster). Bottom 18/height 74 matches the
+   #tcL puck's vertical band, so the HUD lift (bottom:160) already clears it.
+
+   The ELEMENT is the hit area and the painted track is a 14px child — the
+   same hit-area-bleed idea as the telltales' ::after, done here by making
+   the paint smaller than the element instead of growing a pseudo-element,
+   because a steering control wants the whole 74px band grabbable without a
+   74px-tall visual. Children are pointer-events:none (the wheel-hub rule):
+   the strip owns every pointer that lands in the band. */
+#sslider {
+  position: fixed;
+  left: calc(14px + var(--sa-left));
+  right: calc(236px + var(--sa-right));
+  bottom: calc(18px + var(--sa-bottom));
+  height: 74px;
+  z-index: var(--z-wheel);
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+#sslider .ssTrack {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: var(--r-pill);
+  border: 1.5px solid rgba(150, 180, 255, 0.3);
+  background: rgba(12, 15, 25, 0.5);
+  overflow: hidden;
+  pointer-events: none;
+}
+/* centre-anchored, scaleX-driven (SteerSlider sets transform/opacity inline):
+   origin on its left edge, which sits at the track's centre, so a negative
+   scale mirrors the same bar to the left — one compositor-only property for
+   both directions, per the drawer's transition rule. */
+#sslider .ssFill {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: var(--accent-grad);
+  opacity: 0.2;
+}
+/* subtle centre detent: the "straight ahead" mark the thumb re-finds without
+   looking — brighter than the track border, dimmer than the lit fill */
+#sslider .ssDetent {
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  margin-left: -1px;
+  background: rgba(154, 174, 214, 0.45);
+}
+#sslider .ssNub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(150, 180, 255, 0.3);
+  background: rgba(15, 20, 45, 0.25);
+  backdrop-filter: blur(var(--blur-sm));
+  pointer-events: none;
+}
+/* Eased re-centre on release only: while dragging the nub must track the
+   thumb with zero lag, so the transition exists solely in the let-go state
+   (.drag is removed in the same commit that zeroes the value). This is the
+   visual half of the wheel's eased return — the steering value itself is
+   slewed back by readInput's analog rate. */
+#sslider:not(.drag) .ssNub {
+  transition:
+    transform 0.22s var(--ease),
+    border-color 0.22s var(--ease),
+    background 0.22s var(--ease),
+    box-shadow 0.22s var(--ease);
+}
+#sslider:not(.drag) .ssFill {
+  transition:
+    transform 0.22s var(--ease),
+    opacity 0.22s var(--ease);
+}
+
 /* 44px on touch: this is the only on-screen way to reach the pause menu on a
    phone (Esc has no equivalent), and 38px is under the minimum tap target.
    Scoped to touch so the desktop chrome is unchanged. */

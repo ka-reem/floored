@@ -1732,7 +1732,8 @@ export class Game {
   private wheelVal = 0;
   private tiltVal = 0;
   private tiltHooked = false;
-  /** The pointer currently dragging #swheel, set by GameApp's SteerWheel —
+  /** The pointer currently dragging #swheel or #sslider, set by GameApp's
+      SteerWheel/SteerSlider (only one is ever mounted — steerMode picks) —
       lets the watchdog below tell a live drag from a wheelVal that got left
       behind by a gesture the DOM never told anyone had ended. */
   private wheelPointerId: number | null = null;
@@ -3277,9 +3278,10 @@ export class Game {
   setWheelVal(v: number) {
     this.wheelVal = v;
   }
-  /** Which pointer #swheel considers itself grabbed by, or null when let go —
-      set by GameApp's SteerWheel on pointerdown/end so watchdogTouchInput can
-      tell a live drag from a wheelVal a lost gesture left behind. */
+  /** Which pointer #swheel/#sslider considers itself grabbed by, or null when
+      let go — set by GameApp's SteerWheel/SteerSlider on pointerdown/end so
+      watchdogTouchInput can tell a live drag from a wheelVal a lost gesture
+      left behind. */
   setWheelPointer(id: number | null) {
     this.wheelPointerId = id;
   }
@@ -3366,7 +3368,11 @@ export class Game {
     this.input.br += clamp(tB - this.input.br, -6 * dt, 5.2 * dt);
     let sTarget = sL - sR;
     const analog = this.isTouch && this.settings.steerMode !== "buttons";
-    if (analog) sTarget = this.settings.steerMode === "wheel" ? -this.wheelVal : -this.tiltVal;
+    /* The wheel and the slider both feed wheelVal (setWheelVal/setWheelPointer
+       from their widgets in GameApp), so the watchdog below and
+       clearLatchedInput cover both without knowing which widget is mounted;
+       only tilt has its own channel. */
+    if (analog) sTarget = this.settings.steerMode === "tilt" ? -this.tiltVal : -this.wheelVal;
     /* The keyboard rate droops hard with speed — 3.4 at rest down to 1.7 past
        144 km/h — and in TEST MODE that droop is the single biggest thing
        standing between the player and the car.
