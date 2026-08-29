@@ -71,6 +71,13 @@ import type { NpcHit } from "./collide";
 
    L, wr, wz and mass are unrelated to this and are left alone. */
 const TYPE_DIM: Record<string, { L: number; W: number; wr: number; wz: number; mass: number }> = {
+  /* o-prefixed styles are the original Orchids bodyshells riding alongside
+     their modern replacements — the owner wants both generations in
+     traffic. Same dims as their twins. */
+  osedan: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1380 },
+  ohybrid: { L: 4.54, W: 1.75, wr: 0.32, wz: 1.4, mass: 1400 },
+  ocompact: { L: 3.94, W: 1.70, wr: 0.30, wz: 1.24, mass: 1080 },
+  osuv: { L: 4.72, W: 1.89, wr: 0.36, wz: 1.46, mass: 1950 },
   hybrid: { L: 4.54, W: 1.75, wr: 0.32, wz: 1.4, mass: 1400 },
   sedan: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1380 },
   compact: { L: 3.94, W: 1.70, wr: 0.30, wz: 1.24, mass: 1080 },
@@ -125,8 +132,12 @@ const TYRE_C = 0x0b0b0f;
    recolour on top double-painted the bodies into mush — the refLums here
    were measured on the ORCHIDS bakes and mean nothing on the new atlases. */
 const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
-  van:     { hue: -1,    refLum: 0.697 },
-  truck:   { hue: -1,    refLum: 0.668 },
+  van:      { hue: -1,    refLum: 0.697 },
+  truck:    { hue: -1,    refLum: 0.668 },
+  osedan:   { hue: -1,    refLum: 0.675 },
+  ocompact: { hue: -1,    refLum: 0.636 },
+  ohybrid:  { hue: 0.311, refLum: 0.481 }, // authored green
+  osuv:     { hue: 0.594, refLum: 0.106 }, // authored blue
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
@@ -1402,10 +1413,11 @@ export class Traffic {
   private styleOf: Record<string, number> = {};
   /** per style, the loaded model's real lamp clusters; null until one lands */
   private lampsOf: (NpcLamps | null)[] = [];
-  /** per style: the model carries real emissive lens geometry, so the round
-      tail/brake glow sprites hold back until distance shrinks the lenses to
-      sub-pixels (the owner: sprite blobs "make it look bad") */
-  private lampGeoOf: boolean[] = [];
+  /** per style: the model carries real emissive lens geometry (split per
+      kind), so the matching glow sprites hold back until distance shrinks
+      the lenses to sub-pixels (the owner: sprite blobs "make it look
+      bad") — but a kind the bake missed keeps its sprite at every range */
+  private lampGeoOf: { head: boolean; tail: boolean }[] = [];
   /** per style: its Orchids bodyshell has landed and the style may spawn.
       Nothing renders, spawns or sprites a style before this flips — there is
       no placeholder body to fall back to, by design. */
@@ -1628,7 +1640,8 @@ export class Traffic {
        in, plus the two forced police cruisers below. */
     const roster: string[] = [];
     const mix: [string, number][] = [
-      ["sedan", 0.25], ["hybrid", 0.19], ["compact", 0.19], ["suv", 0.17],
+      ["sedan", 0.14], ["hybrid", 0.11], ["compact", 0.11], ["suv", 0.10],
+      ["osedan", 0.11], ["ohybrid", 0.08], ["ocompact", 0.08], ["osuv", 0.07],
       ["taxi", 0.07], ["van", 0.06], ["truck", 0.05], ["bus", 0.02],
     ];
     for (let i = 0; i < N; i++) {
@@ -1669,7 +1682,7 @@ export class Traffic {
       m.geometry.setAttribute("washCol", wash);
       scene.add(m);
       this.lampsOf.push(null);
-      this.lampGeoOf.push(false);
+      this.lampGeoOf.push({ head: false, tail: false });
       this.ready.push(false);
       this.styles.push({ mesh: m, paint, diss, lamp, wash, n: 0 });
     }
@@ -1820,8 +1833,8 @@ export class Traffic {
        everything past 70 m) show. */
     this.clouds = {
       head: mkCloud(0xa9b7d1, 1.0),
-      tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.68),
-      brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.1),
+      tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.8),
+      brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.25),
       sig: mkCloud(0xffa028, 1.05),
       roof: mkCloud(0xffb040, 0.95), polR: mkCloud(0xff3040, 1.5),
       polB: mkCloud(0x3d74ff, 1.5),
@@ -2014,7 +2027,7 @@ export class Traffic {
     old.dispose();
 
     this.lampsOf[si] = m.lamps;
-    this.lampGeoOf[si] = m.hasLampGeo;
+    this.lampGeoOf[si] = { head: m.hasHeadGeo, tail: m.hasTailGeo };
     this.ready[si] = true;
 
     /* Put the shared wheels in this body's own arches. wr/wz are visual only
@@ -5567,7 +5580,9 @@ export class Traffic {
          without lens tags (truck, and any pre-hifi bake) keep the sprites
          at every range, as before. */
       const gdx = n.x - player.x, gdz = n.z - player.z;
-      const tailSprite = !this.lampGeoOf[n.style] || gdx * gdx + gdz * gdz > 4900;
+      const gd2 = gdx * gdx + gdz * gdz;
+      const lg = this.lampGeoOf[n.style];
+      const tailSprite = !lg.tail || gd2 > 4900;
       emit(SP.tail, 0, tx0, ty0, tz0, running && !n.brake && tailSprite);
       emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake && tailSprite);
       emit(SP.brake, 0, tx0, ty0, tz0, !wrecked && n.brake && tailSprite);

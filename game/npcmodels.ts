@@ -50,10 +50,12 @@ export interface NpcModel {
   metalnessMap: THREE.Texture | null;
   lamps: NpcLamps;
   wheels: NpcWheel[];
-  /** the bake tagged real lens geometry (_LAMP has nonzero entries) — the
-      runtime can then let the shaped emissive lenses carry the light up
-      close instead of the round glow sprites */
-  hasLampGeo: boolean;
+  /** the bake tagged real lens geometry — split per lamp kind, because a
+      bake can find headlight pixels yet miss smoked tail lenses (the
+      Fortuner did exactly that and drove around with no tail lights): a
+      kind with no tagged pixels must keep its glow sprite at every range */
+  hasHeadGeo: boolean;
+  hasTailGeo: boolean;
 }
 
 const BASE = "/models/cars/";
@@ -126,11 +128,13 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
     "lampKind",
     lamp ?? new THREE.BufferAttribute(new Float32Array(src.attributes.position.count), 1)
   );
-  let hasLampGeo = false;
+  let hasHeadGeo = false, hasTailGeo = false;
   if (lamp) {
     const la = lamp.array as ArrayLike<number>;
-    for (let i = 0; i < la.length; i++)
-      if (la[i] > 0) { hasLampGeo = true; break; }
+    for (let i = 0; i < la.length && !(hasHeadGeo && hasTailGeo); i++) {
+      if (la[i] > 1.5) hasTailGeo = true;
+      else if (la[i] > 0.5) hasHeadGeo = true;
+    }
   }
   if (src.index) geo.setIndex(src.index);
   geo.computeBoundingSphere();
@@ -148,7 +152,8 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
     metalnessMap: material?.metalnessMap ?? null,
     lamps: readLamps(extras.lamps),
     wheels: readWheels(extras.wheels),
-    hasLampGeo,
+    hasHeadGeo,
+    hasTailGeo,
   };
 }
 
