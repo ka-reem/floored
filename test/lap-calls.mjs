@@ -88,13 +88,19 @@ const sample = (page) =>
         nx.state().frames >= f0 + N ? res() : setTimeout(poll, 120);
       poll();
     });
-    const frames = nx.state().frames - f0;
+    const st = nx.state();
+    const frames = st.frames - f0;
     return {
       calls: Math.round(info.render.calls / frames),
       tris: Math.round(info.render.triangles / frames),
       programs: info.programs.length,
       geometries: info.memory.geometries,
       textures: info.memory.textures,
+      /* the biggest run-to-run noise source: live NPC count (each body is
+         instanced but tris scale with it) and the reactive perf drop — a
+         tris delta means nothing without these alongside */
+      npcs: st.npcs,
+      perfMode: st.perfMode,
       frames,
     };
   });
@@ -164,6 +170,12 @@ for (const tier of TIERS) {
     b?.click();
   });
   await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 180000 });
+  /* Pin the REACTIVE perf drop off (instance property shadows the method).
+     Under SwiftShader every frame is >37 ms, so perfMode latches at some
+     arbitrary point mid-run — it cuts drawDist to 520 and kills shadows,
+     which silently rewrote later stations' numbers in early sweeps. The
+     TIER caps stay untouched; they are what this harness measures. */
+  await page.evaluate(() => { window.__neonx.game.perfCheck = () => {}; });
   /* long enough for the desktop tier's deferred work (PBR detail fetch, HD
      fleet stream) to land, so stations measure the steady state */
   await sleep(8000);
@@ -181,7 +193,7 @@ for (const tier of TIERS) {
     await sleep(2500); // let culling settle at the new position
     const r = await sample(page);
     console.log(
-      `  z=${z} calls/frame=${r.calls} tris/frame=${r.tris} programs=${r.programs} (over ${r.frames} frames)`
+      `  z=${z} calls/frame=${r.calls} tris/frame=${r.tris} programs=${r.programs} npcs=${r.npcs}${r.perfMode ? " PERF-DROP" : ""} (over ${r.frames} frames)`
     );
     emit({ label: LABEL, tier, kind: "station", z, ...r });
   }
@@ -195,7 +207,7 @@ for (const tier of TIERS) {
     await sleep(2500);
     const r = await sample(page);
     console.log(
-      `  mtn:s=${s} calls/frame=${r.calls} tris/frame=${r.tris} programs=${r.programs} (over ${r.frames} frames)`
+      `  mtn:s=${s} calls/frame=${r.calls} tris/frame=${r.tris} programs=${r.programs} npcs=${r.npcs}${r.perfMode ? " PERF-DROP" : ""} (over ${r.frames} frames)`
     );
     emit({ label: LABEL, tier, kind: "station", z: `mtn:${s}`, ...r });
   }
