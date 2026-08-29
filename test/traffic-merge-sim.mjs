@@ -100,7 +100,11 @@ const shrink = (() => {
     let j = i;
     while (j + 1 < edges.length && edges[j + 1].z - edges[j].z < 200) j++;
     const cand = { z0: edges[i].z, z1: edges[j].z, from: edges[i].from, to: edges[j].to };
-    if (!best || cand.from - cand.to > best.from - best.to) best = cand;
+    /* Equal falls tie-break to the higher count: the same shed with more
+       upstream lanes feeding it is the busier zipper — and it is how the
+       playground's six-lane drop gets tested the moment a road has one. */
+    if (!best || cand.from - cand.to > best.from - best.to ||
+      (cand.from - cand.to === best.from - best.to && cand.from > best.from)) best = cand;
     i = j;
   }
   return best ?? { z0: 700, z1: 800, from: 5, to: 3 };
@@ -373,6 +377,10 @@ function run(mode, seed) {
   const stats = {
     overlapFrames: 0, overlapPairs: 0, worstDepth: 0,
     maxBackJump: 0, maxLatRate: 0, snaps: 0, done: 0, ghostLane: 0,
+    /* which lane indices actually carry a car through the settled seed
+       zone — the proof that the spawner and the drivers pick up every lane
+       the road offers, a playground's sixth included */
+    lanesUsed: new Set(),
   };
   const seen = new Set();
   for (let t = 0; t < DUR; t += DT) {
@@ -396,6 +404,7 @@ function run(mode, seed) {
       const latRate = Math.max(0, lat - slide) / DT;
       if (latRate > stats.maxLatRate) stats.maxLatRate = latRate;
       if (n.s > TAPER_HI && n.laneK > c.lanes(n.s) - 1) stats.ghostLane++;
+      if (n.s > Z_IN - 20 && n.s < Z_IN + 150) stats.lanesUsed.add(n.laneK);
       stats.snaps += n.snaps || 0;
       n.snaps = 0;
     }
@@ -453,6 +462,14 @@ for (const seed of [0xbeef, 42, 7, 1234, 99, 2026]) {
   const latCap = Math.max(3.4, c.lanePitch(750) / 1.4) + 0.05;
   if (newS.maxLatRate > latCap) bad(`seed ${seed}: lateral motion ${f(newS.maxLatRate)} m/s beats every sanctioned lane rate`);
   if (newS.done < 50) bad(`seed ${seed}: only ${newS.done} cars made it through — the taper is jammed solid`);
+  /* Every lane the road offers at the seed zone must carry traffic. The
+     spawner biases fast drivers outward and slow ones to the kerb, so over
+     240 s of continuous inflow an untouched lane means an index the lane
+     pick can not reach — exactly the bug that would leave a playground's
+     extra lanes as empty tarmac. */
+  const nlIn = c.lanes(Z_IN);
+  if (newS.lanesUsed.size < nlIn)
+    bad(`seed ${seed}: only ${newS.lanesUsed.size} of ${nlIn} lanes carried a car at the seed zone`);
 }
 
 console.log(fail ? `\n${fail} CHECK(S) FAILED` : "\nall merge-sim checks passed");
