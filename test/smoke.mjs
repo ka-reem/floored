@@ -347,9 +347,32 @@ async function main() {
   await sleep(2000);
   await shot(page, "07-rain-cockpit");
 
-  // hood cam + day time
+  // camera cycle: C must walk CHASE → COCKPIT → HOOD → CONSOLE → BACKSEAT →
+  // DASHCAM and wrap to CHASE (CAM_CYCLE order, not numeric camMode order)
   await page.evaluate(() => {
     window.__neonx.setRain(false);
+    window.__neonx.setCam(0);
+    window.__neonx.setInput({ th: 0.5 });
+  });
+  await sleep(400);
+  const cycle = [];
+  for (let i = 0; i < 6; i++) {
+    await page.keyboard.press("c");
+    await sleep(250);
+    cycle.push((await page.evaluate(() => window.__neonx.state())).camMode);
+  }
+  const wantCycle = [1, 2, 4, 5, 3, 0];
+  if (cycle.join() !== wantCycle.join())
+    errors.push(`camera cycle walked ${cycle.join("→")}, expected ${wantCycle.join("→")}`);
+  else console.log("  camera cycle ok:", cycle.join("→"));
+
+  // the backseat view, at night, while moving
+  await page.evaluate(() => window.__neonx.setCam(5));
+  await sleep(1500);
+  await shot(page, "07b-backseat");
+
+  // hood cam + day time
+  await page.evaluate(() => {
     window.__neonx.setCam(2);
     window.__neonx.setTime(13);
   });
