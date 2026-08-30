@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Space_Grotesk } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 /* Display face for titles/buttons/HUD numerals only (globals.css scopes it
@@ -53,7 +54,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={displayFont.variable}>
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* Vercel Web Analytics: ~1KB, cookieless visitor counting. The
+            numbers live in the Vercel dashboard's Analytics tab — the owner
+            flips the project-level switch there; without it this no-ops. */}
+        <Analytics />
+      </body>
     </html>
   );
 }
