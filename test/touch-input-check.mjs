@@ -13,6 +13,7 @@
 
 import { spawn } from "node:child_process";
 import puppeteer, { KnownDevices } from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const argUrl = process.argv.indexOf("--url");
 const externalUrl = argUrl > -1 ? process.argv[argUrl + 1] : null;
@@ -135,7 +136,7 @@ async function run(dev) {
   });
 
   console.log("→ loading", URL, "(touch-emulated)");
-  await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
 
   const isTouch = await gameState(page, "isTouch");

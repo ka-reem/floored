@@ -40,6 +40,8 @@ import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap, type MiniMapOpts } from "./minimap";
 import { track, trackThrottled, registerSuper } from "../lib/analytics";
+import { DEBUG_HOOKS } from "./debug";
+import { showGfxFail } from "./gfxfail";
 
 const WX_SVG = (body: string) =>
   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">${body}</svg>`;
@@ -1847,6 +1849,12 @@ export class Game {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.className = "game";
     container.appendChild(this.renderer.domElement);
+    /* three.js goes quiet when the GPU drops the context (render() is a
+       no-op until a restore that, with our post chain and render targets,
+       does not reliably come). Say so, and offer the reload that fixes it —
+       game/gfxfail.ts, the same panel GameApp shows when there is no WebGL
+       at all. */
+    this.renderer.domElement.addEventListener("webglcontextlost", this.onContextLost);
 
     this.scene.fog = new THREE.FogExp2(0x0a0d1a, 0.002);
     this.camera = new THREE.PerspectiveCamera(68, innerWidth / innerHeight, 0.08, 3400);
@@ -1895,8 +1903,9 @@ export class Game {
     this.applySettings(this.settings);
     addEventListener("resize", this.onResize);
 
-    // expose debug hooks for the test harness
-    (window as any).__neonx = {
+    // expose debug hooks for the test harness — dev builds and `?debug` URLs
+    // only (game/debug.ts); test/lib/debug-url.mjs adds the flag for the scripts
+    if (DEBUG_HOOKS) (window as any).__neonx = {
       game: this,
       teleport: (x: number, z: number, y?: number, h?: number, u?: number) => {
         this.car.x = x;
@@ -2413,6 +2422,11 @@ export class Game {
 
   private onWindowError = (e: ErrorEvent) => {
     this.debug.errors.push(String(e.message));
+  };
+
+  private onContextLost = (e: Event) => {
+    e.preventDefault();
+    showGfxFail(this.renderer.domElement.parentElement ?? document.body, "lost");
   };
 
   private onWindowBlur = () => {
@@ -3627,6 +3641,7 @@ export class Game {
     this.photoExit(); // no-op unless mid-photo; drops the mode's canvas listeners
     cancelAnimationFrame(this.raf);
     removeEventListener("keydown", this.onKeyDown);
+    this.renderer.domElement.removeEventListener("webglcontextlost", this.onContextLost);
     this.renderer.domElement.removeEventListener("pointerdown", this.onPointerDown);
     this.renderer.domElement.removeEventListener("pointermove", this.onPointerMove);
     this.renderer.domElement.removeEventListener("pointerleave", this.onPointerLeave);

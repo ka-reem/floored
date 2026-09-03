@@ -6,6 +6,7 @@ import {
   fenceTexF, grimeTexF, loadPbrSet, makeTex, type PbrSet,
 } from "../textures";
 import { worldTierCaps } from "../settings";
+import { DEBUG_HOOKS } from "../debug";
 
 /* Shared materials + textures. Planar-reflection sampling is injected into the
    road materials here (ported from v2, adapted to the linear HDR pipeline).
@@ -2217,7 +2218,7 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
      `grit` second, and note it is deliberately low: 0 / 0.5 / 1 / 2 brackets
      it, and 1 is roughly where an earlier pass had it before the reference
      made the case for a plainer wall. */
-  if (typeof window !== "undefined") {
+  if (DEBUG_HOOKS && typeof window !== "undefined") {
     const concFamily = [
       conc, concDouble, concDark, concDarkDouble, barrier, barrierDouble, tunnelCeil,
     ];

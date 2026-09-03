@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const OUT = path.join(process.cwd(), "docs", "gallery", "img");
 mkdirSync(OUT, { recursive: true });
@@ -69,7 +70,7 @@ async function main() {
     protocolTimeout: 300000,
   });
   const page = await browser.newPage();
-  await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.evaluate(() => localStorage.clear());
   await page.reload({ waitUntil: "domcontentloaded", timeout: 120000 });
   await drive(page);

@@ -16,6 +16,7 @@
             [--tier desktop] [--throttle 4]
 */
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const arg = (k, d) => {
   const i = process.argv.indexOf(k);
@@ -47,7 +48,7 @@ page.on("request", (r) => {
 });
 
 t0 = performance.now();
-await page.goto(`${URL}/?tier=${TIER}`, { waitUntil: "domcontentloaded", timeout: 180000 });
+await page.goto(debugUrl(URL, { tier: TIER }), { waitUntil: "domcontentloaded", timeout: 180000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 180000 });
 const tMenu = performance.now() - t0;
 

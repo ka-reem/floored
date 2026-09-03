@@ -10,6 +10,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const argUrl = process.argv.indexOf("--url");
 const URL = argUrl > -1 ? process.argv[argUrl + 1] : "http://localhost:3111";
@@ -75,7 +76,7 @@ async function boot(ctx, { touch = false } = {}) {
       ? { width: 390, height: 844, isMobile: true, hasTouch: true }
       : { width: 1280, height: 800 }
   );
-  await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
   await watchHint(page);
   await sleep(300);

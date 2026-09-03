@@ -16,10 +16,48 @@ const displayFont = Space_Grotesk({
   display: "swap",
 });
 
+/* Absolute origin for the URL-bearing metadata below (canonical, og:image,
+   twitter:image need fully qualified URLs — see metadataBase in
+   node_modules/next/dist/docs/.../functions/generate-metadata.md).
+   NEXT_PUBLIC_SITE_URL wins when set (a custom domain); otherwise Vercel's
+   own production hostname, then the per-deployment hostname for previews,
+   then localhost so `next build` never fails on a missing base. */
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3000");
+
+const DESCRIPTION =
+  "Night driving through a procedurally generated Japanese town and its elevated expressway. Sim-grade tire physics, dense AI traffic, rain, neon.";
+
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: "NEON EXPRESSWAY — 首都高 Night Drive",
-  description:
-    "Night driving through a procedurally generated Japanese town and its elevated expressway. Sim-grade tire physics, dense AI traffic, rain, neon.",
+  description: DESCRIPTION,
+  applicationName: "NEON EXPRESSWAY",
+  alternates: { canonical: "/" },
+  /* Share card. public/og.png is a static 1200×630 render (night palette,
+     title, 首都高ナイトドライブ, sodium-orange road deck) — a committed file
+     rather than an opengraph-image route so scrapers get a plain cached
+     PNG with no render on request. */
+  openGraph: {
+    type: "website",
+    url: "/",
+    siteName: "NEON EXPRESSWAY",
+    title: "NEON EXPRESSWAY — 首都高 Night Drive",
+    description: DESCRIPTION,
+    locale: "en_US",
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "NEON EXPRESSWAY — 首都高ナイトドライブ" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "NEON EXPRESSWAY — 首都高 Night Drive",
+    description: DESCRIPTION,
+    images: ["/og.png"],
+  },
   /* iOS half of the install story (app/manifest.ts is the standard half —
      modern iOS reads it, these tags cover what it still ignores). The title
      matches the manifest short_name so the home-screen label agrees across
