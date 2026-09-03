@@ -27,6 +27,82 @@ import type { Npc } from "./traffic";
      is ~a dozen draw calls no matter how much detail goes in. Only the things
      that move or own a canvas stay as individual meshes. */
 
+/** Where a door-mirror glass goes and what shape it is, in cockpit-local
+    metres: the mirror plate's centre, its normal pointing FORWARD (away from
+    the driver — the eye sees the glass's back face, see placeSideGlass), and
+    its outline in the plate's own plane, x along (n.z, 0, -n.x) and y up. */
+export interface SideGlassFit {
+  centre: THREE.Vector3;
+  normal: THREE.Vector3;
+  outline: [number, number][];
+}
+
+/** Outline of a door-mirror glass, measured off the Volvo donor's own plate
+    (the `sideMirror` role's MIrror_Chrome_0: its one boundary loop, +x side,
+    about the plate's bbox centre, in metres — x outboard, y up). 171 x 109 mm
+    overall, shaped like the real thing: a long straight bottom, an inboard
+    edge that chamfers away toward the bottom, and the outboard-top corner
+    swept off in one long curve. The right glass uses it mirrored, which
+    sideGlassGeometry does through the local frame (its +x is inboard).
+
+    This is the FALLBACK and the procedural cabin's glass; a loaded donor is
+    re-measured at run time (cockpitmodel.ts) so these numbers never have to
+    track an asset rebuild. */
+export const SIDE_GLASS_OUTLINE: [number, number][] = [
+  [-0.075, -0.004], [-0.071, -0.020], [-0.066, -0.037], [-0.060, -0.050],
+  [-0.053, -0.054], [-0.043, -0.054], [0.043, -0.054], [0.050, -0.054],
+  [0.055, -0.052], [0.061, -0.050], [0.066, -0.045], [0.073, -0.040],
+  [0.080, -0.033], [0.086, -0.026], [0.084, -0.016], [0.081, -0.007],
+  [0.079, 0.001], [0.077, 0.007], [0.075, 0.012], [0.073, 0.017],
+  [0.071, 0.020], [0.069, 0.023], [0.065, 0.027], [0.060, 0.032],
+  [0.054, 0.036], [0.047, 0.039], [0.037, 0.041], [0.026, 0.043],
+  [-0.003, 0.048], [-0.020, 0.049], [-0.037, 0.051], [-0.065, 0.054],
+  [-0.074, 0.054], [-0.081, 0.053], [-0.084, 0.050], [-0.086, 0.044],
+  [-0.085, 0.035], [-0.082, 0.024], [-0.079, 0.011],
+];
+/** How far the glass stands toward the driver off the plate it covers. Small
+    on purpose: the pane is drawn OVER the donor's chrome plate, and every mm
+    of standoff is a mm of parallax that lets a sliver of chrome show past one
+    edge at an oblique view. 1 mm is enough to keep it off the plate's depth
+    without that; the rear-view glass runs at 2 mm for the same reason. */
+const SIDE_GLASS_PROUD = 0.001;
+/** The glass is grown this much past the plate outline (a scale about its
+    centre, so ~1.5 mm at the edges) so it covers the chrome to the bevel
+    rather than leaving a hairline of it at the rim. The bevel is painted
+    housing 6 mm wide, so the overlap is invisible. */
+const SIDE_GLASS_GROW = 1.02;
+/** rearCam render target aspect (post.ts: 320 x 128, or 160 x 64 halved —
+    same shape either way, so mirrorHalf needs nothing here). */
+const MIRROR_RT_ASPECT = 2.5;
+/** Vertical slice of the rearCam render a door mirror shows, as a fraction of
+    its height, and where that slice is centred (0.5 = the horizon, since the
+    rearCam is level). Under the horizon so the glass holds more road than
+    sky — at 0.43 the horizon sits ~60% of the way up the glass, which is
+    where a door mirror aimed at the adjacent lane puts it; at the 0.47 first
+    tried, sky was half the glass. Width follows from the glass aspect — see
+    placeSideGlass. */
+const SIDE_BAND = 0.72, SIDE_BAND_MID = 0.43;
+
+/** A flat glass in the shape of `outline`, in the xy plane facing +z, with
+    uvs normalised 0..1 over its own bounds (so cropUV can pick the slice of
+    the render it shows without knowing the shape). */
+function sideGlassGeometry(outline: [number, number][]) {
+  let cx = 0, cy = 0;
+  for (const [x, y] of outline) { cx += x; cy += y; }
+  cx /= outline.length; cy /= outline.length;
+  const shape = new THREE.Shape(outline.map(([x, y]) =>
+    new THREE.Vector2(cx + (x - cx) * SIDE_GLASS_GROW, cy + (y - cy) * SIDE_GLASS_GROW)));
+  const g = new THREE.ShapeGeometry(shape, 1);
+  g.computeBoundingBox();
+  const bb = g.boundingBox!;
+  const w = Math.max(1e-6, bb.max.x - bb.min.x), h = Math.max(1e-6, bb.max.y - bb.min.y);
+  const pos = g.getAttribute("position"), uv = g.getAttribute("uv");
+  for (let i = 0; i < uv.count; i++)
+    uv.setXY(i, (pos.getX(i) - bb.min.x) / w, (pos.getY(i) - bb.min.y) / h);
+  uv.needsUpdate = true;
+  return g;
+}
+
 export interface Cockpit {
   group: THREE.Group;
   wheelGroup: THREE.Group;
@@ -74,6 +150,11 @@ export interface Cockpit {
       as above. */
   wiperSwitch(imported: boolean): THREE.Object3D;
   setMirrorVis(v: boolean): void;
+  /** Re-shape and re-aim one door-mirror glass (s: +1 car LEFT / driver, -1
+      RIGHT) to a donor's own mirror plate — see SIDE_GLASS_OUTLINE and the
+      wing-mirror block for the conventions. `null` restores the built-in
+      (procedural) fit. Called by cockpitmodel.ts once the donor is measured. */
+  fitSideMirror(s: 1 | -1, fit: SideGlassFit | null): void;
   /** Electrochromic dim on the REAR-VIEW glass, 0 (clear) .. 1 (dimmed) —
       a gain write on that glass's own material. The wing mirrors share the
       RT texture but not the material, so they stay at day gain: the cell in
@@ -1787,10 +1868,47 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      driver), and viewing a textured quad from behind already reverses it
      once. That reversal IS the screen flip, so a second one un-mirrors the
      reflection. The wing mirrors below therefore carry no `scale.x = -1`. */
-  function cropUV(g: THREE.PlaneGeometry, u0: number, u1: number) {
+  function cropUV(g: THREE.BufferGeometry, u0: number, u1: number, v0 = 0, v1 = 1) {
     const uv = g.getAttribute("uv");
-    for (let i = 0; i < uv.count; i++) uv.setX(i, u0 + uv.getX(i) * (u1 - u0));
+    for (let i = 0; i < uv.count; i++)
+      uv.setXY(i, u0 + uv.getX(i) * (u1 - u0), v0 + uv.getY(i) * (v1 - v0));
     uv.needsUpdate = true;
+  }
+  /** Shape, aim and place one door-mirror glass. Shared by the build below and
+      by cockpitmodel.ts's donor re-fit (Cockpit.fitSideMirror), so both cabins
+      go through the one function and cannot disagree about the conventions.
+
+      `fit.normal` is the plate's normal pointing FORWARD (+z-ish, away from
+      the driver): the eye is behind the glass and sees its back face, which is
+      the single reversal that makes a rearward render read as a reflection —
+      see the rear-view block for why no `scale.x` flip is wanted here. Local
+      +x is (n.z, 0, -n.x): outboard on the left glass, inboard on the right,
+      as the u-run note below records. `fit.outline` is in that local frame.
+
+      THE IMAGE IS NOT STRETCHED. The rearCam render is 2.5:1 with square
+      pixels, and a glass this shape is ~1.6:1, so a horizontal slice of the
+      full height would show it ~60% too wide. The slice is cut to the glass's
+      own aspect instead: the SIDE_BAND of the render's height, and as much of
+      its width as keeps the pixels square. Vertical band first because it is
+      the one worth choosing — the rearCam is level, so the band's centre is
+      the horizon, and sitting it a little above the glass's middle puts more
+      road than sky in the mirror, which is where the traffic is. */
+  function placeSideGlass(m: THREE.Mesh, s: 1 | -1, fit: SideGlassFit) {
+    const n = fit.normal.clone().normalize();
+    const u = new THREE.Vector3(n.z, 0, -n.x).normalize();
+    const v = new THREE.Vector3().crossVectors(n, u);
+    m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(u, v, n));
+    m.position.copy(fit.centre).addScaledVector(n, -SIDE_GLASS_PROUD);
+    m.geometry.dispose();
+    const g = sideGlassGeometry(fit.outline);
+    g.computeBoundingBox();
+    const bb = g.boundingBox!;
+    const aspect = (bb.max.x - bb.min.x) / Math.max(1e-3, bb.max.y - bb.min.y);
+    const band = SIDE_BAND;
+    const span = Math.min(1, (aspect * band) / MIRROR_RT_ASPECT);
+    const v0 = SIDE_BAND_MID - band / 2;
+    cropUV(g, s > 0 ? 1 - span : 0, s > 0 ? 1 : span, v0, v0 + band);
+    m.geometry = g;
   }
   /* Sized and placed for the eye at ~0.65 m: a 0.5 m glass this close filled a
      quarter of the screen. Height is a two-camera compromise: at EYE.y+0.12
@@ -1954,39 +2072,75 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      edge and 5.2 m at its outboard edge, 20 m back: a blind-spot-aimed door
      mirror that looks down the adjacent lane rather than at the car's own
      flank. Do not "straighten" it toward the eye. */
+  /* THE GLASS IS THE DONOR'S OWN PLATE, NOT A RECTANGLE INSIDE IT. What the
+     `sideMirror` role calls a "chrome bezel" (MIrror_Chrome_0) is not a ring
+     at all — it has a single boundary loop, so it is a flat 171 x 109 mm
+     PLATE, and that plate is the donor's painted-on mirror glass: it sits in
+     the plane of the housing's rear opening (the paint cap's rim is a 183 x
+     115 loop at the same depth, 6 mm outside it all round) and is shaped like
+     a door mirror — a rounded trapezoid with the outboard-top corner swept
+     off and the inboard-bottom corner chamfered, not a rectangle. The 146 x
+     86 rectangle that used to sit "inside" it could not fit: its outboard-top
+     and inboard-bottom corners stood outside the plate on the painted bevel
+     while chrome showed around the rest of it, so the mirror read as a
+     square-ish pane floating off-centre in a bigger dark shape with black
+     around it (reported: "just squares, off-centred, they don't fit inside
+     the mirrors").
+
+     So the reflection now takes the plate's OUTLINE as its shape. The default
+     below is that outline as measured off the shipped GLB (tools: boundary
+     loop of the chrome plate, +x side, in metres about the plate's bbox
+     centre, u outboard and v up), and cockpitmodel.ts re-derives it from
+     whatever donor actually arrives — the plate is found by its geometry
+     (planar, mirror-sized), not by name — so a rebuilt or different donor
+     re-fits the glass instead of inheriting these numbers. The procedural
+     cabin uses the same outline inside a shell sized to hug it, so the A/B
+     toggle does not swap a shaped glass for a rectangle.
+
+     WHERE THE PROCEDURAL GLASS SITS is its own decision, not the donor's.
+     These numbers used to be the donor plate's manifest centre (0.90, 1.0815,
+     0.57), on the theory that the A/B toggle should not move the glass. Two
+     things made that wrong. The loaded donor's plate is not there anyway —
+     the scene is re-seated on arrival and platePlane measures it at y 1.105,
+     z 0.580, which is why the old rectangle also hung 2 cm low on the plate —
+     and it is only right for THAT cabin: the procedural door card's belt rail
+     tops out at y 1.1475 and runs to z 0.57, so a glass spanning y 1.04-1.12
+     at z 0.57 sat entirely below and level with it. From EYE (y 1.35, looking
+     down at it) the card hid all but a sliver along the top edge, and the
+     mirror read as a black shape with a stripe of glass — the procedural
+     cabin's own version of the "doesn't fit, weird black space" report, and
+     invisible from CONSOLE too.
+
+     So the procedural mirror now sits where a door mirror sits: glass bottom
+     ~1.155, just over the belt rail, and 4.5 cm ahead of the card's front end,
+     outboard enough that the shell's inboard end (x ~0.84) meets the card's
+     outer skin rather than living inside the cabin. The stub arm below bridges
+     the card's top-front corner to the shell. A donor never sees these: it
+     re-fits to its own plate (cockpitmodel.ts), and only a donor with NO
+     detectable plate falls back here, with a console warning. */
   const SIDE_MIR = {
-    /* Bezel centre, with the glass stood 3 mm proud of it toward the driver
-       so it never z-fights the ring it sits in. */
-    x: 0.8994, y: 1.0815, z: 0.5668,
+    /* Glass centre; the glass stands SIDE_GLASS_PROUD toward the driver so it
+       never z-fights the shell face it covers. */
+    x: 0.93, y: 1.21, z: 0.615,
     /* rotation.y for the +x glass. The plane's normal (sin, 0, cos) is the
-       bezel normal negated — the same plane, and the sign that puts u=1 on
-       the edge where the far lane appears. */
+       donor bezel normal negated — the same plane, and the sign that puts u=1
+       on the edge where the far lane appears. */
     yaw: 0.2161,
   };
   const sideMirrors: THREE.Mesh[] = [];
-  for (const s of [1, -1]) {
+  for (const s of [1, -1] as const) {
     /* u runs OUTBOARD-to-INBOARD on the left glass and inboard-to-outboard on
        the right, which is what this yaw and the absence of a `scale.x` flip
        between them produce: local +x lands on (cos yaw, 0, -sin yaw), so on
        the left mirror u=1 is the outboard edge (where the far lane is) and on
        the right mirror u=1 is the inboard edge (where the near lane is).
        Both agree with the render, whose u climbs toward the car's left. */
-    /* 146 x 86 inside a 171 x 109 bezel, i.e. ~15% inset per axis rather than
-       the ~7% a straight "fit the aperture" sum gives. The extra is for the
-       CORNERS: the bezel is a rounded rectangle and the glass is a square-cut
-       plane, so at 158 x 96 the plane's corners reached past the curve and a
-       sliver of pane showed outside the ring (reported: "you can kinda see it
-       peeking out"). Inscribing a rectangle in a rounded aperture costs more
-       than the radius, so this is deliberately generous.
-
-       Costs a little glass area, not field of view — cropUV below picks the
-       slice of the render, and that is unchanged, so the mirror still shows
-       the same stretch of road, just in a slightly smaller pane. */
-    const g = new THREE.PlaneGeometry(0.146, 0.086);
-    cropUV(g, s > 0 ? 0.58 : 0, s > 0 ? 1 : 0.42);
-    const m = new THREE.Mesh(g, mirrorMat);
-    m.position.set(s * SIDE_MIR.x, SIDE_MIR.y, SIDE_MIR.z);
-    m.rotation.y = s * SIDE_MIR.yaw;
+    const m = new THREE.Mesh(new THREE.BufferGeometry(), mirrorMat);
+    placeSideGlass(m, s, {
+      centre: new THREE.Vector3(s * SIDE_MIR.x, SIDE_MIR.y, SIDE_MIR.z),
+      normal: new THREE.Vector3(s * Math.sin(SIDE_MIR.yaw), 0, Math.cos(SIDE_MIR.yaw)),
+      outline: SIDE_GLASS_OUTLINE,
+    });
     interiorG.add(m);
     sideMirrors.push(m);
   }
@@ -2000,11 +2154,20 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      panels take over, and a door mirror is body. */
   beginRegion("cabin");
   for (const s of [-1, 1]) {
-    // sized and squared to the donor's own cap (x 0.80-1.01, y 0.97-1.15,
-    // z 0.53-0.69) so the A/B toggle does not move the glass under itself
-    put(rbox(0.196, 0.17, 0.11, 0.035), piano, [s * 0.9112, 1.07, 0.6205], [0, s * SIDE_MIR.yaw, 0]);
-    // stub arm back to the door card, so it is mounted rather than hovering
-    put(rbox(0.06, 0.06, 0.055, 0.02), piano, [s * 0.845, 1.045, 0.615], [0, s * SIDE_MIR.yaw, 0]);
+    /* Hugs the glass: 1 cm of shell past the 171 x 109 outline on each side,
+       with its rear face in the plate plane so the glass stands the same 1 mm
+       proud of it that it stands proud of the donor's plate. It was 196 x 170
+       and hung 1 cm low, which left a black band of shell under a glass that
+       covers barely half its height — the procedural-cabin version of the
+       same "black space" complaint. Placed off SIDE_MIR, so it follows the
+       glass wherever that goes. */
+    const nx = s * Math.sin(SIDE_MIR.yaw), nz = Math.cos(SIDE_MIR.yaw);
+    put(rbox(0.19, 0.128, 0.11, 0.03), piano,
+      [s * SIDE_MIR.x + nx * 0.055, SIDE_MIR.y, SIDE_MIR.z + nz * 0.055], [0, s * SIDE_MIR.yaw, 0]);
+    /* Stub arm from the door card's top-front corner (card to x 0.85, y
+       1.1475, z 0.57) up to the shell's inboard end, so the mirror is mounted
+       rather than hovering past the window line. Sized to overlap both. */
+    put(rbox(0.05, 0.09, 0.08, 0.02), piano, [s * 0.84, 1.17, 0.595], [0, s * SIDE_MIR.yaw, 0]);
   }
   endRegion();
   const mirrorParts = [mirrorMesh, ...sideMirrors];
@@ -2172,6 +2335,14 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
       rearMirrorMat.color.setScalar(
         MIRROR_GAIN.clear + (MIRROR_GAIN.dim - MIRROR_GAIN.clear) * k
       );
+    },
+    fitSideMirror: (s, fit) => {
+      const m = sideMirrors[s > 0 ? 0 : 1];
+      placeSideGlass(m, s, fit ?? {
+        centre: new THREE.Vector3(s * SIDE_MIR.x, SIDE_MIR.y, SIDE_MIR.z),
+        normal: new THREE.Vector3(s * Math.sin(SIDE_MIR.yaw), 0, Math.cos(SIDE_MIR.yaw)),
+        outline: SIDE_GLASS_OUTLINE,
+      });
     },
     setMirrorVis: (v) => {
       mirrorParts.forEach((m) => (m.visible = v));
