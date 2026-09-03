@@ -44,9 +44,30 @@ export function deviceType(): "mobile" | "desktop" {
       boot the real game in puppeteer, and their menu-walks must not pour
       fake players into the dashboard;
     - double mount (React strict/dev): the `ready` latch. */
+/** Owner / tester opt-out. Visit once with `?owner=1` on a device and that
+    browser is excluded from analytics for good (localStorage flag);
+    `?owner=0` re-enables it. Client-side because the site has no server
+    session to key an IP filter on — and the owner plays from several
+    networks anyway. */
+const OWNER_KEY = "neonx.analytics.optout";
+function ownerOptedOut(): boolean {
+  try {
+    const q = new URLSearchParams(location.search).get("owner");
+    if (q === "1" || q === "true") localStorage.setItem(OWNER_KEY, "1");
+    else if (q === "0" || q === "false") localStorage.removeItem(OWNER_KEY);
+    return localStorage.getItem(OWNER_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function initAnalytics() {
   if (ready || typeof window === "undefined") return;
   if (navigator.webdriver) return;
+  if (ownerOptedOut()) {
+    console.info("[analytics] owner opt-out active — nothing is sent from this browser");
+    return;
+  }
   try {
     posthog.init(PH_KEY, {
       api_host: PH_HOST,

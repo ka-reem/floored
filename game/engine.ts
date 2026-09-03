@@ -1720,6 +1720,11 @@ export class Game {
     crashes: 0, laps: 0, mtnRuns: 0,
     routeT: 0, mtnOn: false, mtnLo: 0, mtnHi: 0, mtnOffT: 0,
   };
+  /** Seconds of running time spent in each camera mode this session,
+      indexed like CAM_NAMES. Analytics only (run_end reports the per-run
+      delta) — which view people actually DRIVE in, not just switch to. */
+  private camT: number[] = new Array(CAM_COUNT).fill(0);
+  get cameraSeconds(): readonly number[] { return this.camT; }
   /** Lifetime stats as loaded from the profile — a COPY, never the profile's
       own object, so lifetimeStats() (seed + session, recomputed per call) is
       idempotent however many times persist() writes it back. */
@@ -5666,6 +5671,7 @@ export class Game {
   private statsUpdate(dt: number) {
     const st = this.stats;
     const sp = Math.abs(this.car.u);
+    this.camT[this.camMode] += dt;
     if (sp > STATS.moveFloor) {
       st.dist += sp * dt;
       st.driveT += dt;

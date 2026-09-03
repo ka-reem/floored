@@ -75,22 +75,34 @@ export default function GameApp() {
      one run_end with the delta since the mark. Refs only (the ui callbacks
      handed to the engine are built once, same reason as screenRef), and
      both are no-ops until the world is loaded. */
-  const runMark = useRef<{ t: number; d: number } | null>(null);
+  const runMark = useRef<{ t: number; d: number; cam: number[] } | null>(null);
   const markRun = useCallback(() => {
     const g = gameRef.current;
-    if (g?.loaded) runMark.current = { t: g.sessionStats.driveT, d: g.sessionStats.dist };
+    if (g?.loaded) runMark.current = { t: g.sessionStats.driveT, d: g.sessionStats.dist, cam: [...g.cameraSeconds] };
   }, []);
   const emitRunEnd = useCallback((reason: "pause" | "help" | "exit") => {
     const g = gameRef.current, m = runMark.current;
     if (!g || !m || !g.loaded) return;
     const s = g.sessionStats;
     const secs = s.driveT - m.t, dist = s.dist - m.d;
-    runMark.current = { t: s.driveT, d: s.dist };
+    /* per-camera seconds for THIS run: which view people actually drive in.
+       camera_main is the mode that held the most of the run. */
+    const camNow = [...g.cameraSeconds];
+    const camSecs: Record<string, number> = {};
+    let camMain = "", camMax = -1;
+    camNow.forEach((v, i) => {
+      const d = Math.round(v - (m.cam[i] ?? 0));
+      camSecs["camera_seconds_" + CAM_NAMES[i].toLowerCase()] = d;
+      if (d > camMax) { camMax = d; camMain = CAM_NAMES[i]; }
+    });
+    runMark.current = { t: s.driveT, d: s.dist, cam: camNow };
     if (secs < 1) return; // Esc a beat after resuming is not a run worth a row
     track("run_end", {
       reason,
       seconds_played: Math.round(secs),
       distance_m: Math.round(dist),
+      camera_main: camMain,
+      ...camSecs,
       /* session-scope rollups, not per-run: topSpeed and the counters are
          the engine's session accumulator (Game.sessionStats) */
       top_speed_mph: Math.round(s.topSpeed * 2.236936),
@@ -1466,7 +1478,11 @@ function SettingsPanel({
       } else {
         /* debounced per key: range sliders fire onChange on every tick of a
            drag, and the value worth keeping is the one it settles on */
-        trackDebounced("settings_change:" + k, "settings_change", { setting: k, value: v });
+        trackDebounced("settings_change:" + k, "settings_change", {
+          setting: k,
+          value: v,
+          previous: before[k] as string | number | boolean,
+        });
       }
     }
     force((n) => n + 1);
