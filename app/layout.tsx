@@ -1,8 +1,9 @@
 import type { Metadata, Viewport } from "next";
-import { Overpass, Space_Grotesk, Zen_Kaku_Gothic_New } from "next/font/google";
+import { Space_Grotesk } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import PostHogProvider from "@/components/PostHogProvider";
 import "./globals.css";
+import "./fonts.css";
 import "./ui-system.css";
 
 /* Display face for titles/buttons/HUD numerals only (globals.css scopes it
@@ -17,27 +18,8 @@ const displayFont = Space_Grotesk({
   display: "swap",
 });
 
-/* The Blue Route sign faces (app/ui-system.css, --font-sign / --font-sign-jp).
-   Overpass is the open Highway Gothic descendant the guide-sign chrome is set
-   in; it is a variable font, so no weight list. Zen Kaku Gothic New carries
-   the Japanese. Google serves it as unicode-range slices (there is no
-   "japanese" subset to name), so it is not preloaded — the JP glyph slices
-   arrive on first paint of a JP string, and until then the CSS falls back to
-   the platform's JP stack. Both are self-hosted by next/font at build time,
-   same as Space Grotesk above. */
-const signFont = Overpass({
-  subsets: ["latin"],
-  variable: "--font-sign-raw",
-  display: "swap",
-  fallback: ["Segoe UI", "system-ui", "sans-serif"],
-});
-const signFontJp = Zen_Kaku_Gothic_New({
-  weight: ["700", "900"],
-  preload: false,
-  variable: "--font-sign-jp-raw",
-  display: "swap",
-  fallback: ["Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "Meiryo", "Noto Sans JP", "sans-serif"],
-});
+/* The Blue Route sign faces (Overpass + Zen Kaku Gothic New) are self-hosted
+   via app/fonts.css — see that file for why they are not next/font. */
 
 /* Absolute origin for the URL-bearing metadata below (canonical, og:image,
    twitter:image need fully qualified URLs — see metadataBase in
@@ -115,7 +97,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${displayFont.variable} ${signFont.variable} ${signFontJp.variable}`}>
+    <html lang="en" className={displayFont.variable}>
       <body>
         {/* PostHog product analytics (curated game events + sampled session
             replay — see lib/analytics.ts). Wraps the page so its mount
