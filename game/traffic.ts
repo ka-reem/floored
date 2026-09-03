@@ -483,15 +483,25 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
    real lamp geometry now, so the sprite no longer has to sell the lamp on its
    own up close. */
 const SPRITE_MAX = 0.09;
-function clampSprite(mat: THREE.PointsMaterial) {
+/* `trueMetres`: three's size attenuation is `size * scale / z` with no
+   projection term, so a sprite's pixel size ignores the camera's fov while
+   the geometry around it does not — at the dashcam's ~110 degree horizontal
+   the same sprite is ~3x larger against its lens than in the chase view.
+   The lens halos multiply by projectionMatrix[1][1] (= 1/tan(fov/2)), which
+   makes `size` a true world height in every camera AND in the mirror and
+   road-reflection passes, each of which renders with its own projection. */
+function clampSprite(mat: THREE.PointsMaterial, max = SPRITE_MAX, trueMetres = false) {
   mat.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader.replace(
       "gl_PointSize *= ( scale / - mvPosition.z );",
-      `gl_PointSize *= ( scale / - mvPosition.z );
-       gl_PointSize = min( gl_PointSize, scale * ${SPRITE_MAX.toFixed(3)} );`
+      `gl_PointSize *= ( scale / - mvPosition.z );${
+        trueMetres ? "\n       gl_PointSize *= projectionMatrix[1][1];" : ""
+      }
+       gl_PointSize = min( gl_PointSize, scale * ${max.toFixed(3)} );`
     );
   };
-  mat.customProgramCacheKey = () => "npcSprite";
+  mat.customProgramCacheKey = () =>
+    trueMetres ? `npcHalo|${max.toFixed(3)}` : "npcSprite";
 }
 
 /* Driver personalities. Each NPC rolls one at spawn and keeps it for its whole
@@ -1426,6 +1436,76 @@ function poolTexture(): THREE.Texture {
   return tex;
 }
 
+/* ---- near-field tail/brake lamp halos ----
+   History, because this has flipped twice. The red lamps used to be the
+   round glow sprites (clouds.tail/brake, the shared glowTex) at every range,
+   and on the modelled fleet they read as blobs floating in front of the car
+   — the owner: "I don't want red blob taillights anymore. I want real
+   taillights." So the emissive lens geometry (baked `_LAMP` tags, or the
+   quads npcmodels.ts authors at load) took over inside 70 m and the sprites
+   became a 70→95 m far-field fade (5ac8a4f). That left the near lamps as
+   flat lit polygons: the lens sits at ~0.55 luma running / ~0.75 braking,
+   under the bloom bright-pass knee (soft knee from 0.40, threshold 0.95, so
+   the bright-pass weight is ~0.02 / ~0.07), which is to say no glow at all.
+   The owner's follow-up: keep the shaped lamps, "add some glow like it used
+   to be previously".
+
+   So the glow is back, as a HALO rather than a blob — the differences from
+   the old sprites are exactly the things that made those read badly:
+   - its own texture (haloTexture): the shared glowTex holds 0.5 at 35% of
+     the radius and is a hot disc, which is what covered the lens. This one
+     is (1-r)^2.3 sampled at 18 stops — 0.5 by r=0.26, 0.2 by r=0.5, 0.04
+     by r=0.75, a long low creep to zero (realistic-light: many stops, spend
+     the radius on the tail, never a knee to print).
+   - sized in TRUE metres (clampSprite trueMetres) so it hugs the same lens
+     in the dashcam, chase, hood, cockpit and console views alike, and
+     capped at HALO.max of the viewport so a car right on the bumper never
+     wears an orb.
+   - the vertex-colour weight (tailW/brakeW) keeps the halo's core BELOW the
+     lens: additive, so the lens stays the brightest, sharpest thing and the
+     halo is the skirt around it. Grade math for the tail: (2.05,.15,.22) ×
+     0.95 × 0.45 = (0.88,0.06,0.09) linear at the centre, luma 0.30 — over
+     dark paint that lands ~0.4 display after ACES + encode, saturated red
+     (lampProtect keeps it off the blown-white clip); at r=0.5 it is ~0.13
+     luma, and at r=0.75 ~0.026, riding just over the POV crush floor, which
+     is the fade. Brake at (3.05,.14,.20) × 0.95 × 0.55 = (1.59,.07,.10):
+     luma 0.53 added to the 0.75 lens core puts the lamp at ~1.3 pre-grade,
+     where the bloom bright-pass finally wakes (weight ~0.27) — the brake
+     jump now blooms as well as brightens, which is the step the eye reads.
+   - it hands over to the far sprite across the same 70→95 m band (halo
+     1→0 as the sprite goes 0→1), so the far field is exactly what it was.
+   Styles with no lens geometry at all keep the old sprite-only path.
+   `window.__npcHalo = { tailW, brakeW, tailSize, brakeSize }` overrides
+   these live (read every frame) for A/B from the console; 0 weights are
+   the pre-halo look. */
+const HALO = {
+  /** halo diameters, true metres — ~4x the lens quad's 0.32 m width */
+  tailSize: 1.4, brakeSize: 1.9,
+  /** vertex-colour weight inside the lens range (see the arithmetic above) */
+  tailW: 0.45, brakeW: 0.55,
+  /** pixel cap as a fraction of the viewport height */
+  max: 0.14,
+};
+const HALO_STOPS = 18;
+function haloTexture(): THREE.Texture {
+  const c = document.createElement("canvas");
+  c.width = 64;
+  c.height = 64;
+  const g = c.getContext("2d")!;
+  g.clearRect(0, 0, 64, 64);
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 31);
+  for (let i = 0; i <= HALO_STOPS; i++) {
+    const t = i / HALO_STOPS;
+    const a = Math.pow(1 - t, 2.3);
+    grad.addColorStop(t, `rgba(255,255,255,${a.toFixed(4)})`);
+  }
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 /* ---- streetlight wash over NPC bodies ----
    The deck's sodium lamps are fakes (no dynamic lights), so a car driving
    under one stayed visually unlit while the deck around it glowed. Fix is the
@@ -1921,7 +2001,10 @@ export class Traffic {
     this.poolInst.visible = false;
     scene.add(this.poolInst);
 
-    const mkCloud = (color: number | THREE.Color, size: number, fades = false): Cloud => {
+    const haloTex = haloTexture();
+    const mkCloud = (
+      color: number | THREE.Color, size: number, fades = false, halo = false
+    ): Cloud => {
       const arr = new Float32Array(N * 2 * 3);
       arr.fill(-999);
       const geo = new THREE.BufferGeometry();
@@ -1936,11 +2019,12 @@ export class Traffic {
         geo.setAttribute("color", new THREE.BufferAttribute(fade, 3));
       }
       const pmat = new THREE.PointsMaterial({
-        size, map: glowTex, color, transparent: true, opacity: 0.95,
+        size, map: halo ? haloTex : glowTex, color, transparent: true, opacity: 0.95,
         sizeAttenuation: true, depthWrite: false, blending: THREE.AdditiveBlending,
         vertexColors: fades,
       });
-      clampSprite(pmat);
+      if (halo) clampSprite(pmat, HALO.max, true);
+      else clampSprite(pmat);
       const pts = new THREE.Points(geo, pmat);
       pts.frustumCulled = false;
       scene.add(pts);
@@ -1998,11 +2082,18 @@ export class Traffic {
        — precisely on the lights"): the glow should halo a lens, not replace
        it. The hifi styles already suppress these inside 70 m in favour of
        their emissive lens pixels; these sizes are what the OLD bakes (and
-       everything past 70 m) show. */
+       everything past 70 m) show. Inside 70 m the lenses now wear the
+       tailHalo/brakeHalo clouds instead (HALO above) — the glow the owner
+       asked back, shaped as a skirt around the lens rather than a disc
+       over it. */
     this.clouds = {
       head: mkCloud(0xa9b7d1, 1.0),
       tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.8, true),
       brake: mkCloud(new THREE.Color(3.05, 0.14, 0.20), 1.25, true),
+      /* near-field lens halos — same tints, own soft texture, true-metre
+         sizing; see the HALO block below poolTexture */
+      tailHalo: mkCloud(new THREE.Color(2.05, 0.15, 0.22), HALO.tailSize, true, true),
+      brakeHalo: mkCloud(new THREE.Color(3.05, 0.14, 0.20), HALO.brakeSize, true, true),
       sig: mkCloud(0xffa028, 1.05),
       roof: mkCloud(0xffb040, 0.95), polR: mkCloud(0xff3040, 1.5),
       polB: mkCloud(0x3d74ff, 1.5),
@@ -5885,6 +5976,12 @@ export class Traffic {
   private updateLights(now: number, night: boolean, player: CarState) {
     const SP = this.clouds;
     const CL = this.cloudList;
+    /* live halo knobs (window.__npcHalo, see HALO) — a size change is one
+       uniform write per cloud, a weight change rides the vertex colour */
+    const hk = ((window as any).__npcHalo as Partial<typeof HALO> | undefined) || HALO;
+    const tailHW = hk.tailW ?? HALO.tailW, brakeHW = hk.brakeW ?? HALO.brakeW;
+    (SP.tailHalo.pts.material as THREE.PointsMaterial).size = hk.tailSize ?? HALO.tailSize;
+    (SP.brakeHalo.pts.material as THREE.PointsMaterial).size = hk.brakeSize ?? HALO.brakeSize;
     /* Indicator blink phase. This used to be one global `now % 0.9`, which
        put every signalling car and every wreck's hazards in perfect lockstep
        — two cars indicating in exact sync is unmistakably synthetic, and it
@@ -6004,6 +6101,18 @@ export class Traffic {
       emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake && tailSprite, tailW);
       emit(SP.brake, 0, tx0, ty0, tz0, !wrecked && n.brake && tailSprite, tailW);
       emit(SP.brake, 1, tx1, ty1, tz1, !wrecked && n.brake && tailSprite, tailW);
+      /* The near-field halo around the lens (HALO): the complement of the
+         far sprite's ramp, so the two cross-fade through 70→95 m and a lens
+         style is never bare. Night only, like the emissive lens levels it
+         skirts — by day the lens is unlit plastic and the far brake sprite
+         alone carries the signal. n.fade keeps a despawning car's halo from
+         outliving its body. */
+      const haloW = (1 - tailW) * n.fade;
+      const halo = haloW > 0 && night;
+      emit(SP.tailHalo, 0, tx0, ty0, tz0, halo && running && !n.brake, haloW * tailHW);
+      emit(SP.tailHalo, 1, tx1, ty1, tz1, halo && running && !n.brake, haloW * tailHW);
+      emit(SP.brakeHalo, 0, tx0, ty0, tz0, halo && !wrecked && n.brake, haloW * brakeHW);
+      emit(SP.brakeHalo, 1, tx1, ty1, tz1, halo && !wrecked && n.brake, haloW * brakeHW);
       /* Signals — both slots at once is a hazard flash: a wreck, or the
          two-blink acknowledgement a car gives when it takes a hint and speeds
          up rather than moving over (see HAIL.ackT). */
