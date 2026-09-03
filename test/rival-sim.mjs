@@ -41,12 +41,19 @@ const dir = path.join(out, "game", "world");
   const p = path.join(dir, "corridor.js");
   writeFileSync(p, readFileSync(p, "utf8").replace(/"(\.\.?\/[\w/]+)"/g, '"$1.js"'));
 }
-const { getCorridor, setRoadSeed, TOLL } = await import(path.join(dir, "corridor.js"));
+const { getCorridor, setRoadSeed, TOLL, playground } = await import(path.join(dir, "corridor.js"));
 /* The lane schedule is rolled from the road seed now, so the lap the rival
    drives is a different lap on a different road. ROAD_SEED=<n> re-plans the
    corridor before the scenario is built. */
 if (process.env.ROAD_SEED) setRoadSeed(+process.env.ROAD_SEED);
 const c = getCorridor();
+/* The wide-lane "playground" stretch this road seed rolled (null when none).
+   Section 5 tracks lead-holds inside it explicitly — the follow-cap failure
+   that motivated the rubber-band lived exactly there. */
+const play = playground();
+const TRACE = process.env.TRACE || "";
+const TRACE_FROM = +(process.env.TRACE_FROM || 30); // print while the gap is under this
+let traceNow = false;
 
 let fail = 0;
 const bad = (m) => { console.log("  FAIL " + m); fail++; };
@@ -74,9 +81,11 @@ const RIVAL = {
   holdNotWithin: 40, reseedBehind: 150, reseedAhead: 110, reseedAfter: 6,
   clearLon: 1.0, clearLat: 0.3, sepLon: 0.9, sepLat: 0.25, sepPasses: 4,
   backOffStep: 0.6, backOffSteps: 40,
-  seeAhead: 240, followSee: 95, laneFreeMax: 30, laneGain: 1.3, laneGainHold: 3.0,
-  hustleBehind: 25, hustleAfter: 4, hustleSpan: 8, hustleGainMin: 0.85,
+  seeAhead: 240, followSee: 95, horizon: 4.0, laneGain: 1.3, laneGainHold: 3.0,
+  hustleBehind: 25, hustleAfter: 4, hustleSpan: 8, hustleGainMin: 1.05,
   hustleFolMax: 8.0,
+  pressFrom: 90, pressSpan: 90,
+  surgeTop: 110, surgeAcc: 11.5, laneMinHoldUrgent: 0.3, laneMaxHoldUrgent: 1.2,
   yawMax: 9 * Math.PI / 180, yawTau: 0.10,
   folS0: 1.2, folTUrgent: 0.06, folAMax: 5.0, folBCom: 5.0,
   holdFrom: 40, holdSpan: 120, brakeNear: -1.5, brakeTtc: 2.0,
@@ -87,8 +96,11 @@ const RIVAL = {
   shuntMin: 1.0, shuntMax: 2.0, shuntLat: 0.45, shuntLon: 0.5,
   shuntLonMax: 6, shuntDamp: 2.2,
   seedAhead: 90, slideDt: 0.1,
-
 };
+/* RIVAL_OVERRIDE='{"horizon":6,"laneGain":1.1}' patches the table for a
+   tuning sweep — the shipping values are the ones in traffic.ts. */
+if (process.env.RIVAL_OVERRIDE)
+  Object.assign(RIVAL, JSON.parse(process.env.RIVAL_OVERRIDE));
 /* NOTE: this file used to carry a BEFORE arm that A/B'd against the rival as
    it was before the speed fix. It has been removed — the design has changed
    twice since (the pace model was inverted, then the blocking removed
@@ -455,10 +467,12 @@ console.log("5. threading traffic — body separation");
    of tuning rounds before it was noticed). The flowing case is the one that
    can actually answer "is the rival fast", and the corridor spends plenty of
    time looking like it. */
-/* Three seeds per density, not one — a single fixed seed cannot back the
-   "zero overlaps is absolute" claim, and the ahead%/speed-ratio numbers the
-   report cites need a range rather than one lucky (or unlucky) draw. */
-const DENSITY_SEEDS = [20260825, 90210, 314159];
+/* Five seeds per density (ten runs), not one — a single fixed seed cannot
+   back the "zero overlaps is absolute" claim, "the player never holds the
+   lead" needs at least ten draws to mean anything, and the ahead%/speed-ratio
+   numbers the report cites need a range rather than one lucky (or unlucky)
+   draw. */
+const DENSITY_SEEDS = [20260825, 90210, 314159, 424242, 777001];
 const seedResults = [];
 for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
   console.log(`   ---- ${NC === 180 ? "dense" : "flowing"} traffic, seed ${SEED} ----`);
@@ -489,10 +503,17 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
   }
 
   // --- the rival's own logic, mirroring updateRival's three layers ---
-  const perceive = (rs, roff, fleet, range = 70, halfW = 1.9) => {
+  /* offTo: the band from roff to where it is heading counts — mirrors
+     rivalLead's offTo (the player passes its own offset twice) */
+  /* Real half-widths, as rivalLead: a fixed window sized for a truck made
+     every kerb-lane CAR a "lead" for anything on the 1.5 m shoulder, and the
+     rival queued on the shoulder behind cars it was not behind. */
+  const perceive = (rs, roff, fleet, range = 70, wSelf = R.W, offTo = roff) => {
+    const lo = Math.min(roff, offTo), hi = Math.max(roff, offTo);
     let ds = Infinity, lv = 0;
     for (const m of fleet) {
-      if (Math.abs(m.off - roff) > halfW) continue;
+      const hw = (wSelf + m.W) / 2 + 0.25;
+      if (m.off < lo - hw || m.off > hi + hw) continue;
       const ahead = c.deltaZ(rs, m.s);
       if (ahead <= 0 || ahead > range) continue;
       const d = Math.max(ahead - (m.L + R.L) / 2, 0.1);
@@ -500,63 +521,122 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
     }
     return ds < 1e8 ? { ds, v: lv } : null;
   };
-  const latClear = (rs, off2, fleet) => {
+  /* pB: the PLAYER's body, passed for the rival's own checks (mirrors the
+     playerSlot check at the end of rivalLatClear) and null for the player's. */
+  /* tAt / vSelf: ask the question tAt seconds on, with everything moved at
+     its own speed relative to the mover — mirrors rivalLatClear's tAt */
+  const latClear = (rs, off2, fleet, pB = null, tAt = 0, vSelf = 0) => {
     for (const m of fleet) {
       if (Math.abs(m.off - off2) >= (R.W + m.W) / 2 + RIVAL.clearLat) continue;
       const ds = c.deltaZ(rs, m.s);
       const need = (R.L + m.L) / 2 + RIVAL.clearLon;
-      if (ds > -need && ds < need) return false;
+      const ds2 = ds + (m.v - vSelf) * tAt;
+      if (Math.max(ds, ds2) > -need && Math.min(ds, ds2) < need) return false;
+    }
+    if (pB && Math.abs(pB.off - off2) < (R.W + 1.9) / 2 + RIVAL.clearLat) {
+      const ds = c.deltaZ(rs, pB.s);
+      const need = (R.L + 4.5) / 2 + RIVAL.clearLon;
+      const ds2 = ds + (pB.v - vSelf) * tAt;
+      if (Math.max(ds, ds2) > -need && Math.min(ds, ds2) < need) return false;
     }
     return true;
   };
   let backOffs = 0;
   let excluded = 0, laneEvals = 0, yields = 0, yieldWant = 0, blockedYield = 0;
   let movesStarted = 0, movesDone = 0, reversals = 0, lastMoveDir = 0, pendingMove = false;
-  const laneFree = (rs, off, vFree, fleet) => {
+  /* metres of road over the horizon — mirrors laneProgress in traffic.ts */
+  const laneProgress = (rs, roff, vNow, off, vFree, fleet, pObs = null) => {
+    const T = RIVAL.horizon;
+    const tX = Math.min(T, Math.abs(off - roff) / RIVAL.laneRate);
+    const tRun = T - tX;
+    const vRun = Math.min(vFree, vNow + RIVAL.accMax * tRun * 0.5);
     let d = Infinity, mv = 0;
+    // bodies, not a lane-width window — see laneProgress in traffic.ts
     for (const m of fleet) {
-      if (Math.abs(m.off - off) > 2.2) continue;
+      if (Math.abs(m.off - off) >= (R.W + m.W) / 2 + RIVAL.clearLat) continue;
       const ds = c.deltaZ(rs, m.s);
       if (ds > 0 && ds < RIVAL.seeAhead && ds < d) { d = ds; mv = m.v; }
     }
-    if (d > 1e8) return RIVAL.laneFreeMax;
-    const closing = vFree - mv;
-    if (closing <= 0.5) return RIVAL.laneFreeMax;
-    return Math.min(RIVAL.laneFreeMax, d / closing);
+    // the leading player counts as a car in their lane — see traffic.ts
+    if (pObs && Math.abs(pObs.off - off) < (R.W + 1.9) / 2 + RIVAL.clearLat &&
+        pObs.dz > 0 && pObs.dz < RIVAL.seeAhead && pObs.dz < d) {
+      d = pObs.dz; mv = pObs.v;
+    }
+    let run = vRun * tRun;
+    if (d < 1e8 && mv < vRun) {
+      const gap = Math.max(d + (mv - vNow) * tX, 0);
+      const tHit = gap / (vRun - mv);
+      if (tHit < tRun) run = vRun * tHit + mv * (tRun - tHit);
+    }
+    return vNow * tX + run;
+  };
+  /* the whole crossing, not just the destination — mirrors rivalPathClear */
+  const pathClear = (rs, from, to, fleet, pB = null, vSelf = 0) => {
+    const d = to - from;
+    const steps = Math.max(1, Math.ceil(Math.abs(d) / 1.5));
+    for (let i = 1; i <= steps; i++) {
+      const off = from + (d * i) / steps;
+      const tAt = i < steps ? (Math.abs(off - from) + 1.0) / RIVAL.laneRate : 0;
+      if (!latClear(rs, off, fleet, pB, tAt, vSelf)) return false;
+    }
+    return true;
   };
 
-  const bestLane = (rs, roff, fleet, vFree, gain) => {
+  const bestLane = (rs, roff, vNow, fleet, vFree, gain, pObs = null, pB = null) => {
     laneEvals++;
     const nl = c.lanes(rs);
-    const cur = nearestLane(rs, roff);
-    let bestOff = c.laneOffset(cur, rs);
-    let bv = laneFree(rs, bestOff, vFree, fleet) * gain;
+    const lim = Math.max(0, c.halfWidth(rs) - R.W / 2 - 0.3);
+    // the "stay" option is the nearest named line — see bestLane in traffic.ts
+    let stay = c.laneOffset(0, rs), stayD = Infinity;
+    const near = (off) => { const d = Math.abs(off - roff); if (d < stayD) { stayD = d; stay = off; } };
+    for (let k = 0; k < nl; k++) near(c.laneOffset(k, rs));
+    for (let k = 0; k < nl - 1; k++) near((c.laneOffset(k, rs) + c.laneOffset(k + 1, rs)) / 2);
+    near(-lim); near(lim);
+    let bestOff = stay;
+    let bv = laneProgress(rs, roff, vNow, stay, vFree, fleet, pObs) * gain;
+    if (traceNow) {
+      const row = [`stay ${f(stay)}=${f(bv / gain)}`];
+      const all = [];
+      for (let k = 0; k < nl; k++) all.push(c.laneOffset(k, rs));
+      for (let k = 0; k < nl - 1; k++) all.push((c.laneOffset(k, rs) + c.laneOffset(k + 1, rs)) / 2);
+      all.push(-lim, lim);
+      for (const off of all) {
+        if (off === stay) continue;
+        const ok = pathClear(rs, roff, off, fleet, pB, vNow);
+        row.push(`${f(off)}=${ok ? f(laneProgress(rs, roff, vNow, off, vFree, fleet, pObs)) : "X"}`);
+      }
+      console.log(`       DECIDE gain ${f(gain)} ` + row.join(" | "));
+    }
     for (let k = 0; k < nl; k++) {
-      if (k === cur) continue;
       const off = c.laneOffset(k, rs);
-      if (!latClear(rs, off, fleet)) { excluded++; continue; }
-      const v = laneFree(rs, off, vFree, fleet);
+      if (off === stay) continue;
+      if (!pathClear(rs, roff, off, fleet, pB, vNow)) { excluded++; continue; }
+      const v = laneProgress(rs, roff, vNow, off, vFree, fleet, pObs);
       if (v > bv) { bv = v; bestOff = off; }
     }
     // threading: the line BETWEEN two adjacent lanes — see bestLane in traffic.ts
     for (let k = 0; k < nl - 1; k++) {
       const off = (c.laneOffset(k, rs) + c.laneOffset(k + 1, rs)) / 2;
-      if (!latClear(rs, off, fleet)) { excluded++; continue; }
-      const v = laneFree(rs, off, vFree, fleet);
+      if (off === stay) continue;
+      if (!pathClear(rs, roff, off, fleet, pB, vNow)) { excluded++; continue; }
+      const v = laneProgress(rs, roff, vNow, off, vFree, fleet, pObs);
       if (v > bv) { bv = v; bestOff = off; }
     }
     // the shoulder — see bestLane in traffic.ts
-    const lim = Math.max(0, c.halfWidth(rs) - R.W / 2 - 0.3);
     for (const off of [-lim, lim]) {
-      if (Math.abs(off - roff) < 1.0) continue;
-      if (!latClear(rs, off, fleet)) { excluded++; continue; }
-      const v = laneFree(rs, off, vFree, fleet);
+      if (off === stay) continue;
+      if (!pathClear(rs, roff, off, fleet, pB, vNow)) { excluded++; continue; }
+      const v = laneProgress(rs, roff, vNow, off, vFree, fleet, pObs);
       if (v > bv) { bv = v; bestOff = off; }
     }
     return bestOff;
   };
 
-  const separate = (r, fleet) => {
+  const separate = (r, fleet, pB) => {
+    // would the rival's body at (s, off) sit inside the player's? — rivalInPlayer
+    const inPlayer = (os, ooff) =>
+      Math.abs(pB.off - ooff) < (R.W + 1.9) / 2 + RIVAL.sepLat &&
+      Math.abs(c.deltaZ(os, pB.s)) < (R.L + 4.5) / 2 + RIVAL.sepLon;
     const lim = Math.max(0, c.halfWidth(r.s) - R.W / 2 - 0.3);
     // total penetration the rival would be left in at a hypothetical spot
     const pen = (os, ooff) => {
@@ -593,12 +673,34 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
       if (pLat <= pLon) r.off = latOut;
       else { r.s = lonOut; if (wLon < 0) r.v = Math.min(r.v, worst.v); }
     }
-    // guaranteed escape — see the end of rivalSeparate
+    // guaranteed escape, backwards AND sideways — see the end of rivalSeparate
     if (pen(r.s, r.off) > 0) {
-      for (let i = 0; i < RIVAL.backOffSteps; i++) {
-        r.s = c.wrapZ(r.s - RIVAL.backOffStep);
-        if (pen(r.s, r.off) <= 0) break;
+      const o0 = r.off, nl = c.lanes(r.s);
+      const cands = [o0];
+      for (let k = 0; k < nl; k++) cands.push(c.laneOffset(k, r.s));
+      for (let k = 0; k < nl - 1; k++)
+        cands.push((c.laneOffset(k, r.s) + c.laneOffset(k + 1, r.s)) / 2);
+      cands.push(-lim, lim);
+      cands.sort((a, b) => Math.abs(a - o0) - Math.abs(b - o0));
+      let best = Infinity, bestS = r.s, bestOff = o0, s = r.s;
+      for (let pass = 0; pass < 2 && best === Infinity; pass++) {
+        s = r.s;
+        for (let i = 0; i <= RIVAL.backOffSteps; i++) {
+          const back = i * RIVAL.backOffStep;
+          if (back >= best) break;
+          if (i > 0) s = c.wrapZ(s - RIVAL.backOffStep);
+          for (const off of cands) {
+            const cost = back + Math.abs(off - o0);
+            if (cost >= best) break;
+            if (Math.abs(off) > lim) continue;
+            if (pen(s, off) <= 0 && (pass > 0 || !inPlayer(s, off))) {
+              best = cost; bestS = s; bestOff = off; break;
+            }
+          }
+        }
       }
+      r.s = best < Infinity ? bestS : s;
+      r.off = bestOff;
       backOffs++;
     }
   };
@@ -609,13 +711,17 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
   // answer to "is it faster than me" — the mean folds in the easing
   let freeV = 0, freePv = 0, freeN = 0, easeN = 0;
   let aheadFrames = 0, closeFrames = 0, passes = 0, wasAhead = true, reseeds = 0, behindT = 0;
+  /* LEAD-HOLD — the pass criterion the rubber-band exists for: the longest
+     unbroken stretch the PLAYER stayed in front, overall and while the rival
+     was inside the wide-lane playground (where the follow-cap failure lived). */
+  let leadT = 0, maxLead = 0, wideFrames = 0, maxLeadWide = 0;
   // yaw, measured both ways: OLD = raw one-frame rate with offPrev taken
   // before separation and no cap; NEW = smoothed, taken after, capped
   let offPrevOld = 0, offPrevNew = 0, latRateNew = 0;
   const yawOld = [], yawNew = [];
   let wantDiff = 0, v0Sum = 0, v0CapFrames = 0, laneSwitches = 0, abandoned = 0;
   let prevLane = -1, prevWant = -1, mid = false, farLead = 0, farLeadSum = 0;
-  let sepFired = 0, latBlocked = 0;
+  let sepFired = 0, latBlocked = 0, lastLatBlocked = 0;
   const gapHist = [];
 
   /* The player has to thread the same traffic, or the comparison is
@@ -638,20 +744,42 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
 
   const STEPS = Math.round(240 / DT); // four minutes of driving
   for (let i = 0; i < STEPS; i++) {
+    /* THE RIVAL IS SOLID TO THE PLAYER (collide.ts walks `npcs` and the rival
+       is in it), so the player threads it like any other car: it is a lead
+       to follow, an obstacle in the lane scorer and a body in the lateral
+       gate. The earlier version of this loop let the player drive THROUGH
+       the rival, which handed them passes no real player can make — a rival
+       boxed in a jam was simply driven over, and the "lead-hold" that
+       followed measured the phantom, not the controller. */
+    const rb = { s: r.s, off: r.off, L: R.L, W: R.W, v: r.v };
+    const fleetP = fleet.concat(rb);
     {
       // player: flat out, limited by whatever is in front of them
       let pAcc = (78 - pv) * 1.0;
-      const pl = perceive(ps, pOff, fleet);
+      const pl = perceive(ps, pOff, fleetP, 70, P.W);
       if (pl) {
         const aMax = 3.0, bCom = 3.0, T = 0.8, s0 = 4;
         const dv = pv - pl.v;
-        const sS = s0 + pv * T + (pv * dv) / (2 * Math.sqrt(aMax * bCom));
+        const sS = Math.max(0, s0 + pv * T + (pv * dv) / (2 * Math.sqrt(aMax * bCom)));
         pAcc = Math.min(pAcc, aMax * (1 - Math.pow(sS / Math.max(pl.ds, 0.55), 2)));
       }
       pv = clamp(pv + clamp(pAcc, -7, 3.4) * DT, 4, 82);
       ps = c.wrapZ(ps + pv * DT);
+      /* ...and SOLID to everything, not just the rival: collide.ts stops the
+         player at a car's body, so this does too — any body the player would
+         enter this frame pins them behind it at its pace (a real hit would
+         cost them far more). Without this the flat-out player, who only looks
+         70 m ahead, drove THROUGH standstill queues at 70 m/s (dense 777001,
+         t63: 8 m behind an 8 m/s car doing 71) and every lead-hold that
+         followed was the phantom's, not a pass the rival could have denied. */
+      for (const m of fleetP) {
+        if (Math.abs(m.off - pOff) >= (P.W + m.W) / 2) continue;
+        const dz = c.deltaZ(ps, m.s);
+        const need = (P.L + m.L) / 2 + 0.3;
+        if (dz > 0 && dz < need) { ps = c.wrapZ(m.s - need); pv = Math.min(pv, m.v); }
+      }
       pLaneT -= DT;
-      if (pLaneT <= 0) { pLaneT = 1.2; pLaneWant = bestLane(ps, pOff, fleet, 78, RIVAL.laneGain); }
+      if (pLaneT <= 0) { pLaneT = 1.2; pLaneWant = bestLane(ps, pOff, pv, fleetP, 78, RIVAL.laneGain); }
       const pWant = pLaneWant; // bestLane returns an OFFSET now, not an index
       pOffT += clamp(pWant - pOffT, -3.0 * DT, 3.0 * DT);
       /* The player is subject to the SAME lateral gate as the rival. Without
@@ -659,9 +787,13 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
          a threading edge no real player has (they would crash) — and since the
          rival is gated, that unfairness shows up as the rival being
          permanently a couple of percent slower. Measure like for like. */
+      // the pavement clamp the rival gets, or the player slips outboard of
+      // the shoulder by a few cm and phases past trucks the rival queues behind
+      const pLim = Math.max(0, c.halfWidth(ps) - P.W / 2 - 0.3);
+      pOffT = clamp(pOffT, -pLim, pLim);
       const pStep = clamp(pOffT - pOff, -3.4 * DT, 3.4 * DT);
-      const pCand = pOff + pStep;
-      if (pStep === 0 || latClear(ps, pCand, fleet)) pOff = pCand;
+      const pCand = clamp(pOff + pStep, -pLim, pLim);
+      if (pStep === 0 || latClear(ps, pCand, fleetP)) pOff = pCand;
     }
 
     // --- traffic: lane-follow + IDM, and lane changes that ignore the rival ---
@@ -775,6 +907,14 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
       ahead = RIVAL.reseedAhead;
       reseeds++;
     }
+    /* rubber band: hustle (integrated) max press (instant) — mirrors
+       updateRival */
+    const press = clamp((RIVAL.pressFrom - ahead) / RIVAL.pressSpan, 0, 1);
+    const urg = Math.max(hustleNow, press);
+    // the leading player as a lane-scorer obstacle, and their body for the
+    // lateral clearance gate — mirrors pObs / the playerSlot check
+    const pObs = ahead < 0 ? { off: pOff, dz: -ahead, v: pv } : null;
+    const pB = { off: pOff, s: ps, v: pv };
     r.pace += (pv - r.pace) * (1 - Math.exp(-DT / RIVAL.paceTau));
     if (ahead <= RIVAL.holdNotWithin) r.holdT = 0;
     else if (r.holdT > 0) r.holdT -= DT;
@@ -790,25 +930,39 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
       v0 = lerp(v0, Math.max(r.pace - RIVAL.gapDown, 0), t);
     }
     v0 = clamp(v0, 0, RIVAL.top);
+    // SURGE — mirrors updateRival
+    v0 = lerp(v0, Math.max(v0, RIVAL.surgeTop), urg);
 
-    const lead = perceive(r.s, r.off, fleet, RIVAL.followSee, (R.W + 2.5) / 2 + 0.25);
+    let lead = perceive(r.s, r.off, fleet, RIVAL.followSee, R.W, r.laneWant);
+    /* The PLAYER is an obstacle like nothing else is — mirrors updateRival's
+       _lead2 branch: once they are ahead of it and in its path it follows
+       them properly rather than driving through the car it is racing. */
+    let playerLead = false;
+    if (ahead < 0 && Math.abs(pOff - r.off) < 2.4) {
+      const pds = Math.max(-ahead - (R.L + P.L) / 2, 0.1);
+      if (pds < 90 && (!lead || pds < lead.ds)) {
+        lead = { ds: pds, v: pv };
+        playerLead = true;
+      }
+    }
     let acc = (v0 - r.v) * RIVAL.spdP;
     if (lead) {
-      const aMax = lerp(RIVAL.folAMax, RIVAL.hustleFolMax, hustleNow);
-      const bCom = lerp(RIVAL.folBCom, RIVAL.hustleFolMax, hustleNow);
+      const aMax = lerp(RIVAL.folAMax, RIVAL.surgeAcc, urg);
+      const bCom = lerp(RIVAL.folBCom, RIVAL.hustleFolMax, urg);
       const dv = r.v - lead.v;
       const T = RIVAL.folTUrgent;
-      const sS = RIVAL.folS0 + r.v * T + (r.v * dv) / (2 * Math.sqrt(aMax * bCom));
+      // clamped at zero — a faster leader is not an obstacle (see updateRival)
+      const sS = Math.max(0, RIVAL.folS0 + r.v * T + (r.v * dv) / (2 * Math.sqrt(aMax * bCom)));
       acc = Math.min(acc, aMax * (1 - Math.pow(sS / Math.max(lead.ds, 0.55), 2)));
       if (lead.ds < 12 && r.v > lead.v + 2) pinned++;
       leadFrames++; leadDsSum += lead.ds;
       // did the FOLLOWING limit (not the station-keeping) decide this frame?
       if (aMax * (1 - Math.pow(sS / Math.max(lead.ds, 0.55), 2)) < (v0 - r.v) * RIVAL.spdP) capFrames++;
     }
-    let bf = RIVAL.brakeSoft;
+    let bf = playerLead ? RIVAL.brakeHard : RIVAL.brakeSoft;
     if (ahead > 0) { const cl = pv - r.v;
       if (cl > 0.1) bf = lerp(RIVAL.brakeNear, bf, clamp(ahead / cl / RIVAL.brakeTtc, 0, 1)); }
-    r.v = Math.max(0, r.v + clamp(acc, bf, RIVAL.accMax) * DT);
+    r.v = Math.max(0, r.v + clamp(acc, bf, lerp(RIVAL.accMax, RIVAL.surgeAcc, urg)) * DT);
     vSum += r.v;
     pvSum += pv;
     if (easing) easeN++;
@@ -843,18 +997,21 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
     r.laneT += DT;
     {
       const arrived = Math.abs(r.off - r.laneWant) < RIVAL.laneArrive;
-      const blocked = !arrived && !latClear(r.s, r.laneWant, fleet);
+      const blocked = !arrived && !latClear(r.s, r.laneWant, fleet, pB);
       if (blocked) {
         // abort cleanly and serve the dwell — see updateRival
         if (pendingMove) { pendingMove = false; }
         r.laneWant = c.laneOffset(nearestLane(r.s, r.off), r.s);
         r.laneT = 0;
-      } else if ((arrived && r.laneT > RIVAL.laneMinHold) || r.laneT > RIVAL.laneMaxHold) {
+      } else if ((arrived && r.laneT > lerp(RIVAL.laneMinHold, RIVAL.laneMinHoldUrgent, urg)) ||
+        r.laneT > lerp(RIVAL.laneMaxHold, RIVAL.laneMaxHoldUrgent, urg)) {
         r.laneT = 0;
         const prev = r.laneWant;
         const gain = r.holdT > 0 ? RIVAL.laneGainHold
-          : lerp(RIVAL.laneGain, RIVAL.hustleGainMin, hustleNow);
-        r.laneWant = bestLane(r.s, r.off, fleet, v0, gain);
+          : lerp(RIVAL.laneGain, RIVAL.hustleGainMin, urg);
+        traceNow = TRACE === `${NC}:${SEED}` && ahead < TRACE_FROM;
+        r.laneWant = bestLane(r.s, r.off, r.v, fleet, v0, gain, pObs, pB);
+        traceNow = false;
         /* WIGGLE METRICS — a known failure mode now, so they live here
            permanently. A "move" is a decision that shifts the target by more
            than a metre; it COMPLETES if the body reaches it before the target
@@ -881,7 +1038,7 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
     r.offT = clamp(r.offT, -lim, lim);
     const stepLat = clamp(r.offT - r.off, -track * DT, track * DT);
     const cand = clamp(r.off + stepLat, -lim, lim);
-    if (stepLat === 0 || latClear(r.s, cand, fleet)) r.off = cand;
+    if (stepLat === 0 || latClear(r.s, cand, fleet, pB)) r.off = cand;
     else latBlocked++;
 
     // OLD: rate sampled before separation, offPrev recorded before it too
@@ -894,7 +1051,7 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
     // end-of-frame position — mirrors the rival separation pass at the end of
     // Traffic.update)
     const sBefore = r.s, offBefore = r.off;
-    separate(r, fleet);
+    separate(r, fleet, pB);
     if (r.s !== sBefore || r.off !== offBefore) sepFired++;
     offPrevNew = r.off;
 
@@ -921,6 +1078,14 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
     }
     if (frameOverlap) {
       overlapFrames++;
+      if (TRACE === `${NC}:${SEED}`) {
+        console.log(`     OVERLAP t${(i * DT).toFixed(2)} rival s ${f(r.s)} off ${f(r.off)} v ${f(r.v)} nl ${c.lanes(r.s)} lim ${f(lim)} (before sep: s ${f(sBefore)} off ${f(offBefore)})`);
+        for (const m of fleet) {
+          const dLon = c.deltaZ(r.s, m.s), dLat = m.off - r.off;
+          if (Math.abs(dLon) < 30 && Math.abs(dLat) < 6)
+            console.log(`        car dz ${f(dLon)} dlat ${f(dLat)} L ${f(m.L)} W ${f(m.W)} v ${f(m.v)} laneK ${m.laneK} laneOff ${f(c.laneOffset(m.laneK, m.s))}`);
+        }
+      }
       let sepSees=0, partnerYielded=0, partnerMoving=0;
       for (const m of fleet) {
         const dLat=Math.abs(r.off-m.off), dLon=Math.abs(c.deltaZ(m.s,r.s));
@@ -935,6 +1100,17 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
       if(partnerMoving) ovMoving++;
     }
     gapHist.push(ahead);
+    /* TRACE=<NC>:<SEED> prints the rival's state at 10 Hz whenever the player
+       is ahead or within 30 m — the view that explains a lead-hold. */
+    if (TRACE === `${NC}:${SEED}` && i % 6 === 0 && ahead < TRACE_FROM)
+      console.log(`     t${(i * DT).toFixed(1)} ahead ${f(ahead)} rv ${f(r.v)} pv ${f(pv)} v0 ${f(v0)} urg ${f(urg)} nl ${c.lanes(r.s)} roff ${f(r.off)} poff ${f(pOff)} want ${f(r.laneWant)} lead ${lead ? f(lead.ds) + "@" + f(lead.v) + (playerLead ? "P" : "") : "-"} lim ${f(lim)}${latBlocked > lastLatBlocked ? " L2BLOCK" : ""}`);
+    lastLatBlocked = latBlocked;
+    if (ahead < 0) { leadT += DT; if (leadT > maxLead) maxLead = leadT; }
+    else leadT = 0;
+    if (play && r.s >= play.z0 && r.s <= play.z1) {
+      wideFrames++;
+      if (leadT > maxLeadWide) maxLeadWide = leadT;
+    }
     if (ahead > 0) aheadFrames++;
     if (ahead > 0 && ahead < 10) closeFrames++;
     if (wasAhead && ahead < -8) { passes++; wasAhead = false; }
@@ -966,6 +1142,12 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
   const q = (x) => gapHist[Math.floor(x * (gapHist.length - 1))];
   console.log(`   gap to player p10/med/p90: ${f(q(0.1))} / ${f(q(0.5))} / ${f(q(0.9))} m`);
   console.log(`   AHEAD of the player ${(aheadFrames / STEPS * 100).toFixed(1)}% of the run | out-of-sight recycles: ${reseeds}`);
+  console.log(`   LEAD-HOLD: player's longest lead ${f(maxLead)} s overall, ${f(maxLeadWide)} s in the wide section | rival in wide lanes ${(wideFrames / STEPS * 100).toFixed(0)}% of frames`);
+  if (maxLead >= 2)
+    bad(`player held the lead for ${f(maxLead)} s — the rival must never concede 2 s`);
+  else ok(`player never held the lead 2 s (longest ${f(maxLead)} s)`);
+  if (play && wideFrames === 0)
+    bad("run never traversed the wide-lane playground — lost its coverage");
   console.log(`   rival mean speed ${f(vSum / STEPS)} m/s vs player mean ${f(pvSum / STEPS)} m/s (mean folds in the easing)`);
   console.log(`   WHEN NOT EASING (${(freeN / STEPS * 100).toFixed(0)}% of frames): rival ${f(freeV / Math.max(freeN, 1))} vs player ${f(freePv / Math.max(freeN, 1))} m/s`);
   console.log(`   had a leader in its path on ${(leadFrames / STEPS * 100).toFixed(0)}% of frames (mean gap ${f(leadDsSum / Math.max(leadFrames, 1))} m)`);
@@ -991,6 +1173,9 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
     rivalMean: vSum / STEPS,
     fleetMean: fv / fleet.length,
     abandonedPct: 100 - movesDone / Math.max(movesStarted, 1) * 100,
+    revPerMin: reversals / (STEPS * DT / 60),
+    maxLead, maxLeadWide,
+    widePct: wideFrames / STEPS * 100,
   });
 }
 
@@ -1007,8 +1192,17 @@ for (const NC of [180, 60]) {
   console.log(`   ${label}: rival/flow speed ratio ${rng2(ratios)}x (seeds: ${rs.map((r) => f(r.rivalMean / r.fleetMean)).join(", ")})`);
   console.log(`   ${label}: rival ahead of player ${rng2(aheads)}%`);
   console.log(`   ${label}: WIGGLE abandoned ${rng2(abandons)}%`);
+  console.log(`   ${label}: longest player lead-hold ${rng2(rs.map((r) => r.maxLead))} s (wide section ${rng2(rs.map((r) => r.maxLeadWide))} s)`);
+  console.log(`   ${label}: rival inside the wide-lane playground ${rng2(rs.map((r) => r.widePct))}% of frames`);
   if (totalOverlap > 0) bad(`${label}: ${totalOverlap} overlap frames across seeds — zero overlaps is the one absolute`);
   else ok(`${label}: zero overlap frames across all ${rs.length} seeds`);
+  /* WIGGLE regression guards — bounds set just above the worst pre-rubber-band
+     baseline (dense 38% abandoned / 19.8 reversals-min flowing), so a change
+     that meaningfully worsens the latch trips here. */
+  const worstAb = Math.max(...abandons);
+  if (worstAb > 50) bad(`${label}: WIGGLE abandoned ${f(worstAb)}% — regressed past the 50% guard`);
+  const worstRev = Math.max(...rs.map((r) => r.revPerMin));
+  if (worstRev > 30) bad(`${label}: ${f(worstRev)} direction reversals/min — regressed past the 30/min guard`);
 }
 {
   const flowing = seedResults.filter((r) => r.NC === 60);
