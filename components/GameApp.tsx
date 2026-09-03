@@ -1,23 +1,35 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import { Game, WIPER_MODE_NAMES, CAM_NAMES } from "@/game/engine";
 import { track, trackDebounced, deviceType } from "@/lib/analytics";
 import { showGfxFail, webglAvailable } from "@/game/gfxfail";
 import { HINT_SHOW_MS, type HintMsg } from "@/game/hints";
 import type { LoadReport } from "@/game/loading";
 import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
-import { carPreviewURL } from "@/game/carpreview";
+import { requestCarPreview } from "@/game/carpreview";
 import {
   Gantry, NightRoad, SignKP, SignPlate, SignRow, SignRule, SignSep, SignShield, SignTitle,
+  SignHead, SignBody, SignFootbar, SignBtn, SignToggle, SignSeg, SignSelect, SignSlider,
+  SignShead, SignSrow, SignPost, SignArrow, SignP,
 } from "@/components/ui/Sign";
+import pkg from "../package.json";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
   speedInUnits, syncRivalMode, syncCabinMode, cabinAutoLabel,
   type Profile, type GameSettings, type SpeedUnits,
 } from "@/game/settings";
 
-type Screen = "main" | "garage" | "settings" | "controls" | "stats" | "loading" | "playing" | "paused" | "photo";
+type Screen = "main" | "garage" | "settings" | "controls" | "stats" | "credits" | "loading" | "playing" | "paused" | "photo";
+
+/** package.json's version, shown small on the home plate, the pause board
+    and the credits screen so a bug report can say which build it saw. */
+const VERSION: string = pkg.version;
+/** The "Report a bug" link (pause + credits): a plain mailto with the
+    subject filled in and the version in the body. */
+const BUG_MAILTO =
+  "mailto:bugs@example.invalid?subject=" + encodeURIComponent("NEON EXPRESSWAY bug") +
+  "&body=" + encodeURIComponent(`NEON EXPRESSWAY v${VERSION}\n\nWhat happened:\n`);
 
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
@@ -304,7 +316,7 @@ export default function GameApp() {
      untouched (it ignores arrows unless a drive is running, and this never
      stops propagation). */
   useEffect(() => {
-    if (screen !== "main") return;
+    if (screen !== "main" && screen !== "paused") return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
       const rows = [...document.querySelectorAll<HTMLButtonElement>(".signRoot button.sign-row")];
@@ -588,7 +600,8 @@ export default function GameApp() {
                   line inside the board (ui-system.css shows it only there) */}
               <div className="sign-foot sign-cap faint" aria-hidden="true">
                 <span className="ui-jp" lang="ja">現在の車</span> {getCar(g?.carId || DEFAULT_CAR_ID).name} ·{" "}
-                {PAINTS[(g?.paintIx || 0) % PAINTS.length].name} · TOWN SEED {g?.seed}
+                {PAINTS[(g?.paintIx || 0) % PAINTS.length].name} · TOWN SEED {g?.seed} ·{" "}
+                <span className="sign-ver">v{VERSION}</span>
               </div>
             </SignPlate>
             {/* supplementary plate: current car, then the old subtitle copy.
@@ -604,6 +617,13 @@ export default function GameApp() {
               <span className="sign-plate-line faint">
                 A PROCEDURALLY GENERATED TOWN · ELEVATED EXPRESSWAY · DENSE TRAFFIC · TOWN SEED {g?.seed}
               </span>
+              {/* build number + the way to the credits (attributions, privacy) */}
+              <span className="sign-plate-line foot">
+                <span className="sign-ver faint">v{VERSION}</span>
+                <button type="button" className="sign-plate-btn" onClick={() => setScreen("credits")}>
+                  CREDITS
+                </button>
+              </span>
             </div>
           </div>
           {/* the kilometre post reads the lifetime distance driven */}
@@ -615,28 +635,51 @@ export default function GameApp() {
         <LoadingScreen label={load.label} frac={load.frac} error={loadErr} />
       )}
 
+      {/* Pause: a post-mounted 620-wide board (Pause.dc.html) over the frozen
+          frame. The rows paint their JP from data-jp so each button's text is
+          exactly its EN label — every harness finds the pause menu by a
+          button that says "RESUME". In landscape the rows sit in two columns
+          so the whole board fits without scrolling (ui-system.css). */}
       {screen === "paused" && (
-        <div className="menuRoot paused">
-          <h1 className="menuTitle sm">PAUSED</h1>
-          <div className="menuBtns">
-            <button className="menuBtn primary" onClick={resume}>RESUME</button>
-            <button className="menuBtn" onClick={() => setScreen("stats")}>STATS</button>
-            <button className="menuBtn" onClick={() => setScreen("garage")}>GARAGE</button>
-            <button className="menuBtn" onClick={() => setScreen("settings")}>SETTINGS</button>
-            <button className="menuBtn" onClick={() => setScreen("controls")}>CONTROLS</button>
-            <button
-              className="menuBtn"
-              onClick={() => {
-                gameRef.current?.resetCar();
-                resume();
-              }}
-            >
-              RESET CAR
-            </button>
-            <button className="menuBtn" onClick={backToMenu}>MAIN MENU</button>
+        <div className="menuRoot signRoot sub paused">
+          <SignPost />
+          <div className="sign-stack sub narrow">
+            <SignPlate screen>
+              <SignHead jp="一時停止" en="PAUSED" corner={<>Esc RESUMES<br />MUSIC PAUSED</>} />
+              <SignRule />
+              <SignBody>
+                <nav className="sign-rows two" aria-label="Pause menu">
+                  <SignRow selected jpAttr glyph="up" jp="再開" en="RESUME" onClick={resume} />
+                  <SignSep />
+                  <SignRow jpAttr glyph="ne" jp="記録" en="STATS" onClick={() => setScreen("stats")} />
+                  <SignRow jpAttr glyph="p" jp="車庫" en="GARAGE" onClick={() => setScreen("garage")} />
+                  <SignRow jpAttr glyph="nw" jp="設定" en="SETTINGS" onClick={() => setScreen("settings")} />
+                  <SignRow jpAttr glyph="nw" jp="操作" en="CONTROLS" onClick={() => setScreen("controls")} />
+                  <SignSep />
+                  <SignRow
+                    jpAttr
+                    glyph={<>↺</>}
+                    jp="リセット"
+                    en="RESET CAR"
+                    note="NEAREST ROAD"
+                    onClick={() => {
+                      gameRef.current?.resetCar();
+                      resume();
+                    }}
+                  />
+                  <SignRow jpAttr glyph={<>↩</>} jp="出口" en="MAIN MENU" note="ENDS THE DRIVE" onClick={backToMenu} />
+                </nav>
+              </SignBody>
+              <SignFootbar keep caption={<>NEON EXPRESSWAY <span className="sign-ver">v{VERSION}</span></>}>
+                <a className="sign-btn ghost sm" href={BUG_MAILTO}>REPORT A BUG</a>
+              </SignFootbar>
+            </SignPlate>
           </div>
+          <SignKP value={g ? (g.lifetimeStats().dist / 1000).toFixed(1) : "0.0"} />
         </div>
       )}
+
+      {screen === "credits" && <CreditsScreen loaded={!!g?.loaded} onBack={() => backFrom(true)} />}
 
       {screen === "stats" && g && (
         <StatsPanel game={g} onBack={() => backFrom(true)} />
@@ -673,68 +716,11 @@ export default function GameApp() {
         />
       )}
       {screen === "controls" && (
-        <div className="menuRoot">
-          <div className="panel">
-            <h2>CONTROLS</h2>
-            <div className="jp2">操作方法</div>
-            {/* Audited against engine.ts (onKeyDown/onKeyUp/readInput,
-                bindInput, onPointerDown, gamepad.ts) — every binding listed
-                here exists there, and everything bound there is listed. Keep
-                the two in step when adding a key. */}
-            <div className="ctrlGrid">
-              <b>W / S · ↑ / ↓</b><span>throttle · brake &amp; reverse</span>
-              <b>A / D · ← / →</b><span>steer</span>
-              <b>Space</b><span>handbrake (drift)</span>
-              <b>C</b><span>camera: chase → cockpit → hood → console → backseat → dashcam</span>
-              <b>B</b><span>look back (chase &amp; cockpit)</span>
-              <b>Q / E</b><span>turn signals</span>
-              <b>F</b><span>horn (traffic speeds up)</span>
-              <b>L</b><span>headlights on / auto</span>
-              <b>G</b><span>high beams: tap to flash, hold 2s to latch on / off</span>
-              <b>M</b><span>cockpit mirrors</span>
-              <b>R</b><span>rain</span>
-              <b>U</b><span>wipers: off / int / lo / hi (rain auto-starts lo; also clickable beside the head unit)</span>
-              <b>T</b><span>time-lapse: ×150 → ×1500 → off</span>
-              <b>V</b><span>dashcam grade (the DASHCAM view forces its own, harder)</span>
-              <b>X</b><span>minimap</span>
-              <b>Z</b><span>map zoom: close-up ↔ whole loop (or click the map)</span>
-              <b>N</b><span>reset to nearest road</span>
-              <b>H</b><span>this help screen</span>
-              <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
-              <b>O</b><span>photo mode: orbit the car, Space captures a PNG</span>
-              <b>I</b><span>interior light — desktop only (off by default; the cabin is meant to be dark)</span>
-              <b>P</b><span>in-dash music: play / pause — desktop only</span>
-              <b>, / .</b><span>previous / next piece</span>
-              <b>Esc</b><span>pause menu (music pauses with it)</span>
-            </div>
-            <div className="sectionHead">Mouse · in the cabin</div>
-            <div className="ctrlGrid">
-              <b>Dash screen</b><span>click to switch panes — map / music / trip (desktop)</span>
-              <b>Roof console</b><span>click the overhead panel — interior light</span>
-            </div>
-            <div className="sectionHead">Touch 触れる</div>
-            <div className="ctrlGrid">
-              <b>Pucks</b><span>steer · pedals · CAM · LTS (high beams) · HORN</span>
-              <b>⋯</b><span>quick controls drawer: lights, map, mirrors, rain, time-lapse, dashcam FX, test mode, reset</span>
-              <b>Top of frame</b><span>tap the middle — interior light</span>
-              <b>Steering</b><span>buttons / touch wheel / tilt — pick in settings</span>
-            </div>
-            <div className="sectionHead">Gamepad</div>
-            <div className="ctrlGrid">
-              <b>Sticks / triggers</b><span>left stick steers · RT throttle · LT brake</span>
-              <b>Buttons</b><span>A handbrake · B horn · Y lights · RB or D-pad up camera</span>
-            </div>
-            <p className="ctrlNote">
-              Follow the green EXIT boards on the expressway — each numbered exit has a lit
-              off-ramp down into the town on both sides, and EXIT 4 峠 leads onto the two-way
-              mountain road. Crashed cars keep their hazards on, smoke, and get towed away
-              shortly.
-            </p>
-            <div className="btnrow">
-              <button onClick={() => backFrom(true)}>BACK</button>
-            </div>
-          </div>
-        </div>
+        <ControlsScreen
+          loaded={!!g?.loaded}
+          onBack={() => backFrom(true)}
+          onCredits={() => setScreen("credits")}
+        />
       )}
     </>
   );
@@ -742,14 +728,18 @@ export default function GameApp() {
 
 /* ================= loading screen ================= */
 
-/* Rendered from the DRIVE tap until the world is built and warmed.
+/* Rendered from the DRIVE tap until the world is built and warmed — the toll
+   plaza you wait at (Loading.dc.html): a gantry with three booth plates, the
+   home board's shield and titles, a lane-arrow progress track and the stage
+   being built, in the sign language.
 
-   Everything that moves here moves on the compositor (see the .loadRoot block
-   in globals.css): each build stage blocks the main thread outright, so any
-   JS-driven or layout-driven animation would freeze exactly when the player
-   most needs to see that something is happening. React re-renders this once
-   per stage — a dozen times over the whole load — and the CSS carries the
-   motion in between. */
+   Everything that moves here moves on the compositor (see the .loadRoot and
+   .signLoad blocks in globals.css / ui-system.css): each build stage blocks
+   the main thread outright, so any JS-driven or layout-driven animation would
+   freeze exactly when the player most needs to see that something is
+   happening. React re-renders this once per stage — a dozen times over the
+   whole load — and the CSS carries the motion in between. The .loadRoot /
+   .loadErr / .pct / .loadStatus hooks are what the harnesses read. */
 function LoadingScreen({
   label, frac, error,
 }: {
@@ -758,36 +748,67 @@ function LoadingScreen({
   error: string | null;
 }) {
   return (
-    <div className="loadRoot">
-      <h1 className="loadTitle">NEON EXPRESSWAY</h1>
-      <div className="loadJp">首都高ナイトドライブ</div>
-      {error ? (
-        /* Reload rather than retry: a stage that threw left a half-built world
-           in the scene, and running the stages again over it would stack a
-           second town on the first (see Game.loadFailed). */
-        <div className="loadErr">
-          Something went wrong building the town.
-          <code>{error}</code>
-          <div className="menuBtns inline">
-            <button className="menuBtn primary" onClick={() => location.reload()}>
-              RELOAD
-            </button>
-          </div>
+    <div className="loadRoot signLoad">
+      <div className="toll" aria-hidden="true">
+        <div className="gantry-truss" />
+        <div className="gantry-lattice" />
+        <div className="toll-booths">
+          <div className="toll-booth etc"><i /><b>ETC</b></div>
+          <div className="toll-booth open"><i /><b>↑ OPEN</b></div>
+          <div className="toll-booth jp"><i /><b lang="ja">一般</b></div>
         </div>
-      ) : (
-        <>
-          <div className="loadBar">
-            {/* scaleX rather than width so the bar keeps travelling while the
-                next stage blocks the main thread */}
-            <div className="loadFill" style={{ transform: `scaleX(${frac})` }} />
-            <div className="loadSweep" />
-          </div>
-          <div className="loadStatus">
-            <span>{label}</span>
-            <span className="pct">{Math.round(frac * 100)}%</span>
-          </div>
-        </>
-      )}
+      </div>
+      <div className="sign-stack load">
+        <div className="sign loadboard">
+          <div className="sign-sheet" aria-hidden="true" />
+          <header className="sign-head">
+            <SignShield />
+            <div className="sign-titles">
+              <div className="sign-title-jp loadJp" lang="ja">首都高ナイトドライブ</div>
+              <h1 className="sign-title loadTitle">NEON EXPRESSWAY</h1>
+            </div>
+          </header>
+          <SignRule />
+          {error ? (
+            /* Reload rather than retry: a stage that threw left a half-built world
+               in the scene, and running the stages again over it would stack a
+               second town on the first (see Game.loadFailed). */
+            <div className="loadErr">
+              <div className="tri" aria-hidden="true" />
+              <div>
+                Something went wrong building the town.
+                <code>{error}</code>
+              </div>
+              <SignBtn variant="primary" onClick={() => location.reload()}>
+                RELOAD
+              </SignBtn>
+            </div>
+          ) : (
+            <>
+              <div className="loadBar">
+                {/* scaleX rather than width so the bar keeps travelling while the
+                    next stage blocks the main thread */}
+                <div className="loadFill" style={{ transform: `scaleX(${frac})` }} />
+                <div className="loadSweep" />
+                <div className="loadDashes" aria-hidden="true" />
+              </div>
+              <div className="loadStatus">
+                <div className="stage">
+                  <b>BUILDING</b>
+                  <span>{label}</span>
+                </div>
+                <div className="pct">
+                  {Math.round(frac * 100)}
+                  <small>%</small>
+                </div>
+              </div>
+              <div className="sign-cap faint loadCap">
+                first press builds the whole town · the next DRIVE is instant
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1261,10 +1282,10 @@ function PhotoHint({ game }: { game: Game }) {
       </div>
       {touch && (
         <div className="phBtns">
-          <button className="phBtn shutter" onPointerDown={() => game.uiKeyTap(" ")}>
+          <button type="button" className="phBtn shutter" onPointerDown={() => game.uiKeyTap(" ")}>
             ◉ SHUTTER
           </button>
-          <button className="phBtn" onPointerDown={() => game.uiKeyTap("o")}>
+          <button type="button" className="phBtn" onPointerDown={() => game.uiKeyTap("o")}>
             ✕ EXIT
           </button>
         </div>
@@ -1275,12 +1296,14 @@ function PhotoHint({ game }: { game: Game }) {
 
 /* ================= drive stats ================= */
 
-/* The pause menu's STATS panel: this session beside the lifetime record,
+/* The pause menu's STATS board: this session beside the lifetime record,
    read straight off the engine's accumulator (Game.sessionStats /
    Game.lifetimeStats — see the STATS block in engine.ts). A snapshot, not a
    ticker: the game is paused under it, so nothing here needs to re-render.
    Formatting follows the profile's speed-units setting — the stored numbers
-   are engine units (m, m/s, s) and only the display converts. */
+   are engine units (m, m/s, s) and only the display converts. Layout per
+   Stats.dc.html: a 900-wide board, label · SESSION · LIFETIME columns, the
+   session value that IS the lifetime record lit sodium. */
 
 const fmtDist = (m: number, u: SpeedUnits) =>
   u === "mph" ? (m / 1609.344).toFixed(1) + " mi" : (m / 1000).toFixed(1) + " km";
@@ -1298,8 +1321,8 @@ function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
   const s = game.sessionStats;
   const l = game.lifetimeStats();
   const u = game.settings.units;
-  /* rec: the session value IS the lifetime record — the record rows warm to
-     the accent (same restraint as .combo-hot: a colour shift, not a badge) */
+  /* rec: the session value IS the lifetime record — the record rows light
+     sodium (the one warm thing on the board) */
   const rows: { en: string; jp: string; sv: string; lv: string; rec?: boolean }[] = [
     { en: "DISTANCE", jp: "走行距離", sv: fmtDist(s.dist, u), lv: fmtDist(l.dist, u) },
     { en: "TIME DRIVEN", jp: "走行時間", sv: fmtDur(s.driveT), lv: fmtDur(l.driveT) },
@@ -1327,21 +1350,34 @@ function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
     { en: "TOUGE RUNS", jp: "峠走破", sv: String(s.mtnRuns), lv: String(l.mtnRuns) },
   ];
   return (
-    <div className="menuRoot">
-      <div className="panel">
-        <h2>STATS</h2>
-        <div className="jp2">記録 — drive statistics</div>
-        <div className="statsGrid">
-          <span />
-          <span className="shead">SESSION 今回</span>
-          <span className="shead">LIFETIME 通算</span>
-          {rows.map((r) => (
-            <StatsRow key={r.en} {...r} />
-          ))}
-        </div>
-        <div className="btnrow">
-          <button onClick={onBack}>BACK</button>
-        </div>
+    <div className="menuRoot signRoot sub">
+      {!game.loaded && <NightRoad />}
+      <Gantry />
+      <div className="sign-stack sub mid">
+        <SignPlate hangers screen>
+          <SignHead jp="記録" en="STATS" corner={<>DRIVE STATISTICS<br />SNAPSHOT · PAUSED</>} />
+          <SignRule />
+          <SignBody>
+            <div className="statsGrid">
+              <span />
+              <span className="shead">
+                SESSION <span className="ui-jp" lang="ja">今回</span>
+              </span>
+              <span className="shead">
+                LIFETIME <span className="ui-jp" lang="ja">通算</span>
+              </span>
+              <span className="srule" aria-hidden="true" />
+              {rows.map((r) => (
+                <StatsRow key={r.en} {...r} />
+              ))}
+            </div>
+          </SignBody>
+          <SignFootbar caption="orange = this session is the lifetime record">
+            <SignBtn variant="ghost" back onClick={onBack}>
+              BACK
+            </SignBtn>
+          </SignFootbar>
+        </SignPlate>
       </div>
     </div>
   );
@@ -1358,42 +1394,53 @@ function StatsRow({
 }) {
   return (
     <>
-      <span className="slabel">
-        {en} <i>{jp}</i>
+      <span className={"slabel" + (rec ? " rec" : "")}>
+        {en} <i lang="ja">{jp}</i>
       </span>
       <span className={"sval" + (rec ? " rec" : "")}>{sv}</span>
-      <span className="sval">{lv}</span>
+      <span className="sval life">{lv}</span>
     </>
   );
 }
 
 /* ================= garage ================= */
 
-function CarPreview({ carId, paintHex }: { carId: string; paintHex: number }) {
+/* One card's art. Asks carpreview's render queue rather than rendering in
+   its own effect: the queue shoots one card per animation frame (and puts
+   the selected car first on a paint change), so five cards and their
+   donor-body re-shoots can never freeze the page in one frame. The old url
+   stays up until the new one lands — a card that starts empty and fills in
+   a beat later is worse than one that improves. */
+function CarPreview({
+  carId, paintHex, first, children,
+}: {
+  carId: string;
+  paintHex: number;
+  first?: boolean;
+  children?: React.ReactNode;
+}) {
   const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const raf = requestAnimationFrame(() => {
-      if (cancelled) return;
-      /* Two shots for a car with an imported exterior: the procedural one
-         returns now and the real-bodywork one replaces it a beat later (see
-         carpreview.ts). The card is never empty and never jumps — same frame,
-         same lights, only the shell changes — so this is a plain src swap. */
-      setUrl(carPreviewURL(carId, paintHex, (real) => {
-        if (!cancelled) setUrl(real);
-      }));
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf);
-    };
-  }, [carId, paintHex]);
+  useEffect(
+    () => requestCarPreview(carId, paintHex, (u) => setUrl(u), first),
+    // `first` is only a queue-order hint for the render this effect starts;
+    // a change in which card is selected must not re-render every card
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [carId, paintHex],
+  );
   return (
     <div className="carImg">
       {url && <img src={url} alt="" draggable={false} />}
+      {children}
     </div>
   );
 }
+
+const STAT_LABELS = [
+  ["speed", "speed"],
+  ["accel", "accel"],
+  ["grip", "grip"],
+  ["agility", "handling"],
+] as const;
 
 function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
   /* Resolved through getCar rather than taken raw: an engine still carrying a
@@ -1418,78 +1465,120 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
     setPaintIx(pi);
     game.setCar(id, pi);
   };
+  const paint = PAINTS[paintIx % PAINTS.length];
+  const nPlayable = CARS.filter((c) => !c.comingSoon).length;
+  const nSoon = CARS.length - nPlayable;
   return (
-    <div className="menuRoot">
-      <div className="panel wide">
-        <h2>GARAGE</h2>
-        <div className="jp2">車庫 — pick your machine</div>
-        <div className="garageCars">
-          {CARS.map((c) => {
-            /* A locked car keeps its whole card — the live-rendered shot, the
-               name, the blurb, the bars — and loses only the ability to be
-               picked. sel() is the sole route to game.setCar(), so dropping
-               the handler is the whole lock; the dimming is just how it reads.
-               The stat bars stay (greyed) because they are what the card is
-               teasing, and because a card without them would sit at a
-               different height and break the grid row it shares with the two
-               playable cars. */
-            const locked = !!c.comingSoon;
-            return (
-              <div
-                key={c.id}
-                className={"carCard" + (locked ? " locked" : carId === c.id ? " sel" : "")}
-                onClick={locked ? undefined : () => sel(c.id, paintIx)}
-                aria-disabled={locked || undefined}
-              >
-                {locked && <span className="soonBadge">COMING SOON</span>}
-                <CarPreview carId={c.id} paintHex={PAINTS[paintIx % PAINTS.length].hex} />
-                <h3>{c.name} <span style={{ opacity: 0.6 }}>{c.jp}</span></h3>
-                <div className="carJp">{c.blurb}</div>
-                {(
-                  [
-                    ["speed", c.stats.speed],
-                    ["accel", c.stats.accel],
-                    ["grip", c.stats.grip],
-                    ["agility", c.stats.handling],
-                  ] as const
-                ).map(([label, v]) => (
-                  <div className="statRow" key={label}>
-                    <span>{label}</span>
-                    <div className="statBar"><i style={{ width: `${v * 100}%` }} /></div>
+    <div className="menuRoot signRoot sub">
+      {!game.loaded && <NightRoad />}
+      <Gantry />
+      <div className="sign-stack sub">
+        <SignPlate hangers screen>
+          <SignHead
+            jp="車庫"
+            en="GARAGE"
+            glyph={<SignP big />}
+            corner={<>PICK YOUR MACHINE<br />{nPlayable} DRIVEABLE · {nSoon} COMING SOON</>}
+          />
+          <SignRule />
+          <SignBody>
+            {/* the cars as parking bays (Garage.dc.html): white-bordered cards,
+                the selected one on the sodium lane-edge rule */}
+            <div className="sign-garage" role="radiogroup" aria-label="Car">
+              {CARS.map((c) => {
+                /* A locked car keeps its whole card — the live-rendered shot, the
+                   name, the blurb, the bars — and loses only the ability to be
+                   picked. sel() is the sole route to game.setCar(), so dropping
+                   the handler is the whole lock; the dimming is just how it reads.
+                   The stat bars stay because they are what the card is teasing,
+                   and because a card without them would sit at a different
+                   height and break the row it shares with the playable cars. */
+                const locked = !!c.comingSoon;
+                const on = !locked && carId === c.id;
+                return (
+                  <div
+                    key={c.id}
+                    className={"carCard" + (locked ? " locked" : on ? " sel" : "")}
+                    role="radio"
+                    aria-checked={on}
+                    aria-disabled={locked || undefined}
+                    tabIndex={locked ? -1 : 0}
+                    onClick={locked ? undefined : () => sel(c.id, paintIx)}
+                    onKeyDown={
+                      locked
+                        ? undefined
+                        : (e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              sel(c.id, paintIx);
+                            }
+                          }
+                    }
+                  >
+                    <CarPreview carId={c.id} paintHex={paint.hex} first={on}>
+                      {locked && <span className="soonBadge">COMING SOON</span>}
+                      {on && <span className="sign-chip on carChip">SELECTED</span>}
+                    </CarPreview>
+                    <h3>
+                      {c.name} <span className="jp" lang="ja">{c.jp}</span>
+                    </h3>
+                    <div className="carJp">{c.blurb}</div>
+                    <div className="stats">
+                      {STAT_LABELS.map(([label, key]) => (
+                        <div className="statRow" key={label}>
+                          <span>{label}</span>
+                          <div className="statBar"><i style={{ width: `${c.stats[key] * 100}%` }} /></div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
+                );
+              })}
+            </div>
+            {/* PAINT. The swatches repaint BOTH bodies: the procedural shell
+                through the rig rebuild (engine.ts setCar), and the imported Volvo
+                exterior through player.ts tintDonorPaint, which writes the chosen
+                colour onto the donor's Car_Paint material when the GLB lands — the
+                garage card's real-bodywork shot and the chase cameras agree with
+                the swatch. The caption names the selection because eight anonymous
+                squares is a colour test, not a menu — and the finish word is what
+                tells you why two similar swatches drive differently at night. */}
+            <div className="sign-paint-rule" aria-hidden="true" />
+            <div className="sign-paint">
+              <div className="sign-titles" aria-hidden="true">
+                <div className="sign-title-jp" lang="ja">塗装</div>
+                <div className="sign-title">PAINT</div>
+              </div>
+              <div className="paintRow" role="radiogroup" aria-label="Paint">
+                {PAINTS.map((p, i) => (
+                  <button
+                    key={p.name}
+                    type="button"
+                    role="radio"
+                    aria-checked={i === paintIx}
+                    aria-label={p.name}
+                    className={"paintDot" + (i === paintIx ? " sel" : "")}
+                    title={p.name}
+                    style={{ background: "#" + p.hex.toString(16).padStart(6, "0") }}
+                    onClick={() => sel(carId, i)}
+                  />
                 ))}
               </div>
-            );
-          })}
-        </div>
-        {/* PAINT. The swatches repaint BOTH bodies now: the procedural shell
-            through the rig rebuild (engine.ts setCar), and the imported Volvo
-            exterior through player.ts tintDonorPaint, which writes the chosen
-            colour onto the donor's Car_Paint material when the GLB lands — the
-            garage card's real-bodywork shot and the chase cameras agree with
-            the dot. (The old comment here was an honest admission that the
-            donor kept its baked silver; that limitation is gone.) The caption
-            names the selection because eight anonymous dots at 22px is a
-            colour test, not a menu — and the finish word is what tells you
-            why two similar dots drive differently at night. */}
-        <div className="paintRow">
-          {PAINTS.map((p, i) => (
-            <div
-              key={p.name}
-              className={"paintDot" + (i === paintIx ? " sel" : "")}
-              title={p.name}
-              style={{ background: "#" + p.hex.toString(16).padStart(6, "0") }}
-              onClick={() => sel(carId, i)}
-            />
-          ))}
-        </div>
-        <div className="paintName">
-          {PAINTS[paintIx % PAINTS.length].name}
-          <i>{PAINTS[paintIx % PAINTS.length].finish}</i>
-        </div>
-        <div className="btnrow">
-          <button onClick={onBack}>DONE</button>
-        </div>
+              <div className="paintName">
+                {paint.name}
+                <i>{paint.finish}</i>
+              </div>
+              <div className="sign-cap faint sign-paintnote">
+                repaints both bodies — the procedural shell
+                <br />
+                and the imported Volvo exterior
+              </div>
+            </div>
+          </SignBody>
+          <SignFootbar caption="car art is the live studio shot of each car in the chosen paint">
+            <SignBtn onClick={onBack}>DONE</SignBtn>
+          </SignFootbar>
+        </SignPlate>
       </div>
     </div>
   );
@@ -1497,32 +1586,12 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
 
 /* ================= settings ================= */
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="row"><label>{label}</label>{children}</div>
-  );
-}
-
-function Section({ label }: { label: string }) {
-  return (
-    <div className="sectionHead">{label}</div>
-  );
-}
-
-function Check({
-  label, checked, onChange,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <Row label={label}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-    </Row>
-  );
-}
-
+/* Three columns per Settings.dc.html — GRAPHICS · DRIVING · WORLD & WEATHER
+   (+ SESSION) — every row of the old panel on the sign's own controls
+   (Sign.tsx: SignToggle / SignSeg / SignSelect / SignSlider), each with a
+   real input underneath. The row whose value changed last lights the sodium
+   lane-edge rule, so the one warm thing on the board is the thing you just
+   touched. */
 function SettingsPanel({
   game, onBack, onReseed,
 }: {
@@ -1531,6 +1600,7 @@ function SettingsPanel({
   onReseed: () => void;
 }) {
   const [, force] = useState(0);
+  const [lit, setLit] = useState<string | null>(null);
   const upd = (fn: (s: GameSettings) => void) => {
     /* analytics: shallow snapshot for the key diff below — every row funnels
        through upd(), so instrumenting here covers the whole panel and any
@@ -1562,224 +1632,275 @@ function SettingsPanel({
         });
       }
     }
+    if (changed.length) setLit(changed[0]);
     force((n) => n + 1);
   };
   const s = game.settings;
+  const L = (k: string) => lit === k;
   return (
-    <div className="menuRoot">
-      <div className="panel">
-        <h2>SETTINGS</h2>
-        <div className="jp2">設定</div>
-        <Row label="Graphics preset">
-          <select
-            value={s.preset}
-            onChange={(e) => upd((x) => applyPresetDefaults(x, e.target.value as any))}
-          >
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-          </select>
-        </Row>
-        {/* device tier: caps DPR / reflections / cones etc per hardware class.
-            "Auto" shows what detection resolved; the override persists with
-            the profile. A `?tier=` URL param (testing) beats both. */}
-        <Row label={`Device tier — ${game.renderTier}`}>
-          <select
-            value={s.tierOverride}
-            onChange={(e) => upd((x) => (x.tierOverride = e.target.value as any))}
-          >
-            <option value="auto">Auto</option>
-            <option value="mobile-base">Mobile base</option>
-            <option value="mobile-high">Mobile high</option>
-            <option value="desktop">Desktop</option>
-          </select>
-        </Row>
-        {/* The imported interior, for cars that ship one (the Volvo). Directly
-            under the device tier because that is the row that explains it:
-            "Auto" means the real cabin everywhere except a device that fails
-            the hardware floor in settings.ts, and the label says which of
-            those this device is. Forcing it on a phone that auto-declined is
-            allowed and is the point — it is heavy, not forbidden.
+    <div className="menuRoot signRoot sub">
+      {!game.loaded && <NightRoad />}
+      <Gantry />
+      <div className="sign-stack sub">
+        <SignPlate hangers screen>
+          <SignHead
+            jp="設定"
+            en="SETTINGS"
+            corner={<>DEVICE TIER · {game.renderTier.toUpperCase()}<br />CHANGES APPLY LIVE</>}
+          />
+          <SignRule />
+          <SignBody>
+            <div className="sign-cols">
+              <div>
+                <SignShead en="GRAPHICS" jp="画質" />
+                <SignSrow name="Graphics preset" lit={L("preset")}>
+                  <SignSeg
+                    label="Graphics preset"
+                    value={s.preset}
+                    options={[{ v: "low", t: "LOW" }, { v: "medium", t: "MEDIUM" }, { v: "high", t: "HIGH" }]}
+                    onChange={(v) => upd((x) => applyPresetDefaults(x, v))}
+                  />
+                </SignSrow>
+                {/* device tier: caps DPR / reflections / cones etc per hardware
+                    class. "Auto" shows what detection resolved; the override
+                    persists with the profile. A `?tier=` URL param (testing)
+                    beats both. */}
+                <SignSrow name="Device tier" aside={`— ${game.renderTier}`} lit={L("tierOverride")}>
+                  <SignSelect
+                    aria-label="Device tier"
+                    value={s.tierOverride}
+                    onChange={(e) => upd((x) => (x.tierOverride = e.target.value as any))}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="mobile-base">Mobile base</option>
+                    <option value="mobile-high">Mobile high</option>
+                    <option value="desktop">Desktop</option>
+                  </SignSelect>
+                </SignSrow>
+                {/* The imported interior, for cars that ship one (the Volvo).
+                    Directly under the device tier because that is the row that
+                    explains it: "Auto" means the real cabin everywhere except a
+                    device that fails the hardware floor in settings.ts, and the
+                    aside says which of those this device is. Forcing it on a
+                    phone that auto-declined is allowed and is the point — it is
+                    heavy, not forbidden.
 
-            Rebuilds the rig so the choice takes effect now: the donor is
-            fetched at build time, so without this the row would look like a
-            setting that does nothing until the next reload. setCar is the
-            engine's own rebuild path and is a no-op before the world is
-            loaded, which is where this panel usually is. */}
-        <Row label={`Imported cabin — auto is "${cabinAutoLabel(game.renderTier)}"`}>
-          <select
-            value={s.cabin}
-            onChange={(e) =>
-              upd((x) => {
-                x.cabin = e.target.value as any;
-                syncCabinMode(x);
-                game.setCar(game.carId, game.paintIx);
-              })
-            }
-          >
-            <option value="auto">Auto</option>
-            <option value="donor">Real cabin (heavy)</option>
-            <option value="procedural">Procedural</option>
-          </select>
-        </Row>
-        <Check label="Road reflections" checked={s.reflections} onChange={(v) => upd((x) => (x.reflections = v))} />
-        <Check label="Bloom" checked={s.bloom} onChange={(v) => upd((x) => (x.bloom = v))} />
-        <Check label="Day shadows" checked={s.shadows} onChange={(v) => upd((x) => (x.shadows = v))} />
-        <Check label="FXAA anti-aliasing" checked={s.fxaa} onChange={(v) => upd((x) => (x.fxaa = v))} />
-        <Check label="Motion blur" checked={s.mblur} onChange={(v) => upd((x) => (x.mblur = v))} />
-        {/* game.grade is the live truth — the in-game V key flips it too */}
-        <Check
-          label="Dashcam filter (V)"
-          checked={game.grade}
-          onChange={(v) =>
-            upd((x) => {
-              x.dashcam = v;
-              game.grade = v;
-            })
-          }
-        />
-        <Check label="Traction control" checked={s.tc} onChange={(v) => upd((x) => (x.tc = v))} />
-        <Row label="Touch steering">
-          <select
-            value={s.steerMode}
-            onChange={(e) =>
-              upd((x) => {
-                x.steerMode = e.target.value as any;
-                if (x.steerMode === "tilt") game.hookTilt();
-              })
-            }
-          >
-            <option value="buttons">Buttons</option>
-            <option value="wheel">Touch wheel</option>
-            <option value="slider">Swipe slider</option>
-            <option value="tilt">Tilt</option>
-          </select>
-        </Row>
-        <Row label="Speed units">
-          <select value={s.units} onChange={(e) => upd((x) => (x.units = e.target.value as any))}>
-            <option value="mph">mph</option>
-            <option value="kmh">km/h</option>
-          </select>
-        </Row>
-        <Row label="Fog / haze">
-          <select value={s.fog} onChange={(e) => upd((x) => (x.fog = e.target.value as any))}>
-            <option value="off">Off</option>
-            <option value="light">Light</option>
-            <option value="medium">Medium</option>
-            <option value="heavy">Heavy</option>
-          </select>
-        </Row>
-        <Row label={`Draw distance — ${s.drawDist} m`}>
-          <input
-            type="range" min={350} max={1100} step={50} value={s.drawDist}
-            onChange={(e) => upd((x) => (x.drawDist = +e.target.value))}
-          />
-        </Row>
-        <Row label={`Traffic density — ${Math.round(s.traffic * 100)}%`}>
-          <input
-            type="range" min={20} max={100} value={Math.round(s.traffic * 100)}
-            onChange={(e) => upd((x) => (x.traffic = +e.target.value / 100))}
-          />
-        </Row>
-        {/* game.testMode is a view onto s.testMode (see Game.testMode), so
-            writing either one here is the same write — but go through the
-            setting, which is what persist() copies out. The K key in game
-            flips the same value. */}
-        <Check
-          label="Test mode — extra grip, brakes & power"
-          checked={s.testMode}
-          onChange={(v) => upd((x) => (x.testMode = v))}
-        />
-        {/* The rival pace car. A mode rather than a difficulty: it costs
-            nothing at all while it is off (game/traffic.ts claims its pool
-            slot on the toggle, not at construction). */}
-        <Check
-          label="Rival car (chase the orange one)"
-          checked={s.rival}
-          onChange={(v) => upd((x) => (x.rival = v))}
-        />
-        {s.rival && (
-          <Check
-            label="⤷ rival uses its indicators"
-            checked={s.rivalSignals}
-            onChange={(v) => upd((x) => (x.rivalSignals = v))}
-          />
-        )}
-        {/* No Hesi scoring: speed + near misses build a combo, contact
-            resets it (game/engine.ts's noHesiUpdate). On by default. */}
-        <Check
-          label="No Hesi score (speed + near misses)"
-          checked={s.noHesiScore}
-          onChange={(v) => upd((x) => (x.noHesiScore = v))}
-        />
-        {/* Gates game/hints.ts wholesale. Which tips have already fired is
-            stored separately from the settings (see settings.ts), so DEFAULTS
-            re-enabling this does not replay them. */}
-        <Check
-          label="First-run hints (one-time tips)"
-          checked={s.hints}
-          onChange={(v) => upd((x) => (x.hints = v))}
-        />
-        <Row label={`Field of view — ${s.fovBase}°`}>
-          <input
-            type="range" min={58} max={100} value={s.fovBase}
-            onChange={(e) => upd((x) => (x.fovBase = +e.target.value))}
-          />
-        </Row>
-        <Row label={`Volume — ${Math.round(s.vol * 100)}%`}>
-          <input
-            type="range" min={0} max={100} value={Math.round(s.vol * 100)}
-            onChange={(e) => upd((x) => (x.vol = +e.target.value / 100))}
-          />
-        </Row>
-        <Section label="World & weather" />
-        <Row label={`Time of day — ${fmtTime(game.time)}`}>
-          <input
-            type="range" min={0} max={24} step={0.25} value={game.time}
-            onChange={(e) => {
-              game.time = +e.target.value;
-              force((n) => n + 1);
-            }}
-          />
-        </Row>
-        <Check label="Day/night cycle" checked={s.autoTime} onChange={(v) => upd((x) => (x.autoTime = v))} />
-        <Row label="Rain">
-          <input
-            type="checkbox" checked={game.rain}
-            onChange={(e) => {
-              game.setRain(e.target.checked);
-              force((n) => n + 1);
-            }}
-          />
-        </Row>
-        <Section label="Session" />
-        <Row label={`Town seed — ${game.seed}`}>
-          <button onClick={onReseed}>NEW TOWN (reloads)</button>
-        </Row>
-        <Row label="Reset all settings">
-          <button
-            onClick={() => {
-              Object.assign(game.settings, defaultSettings());
-              game.applySettings(game.settings);
-              /* Every other write to settings goes through upd(), which calls
-                 this; DEFAULTS assigns straight onto game.settings and so
-                 skipped it. applySettings does not cover the rival — it is
-                 driven separately — so resetting left the rival in whatever
-                 state it was in while the panel claimed it was back to
-                 default. */
-              syncRivalMode(game.settings);
-              syncCabinMode(game.settings);
-              // one event, not a diff of every key the reset touched
-              track("settings_change", { setting: "reset_defaults", value: true });
-              force((n) => n + 1);
-            }}
-          >
-            DEFAULTS
-          </button>
-        </Row>
-        <div className="btnrow">
-          <button onClick={onBack}>DONE</button>
-        </div>
+                    Rebuilds the rig so the choice takes effect now: the donor is
+                    fetched at build time, so without this the row would look like
+                    a setting that does nothing until the next reload. setCar is
+                    the engine's own rebuild path and is a no-op before the world
+                    is loaded, which is where this panel usually is. */}
+                <SignSrow name="Imported cabin" aside={`— auto is "${cabinAutoLabel(game.renderTier)}"`} lit={L("cabin")}>
+                  <SignSelect
+                    aria-label="Imported cabin"
+                    value={s.cabin}
+                    onChange={(e) =>
+                      upd((x) => {
+                        x.cabin = e.target.value as any;
+                        syncCabinMode(x);
+                        game.setCar(game.carId, game.paintIx);
+                      })
+                    }
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="donor">Real cabin (heavy)</option>
+                    <option value="procedural">Procedural</option>
+                  </SignSelect>
+                </SignSrow>
+                <SignSrow name="Road reflections" lit={L("reflections")}>
+                  <SignToggle label="Road reflections" checked={s.reflections} onChange={(v) => upd((x) => (x.reflections = v))} />
+                </SignSrow>
+                <SignSrow name="Bloom" lit={L("bloom")}>
+                  <SignToggle label="Bloom" checked={s.bloom} onChange={(v) => upd((x) => (x.bloom = v))} />
+                </SignSrow>
+                <SignSrow name="Day shadows" lit={L("shadows")}>
+                  <SignToggle label="Day shadows" checked={s.shadows} onChange={(v) => upd((x) => (x.shadows = v))} />
+                </SignSrow>
+                <SignSrow name="FXAA anti-aliasing" lit={L("fxaa")}>
+                  <SignToggle label="FXAA anti-aliasing" checked={s.fxaa} onChange={(v) => upd((x) => (x.fxaa = v))} />
+                </SignSrow>
+                <SignSrow name="Motion blur" lit={L("mblur")}>
+                  <SignToggle label="Motion blur" checked={s.mblur} onChange={(v) => upd((x) => (x.mblur = v))} />
+                </SignSrow>
+                {/* game.grade is the live truth — the in-game V key flips it too */}
+                <SignSrow name="Dashcam filter" aside="(V)" lit={L("dashcam")}>
+                  <SignToggle
+                    label="Dashcam filter"
+                    checked={game.grade}
+                    onChange={(v) =>
+                      upd((x) => {
+                        x.dashcam = v;
+                        game.grade = v;
+                      })
+                    }
+                  />
+                </SignSrow>
+                <SignSrow stack name="Draw distance" lit={L("drawDist")}>
+                  <SignSlider
+                    label="Draw distance"
+                    min={350} max={1100} step={50} value={s.drawDist}
+                    text={`${s.drawDist} m`}
+                    onChange={(v) => upd((x) => (x.drawDist = v))}
+                  />
+                </SignSrow>
+                <SignSrow stack last name="Field of view" lit={L("fovBase")}>
+                  <SignSlider
+                    label="Field of view"
+                    min={58} max={100} value={s.fovBase}
+                    text={`${s.fovBase}°`}
+                    onChange={(v) => upd((x) => (x.fovBase = v))}
+                  />
+                </SignSrow>
+              </div>
+              <div>
+                <SignShead en="DRIVING" jp="運転" />
+                <SignSrow name="Traction control" lit={L("tc")}>
+                  <SignToggle label="Traction control" checked={s.tc} onChange={(v) => upd((x) => (x.tc = v))} />
+                </SignSrow>
+                <SignSrow name="Touch steering" lit={L("steerMode")}>
+                  <SignSelect
+                    aria-label="Touch steering"
+                    value={s.steerMode}
+                    onChange={(e) =>
+                      upd((x) => {
+                        x.steerMode = e.target.value as any;
+                        if (x.steerMode === "tilt") game.hookTilt();
+                      })
+                    }
+                  >
+                    <option value="buttons">Buttons</option>
+                    <option value="wheel">Touch wheel</option>
+                    <option value="slider">Swipe slider</option>
+                    <option value="tilt">Tilt</option>
+                  </SignSelect>
+                </SignSrow>
+                <SignSrow name="Speed units" lit={L("units")}>
+                  <SignSeg
+                    label="Speed units"
+                    value={s.units}
+                    options={[{ v: "mph", t: "MPH" }, { v: "kmh", t: "KM/H" }]}
+                    onChange={(v) => upd((x) => (x.units = v as SpeedUnits))}
+                  />
+                </SignSrow>
+                {/* game.testMode is a view onto s.testMode (see Game.testMode), so
+                    writing either one here is the same write — but go through the
+                    setting, which is what persist() copies out. The K key in game
+                    flips the same value. */}
+                <SignSrow name="Test mode" aside="— extra grip, brakes & power" lit={L("testMode")}>
+                  <SignToggle label="Test mode" checked={s.testMode} onChange={(v) => upd((x) => (x.testMode = v))} />
+                </SignSrow>
+                {/* The rival pace car. A mode rather than a difficulty: it costs
+                    nothing at all while it is off (game/traffic.ts claims its pool
+                    slot on the toggle, not at construction). */}
+                <SignSrow name="Rival car" aside="— chase the orange one" lit={L("rival")}>
+                  <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd((x) => (x.rival = v))} />
+                </SignSrow>
+                {s.rival && (
+                  <SignSrow sub name="⤷ rival uses its indicators" lit={L("rivalSignals")}>
+                    <SignToggle label="Rival uses its indicators" checked={s.rivalSignals} onChange={(v) => upd((x) => (x.rivalSignals = v))} />
+                  </SignSrow>
+                )}
+                {/* No Hesi scoring: speed + near misses build a combo, contact
+                    resets it (game/engine.ts's noHesiUpdate). On by default. */}
+                <SignSrow name="No Hesi score" aside="— speed + near misses" lit={L("noHesiScore")}>
+                  <SignToggle label="No Hesi score" checked={s.noHesiScore} onChange={(v) => upd((x) => (x.noHesiScore = v))} />
+                </SignSrow>
+                {/* Gates game/hints.ts wholesale. Which tips have already fired is
+                    stored separately from the settings (see settings.ts), so DEFAULTS
+                    re-enabling this does not replay them. */}
+                <SignSrow name="First-run hints" aside="— one-time tips" lit={L("hints")}>
+                  <SignToggle label="First-run hints" checked={s.hints} onChange={(v) => upd((x) => (x.hints = v))} />
+                </SignSrow>
+                <SignSrow stack name="Traffic density" lit={L("traffic")}>
+                  <SignSlider
+                    label="Traffic density"
+                    min={20} max={100} value={Math.round(s.traffic * 100)}
+                    text={`${Math.round(s.traffic * 100)}%`}
+                    onChange={(v) => upd((x) => (x.traffic = v / 100))}
+                  />
+                </SignSrow>
+                <SignSrow stack last name="Volume" lit={L("vol")}>
+                  <SignSlider
+                    label="Volume"
+                    min={0} max={100} value={Math.round(s.vol * 100)}
+                    text={`${Math.round(s.vol * 100)}%`}
+                    onChange={(v) => upd((x) => (x.vol = v / 100))}
+                  />
+                </SignSrow>
+              </div>
+              <div>
+                <SignShead en="WORLD & WEATHER" jp="天候" />
+                <SignSrow name="Fog / haze" lit={L("fog")}>
+                  <SignSeg
+                    label="Fog / haze"
+                    value={s.fog}
+                    options={[{ v: "off", t: "OFF" }, { v: "light", t: "LIGHT" }, { v: "medium", t: "MED" }, { v: "heavy", t: "HEAVY" }]}
+                    onChange={(v) => upd((x) => (x.fog = v as GameSettings["fog"]))}
+                  />
+                </SignSrow>
+                <SignSrow stack name="Time of day" lit={L("time")}>
+                  <SignSlider
+                    label="Time of day"
+                    min={0} max={24} step={0.25} value={game.time}
+                    text={fmtTime(game.time)}
+                    onChange={(v) => {
+                      game.time = v;
+                      setLit("time");
+                      force((n) => n + 1);
+                    }}
+                  />
+                </SignSrow>
+                <SignSrow name="Day/night cycle" lit={L("autoTime")}>
+                  <SignToggle label="Day/night cycle" checked={s.autoTime} onChange={(v) => upd((x) => (x.autoTime = v))} />
+                </SignSrow>
+                <SignSrow name="Rain" lit={L("rain")}>
+                  <SignToggle
+                    label="Rain"
+                    checked={game.rain}
+                    onChange={(v) => {
+                      game.setRain(v);
+                      setLit("rain");
+                      force((n) => n + 1);
+                    }}
+                  />
+                </SignSrow>
+                <SignShead en="SESSION" jp="セッション" />
+                <SignSrow name="Town seed" aside={`— ${game.seed}`}>
+                  <SignBtn sm onClick={onReseed}>
+                    NEW TOWN <span className="sign-cap">RELOADS</span>
+                  </SignBtn>
+                </SignSrow>
+                <SignSrow last name="Reset all settings">
+                  <SignBtn
+                    sm
+                    variant="ghost"
+                    onClick={() => {
+                      Object.assign(game.settings, defaultSettings());
+                      game.applySettings(game.settings);
+                      /* Every other write to settings goes through upd(), which calls
+                         this; DEFAULTS assigns straight onto game.settings and so
+                         skipped it. applySettings does not cover the rival — it is
+                         driven separately — so resetting left the rival in whatever
+                         state it was in while the panel claimed it was back to
+                         default. */
+                      syncRivalMode(game.settings);
+                      syncCabinMode(game.settings);
+                      // one event, not a diff of every key the reset touched
+                      track("settings_change", { setting: "reset_defaults", value: true });
+                      setLit(null);
+                      force((n) => n + 1);
+                    }}
+                  >
+                    DEFAULTS
+                  </SignBtn>
+                </SignSrow>
+              </div>
+            </div>
+          </SignBody>
+          <SignFootbar caption="changes apply live · the orange row is the one you just changed">
+            <SignBtn onClick={onBack}>DONE</SignBtn>
+          </SignFootbar>
+        </SignPlate>
       </div>
     </div>
   );
@@ -1790,4 +1911,249 @@ function fmtTime(t: number) {
   let mm = Math.round((t - hh) * 60);
   if (mm === 60) mm = 0;
   return (hh < 10 ? "0" : "") + hh + ":" + (mm < 10 ? "0" : "") + mm;
+}
+
+/* ================= controls ================= */
+
+/* Audited against engine.ts (onKeyDown/onKeyUp/readInput, bindInput,
+   onPointerDown, gamepad.ts) — every binding listed here exists there, and
+   everything bound there is listed. Keep the two in step when adding a key.
+   Split into two columns per Controls.dc.html; the third column carries
+   touch and gamepad and the green EXIT board the old note talked about. */
+const KEYS_A: [string, string][] = [
+  ["W / S · ↑ / ↓", "throttle · brake & reverse"],
+  ["A / D · ← / →", "steer"],
+  ["SPACE", "handbrake (drift)"],
+  ["C", "camera: chase → cockpit → hood → console → backseat → dashcam"],
+  ["B", "look back (chase & cockpit)"],
+  ["Q / E", "turn signals"],
+  ["F", "horn (traffic speeds up)"],
+  ["L", "headlights on / auto"],
+  ["G", "high beams: tap to flash, hold 2s to latch on / off"],
+  ["M", "cockpit mirrors"],
+  ["R", "rain"],
+  ["U", "wipers: off / int / lo / hi (rain auto-starts lo; also clickable beside the head unit)"],
+  ["T", "time-lapse: ×150 → ×1500 → off"],
+  ["V", "dashcam grade (the DASHCAM view forces its own, harder)"],
+];
+const KEYS_B: [string, string][] = [
+  ["X", "minimap"],
+  ["Z", "map zoom: close-up ↔ whole loop (or click the map)"],
+  ["N", "reset to nearest road"],
+  ["H", "this help screen"],
+  ["K", "test mode: extra grip, brakes & power (also in settings; persists)"],
+  ["O", "photo mode: orbit the car, Space captures a PNG"],
+  ["I", "interior light — desktop only (off by default; the cabin is meant to be dark)"],
+  ["P", "in-dash music: play / pause — desktop only"],
+  [", / .", "previous / next piece"],
+  ["ESC", "pause menu (music pauses with it)"],
+];
+const KEYS_MOUSE: [string, string][] = [
+  ["DASH SCREEN", "click to switch panes — map / music / trip (desktop)"],
+  ["ROOF CONSOLE", "click the overhead panel — interior light"],
+];
+const KEYS_TOUCH: [string, string][] = [
+  ["PUCKS", "steer · pedals · CAM · LTS (high beams) · HORN"],
+  ["⋯", "quick controls drawer: lights, map, mirrors, rain, wipers, time-lapse, dashcam FX, test mode, reset, photo mode"],
+  ["TOP EDGE", "tap the middle — interior light"],
+  ["STEERING", "buttons / touch wheel / swipe slider / tilt — pick in settings"],
+];
+const KEYS_PAD: [string, string][] = [
+  ["STICKS", "left stick steers · RT throttle · LT brake"],
+  ["BUTTONS", "A handbrake · B horn · Y lights · RB or D-pad up camera"],
+];
+
+function KeyList({ rows }: { rows: [string, string][] }) {
+  return (
+    <div className="sign-keys">
+      {rows.map(([k, d]) => (
+        <Fragment key={k}>
+          <span className="sign-chip">{k}</span>
+          <span>{d}</span>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+function ControlsScreen({
+  loaded, onBack, onCredits,
+}: {
+  loaded: boolean;
+  onBack: () => void;
+  onCredits: () => void;
+}) {
+  return (
+    <div className="menuRoot signRoot sub">
+      {!loaded && <NightRoad />}
+      <Gantry />
+      <div className="sign-stack sub">
+        <SignPlate hangers screen>
+          <SignHead jp="操作方法" en="CONTROLS" corner={<>H TOGGLES THIS SCREEN<br />IN-GAME</>} />
+          <SignRule />
+          <SignBody>
+            <div className="sign-cols ctrl">
+              <div>
+                <SignShead en="KEYBOARD" jp="キーボード" />
+                <KeyList rows={KEYS_A} />
+              </div>
+              <div>
+                <SignShead en="KEYBOARD" jp="続き" />
+                <KeyList rows={KEYS_B} />
+                <SignShead en="MOUSE · IN THE CABIN" />
+                <KeyList rows={KEYS_MOUSE} />
+              </div>
+              <div>
+                <SignShead en="TOUCH" jp="触れる" />
+                <KeyList rows={KEYS_TOUCH} />
+                <SignShead en="GAMEPAD" />
+                <KeyList rows={KEYS_PAD} />
+                <div className="sign-exitboard">
+                  <div className="sign-sheet" aria-hidden="true" />
+                  <div className="sign-exitboard-head">
+                    <span className="sign-arrow" aria-hidden="true">
+                      <SignArrow dir="ne" />
+                    </span>
+                    <div>
+                      <div className="sign-exitboard-title">
+                        EXIT 4 <span className="ui-jp" lang="ja">峠</span>
+                      </div>
+                      <span className="sign-cap">MOUNTAIN ROAD · TWO-WAY</span>
+                    </div>
+                  </div>
+                  <p>
+                    Follow the green EXIT boards on the expressway — each numbered exit has a
+                    lit off-ramp down into the town on both sides, and EXIT 4 leads onto the
+                    two-way mountain road. Crashed cars keep their hazards on, smoke, and get
+                    towed away shortly.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </SignBody>
+          <SignFootbar caption="every key, tap and button the game listens for">
+            <SignBtn variant="ghost" onClick={onCredits}>
+              CREDITS
+            </SignBtn>
+            <SignBtn variant="ghost" back onClick={onBack}>
+              BACK
+            </SignBtn>
+          </SignFootbar>
+        </SignPlate>
+      </div>
+    </div>
+  );
+}
+
+/* ================= credits ================= */
+
+/* The CC-BY attributions from ATTRIBUTIONS.md (the assets that ship and
+   require credit), the typefaces, and the privacy plate. Keep this list in
+   step with ATTRIBUTIONS.md when an asset changes hands. */
+const CREDITS: { what: string; use: string; who: string; host: string; href: string; lic: string }[] = [
+  {
+    what: "Orchids Simulator Traffic Car Pack",
+    use: "NPC traffic bodyshells — sedan, hybrid, compact, SUV, taxi, police, van, truck",
+    who: "SphereBall20 (@playmode280513)",
+    host: "sketchfab.com",
+    href: "https://sketchfab.com/3d-models/orchids-simulator-traffic-car-pack-2fc5970d5ba2415fa98ec98b8801e794",
+    lic: "CC BY 4.0",
+  },
+  {
+    what: "Generic civil service vehicles pack",
+    use: "NPC traffic — the bus",
+    who: "comrade1280",
+    host: "sketchfab.com",
+    href: "https://sketchfab.com/3d-models/8ff2a13f30914932a70c7950cfa58465",
+    lic: "CC BY 4.0",
+  },
+  {
+    what: "Volvo S90 Recharge (Free)",
+    use: "the player car — cockpit interior and exterior body",
+    who: "lazercar",
+    host: "sketchfab.com",
+    href: "https://sketchfab.com/3d-models/volvo-s90-recharge-free-9462b07c10244fd4a28d86846dc9e3a9",
+    lic: "CC BY 4.0",
+  },
+  {
+    what: "Car Tire Skid Squealing",
+    use: "tyre squeal (downmixed to mono, peak-normalised)",
+    who: "qubodup",
+    host: "opengameart.org",
+    href: "https://opengameart.org/content/car-tire-skid-squealing",
+    lic: "CC BY 3.0",
+  },
+];
+const TYPE_CREDITS: { what: string; use: string; who: string; lic: string }[] = [
+  { what: "Overpass", use: "the sign's Latin face", who: "Delve Withrington, Delve Fonts", lic: "OFL 1.1" },
+  { what: "Zen Kaku Gothic New", use: "the sign's Japanese face", who: "Yoshimichi Ohira", lic: "OFL 1.1" },
+  { what: "Space Grotesk", use: "HUD numerals", who: "Florian Karsten", lic: "OFL 1.1" },
+  { what: "three.js · Next.js · React", use: "engine and app", who: "their contributors", lic: "MIT" },
+];
+
+function CreditsScreen({ loaded, onBack }: { loaded: boolean; onBack: () => void }) {
+  return (
+    <div className="menuRoot signRoot sub">
+      {!loaded && <NightRoad />}
+      <Gantry />
+      <div className="sign-stack sub mid">
+        <SignPlate hangers screen>
+          <SignHead jp="クレジット" en="CREDITS" corner={<>NEON EXPRESSWAY v{VERSION}<br />ATTRIBUTIONS · PRIVACY</>} />
+          <SignRule />
+          <SignBody>
+            <SignShead en="THIRD-PARTY ASSETS" jp="素材" />
+            <div className="sign-credits">
+              {CREDITS.map((c) => (
+                <div className="sign-credit" key={c.what}>
+                  <div className="what">
+                    {c.what}
+                    <small>{c.use}</small>
+                  </div>
+                  <div className="who">
+                    {c.who} ·{" "}
+                    <a href={c.href} target="_blank" rel="noreferrer">
+                      {c.host}
+                    </a>
+                  </div>
+                  <span className="sign-chip">{c.lic}</span>
+                </div>
+              ))}
+            </div>
+            <SignShead en="TYPE & CODE" jp="書体" />
+            <div className="sign-credits">
+              {TYPE_CREDITS.map((c) => (
+                <div className="sign-credit" key={c.what}>
+                  <div className="what">
+                    {c.what}
+                    <small>{c.use}</small>
+                  </div>
+                  <div className="who">{c.who}</div>
+                  <span className="sign-chip">{c.lic}</span>
+                </div>
+              ))}
+            </div>
+            <SignShead en="PRIVACY" jp="プライバシー" />
+            {/* mirrors lib/analytics.ts: anonymous PostHog product analytics,
+                25% sampled session replay with inputs masked, respect_dnt,
+                and the ?owner= opt-out flag */}
+            <div className="sign-plate inboard">
+              <b>ANONYMOUS ANALYTICS</b>
+              The game sends anonymous product analytics to PostHog — which screens get opened, which
+              settings get changed, how long a drive lasts — and records a sampled session replay (about
+              one session in four, with every input masked). There are no accounts, no sign-in, and no
+              email or name is ever attached. A browser&apos;s Do Not Track setting is respected. To opt
+              out on this device open the game once with <code>?owner=1</code> in the address; <code>?owner=0</code>{" "}
+              turns it back on.
+            </div>
+          </SignBody>
+          <SignFootbar keep caption={<>every asset&apos;s provenance is in ATTRIBUTIONS.md · <span className="sign-ver">v{VERSION}</span></>}>
+            <a className="sign-btn ghost sm" href={BUG_MAILTO}>REPORT A BUG</a>
+            <SignBtn variant="ghost" back onClick={onBack}>
+              BACK
+            </SignBtn>
+          </SignFootbar>
+        </SignPlate>
+      </div>
+    </div>
+  );
 }

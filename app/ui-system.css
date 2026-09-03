@@ -9,10 +9,13 @@
    ONE primary/selected thing on a screen, all hung on lit steel over the
    dashcam deck. Source of truth for the values: the designer's System sheet
    (scratchpad ui-directions/System.dc.html + ui/common.css). This sheet is
-   the shared foundation; the home screen is the first screen on it, and
-   garage / settings / controls / pause / loading are restyled onto the same
-   tokens next. Nothing here touches the legacy .menuRoot/.panel rules in
-   globals.css — those keep the other screens working until each moves over.
+   the shared foundation: the home screen, and — in the SUB-SCREENS half at
+   the bottom — garage / settings / controls / stats / pause / credits /
+   loading / photo mode, plus the HUD's exit board and hint plate and the
+   touch pucks' press state. The legacy .menuRoot/.panel rules in globals.css
+   are no longer used by any screen; .signRoot overrides what it must of
+   .menuRoot, .loadRoot and #photoHint so the ids/classes the harnesses hook
+   stay where they are.
 
    HOW TO REUSE
    ------------
@@ -537,7 +540,15 @@
   letter-spacing: 0.1em;
   line-height: 1;
   white-space: nowrap;
-  overflow: hidden;
+  /* clip only sideways: the JP face's ascent/descent overshoot a 1.0 line
+     box by ~8px, and an overflow:hidden box was clipping the glyphs' tops
+     and tails (ui-qa rule c). Vertical overflow is free to paint. */
+  overflow: clip visible;
+}
+/* the pause screen paints its JP labels from data-jp so the button's text
+   is exactly its EN label (the harnesses want a button that says "RESUME") */
+.sign-jp[data-jp]::before {
+  content: attr(data-jp);
 }
 .sign-row.sel .sign-jp {
   font-size: var(--sign-fs-row-sel-jp);
@@ -960,7 +971,7 @@
     letter-spacing: 0.14em;
     line-height: 1.2;
     white-space: nowrap;
-    overflow: hidden;
+    overflow: clip visible;
     text-overflow: ellipsis;
   }
   .sign-head .sign-title {
@@ -1035,7 +1046,7 @@
   .sign-plate-line {
     display: block;
     white-space: nowrap;
-    overflow: hidden;
+    overflow: clip visible;
     text-overflow: ellipsis;
     color: var(--sign-ink-dim);
   }
@@ -1178,7 +1189,7 @@
     letter-spacing: 0.12em;
     line-height: 1;
     white-space: nowrap;
-    overflow: hidden;
+    overflow: clip visible;
     text-overflow: ellipsis;
     color: var(--sign-ink-dim);
   }
@@ -1246,7 +1257,2168 @@
     letter-spacing: 0.14em;
     line-height: 1.2;
     white-space: nowrap;
-    overflow: hidden;
+    overflow: clip visible;
+    text-overflow: ellipsis;
+  }
+}
+
+
+/* ==========================================================================
+   SUB-SCREENS — garage / settings / controls / stats / pause / credits /
+   loading / photo, plus the HUD's two sign plates and the touch press state.
+   Values lifted from the designer's screen artboards (scratchpad
+   ui-directions/ui/screens/*.html): the 1320-wide boards sit at left 60 /
+   top 90 of the 1440×900 frame with 34px insets; stats is 900 wide; pause is
+   a 620-wide post-mounted board; loading is a 900-wide board under a toll
+   gantry. Everything is in design pixels × --su on desktop and the fixed
+   phone tokens below 700px / 480px tall, same as the home screen.
+   ========================================================================== */
+
+/* ---------- board sizes ---------- */
+.sign-stack.sub {
+  width: min(calc(1320 * var(--su)), calc(100% - 2 * var(--sign-inset)));
+  margin-top: calc(84 * var(--su));
+  padding-bottom: calc(24 * var(--su));
+  gap: calc(14 * var(--su));
+}
+.sign-stack.sub.mid {
+  width: min(calc(900 * var(--su)), calc(100% - 2 * var(--sign-inset)));
+}
+.sign-stack.sub.narrow {
+  width: min(calc(620 * var(--su)), calc(100% - 2 * var(--sign-inset)));
+  margin-top: calc(110 * var(--su));
+  /* the pause board's rows are the design's 26/22 (30 selected) on a 120
+     JP column, not the home board's 36/32 on 190 — seven rows plus their
+     captions have to fit a 620-wide board */
+  --sign-col-jp: calc(120 * var(--su));
+  --sign-col-arrow: calc(56 * var(--su));
+  --sign-fs-row: calc(26 * var(--su));
+  --sign-fs-row-jp: calc(22 * var(--su));
+  --sign-fs-row-sel: calc(30 * var(--su));
+  --sign-fs-row-sel-jp: calc(24 * var(--su));
+  --sign-fs-arrow: calc(32 * var(--su));
+  --sign-fs-arrow-sel: calc(40 * var(--su));
+  --sign-row-gap: calc(18 * var(--su));
+}
+/* A sub-screen board grows with its content and the ROOT scrolls (the
+   .menuRoot.signRoot.sub rule): the footbar's DONE / BACK is always the last
+   thing in flow, under every card and row, so nothing can ever sit under
+   it. (An earlier cut scrolled the body inside a viewport-high board; the
+   cards passing under the footbar read as overlapping controls to ui-qa's
+   rule d, and to a thumb they were.) */
+.sign.screen {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 0 0 calc(12 * var(--su));
+}
+.menuRoot.signRoot.sub {
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+.sign.screen .sign-hang.h1 {
+  left: 22.7%;
+}
+.sign.screen .sign-hang.h2 {
+  left: 75.7%;
+}
+.sign.screen .sign-hang.h3 {
+  display: none;
+}
+.sign-stack.mid .sign-hang.h1 {
+  left: 33%;
+}
+.sign-stack.mid .sign-hang.h2 {
+  left: 64%;
+}
+
+/* ---------- sub-screen header ---------- */
+.sign-head.sub {
+  gap: calc(20 * var(--su));
+  padding: calc(20 * var(--su)) var(--sign-inset) 0;
+}
+.sign-head.sub .sign-shield {
+  width: calc(72 * var(--su));
+  height: calc(66 * var(--su));
+  border-width: calc(4 * var(--su));
+  border-radius: calc(8 * var(--su)) calc(8 * var(--su)) calc(36 * var(--su)) calc(36 * var(--su));
+}
+.sign-head.sub .sign-shield-code {
+  font-size: calc(28 * var(--su));
+}
+.sign-head.sub .sign-shield-jp {
+  font-size: calc(11 * var(--su));
+}
+.sign-head.sub .sign-title-jp {
+  font-size: calc(22 * var(--su));
+}
+.sign-head.sub .sign-title {
+  margin-top: calc(6 * var(--su));
+  font-size: calc(56 * var(--su));
+}
+.sign-head.sub .sign-corner {
+  font-size: calc(13 * var(--su));
+}
+/* the garage swaps the shield for the big parking square */
+.sign-head .sign-p.big {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(66 * var(--su));
+  height: calc(66 * var(--su));
+  border-radius: calc(10 * var(--su));
+  background: var(--sign-ink);
+  color: var(--sign-blue);
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(50 * var(--su));
+  line-height: 1;
+}
+.sign.screen .sign-rule {
+  margin: calc(14 * var(--su)) var(--sign-inset) calc(6 * var(--su));
+}
+
+/* ---------- body + footbar ---------- */
+.sign-body {
+  position: relative;
+  padding: 0 var(--sign-inset) calc(10 * var(--su));
+}
+.sign-footbar {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(14 * var(--su));
+  padding: calc(6 * var(--su)) var(--sign-inset) calc(4 * var(--su));
+}
+.sign-footcap {
+  min-width: 0;
+  font-size: calc(12 * var(--su));
+  line-height: 1.5;
+}
+.sign-footbtns {
+  display: flex;
+  align-items: center;
+  gap: calc(10 * var(--su));
+  flex-shrink: 0;
+}
+.sign-ver {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- controls (System sheet §05), sized in design pixels ---------- */
+.sign-btn.back::before {
+  content: "↩";
+  font-weight: 900;
+}
+.sign-btn.sm {
+  padding: calc(9 * var(--su)) calc(12 * var(--su)) calc(7 * var(--su));
+  font-size: calc(13 * var(--su));
+  border-width: calc(3 * var(--su));
+  gap: calc(8 * var(--su));
+  min-height: 40px;
+}
+.sign-btn .sign-cap {
+  color: var(--sign-ink-dim);
+  font-size: calc(10 * var(--su));
+}
+.sign-btn.primary .sign-cap {
+  color: var(--sign-blue-deep);
+}
+a.sign-btn {
+  text-decoration: none;
+}
+.sign-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sign-btn:active {
+  transform: translateY(1px);
+}
+
+/* pill switch: a real checkbox (invisible, full-size, focusable) under the
+   painted pill; the label is the 44px tap target */
+.sign-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  min-height: 40px;
+  cursor: pointer;
+}
+.sign-toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.sign-toggle i {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: calc(64 * var(--su));
+  height: calc(32 * var(--su));
+  min-width: 48px;
+  min-height: 24px;
+  border: 3px solid var(--sign-ink);
+  border-radius: 999px;
+  background: transparent;
+  transition: background 0.15s var(--ease), border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+.sign-toggle i::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: calc(20 * var(--su));
+  height: calc(20 * var(--su));
+  min-width: 14px;
+  min-height: 14px;
+  margin-top: calc(-10 * var(--su));
+  border-radius: 50%;
+  background: var(--sign-ink);
+  transition: transform 0.15s var(--ease), background 0.15s var(--ease);
+}
+.sign-toggle.on i {
+  border-color: var(--sign-sodium);
+  background: var(--sign-sodium-tint);
+  box-shadow: 0 0 18px rgba(255, 180, 84, 0.45);
+}
+.sign-toggle.on i::after {
+  transform: translateX(calc(64 * var(--su) - 20 * var(--su) - 12px));
+  background: var(--sign-sodium);
+  box-shadow: 0 0 10px rgba(255, 180, 84, 0.9);
+}
+.sign-toggle:has(input:focus-visible) i {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 3px;
+}
+
+/* segmented control */
+.sign-seg {
+  border-width: 3px;
+  border-radius: calc(8 * var(--su));
+  flex-shrink: 0;
+}
+.sign-seg > * {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: calc(7 * var(--su)) calc(11 * var(--su));
+  font-size: calc(13 * var(--su));
+  line-height: 1;
+  white-space: nowrap;
+}
+.sign-seg > :focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: -4px;
+}
+.sign-seg > :hover:not(.on) {
+  background: var(--sign-wash);
+}
+
+/* native select in the sign's chip */
+.sign-select {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  min-height: 44px;
+  border-width: 3px;
+  border-radius: calc(8 * var(--su));
+  padding: calc(8 * var(--su)) calc(34 * var(--su)) calc(7 * var(--su)) calc(14 * var(--su));
+  font-size: calc(15 * var(--su));
+  line-height: 1;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23eef3ff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right calc(12 * var(--su)) center;
+  max-width: 100%;
+}
+.sign-select option {
+  background: var(--sign-blue-deep);
+  color: var(--sign-ink);
+  font-weight: 700;
+}
+.sign-select:hover {
+  background-color: var(--sign-wash);
+}
+.sign-select:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 2px;
+}
+
+/* slider: a range input (invisible, full-size) over the painted parts */
+.sign-sval {
+  display: flex;
+  align-items: center;
+  gap: calc(12 * var(--su));
+  min-width: 0;
+}
+.sign-slider {
+  position: relative;
+  flex: 1;
+  min-width: calc(120 * var(--su));
+  height: calc(30 * var(--su));
+  background: none;
+  border-radius: 0;
+}
+.sign-slider u,
+.sign-slider b {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: calc(6 * var(--su));
+  min-height: 4px;
+  margin-top: calc(-3 * var(--su));
+  border-radius: 3px;
+}
+.sign-slider u {
+  right: 0;
+  background: rgba(238, 243, 255, 0.5);
+  text-decoration: none;
+}
+.sign-slider b {
+  background: var(--sign-sodium);
+  box-shadow: 0 0 12px rgba(255, 180, 84, 0.8);
+}
+.sign-slider i {
+  position: absolute;
+  top: 50%;
+  width: calc(18 * var(--su));
+  height: calc(26 * var(--su));
+  min-width: 12px;
+  min-height: 18px;
+  margin: 0;
+  box-sizing: border-box;
+  transform: translate(-50%, -50%);
+  background: var(--sign-sodium);
+  border: 3px solid var(--sign-ink);
+  border-radius: calc(5 * var(--su));
+  box-shadow: 0 0 14px rgba(255, 180, 84, 0.8);
+}
+.sign-slider input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.sign-slider:has(input:focus-visible) i {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 3px;
+}
+.sign-value {
+  flex-shrink: 0;
+  width: calc(60 * var(--su));
+  text-align: right;
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: calc(14 * var(--su));
+  letter-spacing: 0.08em;
+  color: var(--sign-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* section head + settings rows */
+.sign-shead {
+  font-size: calc(13 * var(--su));
+  padding: calc(16 * var(--su)) 0 calc(4 * var(--su));
+}
+.sign-cols > div > .sign-shead:first-child {
+  padding-top: calc(6 * var(--su));
+}
+.sign-shead .ui-jp {
+  color: var(--sign-ink-dim);
+  margin-left: calc(8 * var(--su));
+  letter-spacing: 0.1em;
+}
+.sign-srow {
+  gap: calc(16 * var(--su));
+  min-height: calc(46 * var(--su));
+  padding: calc(3 * var(--su)) 0;
+  box-sizing: border-box;
+  border-bottom: 2px solid var(--sign-ink-18);
+}
+.sign-srow.last {
+  border-bottom: 0;
+}
+.sign-srow.stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: calc(2 * var(--su));
+  padding: calc(6 * var(--su)) 0 calc(4 * var(--su));
+}
+.sign-srow .name {
+  min-width: 0;
+  font-size: calc(16 * var(--su));
+  letter-spacing: 0.03em;
+  line-height: 1.25;
+}
+.sign-srow .name .aside {
+  display: inline;
+  font-size: calc(11 * var(--su));
+  letter-spacing: 0.1em;
+  margin-left: calc(6 * var(--su));
+}
+.sign-srow .ctl {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  max-width: 72%;
+}
+.sign-srow.sub .name {
+  padding-left: calc(22 * var(--su));
+}
+/* the row whose value just changed wears the sodium lane-edge rule */
+.sign-srow.lit {
+  border-left: calc(6 * var(--su)) solid var(--sign-sodium);
+  margin-left: calc(-14 * var(--su));
+  padding-left: calc(8 * var(--su));
+  background: rgba(255, 180, 84, 0.1);
+}
+.sign-srow.lit .name {
+  color: var(--sign-sodium);
+}
+.sign-srow.lit .name .aside {
+  color: var(--sign-sodium);
+}
+.sign-cols {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 calc(34 * var(--su));
+  align-content: start;
+}
+.sign-cols > div {
+  min-width: 0;
+}
+
+/* ---------- controls screen ---------- */
+.sign-cols.ctrl {
+  grid-template-columns: 1.1fr 1.1fr 0.9fr;
+}
+.sign-keys {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: calc(7 * var(--su)) calc(12 * var(--su));
+  align-items: baseline;
+  font-family: var(--font-sign);
+  font-weight: 700;
+  font-size: calc(13 * var(--su));
+  line-height: 1.4;
+  color: var(--sign-ink);
+}
+.sign-keys .sign-chip {
+  justify-self: start;
+  margin: 0;
+  white-space: nowrap;
+  line-height: 1;
+  padding: calc(4 * var(--su)) calc(8 * var(--su)) calc(2 * var(--su));
+}
+.sign-keys > span {
+  min-width: 0;
+}
+/* the green EXIT board the note talks about, as itself */
+.sign-exitboard {
+  position: relative;
+  margin-top: calc(26 * var(--su));
+  background: #0a7b44;
+  border: calc(4 * var(--su)) solid var(--sign-ink);
+  border-radius: calc(12 * var(--su));
+  padding: calc(14 * var(--su)) calc(16 * var(--su));
+  box-shadow: 0 0 calc(40 * var(--su)) rgba(28, 180, 100, 0.35);
+  color: var(--sign-ink);
+}
+.sign-exitboard .sign-sheet {
+  border-radius: calc(8 * var(--su));
+}
+.sign-exitboard-head {
+  display: flex;
+  align-items: center;
+  gap: calc(12 * var(--su));
+}
+.sign-exitboard-head .sign-arrow {
+  width: auto;
+  font-size: calc(30 * var(--su));
+}
+.sign-exitboard-title {
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(20 * var(--su));
+  line-height: 1;
+}
+.sign-exitboard-title .ui-jp {
+  margin-left: calc(6 * var(--su));
+}
+.sign-exitboard .sign-cap {
+  display: block;
+  color: var(--sign-ink);
+  font-size: calc(11 * var(--su));
+  margin-top: calc(3 * var(--su));
+}
+.sign-exitboard p {
+  margin: calc(10 * var(--su)) 0 0;
+  font-family: var(--font-sign);
+  font-size: calc(12 * var(--su));
+  font-weight: 700;
+  line-height: 1.5;
+  color: #eaffe9;
+}
+
+/* ---------- stats ---------- */
+.signRoot .statsGrid {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0 calc(20 * var(--su));
+  align-items: center;
+  margin: calc(6 * var(--su)) 0 0;
+  font-size: inherit;
+}
+.signRoot .statsGrid .shead {
+  text-align: right;
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: calc(14 * var(--su));
+  letter-spacing: 0.16em;
+  color: var(--sign-ink-dim);
+}
+.signRoot .statsGrid .shead .ui-jp {
+  margin-left: calc(6 * var(--su));
+}
+.signRoot .statsGrid .srule {
+  grid-column: span 3;
+  height: calc(3 * var(--su));
+  background: var(--sign-ink-75);
+  margin: calc(8 * var(--su)) 0 calc(4 * var(--su));
+}
+.signRoot .statsGrid .slabel {
+  display: flex;
+  align-items: baseline;
+  gap: calc(12 * var(--su));
+  padding: calc(9 * var(--su)) 0;
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(22 * var(--su));
+  line-height: 1;
+  color: var(--sign-ink);
+}
+.signRoot .statsGrid .slabel i {
+  font-family: var(--font-sign-jp);
+  font-style: normal;
+  font-weight: 900;
+  font-size: calc(14 * var(--su));
+  letter-spacing: 0.16em;
+  color: var(--sign-ink-dim);
+  margin: 0;
+}
+.signRoot .statsGrid .sval {
+  min-width: 0;
+  text-align: right;
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(28 * var(--su));
+  line-height: 1;
+  color: var(--sign-ink);
+  font-variant-numeric: tabular-nums;
+}
+.signRoot .statsGrid .sval.life {
+  color: var(--sign-ink-dim);
+}
+.signRoot .statsGrid .sval.rec {
+  color: var(--sign-sodium);
+  text-shadow: 0 0 calc(14 * var(--su)) rgba(255, 180, 84, 0.8);
+}
+.signRoot .statsGrid .slabel.rec {
+  color: var(--sign-sodium);
+  border-left: calc(6 * var(--su)) solid var(--sign-sodium);
+  margin-left: calc(-14 * var(--su));
+  padding-left: calc(8 * var(--su));
+}
+.signRoot .statsGrid .slabel.rec i {
+  color: var(--sign-sodium);
+}
+
+/* ---------- garage ---------- */
+.sign-garage {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: calc(14 * var(--su));
+  margin-top: calc(10 * var(--su));
+}
+.signRoot .carCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: calc(8 * var(--su));
+  min-width: 0;
+  padding: calc(12 * var(--su));
+  border: calc(3 * var(--su)) solid var(--sign-ink);
+  border-radius: calc(12 * var(--su));
+  background: rgba(5, 6, 12, 0.18);
+  color: var(--sign-ink);
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 0.12s var(--ease), border-color 0.12s var(--ease);
+}
+.signRoot .carCard:hover {
+  border-color: var(--sign-ink);
+  background: rgba(238, 243, 255, 0.1);
+}
+.signRoot .carCard:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 3px;
+}
+.signRoot .carCard.sel {
+  border-color: var(--sign-sodium);
+  border-left-width: calc(8 * var(--su));
+  background: rgba(255, 180, 84, 0.14);
+  box-shadow: 0 0 calc(40 * var(--su)) rgba(255, 180, 84, 0.45);
+  color: var(--sign-sodium);
+  animation: signHum 3s ease-in-out infinite;
+}
+.signRoot .carCard.locked {
+  border-color: rgba(238, 243, 255, 0.45);
+  background: rgba(5, 6, 12, 0.18);
+  opacity: 0.55;
+  cursor: default;
+}
+.signRoot .carCard.locked:hover {
+  border-color: rgba(238, 243, 255, 0.45);
+}
+.signRoot .carCard.locked > *:not(.soonBadge) {
+  opacity: 1;
+  filter: none;
+}
+.signRoot .carCard .carImg {
+  position: relative;
+  height: calc(110 * var(--su));
+  margin: 0;
+  aspect-ratio: auto;
+  border-radius: calc(8 * var(--su));
+  background: linear-gradient(180deg, #0c1122, #1a2340);
+  overflow: hidden;
+}
+.signRoot .carCard .carImg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.signRoot .carCard .carChip {
+  position: absolute;
+  right: calc(8 * var(--su));
+  top: calc(8 * var(--su));
+  margin: 0;
+  z-index: 1;
+}
+.signRoot .carCard h3 {
+  display: flex;
+  align-items: baseline;
+  gap: calc(8 * var(--su));
+  margin: 0;
+  min-width: 0;
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(20 * var(--su));
+  line-height: 1;
+  color: inherit;
+  white-space: nowrap;
+}
+.signRoot .carCard h3 .jp {
+  font-family: var(--font-sign-jp);
+  font-size: calc(13 * var(--su));
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  color: var(--sign-ink-dim);
+  opacity: 1;
+}
+.signRoot .carCard.sel h3 .jp {
+  color: var(--sign-sodium);
+}
+.signRoot .carCard .carJp {
+  margin: 0;
+  font-family: var(--font-sign);
+  font-weight: 700;
+  font-size: calc(12 * var(--su));
+  line-height: 1.4;
+  color: var(--sign-ink-faint);
+}
+.signRoot .carCard .stats {
+  display: flex;
+  flex-direction: column;
+  gap: calc(5 * var(--su));
+  margin-top: calc(4 * var(--su));
+}
+.signRoot .statRow {
+  display: flex;
+  align-items: center;
+  gap: calc(8 * var(--su));
+  margin: 0;
+  font-size: calc(10 * var(--su));
+  color: var(--sign-ink-dim);
+}
+.signRoot .statRow span {
+  width: calc(52 * var(--su));
+  flex-shrink: 0;
+  font-family: var(--font-sign);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.signRoot .statBar {
+  flex: 1;
+  height: calc(6 * var(--su));
+  min-height: 4px;
+  background: rgba(238, 243, 255, 0.18);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.signRoot .statBar i {
+  display: block;
+  height: 100%;
+  background: var(--sign-ink);
+  border-radius: 3px;
+}
+.signRoot .carCard.sel .statBar i {
+  background: var(--sign-sodium);
+}
+.signRoot .carCard.locked .statBar i {
+  background: var(--sign-ink-dim);
+}
+.signRoot .soonBadge {
+  position: absolute;
+  right: calc(8 * var(--su));
+  top: calc(8 * var(--su));
+  z-index: 1;
+  padding: calc(4 * var(--su)) calc(8 * var(--su)) calc(2 * var(--su));
+  border: 2px solid var(--sign-ink);
+  border-radius: 4px;
+  background: var(--sign-ink);
+  color: var(--sign-blue);
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: calc(11 * var(--su));
+  letter-spacing: 0.14em;
+  line-height: 1;
+}
+/* the paint lane under the bays */
+.sign-paint-rule {
+  height: calc(3 * var(--su));
+  background: var(--sign-ink-75);
+  margin: calc(18 * var(--su)) 0 calc(14 * var(--su));
+}
+.sign-paint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(14 * var(--su)) calc(26 * var(--su));
+}
+.sign-paint .sign-titles {
+  flex-shrink: 0;
+}
+.sign-paint .sign-title-jp {
+  font-size: calc(16 * var(--su));
+}
+.sign-paint .sign-title {
+  margin-top: calc(4 * var(--su));
+  font-size: calc(26 * var(--su));
+  text-shadow: none;
+}
+.signRoot .paintRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: calc(14 * var(--su));
+  margin: 0;
+}
+.signRoot .paintDot {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0;
+  margin: 0;
+  box-sizing: border-box;
+  width: calc(46 * var(--su));
+  height: calc(46 * var(--su));
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: calc(8 * var(--su));
+  border: 3px solid rgba(238, 243, 255, 0.5);
+  cursor: pointer;
+  transition: border-color 0.12s var(--ease), box-shadow 0.12s var(--ease);
+}
+.signRoot .paintDot:hover {
+  border-color: var(--sign-ink);
+}
+.signRoot .paintDot.sel {
+  border: 4px solid var(--sign-sodium);
+  box-shadow: 0 0 calc(20 * var(--su)) rgba(255, 180, 84, 0.8);
+}
+.signRoot .paintDot:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 3px;
+}
+body .signRoot .paintDot::before {
+  content: none;
+}
+.signRoot .paintName {
+  display: flex;
+  align-items: baseline;
+  gap: calc(10 * var(--su));
+  margin: 0;
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(24 * var(--su));
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--sign-sodium);
+}
+.signRoot .paintName i {
+  font-style: normal;
+  font-size: calc(13 * var(--su));
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: var(--sign-sodium);
+  margin: 0;
+}
+.sign-paint .sign-paintnote {
+  margin-left: auto;
+  text-align: right;
+  font-size: calc(12 * var(--su));
+  line-height: 1.5;
+}
+
+/* ---------- pause ---------- */
+.sign-post {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(50% - 348 * var(--su));
+  width: calc(18 * var(--su));
+  background: linear-gradient(90deg, var(--steel-hi), var(--steel-dark));
+  pointer-events: none;
+}
+.sign-post-stub {
+  position: absolute;
+  left: 100%;
+  width: calc(30 * var(--su));
+  height: calc(12 * var(--su));
+  background: var(--steel-fixture);
+}
+.sign-post-stub.t {
+  top: calc(150 * var(--su));
+}
+.sign-post-stub.b {
+  top: calc(700 * var(--su));
+}
+.sign-note {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: calc(12 * var(--su));
+  white-space: nowrap;
+}
+.sign-row.sel .sign-note {
+  color: var(--sign-sodium);
+}
+.sign-glyph {
+  font-family: var(--font-sign);
+  font-weight: 900;
+  line-height: 1;
+}
+.sign-rows.two {
+  display: flex;
+}
+
+/* ---------- credits ---------- */
+.sign-credits {
+  display: flex;
+  flex-direction: column;
+}
+.sign-credit {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+  gap: calc(6 * var(--su)) calc(20 * var(--su));
+  align-items: center;
+  padding: calc(10 * var(--su)) 0;
+  border-bottom: 2px solid var(--sign-ink-18);
+  min-width: 0;
+}
+.sign-credit:last-child {
+  border-bottom: 0;
+}
+.sign-credit .what {
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(18 * var(--su));
+  line-height: 1.15;
+  color: var(--sign-ink);
+}
+.sign-credit .what small {
+  display: block;
+  font-size: calc(12 * var(--su));
+  font-weight: 700;
+  color: var(--sign-ink-faint);
+  letter-spacing: 0.04em;
+  margin-top: calc(3 * var(--su));
+}
+.sign-credit .who {
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: calc(14 * var(--su));
+  letter-spacing: 0.04em;
+  color: var(--sign-ink-dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sign-credit .who a {
+  color: var(--sign-ink-dim);
+  text-decoration: underline;
+  text-decoration-color: var(--sign-ink-faint);
+  text-underline-offset: 3px;
+}
+.sign-credit .who a:hover,
+.sign-credit .who a:focus-visible {
+  color: var(--sign-ink);
+}
+.sign-credit .who a:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.sign-credit .sign-chip {
+  margin: 0;
+  color: var(--sign-ink);
+}
+.sign-plate.inboard {
+  margin: calc(16 * var(--su)) 0 0;
+  box-shadow: none;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+  line-height: 1.5;
+  display: block;
+}
+.sign-plate.inboard b {
+  display: block;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  color: var(--sign-ink-dim);
+  margin-bottom: calc(4 * var(--su));
+}
+.sign-plate.inboard code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.95em;
+  color: var(--sign-ink);
+}
+.sign-plate-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: 2px solid currentColor;
+  border-radius: 4px;
+  padding: calc(3 * var(--su)) calc(8 * var(--su)) calc(2 * var(--su));
+  font: inherit;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: inherit;
+  cursor: pointer;
+  line-height: 1.2;
+  min-height: 32px;
+}
+.sign-plate-btn:hover,
+.sign-plate-btn:focus-visible {
+  background: var(--sign-wash);
+}
+.sign-plate-btn:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 2px;
+}
+a.sign-plate-btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ---------- loading: the toll plaza ---------- */
+.loadRoot.signLoad {
+  background: radial-gradient(80% 55% at 50% 66%, #101528 0%, #080b16 55%, var(--sign-bg) 100%);
+  font-family: var(--font-sign);
+  color: var(--sign-ink);
+  overflow: hidden;
+}
+.loadRoot.signLoad::before {
+  content: none;
+}
+.toll {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: calc(200 * var(--su));
+  pointer-events: none;
+}
+.toll .gantry-truss {
+  top: calc(60 * var(--su));
+  height: calc(40 * var(--su));
+}
+.toll .gantry-lattice {
+  top: calc(66 * var(--su));
+  height: calc(28 * var(--su));
+}
+.toll-booths {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100 * var(--su));
+  display: flex;
+  justify-content: center;
+  gap: calc(120 * var(--su));
+}
+.toll-booth {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(8 * var(--su));
+}
+.toll-booth i {
+  width: calc(18 * var(--su));
+  height: calc(40 * var(--su));
+  background: var(--steel-fixture);
+}
+.toll-booth b {
+  border: 3px solid var(--sign-ink);
+  border-radius: calc(6 * var(--su));
+  padding: calc(7 * var(--su)) calc(16 * var(--su)) calc(5 * var(--su));
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(15 * var(--su));
+  letter-spacing: 0.14em;
+  line-height: 1;
+  background: var(--sign-blue);
+  color: var(--sign-ink);
+}
+.toll-booth.etc b {
+  background: #5b2d91;
+}
+.toll-booth.open b {
+  border-color: var(--sign-sodium);
+  color: var(--sign-sodium);
+  box-shadow: 0 0 calc(22 * var(--su)) rgba(255, 180, 84, 0.6);
+  animation: signHum 3s ease-in-out infinite;
+}
+.toll-booth.jp b {
+  font-family: var(--font-sign-jp);
+}
+.sign-stack.load {
+  width: min(calc(900 * var(--su)), calc(100% - 2 * var(--sign-inset)));
+  /* .loadRoot centres its column; the toll gantry above is absolute */
+  margin: 0 auto;
+  padding-bottom: 0;
+}
+.sign.loadboard {
+  padding-bottom: calc(20 * var(--su));
+}
+/* the legacy .loadTitle/.loadJp rules (pink JP, wide tracking) lose to these */
+.sign.loadboard .sign-title-jp {
+  margin: 0;
+  color: var(--sign-ink);
+  letter-spacing: 0.2em;
+  text-shadow: none;
+}
+.sign.loadboard .loadTitle {
+  letter-spacing: -0.01em;
+  text-shadow: 0 0 calc(34 * var(--su)) var(--sign-title-glow);
+}
+.sign.loadboard .sign-head {
+  gap: calc(24 * var(--su));
+  padding-top: calc(30 * var(--su));
+}
+.sign.loadboard .sign-shield {
+  width: calc(86 * var(--su));
+  height: calc(78 * var(--su));
+}
+.sign.loadboard .sign-shield-code {
+  font-size: calc(34 * var(--su));
+}
+.sign.loadboard .sign-title-jp {
+  font-size: calc(30 * var(--su));
+}
+.sign.loadboard .sign-head .sign-title {
+  margin-top: calc(8 * var(--su));
+  font-size: calc(64 * var(--su));
+  letter-spacing: -0.01em;
+}
+.sign.loadboard .sign-rule {
+  margin: calc(28 * var(--su)) var(--sign-inset) 0;
+}
+.signLoad .loadBar {
+  position: relative;
+  width: auto;
+  height: calc(34 * var(--su));
+  margin: calc(28 * var(--su)) var(--sign-inset) 0;
+  border: 3px solid var(--sign-ink);
+  border-radius: calc(8 * var(--su));
+  background: rgba(5, 6, 12, 0.35);
+  overflow: hidden;
+}
+.signLoad .loadFill {
+  background: var(--sign-sodium);
+  box-shadow: 0 0 calc(24 * var(--su)) rgba(255, 180, 84, 0.9);
+}
+.signLoad .loadDashes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(90deg, rgba(5, 6, 12, 0) 0 calc(44 * var(--su)), rgba(5, 6, 12, 0.35) calc(44 * var(--su)) calc(48 * var(--su)));
+}
+.signLoad .loadStatus {
+  width: auto;
+  margin: calc(16 * var(--su)) var(--sign-inset) 0;
+  min-height: 0;
+  gap: calc(14 * var(--su));
+  align-items: baseline;
+  font-size: inherit;
+  letter-spacing: normal;
+  color: var(--sign-ink);
+}
+.signLoad .loadStatus .stage {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: calc(6 * var(--su)) calc(14 * var(--su));
+  min-width: 0;
+  min-height: 1.2em;
+}
+.signLoad .loadStatus .stage b {
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: calc(14 * var(--su));
+  letter-spacing: 0.16em;
+  color: var(--sign-sodium);
+}
+.signLoad .loadStatus .stage span {
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(24 * var(--su));
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.1;
+  color: var(--sign-ink);
+}
+.signLoad .loadStatus .stage i {
+  font-family: var(--font-sign-jp);
+  font-style: normal;
+  font-weight: 900;
+  font-size: calc(15 * var(--su));
+  letter-spacing: 0.16em;
+  color: var(--sign-ink-dim);
+}
+.signLoad .loadStatus .pct {
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(34 * var(--su));
+  line-height: 1;
+  letter-spacing: 0;
+  color: var(--sign-ink);
+}
+.signLoad .loadStatus .pct small {
+  font-size: calc(16 * var(--su));
+  margin-left: calc(3 * var(--su));
+}
+.signLoad .loadCap {
+  margin: calc(22 * var(--su)) var(--sign-inset) 0;
+  font-size: calc(12 * var(--su));
+}
+.signLoad .loadErr {
+  display: flex;
+  align-items: center;
+  gap: calc(18 * var(--su));
+  width: auto;
+  margin: calc(28 * var(--su)) var(--sign-inset) 0;
+  padding: calc(14 * var(--su)) calc(22 * var(--su));
+  border: calc(4 * var(--su)) solid var(--sign-danger);
+  border-radius: calc(10 * var(--su));
+  background: var(--sign-blue);
+  box-shadow: 0 0 calc(40 * var(--su)) rgba(255, 77, 94, 0.35);
+  color: var(--sign-ink);
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: calc(18 * var(--su));
+  letter-spacing: 0.06em;
+  line-height: 1.3;
+  text-align: left;
+}
+.signLoad .loadErr .tri {
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: calc(16 * var(--su)) solid transparent;
+  border-right: calc(16 * var(--su)) solid transparent;
+  border-bottom: calc(28 * var(--su)) solid var(--sign-danger);
+}
+.signLoad .loadErr > div {
+  min-width: 0;
+}
+.signLoad .loadErr code {
+  display: block;
+  margin-top: calc(4 * var(--su));
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-weight: 400;
+  font-size: calc(12 * var(--su));
+  letter-spacing: 0;
+  color: var(--sign-ink-faint);
+  word-break: break-word;
+}
+.signLoad .loadErr .sign-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ---------- photo mode plate ---------- */
+#photoHint {
+  left: calc(24px + var(--sa-left));
+  top: calc(24px + var(--sa-top));
+  bottom: auto;
+  padding: 12px 18px;
+  background: var(--sign-blue);
+  border: 4px solid var(--sign-ink);
+  border-radius: 10px;
+  box-shadow: 0 0 30px var(--sign-backlight-soft);
+  backdrop-filter: none;
+  font-family: var(--font-sign);
+  color: var(--sign-ink);
+}
+#photoHint .phTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: 18px;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  color: var(--sign-ink);
+}
+#photoHint .phTitle span {
+  margin: 0;
+  font-family: var(--font-sign-jp);
+  font-weight: 900;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  color: var(--sign-ink-dim);
+}
+#photoHint .phKeys {
+  margin-top: 6px;
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  color: var(--sign-ink-dim);
+}
+#photoHint .phBtns {
+  gap: 10px;
+  margin-top: 10px;
+}
+#photoHint .phBtn {
+  padding: 12px 20px;
+  background: transparent;
+  border: 4px solid var(--sign-ink-faint);
+  border-radius: 10px;
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  color: var(--sign-ink);
+}
+#photoHint .phBtn.shutter {
+  background: var(--sign-sodium);
+  border-color: var(--sign-sodium-pale);
+  color: var(--sign-blue-deep);
+  box-shadow: 0 0 40px rgba(255, 180, 84, 0.55);
+}
+#photoHint .phBtn:active {
+  background: var(--sign-wash);
+  border-color: var(--sign-ink);
+}
+#photoHint .phBtn.shutter:active {
+  background: #ffc36f;
+  border-color: var(--sign-sodium-pale);
+}
+#photoHint .phBtn:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 2px;
+}
+
+/* ---------- HUD: the two sign plates + the touch press state ----------
+   The driving HUD is otherwise untouched (HUD.dc.html keeps the speed
+   cluster, topbar, toast, map and gear as they are). */
+#exitHint {
+  color: var(--sign-ink);
+  background: #0a7b44;
+  border: 3px solid var(--sign-ink);
+  border-radius: 6px;
+  padding: 6px 18px 5px;
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: 16px;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  text-shadow: none;
+  box-shadow: 0 0 24px rgba(28, 180, 100, 0.35);
+  white-space: nowrap;
+}
+#hint {
+  color: var(--sign-ink);
+  background: var(--sign-blue);
+  border: 3px solid var(--sign-ink);
+  border-radius: 6px;
+  padding: 6px 16px 5px;
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  backdrop-filter: none;
+  box-shadow: 0 0 24px var(--sign-backlight-soft);
+}
+#hint i {
+  font-family: var(--font-sign-jp);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--sign-ink-dim);
+  margin-left: 10px;
+}
+/* pressed puck: sodium fill, #ffd280 rim, outer glow (HUDPhone.dc.html) */
+body.touch .tc:active,
+#tcMore:active,
+.qdRow:active {
+  border-color: #ffd280;
+  background: rgba(255, 180, 84, 0.28);
+  color: #fff0be;
+  box-shadow: 0 0 22px rgba(255, 180, 84, 0.85), 0 0 0 4px rgba(255, 180, 84, 0.18);
+  text-shadow: 0 0 10px rgba(255, 210, 128, 0.9);
+}
+.qdRow:active .qdState {
+  border-color: #ffd280;
+  background: rgba(255, 180, 84, 0.35);
+  color: #fff0be;
+}
+.qdRow:active .qdLabel i {
+  color: #ffd280;
+}
+/* Narrow phones (≤420): the HORN puck used to sit at right:168, which on a
+   390px screen is x 166–222 — 12px over the right steer puck (x 104–178).
+   Stack it above LTS instead: the CAM/LTS/HORN column under the right
+   thumb, every gutter still 8px, nothing under the steer pucks. */
+@media (max-width: 420px) {
+  #tcH {
+    right: calc(104px + var(--sa-right));
+    bottom: calc(154px + var(--sa-bottom));
+  }
+}
+
+/* ---------- motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .carCard.sel,
+  .toll-booth.open b {
+    animation: none !important;
+  }
+  .sign-toggle i,
+  .sign-toggle i::after,
+  .loadFill {
+    transition: none !important;
+  }
+}
+
+/* ---------- phones (≤700px) ---------- */
+@media (max-width: 700px) {
+  .sign-stack.sub,
+  .sign-stack.sub.mid,
+  .sign-stack.sub.narrow {
+    width: auto;
+    margin: calc(82px + var(--sa-top)) calc(20px + var(--sa-right)) 0 calc(44px + var(--sa-left));
+    padding-bottom: 16px;
+    gap: 10px;
+    --sign-col-jp: 64px;
+  }
+  .sign.screen {
+    padding: 14px 0 8px;
+  }
+  .sign.screen .sign-hang.h1 {
+    left: 83px;
+  }
+  .sign.screen .sign-hang.h2 {
+    left: 233px;
+  }
+  .sign-head.sub {
+    flex-wrap: nowrap;
+    gap: 10px;
+    padding: 0 var(--sign-inset);
+  }
+  .sign-head.sub .sign-shield {
+    width: 44px;
+    height: 40px;
+    border-width: 3px;
+    border-radius: 5px 5px 22px 22px;
+  }
+  .sign-head.sub .sign-shield-code {
+    font-size: 17px;
+    margin-top: 1px;
+  }
+  .sign-head.sub .sign-shield-jp {
+    font-size: 8px;
+  }
+  .sign-head .sign-p.big {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    font-size: 28px;
+  }
+  .sign-head.sub .sign-titles {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .sign-head.sub .sign-title-jp {
+    flex: none;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    line-height: 1.1;
+  }
+  .sign-head.sub .sign-title {
+    flex: none;
+    margin-top: 3px;
+    font-size: 26px;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: visible;
+  }
+  .sign.screen .sign-rule {
+    margin: 10px var(--sign-inset) 6px;
+  }
+  .sign-body {
+    padding: 0 var(--sign-inset) 6px;
+  }
+  .sign-footbar {
+    padding: 8px var(--sign-inset) 0;
+  }
+  .sign-footcap {
+    display: none;
+  }
+  .sign-footbtns {
+    flex: 1;
+    justify-content: flex-end;
+  }
+  .sign-cols,
+  .sign-cols.ctrl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .sign-srow {
+    min-height: 44px;
+    gap: 10px;
+  }
+  .sign-srow .name {
+    font-size: 14px;
+  }
+  .sign-srow .name .aside {
+    display: block;
+    margin: 2px 0 0;
+    font-size: 10px;
+  }
+  .sign-srow .ctl {
+    max-width: 72%;
+  }
+  .sign-srow.lit {
+    margin-left: -8px;
+    padding-left: 4px;
+    border-left-width: 4px;
+  }
+  .sign-slider {
+    height: 44px;
+  }
+  .sign-value {
+    width: 52px;
+    font-size: 12px;
+  }
+  .sign-seg > * {
+    padding: 8px 7px;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+  }
+  .sign-select {
+    font-size: 13px;
+    padding: 8px 30px 7px 12px;
+    background-position: right 10px center;
+  }
+  .sign-credit .sign-chip {
+    justify-self: start;
+  }
+  .sign-shead {
+    font-size: 11px;
+    padding: 12px 0 2px;
+  }
+  .sign-keys {
+    font-size: 12px;
+    gap: 6px 10px;
+  }
+  .sign-exitboard {
+    margin-top: 16px;
+    padding: 10px 12px;
+  }
+  .signRoot .statsGrid {
+    gap: 0 10px;
+  }
+  .signRoot .statsGrid .slabel {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    padding: 7px 0;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .signRoot .statsGrid .slabel i {
+    font-size: 10px;
+  }
+  .signRoot .statsGrid .slabel.rec {
+    margin-left: -8px;
+    padding-left: 4px;
+    border-left-width: 4px;
+  }
+  .signRoot .statsGrid .sval {
+    font-size: 17px;
+  }
+  .signRoot .statsGrid .shead {
+    font-size: 10px;
+  }
+  .sign-garage {
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+  }
+  .signRoot .carCard {
+    padding: 10px;
+    gap: 6px;
+  }
+  .signRoot .carCard .carImg {
+    height: 110px;
+  }
+  .signRoot .carCard h3 {
+    font-size: 17px;
+  }
+  .signRoot .carCard h3 .jp {
+    font-size: 11px;
+  }
+  .signRoot .carCard .carJp {
+    font-size: 11px;
+  }
+  .signRoot .statRow {
+    font-size: 9px;
+  }
+  .signRoot .statRow span {
+    width: 46px;
+  }
+  .sign-paint {
+    gap: 10px 16px;
+  }
+  .sign-paint .sign-title {
+    font-size: 20px;
+  }
+  .signRoot .paintRow {
+    gap: 8px;
+  }
+  .signRoot .paintDot {
+    width: 44px;
+    height: 44px;
+  }
+  .signRoot .paintName {
+    font-size: 17px;
+  }
+  .sign-paint .sign-paintnote {
+    display: none;
+  }
+  .sign-credit {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 10px;
+  }
+  .sign-credit .who {
+    grid-column: 1 / -1;
+    font-size: 12px;
+  }
+  .sign-credit .what {
+    font-size: 15px;
+  }
+  .sign-plate.inboard {
+    font-size: 11px;
+  }
+  .sign-note {
+    display: none;
+  }
+  .sign-post {
+    display: none;
+  }
+  .sign-plate-btn {
+    min-height: 40px;
+    padding: 4px 10px;
+  }
+  .sign-plate-line.foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    white-space: normal;
+    overflow: visible;
+  }
+  /* loading */
+  .toll {
+    height: 120px;
+  }
+  .toll .gantry-truss {
+    top: calc(40px + var(--sa-top));
+    height: 24px;
+  }
+  .toll .gantry-lattice {
+    display: none;
+  }
+  .toll-booths {
+    top: calc(64px + var(--sa-top));
+    gap: 30px;
+  }
+  .toll-booth i {
+    width: 10px;
+    height: 18px;
+  }
+  .toll-booth b {
+    font-size: 11px;
+    padding: 5px 10px 4px;
+    border-width: 2px;
+  }
+  .sign-stack.load {
+    width: auto;
+    align-self: stretch;
+    margin: 0 calc(20px + var(--sa-right)) 0 calc(20px + var(--sa-left));
+  }
+  .sign.loadboard {
+    padding: 18px 0 16px;
+  }
+  .sign.loadboard .sign-head {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding-top: 0;
+  }
+  .sign.loadboard .sign-shield {
+    width: 54px;
+    height: 48px;
+    border-width: 4px;
+  }
+  .sign.loadboard .sign-shield-code {
+    font-size: 20px;
+  }
+  .sign.loadboard .sign-title-jp {
+    font-size: 14px;
+    line-height: 1.2;
+  }
+  .sign.loadboard .sign-head .sign-title {
+    font-size: 30px;
+    margin-top: 0;
+  }
+  .sign.loadboard .sign-rule {
+    margin: 14px var(--sign-inset) 0;
+  }
+  .signLoad .loadBar {
+    height: 26px;
+    margin-top: 16px;
+  }
+  .signLoad .loadStatus .stage span {
+    font-size: 16px;
+  }
+  .signLoad .loadStatus .stage b {
+    font-size: 11px;
+  }
+  .signLoad .loadStatus .stage i {
+    font-size: 11px;
+  }
+  .signLoad .loadStatus .pct {
+    font-size: 24px;
+  }
+  .signLoad .loadCap {
+    margin-top: 14px;
+    font-size: 10px;
+  }
+  .signLoad .loadErr {
+    flex-wrap: wrap;
+    font-size: 14px;
+    padding: 12px 14px;
+  }
+  /* photo plate */
+  #photoHint {
+    padding: 10px 12px;
+  }
+  #photoHint .phTitle {
+    font-size: 15px;
+  }
+  #photoHint .phKeys {
+    font-size: 11px;
+  }
+  #photoHint .phBtn {
+    padding: 10px 14px;
+    font-size: 14px;
+    border-width: 3px;
+  }
+}
+
+/* ---------- landscape phones (≤480px tall): everything fits ---------- */
+@media (max-height: 480px) {
+  .sign-stack.sub,
+  .sign-stack.sub.mid,
+  .sign-stack.sub.narrow {
+    width: min(820px, calc(100% - 32px - var(--sa-left) - var(--sa-right)));
+    margin: calc(16px + var(--sa-top)) auto 0;
+    padding-bottom: 0;
+    gap: 0;
+    --sign-col-jp: 60px;
+  }
+  .sign-stack.sub.narrow {
+    width: min(640px, calc(100% - 32px - var(--sa-left) - var(--sa-right)));
+  }
+  .sign.screen {
+    padding: 6px 0 4px;
+  }
+  .menuRoot.signRoot.sub {
+    overflow: hidden auto;
+  }
+  .sign-stack.sub,
+  .sign-stack.sub.mid,
+  .sign-stack.sub.narrow {
+    padding-bottom: 12px;
+  }
+  .sign-head.sub {
+    gap: 10px;
+  }
+  .sign-head.sub .sign-shield {
+    width: 34px;
+    height: 30px;
+    border-width: 3px;
+    border-radius: 4px 4px 16px 16px;
+  }
+  .sign-head.sub .sign-shield-code {
+    font-size: 13px;
+    margin-top: 1px;
+  }
+  .sign-head.sub .sign-shield-jp {
+    font-size: 6px;
+  }
+  .sign-head .sign-p.big {
+    width: 30px;
+    height: 30px;
+    font-size: 22px;
+    border-radius: 5px;
+  }
+  .sign-head.sub .sign-titles {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .sign-head.sub .sign-title {
+    order: 1;
+    font-size: 20px;
+    margin: 0;
+  }
+  .sign-head.sub .sign-title-jp {
+    order: 2;
+    font-size: 11px;
+    color: var(--sign-ink-dim);
+  }
+  .sign.screen .sign-rule {
+    margin: 5px var(--sign-inset) 3px;
+  }
+  .sign-body {
+    padding: 0 var(--sign-inset) 4px;
+  }
+  .sign-footbar {
+    padding: 4px var(--sign-inset) 0;
+    gap: 8px;
+  }
+  .sign-footcap {
+    display: none;
+  }
+  .sign-footbtns .sign-btn,
+  .sign-btn.sm {
+    min-height: 36px;
+    padding: 6px 12px 5px;
+    font-size: 13px;
+    border-width: 3px;
+  }
+  .sign-cols {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 20px;
+  }
+  .sign-cols.ctrl {
+    grid-template-columns: 1.1fr 1.1fr 0.9fr;
+    gap: 0 16px;
+  }
+  .sign-shead {
+    font-size: 10px;
+    padding: 8px 0 2px;
+  }
+  .sign-srow {
+    min-height: 38px;
+    padding: 2px 0;
+    gap: 10px;
+  }
+  .sign-srow.stack {
+    padding: 4px 0 2px;
+  }
+  .sign-srow .name {
+    font-size: 13px;
+  }
+  .sign-srow .name .aside {
+    font-size: 9px;
+    margin-left: 4px;
+  }
+  .sign-srow.lit {
+    margin-left: -8px;
+    padding-left: 4px;
+    border-left-width: 4px;
+  }
+  .sign-toggle {
+    min-height: 36px;
+  }
+  .sign-toggle i {
+    width: 48px;
+    height: 24px;
+  }
+  .sign-toggle i::after {
+    width: 14px;
+    height: 14px;
+    margin-top: -7px;
+  }
+  .sign-toggle.on i::after {
+    transform: translateX(22px);
+  }
+  .sign-seg > * {
+    min-height: 32px;
+    padding: 5px 9px;
+    font-size: 11px;
+  }
+  .sign-select {
+    min-height: 34px;
+    font-size: 12px;
+    padding: 5px 28px 4px 10px;
+  }
+  .sign-slider {
+    height: 30px;
+    min-width: 90px;
+  }
+  .sign-value {
+    width: 48px;
+    font-size: 11px;
+  }
+  .sign-keys {
+    font-size: 11px;
+    gap: 4px 8px;
+  }
+  .sign-keys .sign-chip {
+    padding: 2px 5px 1px;
+    font-size: 9px;
+  }
+  .sign-exitboard {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-width: 3px;
+  }
+  .sign-exitboard-title {
+    font-size: 14px;
+  }
+  .sign-exitboard-head .sign-arrow {
+    font-size: 20px;
+  }
+  .sign-exitboard p {
+    font-size: 10px;
+    margin-top: 6px;
+  }
+  .signRoot .statsGrid .slabel {
+    padding: 4px 0;
+    font-size: 14px;
+    gap: 8px;
+  }
+  .signRoot .statsGrid .slabel i {
+    font-size: 10px;
+  }
+  .signRoot .statsGrid .sval {
+    font-size: 16px;
+  }
+  .signRoot .statsGrid .shead {
+    font-size: 10px;
+  }
+  .signRoot .statsGrid .srule {
+    margin: 4px 0 2px;
+  }
+  .sign-garage {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .signRoot .carCard {
+    padding: 8px;
+    gap: 4px;
+    border-width: 2px;
+    border-radius: 8px;
+  }
+  .signRoot .carCard.sel {
+    border-left-width: 5px;
+  }
+  .signRoot .carCard .carImg {
+    height: 64px;
+  }
+  .signRoot .carCard h3 {
+    font-size: 13px;
+    gap: 5px;
+  }
+  .signRoot .carCard h3 .jp {
+    font-size: 9px;
+  }
+  .signRoot .carCard .carJp {
+    display: none;
+  }
+  .signRoot .carCard .stats {
+    gap: 3px;
+  }
+  .signRoot .statRow {
+    font-size: 8px;
+    gap: 5px;
+  }
+  .signRoot .statRow span {
+    width: 38px;
+  }
+  .signRoot .soonBadge {
+    font-size: 8px;
+    padding: 3px 5px 2px;
+  }
+  .signRoot .carCard .carChip {
+    font-size: 8px;
+    padding: 2px 5px;
+  }
+  .sign-paint-rule {
+    margin: 8px 0 6px;
+  }
+  .sign-paint {
+    gap: 6px 14px;
+  }
+  .sign-paint .sign-title-jp {
+    font-size: 10px;
+  }
+  .sign-paint .sign-title {
+    font-size: 16px;
+    margin-top: 2px;
+  }
+  .signRoot .paintRow {
+    gap: 6px;
+  }
+  .signRoot .paintDot {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    min-height: 34px;
+    border-radius: 6px;
+  }
+  .signRoot .paintDot.sel {
+    border-width: 3px;
+  }
+  .signRoot .paintName {
+    font-size: 15px;
+  }
+  .signRoot .paintName i {
+    font-size: 10px;
+  }
+  .sign-paint .sign-paintnote {
+    display: none;
+  }
+  /* pause: two columns of 44px rows, the seps gone, so seven rows sit in
+     the height five did on the home screen */
+  .sign-rows.two {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 10px;
+  }
+  .sign-rows.two .sign-sep {
+    display: none;
+  }
+  .sign-rows.two .sign-row,
+  .sign-rows.two .sign-row.sel {
+    width: auto;
+    margin: 0 -8px;
+  }
+  .sign-note {
+    display: none;
+  }
+  .sign-post {
+    display: none;
+  }
+  .sign-credit {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+    gap: 2px 12px;
+    padding: 5px 0;
+  }
+  .sign-credit .what {
+    font-size: 13px;
+  }
+  .sign-credit .what small {
+    font-size: 9px;
+    margin-top: 1px;
+  }
+  .sign-credit .who {
+    font-size: 11px;
+  }
+  .sign-plate.inboard {
+    margin-top: 6px;
+    padding: 5px 10px;
+    font-size: 9px;
+    line-height: 1.4;
+  }
+  /* loading */
+  .toll {
+    height: 60px;
+  }
+  .toll .gantry-truss {
+    top: calc(4px + var(--sa-top));
+    height: 10px;
+    border-top-width: 1px;
+    border-bottom-width: 1px;
+  }
+  .toll .gantry-lattice,
+  .toll-booths {
+    display: none;
+  }
+  .sign-stack.load {
+    width: min(720px, calc(100% - 32px));
+    margin: calc(28px + var(--sa-top)) auto 0;
+  }
+  .sign.loadboard {
+    padding: 8px 0 10px;
+  }
+  .sign.loadboard .sign-head {
+    flex-wrap: nowrap;
+    gap: 12px;
+    padding-top: 0;
+  }
+  .sign.loadboard .sign-shield {
+    width: 40px;
+    height: 36px;
+    border-width: 3px;
+  }
+  .sign.loadboard .sign-shield-code {
+    font-size: 15px;
+  }
+  .sign.loadboard .sign-titles {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .sign.loadboard .sign-title-jp {
+    order: 2;
+    font-size: 12px;
+    color: var(--sign-ink-dim);
+  }
+  .sign.loadboard .sign-head .sign-title {
+    order: 1;
+    font-size: 24px;
+    margin: 0;
+  }
+  .sign.loadboard .sign-rule {
+    margin: 8px var(--sign-inset) 0;
+  }
+  .signLoad .loadBar {
+    height: 22px;
+    margin-top: 10px;
+  }
+  .signLoad .loadStatus {
+    margin-top: 8px;
+  }
+  .signLoad .loadStatus .stage span {
+    font-size: 14px;
+  }
+  .signLoad .loadStatus .stage b,
+  .signLoad .loadStatus .stage i {
+    font-size: 10px;
+  }
+  .signLoad .loadStatus .pct {
+    font-size: 20px;
+  }
+  .signLoad .loadCap {
+    margin-top: 8px;
+    font-size: 9px;
+  }
+  .signLoad .loadErr {
+    margin-top: 10px;
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+  /* the ⋯ drawer: a strip across the top band instead of a corner sheet.
+     In landscape the corner sheet had to scroll, and its rows below the
+     fold sat over the pedal and CAM/LTS/HORN pucks (ui-qa rule d). The
+     band between the ⋯ button and the pucks (y 64–212 on an 844×390
+     phone) takes every row in one view: a grid of 150px cells, so the
+     eleven rows plus the head fill three 40px lines and end above the
+     throttle puck. Photo mode is on the strip like everything else. */
+  body.touch #tcDrawer {
+    top: calc(64px + var(--sa-top));
+    left: calc(12px + var(--sa-left));
+    right: calc(12px + var(--sa-right));
+    width: auto;
+    max-height: none;
+    overflow: visible;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 0 6px;
+    align-items: center;
+    padding: 4px 8px;
+  }
+  #tcDrawer .qdHead {
+    padding: 4px 8px;
+    overflow: clip visible;
+    text-overflow: ellipsis;
+  }
+  #tcDrawer .qdHead span,
+  .qdLabel i {
+    /* a 150px cell holds the EN label and its state chip, not the JP too */
+    display: none;
+  }
+  .qdRow {
+    min-height: 40px;
+    padding: 2px 8px;
+    gap: 8px;
+  }
+  .qdLabel {
+    white-space: nowrap;
+    overflow: clip visible;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  .qdState {
+    min-width: 38px;
+    padding: 2px 6px;
+  }
+}
+
+/* the pause / credits footbars keep their caption (the version) on phones */
+@media (max-width: 700px), (max-height: 480px) {
+  .sign-footcap.keep {
+    display: block;
+    font-size: 9px;
+    white-space: nowrap;
+    overflow: clip visible;
     text-overflow: ellipsis;
   }
 }

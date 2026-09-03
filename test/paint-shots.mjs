@@ -55,7 +55,7 @@ const pick = async (ix, wait) => {
   await sleep(wait); // pass-two real-bodywork shot lands async
   // the swatch row sits at the panel's bottom; scroll it into the frame
   await page.evaluate(() => {
-    const p = document.querySelector(".panel");
+    const p = document.querySelector(".panel, .sign-body");
     if (p) p.scrollTop = p.scrollHeight;
   });
   await sleep(200);
