@@ -1,0 +1,1073 @@
+/* ==========================================================================
+   UI SYSTEM — "Blue Route": the Japanese expressway guide-sign language
+   ==========================================================================
+
+   The owner picked the Blue Route direction for the whole chrome: every
+   player-facing screen is a piece of highway signage — a blue guide-board
+   with a thick white border, Highway-Gothic-lineage Latin (Overpass) with
+   Japanese (Zen Kaku Gothic New) above or left of it, sodium-orange for the
+   ONE primary/selected thing on a screen, all hung on lit steel over the
+   dashcam deck. Source of truth for the values: the designer's System sheet
+   (scratchpad ui-directions/System.dc.html + ui/common.css). This sheet is
+   the shared foundation; the home screen is the first screen on it, and
+   garage / settings / controls / pause / loading are restyled onto the same
+   tokens next. Nothing here touches the legacy .menuRoot/.panel rules in
+   globals.css — those keep the other screens working until each moves over.
+
+   HOW TO REUSE
+   ------------
+   Tokens (all on :root):
+     colour   --sign-bg  --sign-blue  --sign-blue-deep (text on sodium)
+              --sign-ink  --sign-ink-dim (captions)  --sign-ink-faint
+              --sign-sodium (+ -tint, -glow)  --sign-backlight (blue halo)
+              --sign-ok  --sign-danger  --steel-* (hardware)  --deck
+     type     --font-sign (Latin) --font-sign-jp (JP)
+              ramp: --sign-fs-display 82 · --sign-fs-display-jp 46 ·
+              --sign-fs-row 36 · --sign-fs-row-jp 32 · --sign-fs-btn 20 ·
+              --sign-fs-name 17 · --sign-fs-cap 14 · --sign-fs-chip 13
+     space    --sign-sp-1..6 = 6 · 10 · 14 · 22 · 34 · 56; board inset 34
+     scale    --su is "one design pixel": 1px at the 1440×900 design frame,
+              shrinking with the smaller of the viewport's width/height ratio,
+              floored at 0.5. Desktop sizes are calc(N * var(--su)) with N
+              straight off the design; the whole sign keeps its proportions
+              on any desktop viewport. Phones (≤700px) switch the tokens to
+              the fixed pixel sizes of the phone designs instead.
+   Classes (components/ui/Sign.tsx wraps the important ones):
+     .sign / .sign-sheet / .sign-hang   the board, its reflective sheeting,
+                                        the bracket that ties it to a gantry
+     .sign-plate / .sign-plate.sm       the 4px / 3px supplementary plates
+     .sign-shield                       the C1 route shield (JP over code)
+     .sign-titles .sign-title(-jp)      the JP-over-EN title pair
+     .sign-rule / .sign-sep             5px white rule / 3px thin rule
+     .sign-row (+ .sel, :disabled)      arrow · JP · EN · [chip] · value
+     .sign-arrow .sign-p .sign-jp .sign-en .sign-chip(.on) .sign-dist
+     .sign-cap(.faint)                  caption text
+     .sign-btn(.primary/.ghost) .sign-toggle .sign-seg .sign-select
+     .sign-slider .sign-srow .sign-shead   controls for the next screens
+     .sign-kp                           the kilometre post
+     .gantry                            the steel truss + posts
+     .sign-night                        CSS night deck under the sign when
+                                        no world exists yet
+     .ui-jp                             any inline Japanese text
+   Rules from the System sheet: sodium is the only warm thing on a screen;
+   one slow hum on the selected row and nothing else moves in menus; boards
+   enter with a 220ms fade + 8px rise; reduced motion kills both.
+   ========================================================================== */
+
+:root {
+  /* colour */
+  --sign-bg: #05060c;
+  --sign-blue: #1c3f8f;
+  --sign-blue-deep: #14306e;
+  --sign-ink: #eef3ff;
+  --sign-ink-dim: #bfe0ff;
+  --sign-ink-faint: rgba(238, 243, 255, 0.55);
+  --sign-ink-75: rgba(238, 243, 255, 0.75);
+  --sign-ink-18: rgba(238, 243, 255, 0.18);
+  --sign-wash: rgba(238, 243, 255, 0.08);
+  --sign-sodium: #ffb454;
+  --sign-sodium-tint: rgba(255, 180, 84, 0.16);
+  --sign-sodium-glow: rgba(255, 180, 84, 0.85);
+  --sign-sodium-halo: rgba(255, 180, 84, 0.35);
+  --sign-sodium-pale: #ffd9a6;
+  --sign-backlight: rgba(95, 141, 255, 0.45);
+  --sign-backlight-soft: rgba(95, 141, 255, 0.3);
+  --sign-title-glow: rgba(127, 216, 255, 0.35);
+  --sign-drop: 0 30px 70px rgba(0, 0, 0, 0.65);
+  --sign-ok: #57ff9a;
+  --sign-danger: #ff4d5e;
+  --steel-face: #1b2130;
+  --steel-hi: #2a3244;
+  --steel-lo: #0d1119;
+  --steel-dark: #141925;
+  --steel-fixture: #2c3446;
+  --steel-post: #3a4152;
+  --steel-lattice: rgba(60, 70, 92, 0.55);
+  --floodlight: rgba(230, 240, 255, 0.16);
+  --deck: #1b2030;
+
+  /* type. The raw vars come from next/font in app/layout.tsx; the quoted
+     names after them cover a build that could not self-host, then the
+     system stacks. JP falls back to the platform JP faces. */
+  --font-sign: var(--font-sign-raw, "Overpass"), "Overpass", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-sign-jp: var(--font-sign-jp-raw, "Zen Kaku Gothic New"), "Zen Kaku Gothic New", "Hiragino Kaku Gothic ProN",
+    "Hiragino Sans", "Yu Gothic", "Meiryo", "Noto Sans JP", sans-serif;
+
+  /* one design pixel (see the header comment) */
+  --su: clamp(0.5px, min(0.06944vw, 0.11111vh), 1px);
+
+  /* type ramp — design pixels × --su */
+  --sign-fs-display: calc(82 * var(--su));
+  --sign-fs-display-jp: calc(46 * var(--su));
+  --sign-fs-row: calc(36 * var(--su));
+  --sign-fs-row-jp: calc(32 * var(--su));
+  --sign-fs-row-sel: calc(46 * var(--su));
+  --sign-fs-row-sel-jp: calc(40 * var(--su));
+  --sign-fs-arrow: calc(40 * var(--su));
+  --sign-fs-arrow-sel: calc(54 * var(--su));
+  --sign-fs-dist: calc(30 * var(--su));
+  --sign-fs-dist-sel: calc(34 * var(--su));
+  --sign-fs-unit: calc(15 * var(--su));
+  --sign-fs-btn: calc(20 * var(--su));
+  --sign-fs-name: calc(17 * var(--su));
+  --sign-fs-cap: calc(14 * var(--su));
+  --sign-fs-chip: calc(13 * var(--su));
+  --sign-fs-shield: calc(38 * var(--su));
+  --sign-fs-shield-jp: calc(13 * var(--su));
+
+  /* spacing 6 · 10 · 14 · 22 · 34 · 56 */
+  --sign-sp-1: calc(6 * var(--su));
+  --sign-sp-2: calc(10 * var(--su));
+  --sign-sp-3: calc(14 * var(--su));
+  --sign-sp-4: calc(22 * var(--su));
+  --sign-sp-5: calc(34 * var(--su));
+  --sign-sp-6: calc(56 * var(--su));
+
+  /* board geometry */
+  --sign-border: calc(8 * var(--su));
+  --sign-radius: calc(24 * var(--su));
+  --sign-rule: calc(5 * var(--su));
+  --sign-inset: var(--sign-sp-5);
+  --sign-col-arrow: calc(70 * var(--su));
+  --sign-col-jp: calc(190 * var(--su));
+  --sign-row-gap: var(--sign-sp-4);
+}
+
+.ui-jp {
+  font-family: var(--font-sign-jp);
+}
+
+/* ---------- the scene root ----------
+   A modifier on the legacy .menuRoot so the z-index / fixed-inset / touch
+   contract stays the same; everything decorative about the old overlay
+   (scrim, blur, viewfinder brackets, REC dot) is switched off so the live
+   dashcam road shows through under the gantry. */
+.menuRoot.signRoot {
+  display: block;
+  padding: 0;
+  text-align: left;
+  background: radial-gradient(80% 55% at 50% 66%, rgba(16, 21, 40, 0.28) 0%, rgba(8, 11, 22, 0.42) 55%, rgba(5, 6, 12, 0.55) 100%);
+  backdrop-filter: none;
+  overflow: hidden auto;
+  font-family: var(--font-sign);
+  color: var(--sign-ink);
+}
+.menuRoot.signRoot::before,
+.menuRoot.signRoot::after {
+  content: none;
+}
+
+/* ---------- night deck (no world yet) ----------
+   The engine builds nothing until DRIVE, so before the first drive the canvas
+   under the menu is black. This is the design file's night: haze, deck,
+   parapets, lane dashes, the sodium pool. It unmounts once a world exists. */
+.sign-night {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(80% 55% at 50% 66%, #101528 0%, #080b16 55%, var(--sign-bg) 100%);
+}
+.sign-night-deck {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 33%;
+  background: linear-gradient(180deg, rgba(20, 24, 36, 0) 0%, #151927 40%, var(--deck) 100%);
+  clip-path: polygon(44% 0%, 56% 0%, 100% 100%, 0% 100%);
+}
+.sign-night-parapet {
+  position: absolute;
+  bottom: 0;
+  width: 33%;
+  height: 33%;
+  background: linear-gradient(180deg, rgba(90, 96, 110, 0) 0%, #2a2f3c 100%);
+}
+.sign-night-parapet.l {
+  left: 0;
+  clip-path: polygon(100% 0%, 100% 6%, 0% 100%, 0% 76%);
+}
+.sign-night-parapet.r {
+  right: 0;
+  clip-path: polygon(0% 0%, 0% 6%, 100% 100%, 100% 76%);
+}
+.sign-night-dash {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(238, 243, 255, 0.5);
+}
+.sign-night-dash.d1 {
+  bottom: 24%;
+  width: calc(5 * var(--su));
+  height: calc(28 * var(--su));
+  opacity: 0.7;
+}
+.sign-night-dash.d2 {
+  bottom: 14.5%;
+  width: calc(7 * var(--su));
+  height: calc(48 * var(--su));
+}
+.sign-night-dash.d3 {
+  bottom: 3%;
+  width: calc(10 * var(--su));
+  height: calc(74 * var(--su));
+  background: rgba(238, 243, 255, 0.6);
+}
+.sign-night-haze {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 6%;
+  height: 36%;
+  background: radial-gradient(50% 100% at 50% 100%, rgba(240, 192, 122, 0.24) 0%, rgba(240, 192, 122, 0) 70%);
+}
+
+/* ---------- gantry ---------- */
+.gantry {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: calc(98 * var(--su));
+  pointer-events: none;
+}
+.gantry-truss {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(36 * var(--su));
+  height: calc(48 * var(--su));
+  background: var(--steel-face);
+  border-top: calc(3 * var(--su)) solid var(--steel-hi);
+  border-bottom: calc(3 * var(--su)) solid var(--steel-lo);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.6);
+}
+.gantry-lattice {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(42 * var(--su));
+  height: calc(36 * var(--su));
+  background:
+    repeating-linear-gradient(-60deg, var(--steel-lattice) 0 calc(3 * var(--su)), rgba(0, 0, 0, 0) calc(3 * var(--su)) calc(44 * var(--su))),
+    repeating-linear-gradient(60deg, var(--steel-lattice) 0 calc(3 * var(--su)), rgba(0, 0, 0, 0) calc(3 * var(--su)) calc(44 * var(--su)));
+}
+.gantry-post {
+  position: absolute;
+  top: 0;
+  width: calc(24 * var(--su));
+  height: calc(90 * var(--su));
+}
+.gantry-post.l {
+  left: calc(48 * var(--su));
+  background: linear-gradient(90deg, var(--steel-hi), var(--steel-dark));
+}
+.gantry-post.r {
+  right: calc(48 * var(--su));
+  background: linear-gradient(90deg, var(--steel-dark), var(--steel-hi));
+}
+
+/* ---------- the board ---------- */
+.sign-stack {
+  /* board + supplementary plate as one flow column, so the plate can never
+     sit under a row whatever the viewport does */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: calc(18 * var(--su));
+  width: min(calc(1180 * var(--su)), calc(100% - 2 * var(--sign-inset)));
+  margin: calc(98 * var(--su)) auto 0;
+  padding-bottom: calc(150 * var(--su));
+  animation: signIn 220ms var(--ease) both;
+}
+@keyframes signIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.sign {
+  position: relative;
+  width: 100%;
+  background: var(--sign-blue);
+  border: var(--sign-border) solid var(--sign-ink);
+  border-radius: var(--sign-radius);
+  box-shadow: 0 0 calc(120 * var(--su)) var(--sign-backlight), var(--sign-drop);
+  color: var(--sign-ink);
+  /* the design leaves a hand of empty blue under the last row */
+  padding-bottom: calc(90 * var(--su));
+}
+.sign-sheet {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    /* three floodlights along the top edge (the gantry fixtures) */
+    radial-gradient(50% 60% at 17% 0%, var(--floodlight) 0%, rgba(230, 240, 255, 0) 70%),
+    radial-gradient(50% 60% at 49% 0%, var(--floodlight) 0%, rgba(230, 240, 255, 0) 70%),
+    radial-gradient(50% 60% at 81% 0%, var(--floodlight) 0%, rgba(230, 240, 255, 0) 70%),
+    /* retroreflective sheeting: bead texture + a diagonal sheen */
+    radial-gradient(circle, rgba(255, 255, 255, 0.13) 0 0.6px, rgba(255, 255, 255, 0) 1px) 0 0 / 5px 5px,
+    linear-gradient(112deg, rgba(255, 255, 255, 0) 44%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0) 56%);
+}
+.sign-hang {
+  position: absolute;
+  top: calc(-22 * var(--su) - var(--sign-border));
+  width: calc(18 * var(--su));
+  height: calc(22 * var(--su));
+  background: var(--steel-fixture);
+  transform: translateX(-50%);
+}
+.sign-hang::before {
+  /* the light fixture in front of the bracket */
+  content: "";
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: calc(8 * var(--su));
+  width: calc(60 * var(--su));
+  height: calc(14 * var(--su));
+  background: var(--steel-fixture);
+  border-radius: 0 0 calc(6 * var(--su)) calc(6 * var(--su));
+}
+.sign-hang.h1 { left: 17.5%; }
+.sign-hang.h2 { left: 49.5%; }
+.sign-hang.h3 { left: 81.5%; }
+
+/* header */
+.sign-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: calc(26 * var(--su));
+  padding: calc(26 * var(--su)) var(--sign-inset) 0;
+}
+.sign-shield {
+  flex-shrink: 0;
+  width: calc(96 * var(--su));
+  height: calc(86 * var(--su));
+  border: calc(5 * var(--su)) solid var(--sign-ink);
+  border-radius: calc(8 * var(--su)) calc(8 * var(--su)) calc(48 * var(--su)) calc(48 * var(--su));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-weight: 900;
+  color: var(--sign-ink);
+}
+.sign-shield-jp {
+  font-family: var(--font-sign-jp);
+  font-size: var(--sign-fs-shield-jp);
+}
+.sign-shield-code {
+  font-family: var(--font-sign);
+  font-size: var(--sign-fs-shield);
+  margin-top: calc(4 * var(--su));
+}
+.sign-titles {
+  min-width: 0;
+}
+.sign-title-jp {
+  font-family: var(--font-sign-jp);
+  font-size: var(--sign-fs-display-jp);
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  line-height: 1;
+}
+.sign-title {
+  margin: calc(10 * var(--su)) 0 0;
+  font-family: var(--font-sign);
+  font-size: var(--sign-fs-display);
+  font-weight: 900;
+  line-height: 0.95;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  text-shadow: 0 0 calc(34 * var(--su)) var(--sign-title-glow);
+  color: var(--sign-ink);
+}
+/* The home board shares its title line with the corner caption, so its
+   title runs at 74 (the designer's Main screen) instead of the ramp's 82. */
+.sign-head .sign-title {
+  font-size: calc(74 * var(--su));
+}
+.sign-corner {
+  margin-left: auto;
+  align-self: flex-start;
+  text-align: right;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.sign-cap {
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: var(--sign-fs-cap);
+  letter-spacing: 0.16em;
+  color: var(--sign-ink-dim);
+}
+.sign-cap.faint {
+  color: var(--sign-ink-faint);
+}
+.sign-rule {
+  position: relative;
+  height: var(--sign-rule);
+  background: var(--sign-ink);
+  margin: calc(36 * var(--su)) var(--sign-inset) calc(13 * var(--su));
+}
+.sign-sep {
+  height: calc(3 * var(--su));
+  background: var(--sign-ink-75);
+  margin: calc(4 * var(--su)) 0;
+}
+
+/* rows */
+.sign-rows {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--sign-inset);
+}
+.sign-row {
+  /* a <button> wearing the row: reset first */
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: 0;
+  margin: 0 calc(-1 * var(--sign-sp-3));
+  width: calc(100% + 2 * var(--sign-sp-3));
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--sign-row-gap);
+  padding: var(--sign-sp-1) var(--sign-sp-3);
+  /* the lane-edge line: 6px, transparent until selected */
+  border-left: calc(6 * var(--su)) solid transparent;
+  border-radius: calc(10 * var(--su));
+  color: var(--sign-ink);
+  font-family: var(--font-sign);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s var(--ease);
+}
+.sign-row:hover,
+.sign-row:focus-visible {
+  background: var(--sign-wash);
+}
+.sign-row:active {
+  background: rgba(238, 243, 255, 0.16);
+}
+.sign-row:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 2px;
+}
+.sign-row:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: none;
+}
+.sign-row.sel {
+  padding: var(--sign-sp-2) var(--sign-sp-3);
+  background: var(--sign-sodium-tint);
+  color: var(--sign-sodium);
+  border-left-color: var(--sign-sodium);
+  box-shadow: 0 0 calc(34 * var(--su)) var(--sign-sodium-halo);
+  animation: signHum 3s ease-in-out infinite;
+}
+.sign-row.sel:hover,
+.sign-row.sel:focus-visible {
+  background: rgba(255, 180, 84, 0.22);
+}
+.sign-row.sel:active {
+  background: rgba(255, 180, 84, 0.3);
+}
+@keyframes signHum {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.86;
+  }
+}
+.sign-arrow {
+  flex-shrink: 0;
+  width: var(--sign-col-arrow);
+  display: flex;
+  align-items: center;
+  font-size: var(--sign-fs-arrow);
+  line-height: 1;
+}
+.sign-arrow svg {
+  width: 1em;
+  height: 1em;
+  display: block;
+  fill: currentColor;
+}
+.sign-row.sel .sign-arrow {
+  font-size: var(--sign-fs-arrow-sel);
+  filter: drop-shadow(0 0 calc(11 * var(--su)) var(--sign-sodium-glow));
+}
+.sign-arrow .sign-p {
+  width: calc(44 * var(--su));
+  height: calc(44 * var(--su));
+  background: var(--sign-ink);
+  color: var(--sign-blue);
+  border-radius: calc(6 * var(--su));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: calc(32 * var(--su));
+  line-height: 1;
+}
+.sign-jp {
+  flex-shrink: 0;
+  width: var(--sign-col-jp);
+  font-family: var(--font-sign-jp);
+  font-size: var(--sign-fs-row-jp);
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.sign-row.sel .sign-jp {
+  font-size: var(--sign-fs-row-sel-jp);
+}
+.sign-en {
+  font-family: var(--font-sign);
+  font-size: var(--sign-fs-row);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  white-space: nowrap;
+}
+.sign-row.sel .sign-en {
+  font-size: var(--sign-fs-row-sel);
+  text-shadow: 0 0 calc(22 * var(--su)) rgba(255, 180, 84, 0.6);
+}
+.sign-chip {
+  flex-shrink: 0;
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: var(--sign-fs-chip);
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  border: 2px solid currentColor;
+  border-radius: 4px;
+  padding: calc(3 * var(--su)) calc(8 * var(--su));
+  margin-left: var(--sign-sp-1);
+}
+.sign-chip.on {
+  background: var(--sign-sodium);
+  border-color: var(--sign-sodium);
+  color: var(--sign-blue-deep);
+  box-shadow: 0 0 calc(18 * var(--su)) rgba(255, 180, 84, 0.7);
+}
+.sign-dist {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--sign-sp-1);
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: var(--sign-fs-dist);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.sign-dist span {
+  font-size: var(--sign-fs-unit);
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+.sign-row.sel .sign-dist {
+  font-size: var(--sign-fs-dist-sel);
+}
+
+/* ---------- supplementary plate + kilometre post ---------- */
+.sign-plate {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sign-sp-1) calc(18 * var(--su));
+  max-width: 100%;
+  background: var(--sign-blue);
+  border: calc(4 * var(--su)) solid var(--sign-ink);
+  border-radius: calc(10 * var(--su));
+  padding: calc(9 * var(--su)) calc(18 * var(--su));
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: var(--sign-fs-cap);
+  letter-spacing: 0.12em;
+  line-height: 1.4;
+  color: var(--sign-ink);
+  box-shadow: 0 0 calc(40 * var(--su)) var(--sign-backlight-soft);
+}
+.sign-plate.sm {
+  border-width: calc(3 * var(--su));
+  border-radius: calc(6 * var(--su));
+}
+.sign-plate-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sign-sp-1) calc(18 * var(--su));
+  min-width: 0;
+}
+.sign-plate .ui-jp {
+  font-weight: 900;
+}
+.sign-plate .faint {
+  opacity: 0.8;
+}
+.sign-kp {
+  position: absolute;
+  right: calc(96 * var(--su));
+  bottom: calc(60 * var(--su));
+  width: calc(84 * var(--su));
+  background: var(--sign-blue);
+  border: calc(3 * var(--su)) solid var(--sign-ink);
+  border-radius: calc(6 * var(--su));
+  text-align: center;
+  padding: calc(8 * var(--su)) 0 calc(6 * var(--su));
+  font-family: var(--font-sign);
+  font-weight: 900;
+  line-height: 1.1;
+  color: var(--sign-ink);
+  font-variant-numeric: tabular-nums;
+}
+.sign-kp-num {
+  font-size: calc(30 * var(--su));
+}
+.sign-kp-unit {
+  font-size: calc(11 * var(--su));
+  letter-spacing: 0.2em;
+  opacity: 0.85;
+}
+.sign-kp-post {
+  position: absolute;
+  right: calc(134 * var(--su));
+  bottom: 0;
+  width: calc(8 * var(--su));
+  height: calc(62 * var(--su));
+  background: var(--steel-post);
+}
+
+/* ---------- controls (System sheet §05) ----------
+   Not exercised by the home screen yet; here so the next screens are
+   built from the same primitives rather than re-deriving them. */
+.sign-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: calc(12 * var(--su));
+  background: var(--sign-blue);
+  border: calc(4 * var(--su)) solid var(--sign-ink);
+  border-radius: calc(10 * var(--su));
+  padding: calc(12 * var(--su)) var(--sign-sp-4);
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: var(--sign-fs-btn);
+  letter-spacing: 0.08em;
+  line-height: 1;
+  color: var(--sign-ink);
+  cursor: pointer;
+  min-height: 44px;
+}
+.sign-btn:hover,
+.sign-btn:focus-visible {
+  background: #234a9f;
+}
+.sign-btn:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 2px;
+}
+.sign-btn.primary {
+  background: var(--sign-sodium);
+  color: var(--sign-blue-deep);
+  border-color: var(--sign-sodium-pale);
+  box-shadow: 0 0 calc(40 * var(--su)) rgba(255, 180, 84, 0.55);
+}
+.sign-btn.primary:hover,
+.sign-btn.primary:focus-visible {
+  background: #ffc36f;
+}
+.sign-btn.ghost {
+  background: transparent;
+  border-color: var(--sign-ink-faint);
+}
+.sign-btn.ghost:hover,
+.sign-btn.ghost:focus-visible {
+  background: var(--sign-wash);
+}
+.sign-toggle {
+  position: relative;
+  flex-shrink: 0;
+  width: 64px;
+  height: 32px;
+  border: 3px solid var(--sign-ink);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+.sign-toggle i {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--sign-ink);
+}
+.sign-toggle.on {
+  border-color: var(--sign-sodium);
+  background: var(--sign-sodium-tint);
+  box-shadow: 0 0 18px rgba(255, 180, 84, 0.45);
+}
+.sign-toggle.on i {
+  left: auto;
+  right: 3px;
+  background: var(--sign-sodium);
+  box-shadow: 0 0 10px rgba(255, 180, 84, 0.9);
+}
+.sign-seg {
+  display: inline-flex;
+  border: 3px solid var(--sign-ink);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.sign-seg > * {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-right: 3px solid var(--sign-ink);
+  padding: 8px 14px;
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: 14px;
+  letter-spacing: 0.1em;
+  color: var(--sign-ink);
+  cursor: pointer;
+}
+.sign-seg > :last-child {
+  border-right: 0;
+}
+.sign-seg > .on {
+  background: var(--sign-sodium);
+  color: var(--sign-blue-deep);
+}
+.sign-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  border: 3px solid var(--sign-ink);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: var(--sign-ink);
+  background: transparent;
+  cursor: pointer;
+}
+.sign-slider {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  background: var(--sign-ink-faint);
+  border-radius: 3px;
+}
+.sign-slider b {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: var(--sign-sodium);
+  border-radius: 3px;
+  box-shadow: 0 0 12px rgba(255, 180, 84, 0.8);
+}
+.sign-slider i {
+  position: absolute;
+  top: 50%;
+  width: 22px;
+  height: 30px;
+  margin: -15px 0 0 -11px;
+  background: var(--sign-sodium);
+  border: 3px solid var(--sign-ink);
+  border-radius: 5px;
+  box-shadow: 0 0 14px rgba(255, 180, 84, 0.8);
+}
+.sign-srow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 10px 0;
+  border-bottom: 2px solid var(--sign-ink-18);
+}
+.sign-srow .name {
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: var(--sign-fs-name);
+  letter-spacing: 0.04em;
+  color: var(--sign-ink);
+}
+.sign-shead {
+  font-family: var(--font-sign);
+  font-weight: 900;
+  font-size: 13px;
+  letter-spacing: 0.24em;
+  color: var(--sign-sodium);
+  padding: var(--sign-sp-4) 0 var(--sign-sp-1);
+}
+
+/* ---------- motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .sign-row.sel,
+  .sign-stack {
+    animation: none !important;
+  }
+}
+
+/* ---------- short viewports (landscape phones) ---------- */
+@media (max-height: 480px) {
+  .sign-kp,
+  .sign-kp-post {
+    display: none;
+  }
+}
+
+/* ---------- phones (≤700px): post-mounted board filling the width ----------
+   From the designer's HomePhone screen: a top bar and one full-height post
+   at the left, two bracket stubs, the board + plate as one flow column with
+   the board 44px from the left edge / 20px from the right, a 64px DRIVE row
+   and 56px rows, no distance column, the KP post bottom right. */
+@media (max-width: 700px) {
+  :root {
+    --sign-border: 6px;
+    --sign-radius: 18px;
+    --sign-rule: 4px;
+    --sign-inset: 16px;
+    --sign-fs-display: 30px;
+    --sign-fs-display-jp: 16px;
+    --sign-fs-row: 22px;
+    --sign-fs-row-jp: 17px;
+    --sign-fs-row-sel: 28px;
+    --sign-fs-row-sel-jp: 20px;
+    --sign-fs-arrow: 28px;
+    --sign-fs-arrow-sel: 36px;
+    --sign-fs-btn: 18px;
+    --sign-fs-name: 16px;
+    --sign-fs-cap: 11px;
+    --sign-fs-chip: 11px;
+    --sign-fs-shield: 20px;
+    --sign-fs-shield-jp: 9px;
+    --sign-col-arrow: 36px;
+    --sign-col-jp: 64px;
+    --sign-row-gap: 10px;
+    --sign-sp-1: 4px;
+    --sign-sp-2: 8px;
+    --sign-sp-3: 8px;
+    --sign-sp-4: 12px;
+  }
+  .sign-night-deck {
+    height: 240px;
+    clip-path: polygon(38% 0%, 62% 0%, 100% 100%, 0% 100%);
+  }
+  .sign-night-parapet,
+  .sign-night-dash,
+  .gantry-lattice,
+  .gantry-post.r,
+  .sign-hang.h3,
+  .sign-corner {
+    display: none;
+  }
+  .sign-night-haze {
+    bottom: 0;
+    height: 240px;
+  }
+  .gantry {
+    height: 100%;
+  }
+  .gantry-truss {
+    top: calc(40px + var(--sa-top));
+    height: 28px;
+    border-top-width: 2px;
+    border-bottom-width: 2px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+  }
+  .gantry-post.l {
+    left: calc(18px + var(--sa-left));
+    width: 14px;
+    height: 100%;
+  }
+  .sign-stack {
+    gap: 12px;
+    width: auto;
+    margin: calc(82px + var(--sa-top)) calc(20px + var(--sa-right)) 0 calc(44px + var(--sa-left));
+    padding-bottom: 120px;
+  }
+  .sign {
+    padding: 18px 0 16px;
+    overflow: hidden;
+    box-shadow: 0 0 60px var(--sign-backlight), 0 18px 40px rgba(0, 0, 0, 0.6);
+  }
+  .sign-hang {
+    top: calc(-14px - var(--sign-border));
+    width: 14px;
+    height: 14px;
+  }
+  .sign-hang::before {
+    content: none;
+  }
+  .sign-hang.h1 {
+    left: 83px;
+  }
+  .sign-hang.h2 {
+    left: 233px;
+  }
+  /* header stacks: shield + JP on one line, the title on its own below so
+     it may wrap to two lines ("NEON / EXPRESSWAY") without pushing anything */
+  .sign-head {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 0 var(--sign-inset);
+  }
+  .sign-shield {
+    width: 54px;
+    height: 48px;
+    border-width: 4px;
+    border-radius: 6px 6px 28px 28px;
+  }
+  .sign-shield-code {
+    margin-top: 2px;
+  }
+  .sign-titles {
+    display: contents;
+  }
+  .sign-title-jp {
+    flex: 1 1 0;
+    min-width: 0;
+    letter-spacing: 0.14em;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sign-head .sign-title {
+    flex: 1 1 100%;
+    font-size: var(--sign-fs-display);
+    margin-top: 0;
+    line-height: 0.98;
+    white-space: normal;
+    overflow-wrap: normal;
+    text-shadow: 0 0 18px var(--sign-title-glow);
+  }
+  .sign-rule {
+    margin: 12px var(--sign-inset) 10px;
+  }
+  .sign-rows {
+    gap: 4px;
+  }
+  .sign-row {
+    padding: 10px 8px;
+    min-height: 56px;
+    border-left-width: 4px;
+    border-radius: 8px;
+  }
+  .sign-row.sel {
+    padding: 12px 8px;
+    min-height: 64px;
+    box-shadow: 0 0 24px var(--sign-sodium-halo);
+  }
+  .sign-row.sel .sign-arrow {
+    filter: drop-shadow(0 0 8px var(--sign-sodium-glow));
+  }
+  .sign-row.sel .sign-en {
+    letter-spacing: 0.04em;
+    text-shadow: 0 0 14px rgba(255, 180, 84, 0.6);
+  }
+  .sign-jp {
+    letter-spacing: 0.02em;
+  }
+  .sign-en {
+    letter-spacing: 0.02em;
+  }
+  .sign-arrow .sign-p {
+    width: 30px;
+    height: 30px;
+    border-radius: 5px;
+    font-size: 22px;
+  }
+  .sign-chip {
+    margin-left: auto;
+    padding: 2px 6px;
+    letter-spacing: 0.1em;
+  }
+  .sign-dist {
+    display: none;
+  }
+  .sign-sep {
+    height: 3px;
+    margin: 0;
+  }
+  .sign-plate {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    width: 100%;
+    border-width: 3px;
+    border-radius: 8px;
+    padding: 8px 12px;
+    letter-spacing: 0.16em;
+    line-height: 1.5;
+    box-shadow: 0 0 24px var(--sign-backlight-soft);
+  }
+  .sign-plate-line {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--sign-ink-dim);
+  }
+  .sign-plate-line.faint {
+    /* the subtitle copy is longer than one phone line: wrap it rather than
+       lose half of it to an ellipsis */
+    font-size: 10px;
+    color: var(--sign-ink-faint);
+    opacity: 1;
+    white-space: normal;
+  }
+  .sign-plate-line .sep {
+    display: none;
+  }
+  .sign-kp {
+    right: calc(24px + var(--sa-right));
+    bottom: calc(44px + var(--sa-bottom));
+    width: 64px;
+    border-width: 3px;
+    border-radius: 6px;
+    padding: 6px 0 4px;
+  }
+  .sign-kp-num {
+    font-size: 22px;
+  }
+  .sign-kp-unit {
+    font-size: 9px;
+  }
+  .sign-kp-post {
+    right: calc(52px + var(--sa-right));
+    width: 6px;
+    height: calc(46px + var(--sa-bottom));
+  }
+}

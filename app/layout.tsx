@@ -1,7 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import { Space_Grotesk } from "next/font/google";
+import { Overpass, Space_Grotesk, Zen_Kaku_Gothic_New } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
+import "./ui-system.css";
 
 /* Display face for titles/buttons/HUD numerals only (globals.css scopes it
    with var(--font-display) rather than applying .className to <body>) —
@@ -13,6 +14,28 @@ const displayFont = Space_Grotesk({
   subsets: ["latin"],
   variable: "--font-display-raw",
   display: "swap",
+});
+
+/* The Blue Route sign faces (app/ui-system.css, --font-sign / --font-sign-jp).
+   Overpass is the open Highway Gothic descendant the guide-sign chrome is set
+   in; it is a variable font, so no weight list. Zen Kaku Gothic New carries
+   the Japanese. Google serves it as unicode-range slices (there is no
+   "japanese" subset to name), so it is not preloaded — the JP glyph slices
+   arrive on first paint of a JP string, and until then the CSS falls back to
+   the platform's JP stack. Both are self-hosted by next/font at build time,
+   same as Space Grotesk above. */
+const signFont = Overpass({
+  subsets: ["latin"],
+  variable: "--font-sign-raw",
+  display: "swap",
+  fallback: ["Segoe UI", "system-ui", "sans-serif"],
+});
+const signFontJp = Zen_Kaku_Gothic_New({
+  weight: ["700", "900"],
+  preload: false,
+  variable: "--font-sign-jp-raw",
+  display: "swap",
+  fallback: ["Hiragino Kaku Gothic ProN", "Hiragino Sans", "Yu Gothic", "Meiryo", "Noto Sans JP", "sans-serif"],
 });
 
 export const metadata: Metadata = {
@@ -53,7 +76,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={displayFont.variable}>
+    <html lang="en" className={`${displayFont.variable} ${signFont.variable} ${signFontJp.variable}`}>
       <body>
         {children}
         {/* Vercel Web Analytics: ~1KB, cookieless visitor counting. The
