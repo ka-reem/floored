@@ -36,13 +36,15 @@
    Usage:
      node test/ui-qa.mjs [--url http://localhost:3131] [--out DIR]
                          [--viewports desktop,phone,phone-land]
-                         [--skip-mountain] [--skip-cameras]
+                         [--skip-mountain] [--skip-cameras] [--skip-garage]
+                         [--skip-paint] [--turbopack] [--tier mobile-base]
+                         [--paint-wait SECS]
    Starts `next dev` itself when no --url is given. Everything is driven by SIM
    time through window.__neonx (test/lib/debug-url.mjs adds ?debug=1), so a
    loaded box with SwiftShader at a frame per second still finishes. */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, appendFileSync, existsSync, symlinkSync, unlinkSync, rmSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import puppeteer from "puppeteer";
@@ -63,6 +65,24 @@ const OUT = path.resolve(
 );
 const SKIP_MTN = has("--skip-mountain");
 const SKIP_CAMS = has("--skip-cameras");
+const SKIP_GARAGE = has("--skip-garage"); // dev iteration: the previews cost minutes on SwiftShader
+/* the garage paint change re-renders every card preview synchronously; on
+   this shared SwiftShader box that has hung the page for 5+ minutes and
+   taken the browser down — see the paint block. --skip-paint gets the rest of
+   the walkthrough through; the paint row itself is still audited. */
+const SKIP_PAINT = has("--skip-paint");
+/* how long the desktop pass waits for a garage paint change to hand the main
+   thread back before it abandons the tab (see the paint block below) */
+const PAINT_WAIT_MS = Number(argOf("--paint-wait") || 300) * 1000;
+/* `--tier mobile-base|mobile-high|desktop` is passed through as ?tier= (see
+   resolveRenderTier in game/settings.ts). On a shared SwiftShader box a
+   1440×900 frame at the desktop preset has taken 100–150 s; mobile-base gets
+   the same layout through in minutes. A visual judgement at the shipped
+   desktop preset still needs a quiet box or a real GPU. */
+const TIER = argOf("--tier") || undefined;
+const pageUrl = (base) => debugUrl(base, { tier: TIER });
+const T0 = Date.now();
+{ const raw = console.log; console.log = (...a) => raw(`[${String(Math.round((Date.now() - T0) / 1000)).padStart(4)}s]`, ...a); }
 const VIEWPORTS_ALL = {
   desktop: { width: 1440, height: 900, phone: false },
   phone: { width: 390, height: 844, phone: true },
@@ -95,8 +115,18 @@ async function freePort(start) {
 
 async function startDev() {
   if (externalUrl) return { url: externalUrl, child: null };
-  const port = await freePort(3131);
-  const child = spawn("npx", ["next", "dev", "-p", String(port)], {
+  // other sessions on this box hold 3111/3117/3131/3141/3151 — probe upward
+  // from a base of our own and only trust the server's own Ready line
+  const port = await freePort(Number(process.env.QA_PORT_BASE || 3161));
+  /* webpack rather than Turbopack, by default: app/layout.tsx self-hosts three
+     Google fonts through next/font, and Turbopack's own fetcher does not go
+     through this sandbox's egress proxy for the ~240 per-subset woff2 slices
+     of Zen Kaku Gothic New ("issue establishing a connection"), which surfaces
+     as a module-not-found pageerror and a page that never boots. The webpack
+     loader uses Node https + the HTTPS_PROXY agent and fetches them all.
+     --turbopack opts back in where the network is plain. */
+  const bundler = has("--turbopack") ? [] : ["--webpack"];
+  const child = spawn("npx", ["next", "dev", ...bundler, "-p", String(port)], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env },
     detached: true,
@@ -118,9 +148,9 @@ function killDev(child) {
 
 /* ---------------- findings ---------------- */
 const SEVERITY = {
-  "a-hscroll": "error", "b-offscreen": "error", "c-clipped-text": "warning",
+  "a-hscroll": "error", "b-offscreen": "error", "b-offscreen-decor": "warning", "c-clipped-text": "warning",
   "d-overlap": "error", "e-small-target": "warning", "f-text-centre": "warning",
-  "g-console": "error", "touch-layout": "error", "walk": "error",
+  "g-console": "error", "touch-layout": "error", "walk": "error", "crash": "error", "perf": "warning",
   "mtn-stall": "error", "mtn-offroad": "error", "mtn-drop": "error", "mtn-reset": "error",
   "mtn-collision": "error", "mtn-incomplete": "error", "mtn-height-step": "warning",
   "chase-pitch": "warning", "chase-jitter": "warning",
@@ -202,7 +232,11 @@ const AUDIT_FN = (opts) => {
       if (skip) continue;
       flaggedB.add(el);
       const side = Object.entries(over).filter(([, v]) => v > 2).map(([k, v]) => `${k}+${r4(v)}`).join(" ");
-      push("b-offscreen", el, { overflowPx: r4(worst), rect: [r4(b.l), r4(b.t), r4(b.w), r4(b.h)], viewport: [W, H] }, `${side} · ${shortText(el)}`);
+      /* textless aria-hidden furniture (a gantry post running off the top,
+         a kilometre post into the bottom edge) bleeds off-screen by design —
+         reported, but as a warning; anything carrying text is a real finding */
+      const decor = el.getAttribute("aria-hidden") === "true" && !(el.textContent || "").trim();
+      push(decor ? "b-offscreen-decor" : "b-offscreen", el, { overflowPx: r4(worst), rect: [r4(b.l), r4(b.t), r4(b.w), r4(b.h)], viewport: [W, H] }, `${side} · ${shortText(el)}`);
     }
   }
 
@@ -216,7 +250,7 @@ const AUDIT_FN = (opts) => {
     if (!(el.textContent || "").trim()) continue;
     const dx = el.scrollWidth - el.clientWidth, dy = el.scrollHeight - el.clientHeight;
     if ((hidX && dx > 4) || (hidY && dy > 4))
-      push("c-clipped-text", el, { clippedX: dx, clippedY: dy, clientW: el.clientWidth, clientH: el.clientHeight });
+      push("c-clipped-text", el, { clippedX: dx, clippedY: dy, clientW: el.clientWidth, clientH: el.clientHeight, ellipsis: s.textOverflow === "ellipsis" ? 1 : 0 });
   }
 
   /* (d) overlapping interactive, (e) small touch targets */
@@ -242,13 +276,15 @@ const AUDIT_FN = (opts) => {
   }
 
   /* (f) text centring on buttons / chips */
-  const CHIPS = "button, .tc, #tcMore, .menuBtn, .phBtn, .qdState, .soonBadge, .paintName, .menuTitle, .loadTitle";
+  const CHIPS = "button, .tc, #tcMore, .menuBtn, .phBtn, .qdState, .soonBadge, .paintName, .sign-chip, .menuTitle, .loadTitle";
   for (const el of document.querySelectorAll(CHIPS)) {
     if (!visible(el) || el.closest("nextjs-portal")) continue;
     const txt = (el.textContent || "").trim();
     if (!txt) continue;
     const s = cs(el);
-    const centred = el.tagName === "BUTTON" || s.textAlign === "center" ||
+    // only things that claim to centre their label: text-align (the UA
+    // default for <button>, unless a design left-aligns it) or a centred flexbox
+    const centred = s.textAlign === "center" ||
       (s.display.includes("flex") && /center|space-around|space-evenly/.test(s.justifyContent));
     if (!centred) continue;
     const b = box(el);
@@ -274,15 +310,23 @@ const AUDIT_FN = (opts) => {
 const IGNORE_CONSOLE = /favicon|ERR_TUNNEL_CONNECTION_FAILED|va\.vercel-scripts\.com|\/_vercel\/insights\/|posthog|Failed to load resource|net::ERR_|WebSocket|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION/i;
 
 class Session {
-  constructor(page, vpName, vp) {
-    this.page = page;
+  constructor(page, vpName, vp, { onReplace } = {}) {
     this.vpName = vpName;
     this.vp = vp;
     this.n = 0;
     this.screen = "boot";
     this.consoleErrors = [];
+    this.onReplace = onReplace;
     this.dir = path.join(OUT, "shots", vpName);
     mkdirSync(this.dir, { recursive: true });
+    this.attach(page);
+  }
+  attach(page) {
+    this.page = page;
+    const vpName = this.vpName;
+    // a page reused for a second viewport must not keep the first one's listeners
+    page.removeAllListeners("console");
+    page.removeAllListeners("pageerror");
     page.on("console", (m) => {
       if (m.type() !== "error") return;
       const t = m.text();
@@ -291,11 +335,29 @@ class Session {
       addFinding(vpName, this.screen, "g-console", "console", t.slice(0, 300));
       console.log("  ⛔ console.error:", t.slice(0, 200));
     });
+    this.crashed = false;
+    page.removeAllListeners("error");
+    page.on("error", (e) => { this.crashed = true; console.log("  ⛔ page crashed:", String(e.message || e).slice(0, 200)); });
     page.on("pageerror", (e) => {
       const t = String(e.message || e);
       addFinding(vpName, this.screen, "g-console", "pageerror", t.slice(0, 300));
       console.log("  ⛔ pageerror:", t.slice(0, 200));
     });
+  }
+  /** Abandon a tab whose main thread is not coming back and open a fresh one
+      in the same context (same localStorage profile, so what the walkthrough
+      changed so far is kept). Throws if the hung tab cannot even be closed. */
+  async replacePage() {
+    const old = this.page;
+    const ctx = old.browserContext();
+    const closed = await Promise.race([old.close().then(() => true).catch(() => false), sleep(30000).then(() => false)]);
+    if (!closed) { this.crashed = true; throw new Error("Target closed: hung tab could not be closed"); }
+    const page = await ctx.newPage();
+    if (this.vp.phone) await page.setUserAgent(IPHONE_UA);
+    await page.setViewport({ width: this.vp.width, height: this.vp.height, deviceScaleFactor: 1, isMobile: this.vp.phone, hasTouch: this.vp.phone });
+    this.attach(page);
+    this.onReplace?.(page);
+    return page;
   }
   async frames() {
     return this.page.evaluate(() => window.__neonx?.game?.debug?.frames ?? -1).catch(() => -1);
@@ -332,8 +394,9 @@ class Session {
       return;
     }
     for (const r of res) addFinding(this.vpName, name, r.rule, r.sel, r.text, r.nums);
-    const errs = res.filter((r) => SEVERITY[r.rule] === "error").length;
-    console.log(`  audit ${name}: ${res.length} finding(s), ${errs} error(s)`);
+    const errs = res.filter((r) => SEVERITY[r.rule] === "error");
+    console.log(`  audit ${name}: ${res.length} finding(s), ${errs.length} error(s)`);
+    for (const r of errs.slice(0, 8)) console.log(`    ✗ ${r.rule} ${r.sel} — ${String(r.text).slice(0, 90)}`);
   }
   /* --- interaction --- */
   async clickText(selector, text, { exact = false } = {}) {
@@ -372,6 +435,33 @@ class Session {
     }, { selector, textFilter });
     return true;
   }
+  /** The world build is progress-aware rather than a flat timeout: on a box
+      shared with other headless sessions (load average 20+ on 4 cores has been
+      seen) a SwiftShader build takes many minutes, so the wait only gives up
+      when the loading screen's own percentage stops moving for `stallMs`, or
+      at a hard ceiling, or when the loader reports a build error. */
+  async waitWorld({ stallMs = 180000, maxMs = 900000 } = {}) {
+    const t0 = Date.now();
+    let lastPct = -1, lastMove = t0;
+    while (Date.now() - t0 < maxMs) {
+      const st = await this.page.evaluate(() => ({
+        loaded: !!window.__neonx?.game?.loaded && !document.querySelector(".loadRoot"),
+        err: document.querySelector(".loadRoot .loadErr code")?.textContent || null,
+        pct: Number((document.querySelector(".loadRoot .pct")?.textContent || "-1").replace("%", "")),
+        label: document.querySelector(".loadRoot .loadStatus span")?.textContent || "",
+      })).catch(() => ({ loaded: false, err: null, pct: -1, label: "" }));
+      if (st.loaded) { console.log(`  world loaded in ${((Date.now() - t0) / 1000).toFixed(0)}s`); return true; }
+      if (st.err) { addFinding(this.vpName, "loading", "walk", ".loadErr", `world build failed: ${st.err.slice(0, 200)}`); return false; }
+      if (st.pct !== lastPct) { lastPct = st.pct; lastMove = Date.now(); console.log(`  loading ${st.pct}% ${st.label}`); }
+      else if (Date.now() - lastMove > stallMs) {
+        addFinding(this.vpName, "loading", "walk", "world load", `loading stalled at ${st.pct}% (${st.label}) for ${stallMs / 1000}s`);
+        return false;
+      }
+      await sleep(3000);
+    }
+    addFinding(this.vpName, "loading", "walk", "world load", `world not loaded after ${maxMs / 1000}s (last ${lastPct}%)`);
+    return false;
+  }
   async waitFor(fn, ms, label) {
     try { await this.page.waitForFunction(fn, { timeout: ms }); return true; }
     catch { addFinding(this.vpName, this.screen, "walk", label, `timed out waiting for ${label}`); return false; }
@@ -379,11 +469,45 @@ class Session {
 }
 
 /* ---------------- the walkthrough ---------------- */
-async function walkthrough(S, url) {
-  const { page, vp, vpName } = S;
-  console.log(`\n=== ${vpName} ${vp.width}×${vp.height}${vp.phone ? " (touch)" : ""} ===`);
-  await page.goto(debugUrl(url), { waitUntil: "domcontentloaded", timeout: 180000 });
+/* screen predicates — by visible text, never by a design's class names.
+   Installed INTO the page (window.__qa) so waitForFunction predicates can
+   call them; a closure referencing a Node-side helper would not survive
+   serialisation. */
+const QA_HELPERS = () => {
+  window.__qa = {
+    onMainMenu() {
+      const bs = [...document.querySelectorAll("button")].map((b) => (b.textContent || "").trim());
+      return bs.some((t) => t.includes("DRIVE")) && !bs.some((t) => t === "RESUME");
+    },
+    onPause() {
+      return [...document.querySelectorAll("button")].some((b) => (b.textContent || "").trim() === "RESUME");
+    },
+    hasHeading(txt) {
+      return [...document.querySelectorAll("h1, h2, h3")].some((h) => (h.textContent || "").includes(txt));
+    },
+  };
+};
+const onMainMenu = () => window.__qa.onMainMenu();
+const onPause = () => window.__qa.onPause();
+
+let paintSampled = false; // once per run, even across a crash retry
+async function walkthrough(S, url, { reuse = false } = {}) {
+  const { vp, vpName } = S;
+  let { page } = S;
+  console.log(`\n=== ${vpName} ${vp.width}×${vp.height}${vp.phone ? " (touch)" : ""}${reuse ? " (same page, resized)" : ""} ===`);
+  if (!reuse) await page.evaluateOnNewDocument(QA_HELPERS);
+  if (reuse) {
+    await sleep(1200); // let the resize settle and the menu re-lay out
+    const ok = await page.evaluate(onMainMenu).catch(() => false);
+    if (!ok) { addFinding(vpName, "boot", "walk", "reuse", "page was not on the main menu after the previous viewport; reloading"); }
+    else await sleep(300);
+    if (!ok) await page.goto(pageUrl(url), { waitUntil: "domcontentloaded", timeout: 180000 });
+  } else {
+    await page.goto(pageUrl(url), { waitUntil: "domcontentloaded", timeout: 180000 });
+  }
   await page.waitForFunction(() => !!window.__neonx, { timeout: 180000 });
+  await page.evaluate(QA_HELPERS);
+  await page.waitForFunction(onMainMenu, { timeout: 60000 }).catch(() => addFinding(vpName, "boot", "walk", "main menu", "no DRIVE button appeared"));
   await sleep(1500);
 
   const touch = await page.evaluate(() => ({
@@ -401,12 +525,15 @@ async function walkthrough(S, url) {
   await S.audit("menu");
 
   /* ---- garage ---- */
+  if (!SKIP_GARAGE) {
   await S.clickText("button", "GARAGE");
-  await S.waitFor(() => document.querySelector(".carCard"), 10000, ".carCard");
+  // the card previews render synchronously in the panel's first frame — on a shared SwiftShader box that has been 7 minutes with the main thread held
+  await S.waitFor(() => document.querySelector(".carCard") || window.__qa.hasHeading("GARAGE"), 600000, "garage");
   await sleep(1200); // car previews render off-screen
   await S.audit("garage");
   const cars = await page.evaluate(() =>
     [...document.querySelectorAll(".carCard:not(.locked)")].map((c) => (c.querySelector("h3")?.firstChild?.textContent || c.textContent).trim().split(/\s+/)[0]));
+  if (!cars.length) addFinding(vpName, "garage", "walk", ".carCard", "no playable car cards found — garage selectors need updating");
   for (const name of cars) {
     await page.evaluate((name) => {
       [...document.querySelectorAll(".carCard:not(.locked)")]
@@ -415,50 +542,101 @@ async function walkthrough(S, url) {
     await sleep(700);
     await S.audit(`garage-car-${name.toLowerCase().replace(/[^a-z0-9]+/g, "")}`);
   }
-  for (const pi of [2, 5]) {
+  /* A paint change re-renders every card's preview (two passes each, one
+     with the imported body) — minutes of main-thread SwiftShader on a loaded
+     box — so it is sampled once, on the desktop pass only. The phone passes
+     still audit the paint row itself. */
+  if (!vp.phone && !reuse && !paintSampled && !SKIP_PAINT) {
+    paintSampled = true;
+    const pi = 3;
+    const nCards = await page.evaluate(() => document.querySelectorAll(".carCard").length);
+    const t0 = Date.now();
     const ok = await page.evaluate((pi) => { const d = document.querySelectorAll(".paintDot")[pi]; if (!d) return false; d.click(); return true; }, pi);
-    if (ok) { await sleep(600); await S.audit(`garage-paint-${pi}`); }
+    if (ok) {
+      /* The click re-renders every card's preview synchronously; on a shared
+         SwiftShader box that has been seen to hold the main thread for over
+         12 minutes. Wait a bounded time for the page to answer again; past
+         that the tab is abandoned and the menu reloaded in a fresh one (the
+         profile in localStorage keeps the paint), so the pass can go on. */
+      const back = await Promise.race([
+        // two rAFs: the React commit and then the previews' own rAF renders
+        page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))).then(() => true).catch(() => false),
+        sleep(PAINT_WAIT_MS).then(() => false),
+      ]);
+      const secs = (Date.now() - t0) / 1000;
+      if (back) {
+        console.log(`  paint change: previews re-rendered in ${secs.toFixed(1)}s (${nCards} cards)`);
+        if (secs > 5) addFinding(vpName, "garage", "perf", ".paintDot", `paint change held the main thread ${secs.toFixed(0)}s — ${nCards} card previews re-rendered synchronously (SwiftShader; ms on a GPU)`, { secs, nCards });
+        await sleep(600);
+        await S.audit(`garage-paint-${pi}`);
+      } else {
+        addFinding(vpName, "garage", "perf", ".paintDot", `paint change still holding the main thread after ${PAINT_WAIT_MS / 1000}s (${nCards} card previews, SwiftShader) — tab abandoned, menu reloaded`, { secs: PAINT_WAIT_MS / 1000, nCards });
+        console.log(`  ⚠️  paint change has not returned after ${PAINT_WAIT_MS / 1000}s — replacing the tab`);
+        page = await S.replacePage();
+        await page.evaluateOnNewDocument(QA_HELPERS);
+        await page.goto(pageUrl(url), { waitUntil: "domcontentloaded", timeout: 180000 });
+        await page.waitForFunction(() => !!window.__neonx, { timeout: 180000 });
+        await page.evaluate(QA_HELPERS);
+        await S.waitFor(onMainMenu, 60000, "main menu after paint reload");
+        await sleep(800);
+        await S.audit("menu-after-paint-reload");
+        // the garage again, now with the cached (new-paint) previews: the paint row must show the pick
+        await S.clickText("button", "GARAGE");
+        await S.waitFor(() => document.querySelector(".carCard") || window.__qa.hasHeading("GARAGE"), 15000, "garage after reload");
+        await sleep(1200);
+        await S.audit(`garage-paint-${pi}`);
+      }
+    }
   }
   await S.clickText("button", "DONE", { exact: true });
   await sleep(300);
+  }
 
   /* ---- settings ---- */
   await S.clickText("button", "SETTINGS");
-  await S.waitFor(() => document.querySelector(".panel"), 10000, "settings panel");
+  await S.waitFor(() => window.__qa.hasHeading("SETTINGS") && document.querySelector('input[type="checkbox"], input[type="range"], select'), 15000, "settings panel");
   await sleep(300);
   await S.audit("settings");
+  // the panel's own scroller, whatever element carries it in this design
   const scrollable = await page.evaluate(() => {
-    const p = document.querySelector(".panel");
+    const root = document.querySelector(".menuRoot") || document.body;
+    const p = [root, ...root.querySelectorAll("*")].find((e) => {
+      const s = getComputedStyle(e);
+      return /auto|scroll/.test(s.overflowY) && e.scrollHeight > e.clientHeight + 4;
+    });
     if (!p) return null;
-    const can = p.scrollHeight > p.clientHeight + 4;
-    if (can) p.scrollTop = p.scrollHeight;
-    return { can, scrollHeight: p.scrollHeight, clientHeight: p.clientHeight };
+    p.scrollTop = p.scrollHeight;
+    p.setAttribute("data-qa-scroller", "1");
+    return { can: true, scrollHeight: p.scrollHeight, clientHeight: p.clientHeight };
   });
   console.log("  settings panel:", JSON.stringify(scrollable));
   if (scrollable?.can) { await sleep(300); await S.audit("settings-scrolled"); }
-  await page.evaluate(() => { const p = document.querySelector(".panel"); if (p) p.scrollTop = 0; });
+  await page.evaluate(() => { const p = document.querySelector("[data-qa-scroller]"); if (p) { p.scrollTop = 0; p.removeAttribute("data-qa-scroller"); } });
   const changed = await page.evaluate(() => {
+    const root = document.querySelector(".menuRoot") || document.body;
     const done = {};
-    const cb = document.querySelector('.panel input[type="checkbox"]');
+    const cb = root.querySelector('input[type="checkbox"]');
     if (cb) { cb.click(); done.toggle = cb.closest(".row")?.querySelector("label")?.textContent?.trim(); }
     // segmented control if the UI has one, else the first <select>
-    const seg = document.querySelector('.panel .seg button, .panel [role="radiogroup"] button, .panel .segmented button');
+    const seg = root.querySelector('.seg button, [role="radiogroup"] button, .segmented button, [role="radio"]');
     if (seg) {
-      const opts = [...seg.parentElement.querySelectorAll("button")];
-      const other = opts.find((b) => !b.classList.contains("sel") && b.getAttribute("aria-pressed") !== "true") || opts[1] || opts[0];
+      const opts = [...seg.parentElement.querySelectorAll('button, [role="radio"]')];
+      const other = opts.find((b) => !b.classList.contains("sel") && b.getAttribute("aria-pressed") !== "true" && b.getAttribute("aria-checked") !== "true") || opts[1] || opts[0];
       other.click();
       done.segmented = other.textContent.trim();
     } else {
-      const sel = document.querySelector(".panel select");
+      const sel = root.querySelector("select");
       if (sel) {
+        window.__qaSel = { el: sel, was: sel.selectedIndex };
         const ix = (sel.selectedIndex + 1) % sel.options.length;
         Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(sel, sel.options[ix].value);
         sel.dispatchEvent(new Event("change", { bubbles: true }));
         done.select = `${sel.closest(".row")?.querySelector("label")?.textContent?.trim()} → ${sel.options[ix].text}`;
       }
     }
-    const rng = document.querySelector('.panel input[type="range"]');
+    const rng = root.querySelector('input[type="range"]');
     if (rng) {
+      window.__qaRng = { el: rng, was: rng.value };
       const v = (Number(rng.min) + Number(rng.max)) / 2;
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(rng, String(v));
       rng.dispatchEvent(new Event("input", { bubbles: true }));
@@ -469,15 +647,34 @@ async function walkthrough(S, url) {
   console.log("  settings changed:", JSON.stringify(changed));
   await sleep(500);
   await S.audit("settings-changed");
+  // put the three back — the drive that follows (and a reused page's next
+  // pass) should run on the profile's own settings
+  await page.evaluate(() => {
+    const root = document.querySelector(".menuRoot") || document.body;
+    root.querySelector('input[type="checkbox"]')?.click();
+    const s = window.__qaSel;
+    if (s?.el?.isConnected) {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(s.el, s.el.options[s.was].value);
+      s.el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const r = window.__qaRng;
+    if (r?.el?.isConnected) {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(r.el, r.was);
+      r.el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    delete window.__qaSel; delete window.__qaRng;
+  });
+  await sleep(200);
   await S.clickText("button", "DONE", { exact: true });
   await sleep(300);
 
   /* ---- controls ---- */
   await S.clickText("button", "CONTROLS");
-  await S.waitFor(() => [...document.querySelectorAll("h2")].some((h) => h.textContent.includes("CONTROLS")), 10000, "controls panel");
+  await S.waitFor(() => [...document.querySelectorAll("h1, h2, h3")].some((h) => h.textContent.includes("CONTROLS")), 15000, "controls panel");
   await sleep(300);
   await S.audit("controls");
   await S.clickText("button", "BACK", { exact: true });
+  await S.waitFor(onMainMenu, 10000, "main menu after controls");
   await sleep(300);
   await S.audit("menu-back");
 
@@ -486,7 +683,7 @@ async function walkthrough(S, url) {
   // the loading screen is transient; grab it if it is still up after a beat
   await sleep(700);
   if (await page.evaluate(() => !!document.querySelector(".loadRoot"))) await S.audit("loading");
-  const loaded = await S.waitFor(() => window.__neonx?.game?.loaded && !document.querySelector(".loadRoot"), 240000, "world load");
+  const loaded = await S.waitWorld();
   if (!loaded) return;
   await sleep(1500);
   await page.evaluate(() => { window.__neonx.setInput({ th: 0.75 }); window.__neonx.simStep(4); });
@@ -516,21 +713,21 @@ async function walkthrough(S, url) {
   /* ---- pause ---- */
   if (vp.phone) await S.tapEl("#gearBtn");
   else await page.keyboard.press("Escape");
-  await S.waitFor(() => document.querySelector(".menuRoot.paused"), 5000, "pause menu");
+  await S.waitFor(onPause, 8000, "pause menu");
   await sleep(300);
   await S.audit("pause");
 
   /* ---- stats ---- */
   await S.clickText("button", "STATS", { exact: true });
-  await S.waitFor(() => document.querySelector(".statsGrid"), 5000, "stats panel");
+  await S.waitFor(() => window.__qa.hasHeading("STATS"), 8000, "stats panel");
   await sleep(300);
   await S.audit("stats");
   await S.clickText("button", "BACK", { exact: true });
-  await S.waitFor(() => document.querySelector(".menuRoot.paused"), 5000, "pause after stats");
+  await S.waitFor(onPause, 8000, "pause after stats");
 
   /* ---- resume ---- */
   await S.clickText("button", "RESUME", { exact: true });
-  await S.waitFor(() => !document.querySelector(".menuRoot") && window.__neonx.game.running, 5000, "resume");
+  await S.waitFor(() => !window.__qa.onPause() && window.__neonx.game.running, 8000, "resume");
   await page.evaluate(() => { window.__neonx.setInput({ th: 0.5 }); window.__neonx.simStep(1.5); window.__neonx.setInput(null); });
   await S.waitFrames(2);
   await S.audit("resume");
@@ -555,9 +752,9 @@ async function walkthrough(S, url) {
   /* ---- exit to menu ---- */
   if (vp.phone) await S.tapEl("#gearBtn");
   else await page.keyboard.press("Escape");
-  await S.waitFor(() => document.querySelector(".menuRoot.paused"), 5000, "pause before exit");
+  await S.waitFor(onPause, 8000, "pause before exit");
   await S.clickText("button", "MAIN MENU");
-  await S.waitFor(() => document.querySelector(".menuTitle") && !document.querySelector(".paused"), 5000, "main menu after exit");
+  await S.waitFor(onMainMenu, 8000, "main menu after exit");
   await sleep(300);
   await S.audit("menu-after-exit");
 }
@@ -677,7 +874,7 @@ async function mountainDrive(S) {
   const STEP = 0.1;
   const log = [];
   let phase = "deck-in", sim = 0, lastS = null, sinceProgress = 0, prev = null;
-  let maxDy = 0, maxDyAt = null, resets = 0, collisions = 0, offroad = 0, completed = false, stall = null, drops = 0;
+  let maxDy = 0, maxDyAt = null, resets = 0, collisions = 0, offroad = 0, completed = false, stall = null, drops = 0, npcsParked = 0;
   const milestones = { entrance: false, mid: false, exit: false };
   const shotPair = async (name) => {
     await page.evaluate(() => window.__neonx.setCam(3));
@@ -693,6 +890,19 @@ async function mountainDrive(S) {
       const n = window.__neonx, g = n.game;
       const mt = g.world.routes.mtn, c = g.terrain.corridor;
       const s0 = n.state();
+      /* Traffic is not what this pass measures: the first run on the current
+         build sat at 3 mph behind an NPC in the exit lane 90 m short of the
+         gore for the whole budget. Any NPC within 60 m ahead in the player's
+         own lane is parked out of the way (deactivated) and counted, so a
+         stall that remains is the road's. */
+      let parked = 0;
+      for (const npc of g.traffic?.npcs || []) {
+        if (!npc.active) continue;
+        const dx = npc.x - s0.x, dz = npc.z - s0.z;
+        const ahead = dx * Math.sin(s0.h) + dz * Math.cos(s0.h);
+        const side = dx * Math.cos(s0.h) - dz * Math.sin(s0.h);
+        if (ahead > -6 && ahead < 60 && Math.abs(side) < 3.2) { npc.active = false; parked++; }
+      }
       const hit = mt.project(s0.x, s0.z, 24);
       let ph = phase;
       if (ph === "deck-in" && hit && hit.s > 2 && hit.s < mt.len - 2) ph = "pass";
@@ -729,7 +939,7 @@ async function mountainDrive(S) {
       let hw = null;
       if (h1) { const w = mt.halfWidths(h1.s); hw = { L: w.hwL, R: w.hwR }; }
       return {
-        phase: ph, t: null, x: s1.x, y: s1.y, z: s1.z, h: s1.h, kmh: s1.kmh,
+        phase: ph, t: null, x: s1.x, y: s1.y, z: s1.z, h: s1.h, kmh: s1.kmh, parked,
         s: h1 ? h1.s : null, lat: h1 ? h1.lat : null, hw,
         onMountain: s1.onMountain, surface: surf ? surf.edgeId : null, roadY, deckY,
         dy: roadY == null ? null : s1.y - roadY,
@@ -742,7 +952,9 @@ async function mountainDrive(S) {
     if (prev) {
       const jump = Math.hypot(st.x - prev.x, st.z - prev.z);
       const stepY = Math.abs(st.y - prev.y);
-      if (jump > 12) { resets++; st.reset = true; addFinding(S.vpName, "mountain", "mtn-reset", "car", `position jumped ${jump.toFixed(1)} m at t=${st.t}s (s=${f1(prev.s)})`, { t: st.t, from: [prev.x, prev.y, prev.z], to: [st.x, st.y, st.z] }); }
+      // the corridor wraps every LOOP metres in z — that jump is the world's seam, not a reset
+      const wrap = Math.abs(Math.abs(st.z - prev.z) - info.LOOP) < 20;
+      if (jump > 12 && !wrap) { resets++; st.reset = true; addFinding(S.vpName, "mountain", "mtn-reset", "car", `position jumped ${jump.toFixed(1)} m at t=${st.t}s (s=${f1(prev.s)})`, { t: st.t, from: [prev.x, prev.y, prev.z], to: [st.x, st.y, st.z] }); }
       else if (stepY > maxDy) { maxDy = stepY; maxDyAt = { t: st.t, s: st.s, from: prev.y, to: st.y, roadFrom: prev.roadY, roadTo: st.roadY }; }
       if (st.crashes > 0 || (prev.kmh - st.kmh > 25 && !st.reset)) {
         collisions++; st.collision = true;
@@ -756,6 +968,7 @@ async function mountainDrive(S) {
       if (out) { offroad++; st.offroad = true; }
       if (out && offroad === 1) addFinding(S.vpName, "mountain", "mtn-offroad", "car", `left the pavement at s=${f1(st.s)} lat=${f2(st.lat)} (hw L ${f2(st.hw.L)} / R ${f2(st.hw.R)})`, { t: st.t });
     }
+    npcsParked += st.parked || 0;
     if (st.dy != null && st.dy < -2) { drops++; st.drop = true; if (drops === 1) addFinding(S.vpName, "mountain", "mtn-drop", "car", `car ${(-st.dy).toFixed(1)} m below the road at t=${st.t}s s=${f1(st.s)} x=${f1(st.x)} z=${f1(st.z)}`, { t: st.t, y: st.y, roadY: st.roadY }); }
     log.push(st);
     if (log.length % 50 === 0)
@@ -810,25 +1023,42 @@ async function mountainDrive(S) {
     await shotPair(k + "-staged");
   }
   const result = {
+    npcsParked,
     completed, stall: stall ? { t: stall.t, phase: stall.phase, x: stall.x, y: stall.y, z: stall.z, s: stall.s, lat: stall.lat, kmh: stall.kmh, near: stallInfo } : null,
     simSeconds: +sim.toFixed(1), resets, collisions, offroadSteps: offroad, dropSteps: drops,
     maxHeightStep: { m: +maxDy.toFixed(3), perStep: STEP, at: maxDyAt }, route: info, steps: log,
   };
   writeFileSync(path.join(OUT, "mountain-log.json"), JSON.stringify(result, null, 1));
-  console.log(`  mountain: completed=${completed} stall=${stall ? `${stall.phase}@t=${stall.t}s s=${f1(stall.s)}` : "no"} resets=${resets} collisions=${collisions} offroad=${offroad} drops=${drops} maxΔy=${maxDy.toFixed(2)} m/step sim=${sim.toFixed(1)} s`);
+  console.log(`  mountain: completed=${completed} stall=${stall ? `${stall.phase}@t=${stall.t}s s=${f1(stall.s)}` : "no"} resets=${resets} collisions=${collisions} offroad=${offroad} drops=${drops} npcsParked=${npcsParked} maxΔy=${maxDy.toFixed(2)} m/step sim=${sim.toFixed(1)} s`);
   return result;
 }
 
 /* ---------------- report ---------------- */
 function writeReport(extra) {
+  /* A run over a subset of viewports (--viewports) refreshes only those in
+     findings.json and keeps the rest — so the three passes can be run as
+     separate processes on a slow box and still produce one report. */
+  const fj = path.join(OUT, "findings.json");
+  if (existsSync(fj) && VIEWPORTS.length < Object.keys(VIEWPORTS_ALL).length) {
+    try {
+      const prev = JSON.parse(readFileSync(fj, "utf8"));
+      const keep = (f) => !VIEWPORTS.includes(f.viewport);
+      findings.push(...(prev.findings || []).filter(keep));
+      shots.push(...(prev.shots || []).filter(keep));
+      for (const k of ["chase", "mountain"]) if (!extra[k] && prev[k]) extra[k] = prev[k];
+      console.log(`  merged ${prev.findings?.length ?? 0} finding(s) from the previous run for viewports not in this one`);
+    } catch {}
+  }
   const errors = findings.filter((f) => f.severity === "error");
   const warns = findings.filter((f) => f.severity !== "error");
+  const seen = new Set([...VIEWPORTS, ...findings.map((f) => f.viewport), ...shots.map((s) => s.viewport)]);
+  const REPORT_VPS = Object.keys(VIEWPORTS_ALL).filter((v) => seen.has(v));
   const lines = [];
   lines.push(`# UI QA walkthrough — ${new Date().toISOString()}`);
   lines.push("");
-  lines.push(`Viewports: ${VIEWPORTS.join(", ")} · findings: **${errors.length} error(s)**, ${warns.length} warning(s) · screenshots: ${shots.length}`);
+  lines.push(`Viewports: ${REPORT_VPS.join(", ")} · findings: **${errors.length} error(s)**, ${warns.length} warning(s) · screenshots: ${shots.length}`);
   lines.push("");
-  for (const vp of VIEWPORTS) {
+  for (const vp of REPORT_VPS) {
     const e = errors.filter((f) => f.viewport === vp), w = warns.filter((f) => f.viewport === vp);
     lines.push(`## ${vp} — ${e.length} error(s), ${w.length} warning(s)`);
     lines.push("");
@@ -855,6 +1085,7 @@ function writeReport(extra) {
     const m = extra.mountain;
     lines.push("## Mountain road drive-through");
     lines.push("");
+    lines.push(`- NPCs parked out of the driver's lane: ${m.npcsParked ?? 0}`);
     lines.push(`- completed: **${m.completed}** · sim time ${m.simSeconds} s · resets ${m.resets} · collisions ${m.collisions} · off-road steps ${m.offroadSteps} · below-road steps ${m.dropSteps}`);
     lines.push(`- max height step: ${m.maxHeightStep.m} m per ${m.maxHeightStep.perStep} s${m.maxHeightStep.at ? ` at s=${f1(m.maxHeightStep.at.s)} (y ${f2(m.maxHeightStep.at.from)} → ${f2(m.maxHeightStep.at.to)}, road ${f2(m.maxHeightStep.at.roadFrom)} → ${f2(m.maxHeightStep.at.roadTo)})` : ""}`);
     if (m.stall) {
@@ -880,7 +1111,7 @@ function writeReport(extra) {
     lines.push("");
   }
   writeFileSync(path.join(OUT, "report.md"), lines.join("\n"));
-  writeFileSync(path.join(OUT, "findings.json"), JSON.stringify({ when: new Date().toISOString(), viewports: VIEWPORTS, findings, shots, mountain: extra.mountain ? { ...extra.mountain, steps: undefined } : null, chase: extra.chase ? { sim: extra.chase.sim, real: extra.chase.real } : null }, null, 1));
+  writeFileSync(path.join(OUT, "findings.json"), JSON.stringify({ when: new Date().toISOString(), viewports: REPORT_VPS, findings, shots, mountain: extra.mountain ? { ...extra.mountain, steps: undefined } : null, chase: extra.chase ? { sim: extra.chase.sim, real: extra.chase.real } : null }, null, 1));
 }
 
 function printTable() {
@@ -902,51 +1133,115 @@ async function main() {
   process.on("SIGTERM", () => { cleanup(); process.exit(143); });
   let browser;
   const extra = {};
-  try {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader",
-        "--no-sandbox", "--disable-dev-shm-usage", "--mute-audio", "--window-size=1440,900",
-      ],
-      protocolTimeout: 600000,
+  /* This box is shared with other headless sessions, and a browser process
+     has vanished mid-pass three times ("Connection closed" with no OOM kill on
+     record and no crash event first) — the signature of someone else's
+     `pkill chrome`. The browser is therefore launched through a symlink with
+     a name of its own and a profile directory without "chrome" in it, so a
+     by-name or by-command-line kill aimed at stray Chromes does not match. */
+  const exe = (() => {
+    try {
+      const real = puppeteer.executablePath();
+      const link = path.join(OUT, "qa-headless-browser");
+      try { unlinkSync(link); } catch {}
+      symlinkSync(real, link);
+      return link;
+    } catch { return undefined; }
+  })();
+  const launch = () => puppeteer.launch({
+    headless: true,
+    executablePath: exe,
+    userDataDir: path.join(OUT, ".qa-profile-" + process.pid),
+    args: [
+      "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader",
+      "--no-sandbox", "--disable-dev-shm-usage", "--mute-audio", "--window-size=1440,900",
+      // a SwiftShader frame can take seconds on a shared box; neither watchdog
+      // should be the thing that ends the run
+      "--disable-hang-monitor", "--disable-gpu-watchdog",
+      // a SwiftShader GPU process that crashes twice makes Chrome give up and
+      // EXIT ("GPU process isn't usable. Goodbye.") — keep the browser alive
+      // and let the page's own context-loss handling show up in the audit
+      "--disable-gpu-process-crash-limit",
+    ],
+    protocolTimeout: 600000,
+  });
+  /* One isolated browser context per INPUT MODE, not per viewport: the
+     profile in localStorage must not leak between desktop and touch, and
+     Game.isTouch is computed once per page load — but the two phone
+     viewports share a touch page and simply resize between passes (the
+     world build and the garage previews are the expensive part of a pass,
+     and a rotation is itself a case worth exercising). */
+  const groups = new Map();
+  /* A renderer or GPU process that dies mid-pass (seen at load average 30:
+     "Target closed" during a garage paint change) takes the tab and, with it,
+     every CDP session; the pass is retried once on a fresh browser. */
+  const browserLog = path.join(OUT, "browser.log");
+  const ensureBrowser = async () => {
+    if (browser?.connected) return;
+    if (browser) { console.log("  ⚠️  browser connection lost — relaunching"); try { await browser.close(); } catch {} groups.clear(); }
+    browser = await launch();
+    // Chrome's own stderr: the only place a GPU-process crash or a "Goodbye" is explained
+    const err = browser.process()?.stderr;
+    if (err) err.on("data", (d) => {
+      const t = String(d);
+      appendFileSync(browserLog, t);
+      for (const line of t.split("\n")) if (/GPU process|crash|Goodbye|Oops|FATAL|out of memory|Killed/i.test(line)) console.log("  [chrome]", line.trim().slice(0, 200));
     });
+    browser.on("disconnected", () => console.log("  [chrome] browser disconnected"));
+  };
+  const CRASH_RE = /detached Frame|Target closed|Session closed|Connection closed|Target crashed|Page crashed/i;
+  try {
     for (const vpName of VIEWPORTS) {
       const vp = VIEWPORTS_ALL[vpName];
-      // an isolated context per viewport: the profile in localStorage must not
-      // carry the settings one pass changed into the next
-      const ctx = await browser.createBrowserContext();
-      const page = await ctx.newPage();
-      if (vp.phone) {
-        await page.setUserAgent(IPHONE_UA);
-        await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1, isMobile: true, hasTouch: true });
-      } else {
-        await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1 });
-      }
-      const S = new Session(page, vpName, vp);
-      try {
-        await walkthrough(S, url);
-        if (!vp.phone) {
-          if (!SKIP_CAMS) { try { extra.chase = await cameraSweep(S); } catch (e) { addFinding(vpName, "cameras", "walk", "cameraSweep", String(e.message).slice(0, 300)); console.log("  camera sweep failed:", e.message); } }
-          if (!SKIP_MTN) {
-            try {
-              if (SKIP_CAMS) { await S.clickText("button", "DRIVE"); await S.waitFor(() => window.__neonx?.game?.loaded && window.__neonx.game.running, 240000, "drive for mountain"); }
-              extra.mountain = await mountainDrive(S);
-            } catch (e) { addFinding(vpName, "mountain", "walk", "mountainDrive", String(e.message).slice(0, 300)); console.log("  mountain drive failed:", e.message); }
-          }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await ensureBrowser();
+        let grp = groups.get(vp.phone);
+        if (!grp) {
+          const ctx = await browser.createBrowserContext();
+          const page = await ctx.newPage();
+          if (vp.phone) await page.setUserAgent(IPHONE_UA);
+          grp = { ctx, page, used: false };
+          groups.set(vp.phone, grp);
         }
-      } catch (e) {
-        addFinding(vpName, S.screen, "walk", "walkthrough", String(e.message).slice(0, 300));
-        console.log("  ⛔ walkthrough aborted:", e.message);
-        try { await S.shot("aborted"); } catch {}
+        const { page } = grp;
+        const reuse = grp.used;
+        await page.setViewport({ width: vp.width, height: vp.height, deviceScaleFactor: 1, isMobile: vp.phone, hasTouch: vp.phone });
+        grp.used = true;
+        const S = new Session(page, vpName, vp, { onReplace: (p) => { grp.page = p; } });
+        let crashed = false;
+        try {
+          await walkthrough(S, url, { reuse });
+          if (!vp.phone) {
+            if (!SKIP_CAMS) { try { extra.chase = await cameraSweep(S); } catch (e) { if (CRASH_RE.test(e.message)) throw e; addFinding(vpName, "cameras", "walk", "cameraSweep", String(e.message).slice(0, 300)); console.log("  camera sweep failed:", e.message); } }
+            if (!SKIP_MTN) {
+              try {
+                if (SKIP_CAMS) { await S.clickText("button", "DRIVE"); await S.waitFor(() => window.__neonx?.game?.loaded && window.__neonx.game.running, 240000, "drive for mountain"); }
+                extra.mountain = await mountainDrive(S);
+              } catch (e) { if (CRASH_RE.test(e.message)) throw e; addFinding(vpName, "mountain", "walk", "mountainDrive", String(e.message).slice(0, 300)); console.log("  mountain drive failed:", e.message); }
+            }
+          }
+        } catch (e) {
+          crashed = S.crashed || S.page.isClosed() || !browser.connected || CRASH_RE.test(String(e.message));
+          addFinding(vpName, S.screen, crashed ? "crash" : "walk", "walkthrough", (crashed ? "tab/browser died: " : "") + String(e.message).slice(0, 300));
+          console.log(`  ⛔ walkthrough ${crashed ? "crashed" : "aborted"}:`, e.message);
+          if (!crashed) { try { await S.shot("aborted"); } catch {} }
+        }
+        const pageErrs = await S.page.evaluate(() => window.__neonx?.state?.().errors ?? []).catch(() => []);
+        for (const e of pageErrs) addFinding(vpName, "engine", "g-console", "__neonx.errors", String(e).slice(0, 300));
+        if (crashed && attempt === 0) {
+          console.log(`  ↻ retrying ${vpName} once on a fresh browser`);
+          try { await browser.close(); } catch {}
+          groups.clear();
+          continue;
+        }
+        break;
       }
-      const pageErrs = await page.evaluate(() => window.__neonx?.state?.().errors ?? []).catch(() => []);
-      for (const e of pageErrs) addFinding(vpName, "engine", "g-console", "__neonx.errors", String(e).slice(0, 300));
-      await ctx.close().catch(() => {});
     }
+    for (const g of groups.values()) await g.ctx.close().catch(() => {});
   } finally {
     if (browser) await browser.close().catch(() => {});
     cleanup();
+    try { rmSync(path.join(OUT, ".qa-profile-" + process.pid), { recursive: true, force: true }); } catch {}
   }
   printTable();
   writeReport(extra);
