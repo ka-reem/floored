@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { clamp, lerp, TAU } from "./util";
 import { speedInUnits, unitLabel, type SpeedUnits } from "./settings";
+import { DEBUG_HOOKS } from "./debug";
 
 /* Instrument cluster for the cockpit view: two analog dials (tacho + speedo)
    with real 3D needles, a centre digital display (speed / gear / odo / tells)
@@ -597,8 +598,9 @@ export function buildInstrumentCluster(
 
   /* LIVE PREVIEW, same idea as window.__aurora / __wall. The look of a night
      cluster cannot be judged from a still, so the presets and every field in
-     them are switchable from the console while driving. */
-  {
+     them are switchable from the console while driving. Dev builds and
+     `?debug` URLs only — see game/debug.ts. */
+  if (DEBUG_HOOKS) {
     const names = Object.keys(CLUSTER_STYLES);
     const knob = {
       get style() { return styleName; },

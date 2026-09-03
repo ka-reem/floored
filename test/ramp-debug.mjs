@@ -1,6 +1,7 @@
 /* Focused ramp-descent instrumentation: sample car state every 300 ms and dump
    colliders near the stall point. Requires a running dev server (--url). */
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const URL = process.argv[2] || "http://localhost:3000";
 const ZR = Number(process.argv[3] ?? -500); // which gore to probe (CONNECT_Z[0])
@@ -15,7 +16,7 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("pageerror:", e.message));
 // the dev server holds an HMR socket open, so the network never goes idle
-await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
 await page.evaluate(() => {
   const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));

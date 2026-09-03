@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer, { KnownDevices } from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 import sharp from "sharp";
 
 const OUT = path.join(process.cwd(), "docs", "gallery", "img");
@@ -86,7 +87,7 @@ async function withSession(port, seedProfile, body) {
     }
     const url = `http://localhost:${port}`;
     console.log("→ loading", url);
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 120000 });
+    await page.goto(debugUrl(url), { waitUntil: "domcontentloaded", timeout: 120000 });
     await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
     await page.evaluate(() => {
       const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));

@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer, { KnownDevices } from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 import sharp from "sharp";
 
 const PORT = 3211;
@@ -71,7 +72,7 @@ async function newSession(browser, { viewport, seedProfile } = {}) {
       localStorage.setItem("neonx.profile.v3", JSON.stringify(profile));
     }, seedProfile);
   }
-  await page.goto(`http://localhost:${PORT}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(debugUrl(`http://localhost:${PORT}`), { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
   await page.evaluate(() => {
     const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));

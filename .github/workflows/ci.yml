@@ -1,0 +1,41 @@
+# Launch-readiness gate on every push and pull request: types, the committed
+# asset budget, and a production build. No headless smoke here — that is
+# SwiftShader rendering the whole game on a CPU and belongs in renders.yml
+# (manual) or on a laptop, not on every commit.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # puppeteer is a devDependency for the render scripts only; skipping its
+      # Chrome download keeps `npm ci` to seconds here.
+      PUPPETEER_SKIP_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Asset size budget
+        run: node test/size-budget.mjs
+
+      # `npm run build` also runs the prebuild icon render (tools/build-pwa-icons.mjs)
+      - name: Build
+        run: npm run build

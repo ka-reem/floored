@@ -18,6 +18,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer, { KnownDevices } from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 import sharp from "sharp";
 
 const argUrl = process.argv.indexOf("--url");
@@ -130,7 +131,7 @@ await page.emulate(KnownDevices["iPhone 13"]);
 await page.evaluateOnNewDocument(() => {
   localStorage.setItem("neonx.profile.v3", JSON.stringify({ settings: { steerMode: "wheel" } }));
 });
-await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
 await page.evaluate(() => {
   [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"))?.click();

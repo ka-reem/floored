@@ -28,6 +28,7 @@
             [--tier all] [--hitches] [--json out.json]
 */
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 import { appendFileSync } from "node:fs";
 
 const arg = (k, d) => {
@@ -163,7 +164,7 @@ for (const tier of TIERS) {
   const page = await browser.newPage();
   page.__tier = tier;
   await page.setViewport(VIEWPORT[tier]);
-  await page.goto(`${URL}/?tier=${tier}`, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(debugUrl(URL, { tier }), { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
   await page.evaluate(() => {
     const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));

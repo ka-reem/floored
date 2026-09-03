@@ -3,6 +3,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const OUT = process.env.SHOT_DIR;
 mkdirSync(OUT, { recursive: true });
@@ -28,7 +29,7 @@ await page.evaluateOnNewDocument(() => {
     return el;
   };
 });
-await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
 await page.evaluate(() => {
   const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));
