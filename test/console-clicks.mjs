@@ -24,6 +24,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const ART = path.join(process.cwd(), "test", "artifacts");
 mkdirSync(ART, { recursive: true });
@@ -171,7 +172,7 @@ async function main() {
   page.on("pageerror", (e) => errors.push(String(e.message || e)));
 
   console.log("→ loading", URL);
-  await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
 
   await page.evaluate(() => {

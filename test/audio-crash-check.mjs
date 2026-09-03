@@ -16,6 +16,7 @@
 
    Usage: node test/audio-crash-check.mjs --url http://localhost:3141 */
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const argUrl = process.argv.indexOf("--url");
 const URL = argUrl > -1 ? process.argv[argUrl + 1] : "http://localhost:3141";
@@ -37,7 +38,7 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 page.on("pageerror", (e) => errors.push("pageerror: " + String(e.message || e)));
 
-await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
 await page.evaluate(() => {
   const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));

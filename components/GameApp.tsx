@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Game, WIPER_MODE_NAMES, CAM_NAMES } from "@/game/engine";
 import { track, trackDebounced, deviceType } from "@/lib/analytics";
+import { showGfxFail, webglAvailable } from "@/game/gfxfail";
 import { HINT_SHOW_MS, type HintMsg } from "@/game/hints";
 import type { LoadReport } from "@/game/loading";
 import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
@@ -118,6 +119,14 @@ export default function GameApp() {
   /* create engine once */
   useEffect(() => {
     if (gameRef.current || !hostRef.current) return;
+    /* No WebGL (locked-down browser, blocklisted GPU, hardware acceleration
+       off): the renderer would throw inside `new Game()`. Say so on a
+       branded panel instead — game/gfxfail.ts, shared with the engine's
+       context-lost overlay. */
+    if (!webglAvailable()) {
+      showGfxFail(hostRef.current, "nowebgl");
+      return;
+    }
     const profile = loadProfile();
     profileRef.current = profile;
     /* traffic.ts reads rival mode from a live module value rather than from
@@ -679,7 +688,6 @@ export default function GameApp() {
               <b>M</b><span>cockpit mirrors</span>
               <b>R</b><span>rain</span>
               <b>U</b><span>wipers: off / int / lo / hi (rain auto-starts lo; also clickable beside the head unit)</span>
-              <b>T</b><span>time-lapse</span>
               <b>T</b><span>time-lapse: ×150 → ×1500 → off</span>
               <b>V</b><span>dashcam grade (the DASHCAM view forces its own, harder)</span>
               <b>X</b><span>minimap</span>
@@ -688,7 +696,6 @@ export default function GameApp() {
               <b>H</b><span>this help screen</span>
               <b>K</b><span>test mode: extra grip, brakes &amp; power (also in settings; persists)</span>
               <b>O</b><span>photo mode: orbit the car, Space captures a PNG</span>
-              <b>P</b><span>in-dash music: play / pause</span>
               <b>I</b><span>interior light — desktop only (off by default; the cabin is meant to be dark)</span>
               <b>P</b><span>in-dash music: play / pause — desktop only</span>
               <b>, / .</b><span>previous / next piece</span>

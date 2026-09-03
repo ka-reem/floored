@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const ART = path.join(process.cwd(), "test", "artifacts");
 mkdirSync(ART, { recursive: true });
@@ -81,6 +82,14 @@ async function main() {
     if (t === "error") {
       // ignore benign favicon 404s
       if (txt.includes("favicon")) return;
+      /* @vercel/analytics loads its script from va.vercel-scripts.com; on an
+         offline or proxied box that fetch fails with ERR_TUNNEL_CONNECTION_FAILED
+         (or a plain network error) and the game is entirely unaffected. */
+      if (
+        txt.includes("ERR_TUNNEL_CONNECTION_FAILED") ||
+        txt.includes("va.vercel-scripts.com") ||
+        txt.includes("/_vercel/insights/")
+      ) return;
       errors.push(txt);
       console.log("  ⛔ console.error:", txt.slice(0, 300));
     } else if (t === "warning" && !txt.includes("Download the React DevTools")) {
@@ -97,7 +106,7 @@ async function main() {
      HMR websocket open, so the network never goes idle, and under load the wait
      ends with a detached frame instead of a loaded page. The game exposing
      window.__neonx is the real "ready" signal — wait for that. */
-  await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
   await sleep(1200);
   await shot(page, "01-menu");

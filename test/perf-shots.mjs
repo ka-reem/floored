@@ -8,6 +8,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const arg = (k, d) => {
   const i = process.argv.indexOf(k);
@@ -30,7 +31,7 @@ const browser = await puppeteer.launch({
 const page = await browser.newPage();
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e.message || e)));
-await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
 await page.evaluate(() => {
   const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));

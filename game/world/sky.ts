@@ -3,6 +3,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { rand, TAU } from "../util";
 import { skyCanvas, skylineTexF } from "../textures";
 import { worldTierCaps } from "../settings";
+import { DEBUG_HOOKS } from "../debug";
 import { buildAurora, FX_AURORA, type Aurora } from "./aurora";
 import { buildNightClouds, FX_NIGHT_CLOUDS, type NightClouds } from "./nightclouds";
 
@@ -82,8 +83,9 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     /* Live preview handle. The sky is the one thing here a player can't
        audition without a rebuild, so the whole control surface goes on the
        console: __aurora.next() to flick through rolls, .gain to dial
-       brightness, .lock() to keep the one you like. */
-    try {
+       brightness, .lock() to keep the one you like. Dev builds and `?debug`
+       URLs only — see game/debug.ts. */
+    if (DEBUG_HOOKS) try {
       const w = window as unknown as { __aurora?: unknown; __clouds?: unknown };
       w.__aurora = aurora;
       w.__clouds = clouds;

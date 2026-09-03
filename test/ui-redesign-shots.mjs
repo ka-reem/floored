@@ -8,6 +8,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 
 const argUrl = process.argv.indexOf("--url");
 const URL = argUrl > -1 ? process.argv[argUrl + 1] : "http://localhost:3000";
@@ -34,7 +35,7 @@ async function shoot(viewport, isTouch, label, actions) {
     if (m.type() === "error" && !m.text().includes("favicon")) errors.push(`${label}: ${m.text()}`);
   });
   await page.setViewport({ ...viewport, isMobile: isTouch, hasTouch: isTouch });
-  await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120000 });
+  await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 120000 });
   await page.waitForFunction(() => !!window.__neonx, { timeout: 120000 });
   await sleep(500);
   await actions(page);

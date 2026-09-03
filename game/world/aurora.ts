@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { clamp, mulberry32, rrand, rrandi, TAU, type Rng } from "../util";
 import { loadProfile, worldTierCaps } from "../settings";
+import { DEBUG_HOOKS } from "../debug";
 
 /* Procedural aurora curtains, drawn straight onto the sky.
  *
@@ -891,6 +892,7 @@ void main(){
   let skyEnv = 1;
 
   const announce = (r: AuroraRoll) => {
+    if (!DEBUG_HOOKS) return r; // the narration is for the tuning console only
     try {
       const m = (sec: number) => (sec / 60).toFixed(1);
       const up = pinned ? null : nextEpisode(tDark);
@@ -973,7 +975,7 @@ void main(){
     lock() {
       const s = `?aurora=${api.roll.seed}`;
       try {
-        console.log(`add ${s} to the URL to start on this sky every time`);
+        if (DEBUG_HOOKS) console.log(`add ${s} to the URL to start on this sky every time`);
       } catch {
         /* ignore */
       }
