@@ -764,6 +764,26 @@ export function buildScenery(
        The zone's head crosses the splice overrun — every roll happens once
        in wrapped space, emitted at each built copy. */
     {
+      /* EXIT 4's mountain pass (routegraph MTN) climbs THIS strip: its
+         pavement swings out to x ≈ 600 through z ∈ [−1968, −1644], with the
+         cut-face flank 12 m west of it and the bank skirt 5 m east. Nothing
+         in the yard may stand in that footprint — a straddle carrier's
+         10 × 10 m collider used to sit across both lanes at s ≈ 167–181, the
+         dead stop a car met mid-pass with nothing visible in front of it
+         (the carrier's legs stood beside the road; its collider box did
+         not). Every roll below still happens — the rng stream, and so every
+         other same-seed placement, is unchanged — only the emit is skipped.
+         The probe is in canonical z: the pass's stations are, its splice
+         copies are visual only, and the yard is emitted per copy. */
+      const mt = world.routes?.mtn;
+      const onPass = (x: number, z: number, r: number) => {
+        if (!mt) return false;
+        const h = mt.project(x, cor.wrapZ(z), mt.maxHalf + 13 + r);
+        if (!h) return false;
+        const { hwL, hwR } = mt.halfWidths(h.s);
+        const clear = h.lat < 0 ? hwR + 13 : hwL + 6;
+        return Math.abs(h.lat) < clear + r;
+      };
       const CONT: readonly number[] = [0x30424a, 0x4a3a2c, 0x35452f, 0x413138, 0x2c3644];
       // container blocks every ~34 m, rolled in wrapped space
       for (let wz = WHARF.z0 + 16; wz < WHARF.z1 - 12; wz += rrand(rng2, 26, 44)) {
@@ -777,6 +797,7 @@ export function buildScenery(
             stack.push([x + r * 3.1, hh, wz]);
         for (const z of copies(wz)) {
           const gy = terrain.h(x, z);
+          const skip = onPass(x + (rows - 1) * 1.55, z, len / 2 + rows * 1.55 + 1.6);
           for (const [sx, hh] of stack) {
             /* baked warm floodlight: the bucket renders unlit (see the
                material note at the bucket's mesh), so the colour IS the
@@ -789,8 +810,9 @@ export function buildScenery(
               Math.min(1, colC.g * 1.35 * k),
               colC.b * 0.85 * k
             );
-            place(box, colored, sx, gy + 1.3 + hh * 2.6, z, 2.9, 2.55, len, ry, colC);
+            if (!skip) place(box, colored, sx, gy + 1.3 + hh * 2.6, z, 2.9, 2.55, len, ry, colC);
           }
+          if (skip) continue;
           world.colliders.addAabb({
             x0: x - 1.6, x1: x + rows * 3.1 + 1.6, z0: z - len / 2 - 0.4,
             z1: z + len / 2 + 0.4, y0: gy - 1, y1: gy + high * 2.6,
@@ -802,6 +824,7 @@ export function buildScenery(
       for (let wz = WHARF.z0 + 120; wz < WHARF.z1 - 90; wz += rrand(rng2, 240, 330)) {
         const x = rrand(rng2, 586, 616), ch = rrand(rng2, 13, 16);
         for (const z of copies(wz)) {
+          if (onPass(x, z, 8)) continue;
           const gy = terrain.h(x, z);
           for (const dz of [-4.4, 4.4]) {
             place(box, struct, x - 4.6, gy + ch / 2, z + dz, 0.9, ch, 0.9);
@@ -823,6 +846,7 @@ export function buildScenery(
       for (let wz = WHARF.z0 + 40; wz < WHARF.z1 - 20; wz += 105) {
         const x = 568, jz = rrand(rng2, -8, 8);
         for (const z of copies(wz)) {
+          if (onPass(x, z + jz, 2)) continue;
           const gy = terrain.h(x, z + jz);
           place(cyl, struct, x, gy + 8, z + jz, 0.17, 16, 0.17);
           place(box, struct, x, gy + 15.6, z + jz, 2.6, 0.24, 0.24);
