@@ -9,6 +9,9 @@ import type { LoadReport } from "@/game/loading";
 import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import { carPreviewURL } from "@/game/carpreview";
 import {
+  Gantry, NightRoad, SignKP, SignPlate, SignRow, SignRule, SignSep, SignShield, SignTitle,
+} from "@/components/ui/Sign";
+import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
   speedInUnits, syncRivalMode, syncCabinMode, cabinAutoLabel,
   type Profile, type GameSettings, type SpeedUnits,
@@ -293,6 +296,27 @@ export default function GameApp() {
     markRun(); // the next run_end measures from this resume, not from DRIVE
     persist();
   };
+  /* Arrow keys walk the sign's rows on the home screen (Tab still works;
+     Enter/Space activate the focused row natively since each row is a
+     <button>). A window listener rather than onKeyDown on the rows, so the
+     first press works with nothing focused yet — it lands on DRIVE. Mounted
+     only while screen === "main"; the engine's own window key handling is
+     untouched (it ignores arrows unless a drive is running, and this never
+     stops propagation). */
+  useEffect(() => {
+    if (screen !== "main") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const rows = [...document.querySelectorAll<HTMLButtonElement>(".signRoot button.sign-row")];
+      if (!rows.length) return;
+      const ix = rows.indexOf(document.activeElement as HTMLButtonElement);
+      const next = ix < 0 ? 0 : (ix + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length;
+      rows[next].focus();
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [screen]);
   const backToMenu = () => {
     emitRunEnd("exit"); // no-op unless the menu was reached straight from driving
     setFromPause(false);
@@ -501,43 +525,89 @@ export default function GameApp() {
         "ontouchstart" in window && <SteerSlider game={g} />}
 
       {/* ---------- menus ---------- */}
+      {/* Home screen: a blue expressway guide-sign hung on a lit gantry over
+          the dashcam road (the owner's "Blue Route v2" direction; the kit is
+          components/ui/Sign.tsx + app/ui-system.css). The rows are real
+          buttons whose text still carries DRIVE / RIVAL / GARAGE / SETTINGS /
+          CONTROLS — every headless test finds them by textContent. Before the
+          first drive there is no world under the menu (Game.load builds it),
+          so a CSS night road stands in; once loaded, the live scene shows
+          through instead, in whichever camera the player left it. */}
       {screen === "main" && (
-        <div className="menuRoot">
-          <h1 className="menuTitle">NEON EXPRESSWAY</h1>
-          <div className="menuJp">首都高ナイトドライブ</div>
-          <p className="menuSub">a procedurally generated town · elevated expressway · dense traffic</p>
-          <p className="menuSub">
-            car: <b>{getCar(g?.carId || DEFAULT_CAR_ID).name}</b> · paint:{" "}
-            {PAINTS[(g?.paintIx || 0) % PAINTS.length].name} · town seed {g?.seed}
-          </p>
-          <div className="menuBtns">
-            <button className="menuBtn primary" onClick={drive}>▶ &nbsp;DRIVE</button>
-            {/* The same setting the panel carries, surfaced here so the mode
-                is discoverable without going three screens deep. */}
-            <button
-              className="menuBtn"
-              onClick={() => {
-                const p = profileRef.current;
-                if (!p) return;
-                const on = !p.settings.rival;
-                p.settings.rival = on;
-                if (g) {
-                  g.settings.rival = on;
-                  syncRivalMode(g.settings);
-                } else syncRivalMode(p.settings);
-                saveProfile(p);
-                // same event the settings panel emits for this key — the
-                // menu shortcut and the panel row are one setting
-                track("settings_change", { setting: "rival", value: on });
-                rerender();
-              }}
-            >
-              RIVAL 好敵手 — {(g?.settings ?? profileRef.current?.settings)?.rival ? "ON" : "OFF"}
-            </button>
-            <button className="menuBtn" onClick={() => setScreen("garage")}>GARAGE 車庫</button>
-            <button className="menuBtn" onClick={() => setScreen("settings")}>SETTINGS 設定</button>
-            <button className="menuBtn" onClick={() => setScreen("controls")}>CONTROLS 操作</button>
+        <div className="menuRoot signRoot">
+          {!g?.loaded && <NightRoad />}
+          <Gantry />
+          <div className="sign-stack">
+            <SignPlate hangers>
+              <header className="sign-head">
+                <SignShield />
+                <SignTitle jp="首都高ナイトドライブ" en="NEON EXPRESSWAY" />
+                <div className="sign-corner sign-cap" aria-hidden="true">
+                  TOKYO METROPOLITAN
+                  <br />
+                  EXPWY · NIGHT
+                  <br />
+                  <span className="ui-jp" lang="ja">首都高速</span>
+                </div>
+              </header>
+              <SignRule />
+              <nav className="sign-rows" aria-label="Main menu">
+                <SignRow selected glyph="up" jp="本線" en="DRIVE" dist="0.0" onClick={drive} />
+                <SignSep />
+                {/* The same setting the panel carries, surfaced here so the mode
+                    is discoverable without going three screens deep. */}
+                <SignRow
+                  glyph="ne"
+                  jp="好敵手"
+                  en="RIVAL"
+                  badge={(g?.settings ?? profileRef.current?.settings)?.rival ? "ON" : "OFF"}
+                  badgeOn={!!(g?.settings ?? profileRef.current?.settings)?.rival}
+                  dist="1.2"
+                  aria-pressed={!!(g?.settings ?? profileRef.current?.settings)?.rival}
+                  onClick={() => {
+                    const p = profileRef.current;
+                    if (!p) return;
+                    const on = !p.settings.rival;
+                    p.settings.rival = on;
+                    if (g) {
+                      g.settings.rival = on;
+                      syncRivalMode(g.settings);
+                    } else syncRivalMode(p.settings);
+                    saveProfile(p);
+                    // same event the settings panel emits for this key — the
+                    // menu shortcut and the panel row are one setting
+                    track("settings_change", { setting: "rival", value: on });
+                    rerender();
+                  }}
+                />
+                <SignRow glyph="p" jp="車庫" en="GARAGE" dist="0.4" onClick={() => setScreen("garage")} />
+                <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => setScreen("settings")} />
+                <SignRow glyph="nw" jp="操作" en="CONTROLS" dist="3.1" onClick={() => setScreen("controls")} />
+              </nav>
+              {/* landscape-phone stand-in for the plate below: one caption
+                  line inside the board (ui-system.css shows it only there) */}
+              <div className="sign-foot sign-cap faint" aria-hidden="true">
+                <span className="ui-jp" lang="ja">現在の車</span> {getCar(g?.carId || DEFAULT_CAR_ID).name} ·{" "}
+                {PAINTS[(g?.paintIx || 0) % PAINTS.length].name} · TOWN SEED {g?.seed}
+              </div>
+            </SignPlate>
+            {/* supplementary plate: current car, then the old subtitle copy.
+                Two lines on a phone (each clipped with an ellipsis), one
+                run on desktop. */}
+            <div className="sign-plate">
+              <span className="sign-plate-line">
+                <span className="ui-jp" lang="ja">現在の車</span>{" "}
+                <span>
+                  {getCar(g?.carId || DEFAULT_CAR_ID).name} · {PAINTS[(g?.paintIx || 0) % PAINTS.length].name}
+                </span>
+              </span>
+              <span className="sign-plate-line faint">
+                A PROCEDURALLY GENERATED TOWN · ELEVATED EXPRESSWAY · DENSE TRAFFIC · TOWN SEED {g?.seed}
+              </span>
+            </div>
           </div>
+          {/* the kilometre post reads the lifetime distance driven */}
+          <SignKP value={g ? (g.lifetimeStats().dist / 1000).toFixed(1) : "0.0"} />
         </div>
       )}
 
