@@ -208,6 +208,9 @@ export function collidePlayer(
      ramp can leave, and the ramp's own wall OBBs take over — so a car anywhere
      on ramp pavement is exempt for as long as it is still up at deck height. */
   const cor = world.terrain.corridor;
+  /* at deck height AND within the deck's own width plus the apron bulge —
+     deck or paved runoff pocket, the moving east wall below contains it */
+  let onDeckPocket = false;
   if (Math.abs(car.y - cor.centerY(car.z)) < SURFACE_TOL && car.z > cor.ZB0 && car.z < cor.ZB1) {
     const zc = cor.zAt(car.x, car.z);
     const lat = cor.latAt(car.x, car.z);
@@ -220,6 +223,7 @@ export function collidePlayer(
        (route-frame) clamps could never catch. */
     const apron = world.routes && lat > 0 ? world.routes.apronW(zc) : 0;
     const lim = cor.halfWidth(zc) + apron + 0.06 - halfW;
+    onDeckPocket = Math.abs(lat) <= cor.halfWidth(zc) + apron + 0.3;
     const side = lat >= 0 ? 1 : -1;
     let guarded = true;
     if (side < 0) {
@@ -240,12 +244,33 @@ export function collidePlayer(
         if (gp.edgeId !== MOUNTAIN_EDGE && car.z > gp.z0 && car.z < gp.z1 && side === gp.side)
           guarded = false;
       if (guarded) {
-        // …but a hit on MOUNTAIN pavement must not un-guard: through the
-        // gore wedges that pavement lies inside the apron bulge, and turning
-        // the moving wall off there is exactly the hugger hole again
         const sf = world.routes.surfaceAt(car.x, car.z, 1.0, _bySurf);
-        if (sf !== null && sf.edgeId !== MOUNTAIN_EDGE &&
-          Math.abs(sf.y - car.y) < SURFACE_TOL) guarded = false;
+        if (sf !== null && Math.abs(sf.y - car.y) < SURFACE_TOL) {
+          if (sf.edgeId !== MOUNTAIN_EDGE) guarded = false;
+          else if (side > 0) {
+            /* MOUNTAIN pavement. The apron's moving wall used to stay armed
+               here too, on the theory that the road inside the bulge is the
+               hugger hole. It is not — and armed, it was the wall the owner
+               hit: the apron caps and tapers back at 0.35 m/m from the first
+               z where the road's inner edge has left the deck edge, which is
+               ~20 m past the nose, while the road itself is still at deck
+               height (it climbs 3.4 m only ~100 m in) and still swinging out
+               across the deck frame. So from s ≈ 20 to ≈ 100 the deck-frame
+               wall line ran THROUGH the pass's forward lane, and every car
+               that took EXIT 4 was clamped to a dead stop on the road at
+               corLat ≈ hw + apron — the same wall, mirrored, shut the merge
+               end from the pass side. A car INSIDE the road's own pavement
+               (no pad: strictly between its edges) is the road's business —
+               its free-edge clamps below hold it, and the instant it leaves
+               that pavement it is on the apron pocket or the deck and this
+               wall is armed again. That keeps the hugger contained: through
+               the wedge the road's east edge IS the apron's outer edge, so
+               a car sliding out of the road meets the road wall first and
+               the re-armed apron wall a step later. */
+            const { hwL, hwR } = world.routes.mtn.halfWidths(sf.s, _byHw);
+            if (sf.lat <= hwL && sf.lat >= -hwR) guarded = false;
+          }
+        }
       }
     }
     if (guarded && Math.abs(lat) > lim) {
@@ -289,8 +314,27 @@ export function collidePlayer(
        road's rock face / stone parapet share one contract — an analytic wall
        at each FREE edge, none through the shared gore wedges */
     for (const e of world.routes.attached) {
+      /* MOUNTAIN: no free-edge wall for a car on the deck or its runoff
+         apron. The road's west edge stops being "shared" the moment the
+         road's centre is MTN.half outside the deck edge (s ≈ 18 at each
+         gore), and hwR snaps to full width there — while the paved apron
+         pocket still runs from the deck edge to that line and a car taking
+         EXIT 4 at speed is crossing it diagonally. This clamp does not know
+         inside from outside: the car arriving from the pocket sat within
+         WALL_REACH of the line, its velocity relative to the peeling road
+         counted as "outward", and it was reflected — 70 → 7 km/h on the
+         exit, the same wall mirrored on the way in at the merge. A car in
+         the pocket is the deck clamp's (apron-widened, always armed)
+         business; this wall takes over once it is off both pavements. The
+         bypass keeps the wall: its deck clamp is switched OFF through its
+         gores, so the free edge is what stands between a car and the drop.
+         West side (−lat) only — the deck is west of this road at both gores;
+         the east edge stays walled even inside the apron span, so a car's
+         body never hangs over the stone parapet while its centre is still
+         inside the pavement (the deck clamp is exempt there). */
       const bHit = e.project(car.x, car.z, e.maxHalf + 6, _byHit);
       if (!bHit) continue;
+      if (onDeckPocket && e.id === MOUNTAIN_EDGE && bHit.lat < 0) continue;
       const p = e.poseAt(bHit.s, _byPose);
       const surfY = p.y + bHit.lat * p.bank;
       if (Math.abs(car.y - surfY) < SURFACE_TOL) {

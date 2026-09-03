@@ -3949,19 +3949,34 @@ function buildMountainRoad(
       }
     }
 
-    /* the river-side stone parapet, on free hwL edges outside the noses */
+    /* the river-side stone parapet, on free hwL edges outside the noses —
+       and the same wall on the ROCK side through both gore throats, where
+       the edge clamp is already armed (collide.ts walls every free edge) but
+       the cut face has barely begun to rise (rockK ramps in over 50 m): a
+       car cutting the exit early met a hard edge with nothing visible on
+       it. The parapet gives that edge a body, and hands over to the rock
+       once the face is tall enough to read on its own. */
+    const up = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
+    const dn = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
     for (let i = 0; i + 2 < N; i += 2) {
       const a = st[i], e = st[i + 2];
       const sh = mt.sharedSides((a.s + e.s) / 2);
-      if (sh.shL || a.hwL < 0.55 || e.hwL < 0.55) continue;
-      const lo = a.hwL + WALL_T / 2 + 0.06, hi = e.hwL + WALL_T / 2 + 0.06;
-      const a0 = mpt(i, lo - WALL_T / 2), a1 = mpt(i, lo + WALL_T / 2);
-      const b0 = mpt(i + 2, hi - WALL_T / 2), b1 = mpt(i + 2, hi + WALL_T / 2);
-      const up = (p: Vec3): Vec3 => [p[0], p[1] + WALL_H, p[2]];
-      const dn = (p: Vec3): Vec3 => [p[0], p[1] - 0.3, p[2]];
-      wall.quad(dn(a0), dn(b0), up(b0), up(a0));
-      wall.quad(dn(a1), dn(b1), up(b1), up(a1));
-      wall.quad(up(a0), up(b0), up(b1), up(a1));
+      if (!sh.shL && a.hwL >= 0.55 && e.hwL >= 0.55) {
+        const lo = a.hwL + WALL_T / 2 + 0.06, hi = e.hwL + WALL_T / 2 + 0.06;
+        const a0 = mpt(i, lo - WALL_T / 2), a1 = mpt(i, lo + WALL_T / 2);
+        const b0 = mpt(i + 2, hi - WALL_T / 2), b1 = mpt(i + 2, hi + WALL_T / 2);
+        wall.quad(dn(a0), dn(b0), up(b0), up(a0));
+        wall.quad(dn(a1), dn(b1), up(b1), up(a1));
+        wall.quad(up(a0), up(b0), up(b1), up(a1));
+      }
+      if (!sh.shR && a.hwR >= 0.55 && e.hwR >= 0.55 && rockK((a.s + e.s) / 2) < 0.7) {
+        const lo = -(a.hwR + WALL_T / 2 + 0.06), hi = -(e.hwR + WALL_T / 2 + 0.06);
+        const a0 = mpt(i, lo + WALL_T / 2), a1 = mpt(i, lo - WALL_T / 2);
+        const b0 = mpt(i + 2, hi + WALL_T / 2), b1 = mpt(i + 2, hi - WALL_T / 2);
+        wall.quad(dn(a0), dn(b0), up(b0), up(a0));
+        wall.quad(dn(a1), dn(b1), up(b1), up(a1));
+        wall.quad(up(a0), up(b0), up(b1), up(a1));
+      }
     }
 
     /* The gore runoff aprons (routegraph.mtnAprons): the paved pocket the
