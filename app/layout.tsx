@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Overpass, Space_Grotesk, Zen_Kaku_Gothic_New } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
+import PostHogProvider from "@/components/PostHogProvider";
 import "./globals.css";
 import "./ui-system.css";
 
@@ -78,7 +79,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${displayFont.variable} ${signFont.variable} ${signFontJp.variable}`}>
       <body>
-        {children}
+        {/* PostHog product analytics (curated game events + sampled session
+            replay — see lib/analytics.ts). Wraps the page so its mount
+            effect inits the client before the game emits anything. */}
+        <PostHogProvider>{children}</PostHogProvider>
         {/* Vercel Web Analytics: ~1KB, cookieless visitor counting. The
             numbers live in the Vercel dashboard's Analytics tab — the owner
             flips the project-level switch there; without it this no-ops. */}

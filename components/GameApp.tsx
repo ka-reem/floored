@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Game, WIPER_MODE_NAMES } from "@/game/engine";
+import { Game, WIPER_MODE_NAMES, CAM_NAMES } from "@/game/engine";
+import { track, trackDebounced, deviceType } from "@/lib/analytics";
 import { HINT_SHOW_MS, type HintMsg } from "@/game/hints";
 import type { LoadReport } from "@/game/loading";
 import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
@@ -71,6 +72,49 @@ export default function GameApp() {
     toastTimer.current = setTimeout(() => setToast(""), 1600);
   }, []);
 
+  /* ---- analytics: run bookkeeping ----
+     A "run" is a stretch of the playing screen: DRIVE/RESUME marks the
+     session-stat counters, and every way OUT of the playing screen emits
+     one run_end with the delta since the mark. Refs only (the ui callbacks
+     handed to the engine are built once, same reason as screenRef), and
+     both are no-ops until the world is loaded. */
+  const runMark = useRef<{ t: number; d: number; cam: number[] } | null>(null);
+  const markRun = useCallback(() => {
+    const g = gameRef.current;
+    if (g?.loaded) runMark.current = { t: g.sessionStats.driveT, d: g.sessionStats.dist, cam: [...g.cameraSeconds] };
+  }, []);
+  const emitRunEnd = useCallback((reason: "pause" | "help" | "exit") => {
+    const g = gameRef.current, m = runMark.current;
+    if (!g || !m || !g.loaded) return;
+    const s = g.sessionStats;
+    const secs = s.driveT - m.t, dist = s.dist - m.d;
+    /* per-camera seconds for THIS run: which view people actually drive in.
+       camera_main is the mode that held the most of the run. */
+    const camNow = [...g.cameraSeconds];
+    const camSecs: Record<string, number> = {};
+    let camMain = "", camMax = -1;
+    camNow.forEach((v, i) => {
+      const d = Math.round(v - (m.cam[i] ?? 0));
+      camSecs["camera_seconds_" + CAM_NAMES[i].toLowerCase()] = d;
+      if (d > camMax) { camMax = d; camMain = CAM_NAMES[i]; }
+    });
+    runMark.current = { t: s.driveT, d: s.dist, cam: camNow };
+    if (secs < 1) return; // Esc a beat after resuming is not a run worth a row
+    track("run_end", {
+      reason,
+      seconds_played: Math.round(secs),
+      distance_m: Math.round(dist),
+      camera_main: camMain,
+      ...camSecs,
+      /* session-scope rollups, not per-run: topSpeed and the counters are
+         the engine's session accumulator (Game.sessionStats) */
+      top_speed_mph: Math.round(s.topSpeed * 2.236936),
+      session_crashes: s.crashes,
+      session_near_misses: s.nearMisses,
+      session_laps: s.laps,
+    });
+  }, []);
+
   /* create engine once */
   useEffect(() => {
     if (gameRef.current || !hostRef.current) return;
@@ -99,6 +143,7 @@ export default function GameApp() {
         const s = screenRef.current;
         if (s === "playing") {
           gameRef.current?.setRunning(false);
+          emitRunEnd("pause");
           setFromPause(true);
           setScreen("paused");
         } else if (s === "paused") {
@@ -147,6 +192,7 @@ export default function GameApp() {
       helpRequest: () => {
         if (screenRef.current === "playing") {
           gameRef.current?.setRunning(false);
+          emitRunEnd("help");
           setFromPause(true);
           setScreen("controls");
         } else if (screenRef.current === "controls" && fromPauseRef.current) {
@@ -188,6 +234,7 @@ export default function GameApp() {
   const drive = useCallback(async () => {
     const g = gameRef.current;
     if (!g) return;
+    const coldStart = !g.loaded; // whether this press pays for the world build
     /* Before anything asynchronous: iOS only unlocks an AudioContext created
        inside the gesture itself, and every line below this one is a task or
        more removed from the tap. */
@@ -218,11 +265,26 @@ export default function GameApp() {
     g.setRunning(true);
     setFromPause(false);
     setScreen("playing");
+    /* the funnel's anchor event: main menu → behind the wheel. device is
+       also a super property; explicit here because game_start is the row
+       people segment first. */
+    track("game_start", {
+      device: deviceType(),
+      graphics_tier: g.renderTier,
+      graphics_preset: g.settings.preset,
+      camera: CAM_NAMES[g.camMode],
+      car: g.carId,
+      paint: PAINTS[g.paintIx % PAINTS.length].name,
+      seed: g.seed,
+      cold_start: coldStart,
+    });
+    markRun();
     persist();
-  }, [persist]);
+  }, [persist, markRun]);
   const resume = () => {
     gameRef.current?.setRunning(true);
     setScreen("playing");
+    markRun(); // the next run_end measures from this resume, not from DRIVE
     persist();
   };
   /* Arrow keys walk the sign's rows on the home screen (Tab still works;
@@ -247,6 +309,7 @@ export default function GameApp() {
     return () => window.removeEventListener("keydown", onKey);
   }, [screen]);
   const backToMenu = () => {
+    emitRunEnd("exit"); // no-op unless the menu was reached straight from driving
     setFromPause(false);
     setScreen("main");
     /* Leaving for the menu is how a drive ends — bank it. resume() and
@@ -258,6 +321,12 @@ export default function GameApp() {
     if (fromPause && sub) setScreen("paused");
     else setScreen("main");
   };
+
+  /* analytics: one screen_view per menu screen entered. "playing" is not a
+     menu — that transition is game_start/run_end territory above. */
+  useEffect(() => {
+    if (screen !== "playing") track("screen_view", { screen });
+  }, [screen]);
 
   const g = gameRef.current;
   const playing = screen === "playing";
@@ -392,6 +461,7 @@ export default function GameApp() {
           onPointerDown={(e) => {
             e.stopPropagation();
             gameRef.current?.setRunning(false);
+            emitRunEnd("pause");
             setFromPause(true);
             setScreen("paused");
           }}
@@ -495,6 +565,9 @@ export default function GameApp() {
                       syncRivalMode(g.settings);
                     } else syncRivalMode(p.settings);
                     saveProfile(p);
+                    // same event the settings panel emits for this key — the
+                    // menu shortcut and the panel row are one setting
+                    track("settings_change", { setting: "rival", value: on });
                     rerender();
                   }}
                 />
@@ -1316,6 +1389,18 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
   const [carId, setCarId] = useState(() => getCar(game.carId).id);
   const [paintIx, setPaintIx] = useState(game.paintIx);
   const sel = (id: string, pi: number) => {
+    // sel() is the single door to game.setCar (see the locked-card note
+    // below), so a diff here sees every real change and nothing twice
+    if (id !== carId) track("garage_car", { car: id });
+    if (pi !== paintIx) {
+      const p = PAINTS[pi % PAINTS.length];
+      track("garage_paint", {
+        paint: p.name,
+        finish: p.finish,
+        hex: "#" + p.hex.toString(16).padStart(6, "0"),
+        car: id,
+      });
+    }
     setCarId(id);
     setPaintIx(pi);
     game.setCar(id, pi);
@@ -1434,12 +1519,36 @@ function SettingsPanel({
 }) {
   const [, force] = useState(0);
   const upd = (fn: (s: GameSettings) => void) => {
+    /* analytics: shallow snapshot for the key diff below — every row funnels
+       through upd(), so instrumenting here covers the whole panel and any
+       row added later, with no per-row wiring to forget. */
+    const before: Record<string, unknown> = { ...game.settings };
     fn(game.settings);
     game.applySettings(game.settings);
     // one call covers every row, so a new rival toggle can never be wired up
     // and then forgotten here
     syncRivalMode(game.settings);
     syncCabinMode(game.settings);
+    const after = game.settings as unknown as Record<string, unknown>;
+    let changed = Object.keys(after).filter((k) => after[k] !== before[k]);
+    // a preset flip rewrites its derived keys too; the choice was the preset
+    if (changed.includes("preset")) changed = ["preset"];
+    for (const k of changed) {
+      const v = after[k] as string | number | boolean;
+      if (k === "steerMode") {
+        // its own curated event: which steering scheme mobile players pick
+        // is a top-level question, not a generic settings row
+        track("mobile_steer_mode", { mode: String(v), device: deviceType() });
+      } else {
+        /* debounced per key: range sliders fire onChange on every tick of a
+           drag, and the value worth keeping is the one it settles on */
+        trackDebounced("settings_change:" + k, "settings_change", {
+          setting: k,
+          value: v,
+          previous: before[k] as string | number | boolean,
+        });
+      }
+    }
     force((n) => n + 1);
   };
   const s = game.settings;
@@ -1647,6 +1756,8 @@ function SettingsPanel({
                  default. */
               syncRivalMode(game.settings);
               syncCabinMode(game.settings);
+              // one event, not a diff of every key the reset touched
+              track("settings_change", { setting: "reset_defaults", value: true });
               force((n) => n + 1);
             }}
           >

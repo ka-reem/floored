@@ -1,5 +1,6 @@
 import { rr, drawBackPill } from "./carscreen";
 import type { ScreenAction } from "./carscreen";
+import { track } from "../lib/analytics";
 
 /* GAMES pane for the head unit — tic-tac-toe against the car.
 
@@ -137,6 +138,13 @@ function settle(who: Cell, line: number[] | null) {
   if (who === 1) st.tally.w++;
   else if (who === 2) st.tally.l++;
   else st.tally.d++;
+  /* one event per finished game — settle() is the single resolution point
+     both sides share, so this can never double-count */
+  track("ttt_game", {
+    result: who === 1 ? "win" : who === 2 ? "loss" : "draw",
+    wins: st.tally.w, losses: st.tally.l, draws: st.tally.d,
+    player_opened: st.playerOpens,
+  });
 }
 
 /** Drop a mark, resolve the game if that ended it, otherwise pass the turn.

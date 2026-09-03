@@ -39,6 +39,7 @@ import { bindGameTally, gameClick, gameTally } from "./consolegame";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap, type MiniMapOpts } from "./minimap";
+import { track, trackThrottled, registerSuper } from "../lib/analytics";
 
 const WX_SVG = (body: string) =>
   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">${body}</svg>`;
@@ -306,7 +307,7 @@ const HORN_MIN_S = 0.11;
 const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3, CAM_CONSOLE = 4;
 const CAM_BACKSEAT = 5;
 const CAM_COUNT = 6;
-const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE", "BACKSEAT"];
+export const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE", "BACKSEAT"];
 /* CYCLE ORDER IS NOT NUMERIC ORDER, and the split is deliberate.
 
    AGENTS.md requires the dashcam to be LAST in the cycle — it is the view the
@@ -1265,6 +1266,7 @@ export class Game {
     else if (this.wipeDir === 0) this.wipeWait = 0; // sweep NOW, not after a stale INT pause
     this.audio.stalkClick();
     this.ui.toast("WIPERS " + WIPER_MODE_NAMES[this.wiperMode]);
+    track("wipers_toggle", { mode: WIPER_MODE_NAMES[this.wiperMode], rain: this.rain });
   }
 
   /** Toggle the rear-view's electrochromic dim (clicking the glass itself).
@@ -1718,6 +1720,11 @@ export class Game {
     crashes: 0, laps: 0, mtnRuns: 0,
     routeT: 0, mtnOn: false, mtnLo: 0, mtnHi: 0, mtnOffT: 0,
   };
+  /** Seconds of running time spent in each camera mode this session,
+      indexed like CAM_NAMES. Analytics only (run_end reports the per-run
+      delta) — which view people actually DRIVE in, not just switch to. */
+  private camT: number[] = new Array(CAM_COUNT).fill(0);
+  get cameraSeconds(): readonly number[] { return this.camT; }
   /** Lifetime stats as loaded from the profile — a COPY, never the profile's
       own object, so lifetimeStats() (seed + session, recomputed per call) is
       idempotent however many times persist() writes it back. */
@@ -1828,6 +1835,10 @@ export class Game {
     // has to spin up a throwaway canvas context of its own
     this.renderTier = resolveRenderTier(this.settings, this.isTouch, this.renderer.getContext());
     this.tierCaps = TIER_CAPS[this.renderTier];
+    /* analytics super property: every event from this session carries the
+       hardware class the game actually ran at (re-registered on a manual
+       override in applySettings) */
+    registerSuper({ tier: this.renderTier });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, this.tierCaps.dprCap));
     this.renderer.setSize(innerWidth, innerHeight);
     this.renderer.toneMapping = THREE.NoToneMapping; // manual ACES in the composite pass
@@ -2572,6 +2583,7 @@ export class Game {
     if (k === "c") {
       this.camMode = nextCam(this.camMode);
       this.ui.toast(CAM_NAMES[this.camMode]);
+      track("camera_change", { camera: CAM_NAMES[this.camMode], source: "key" });
     }
     if (k === "l") {
       this.car.lightsUser = !this.car.lightsUser;
@@ -2681,6 +2693,7 @@ export class Game {
       this.mmapZoom = !this.mmapZoom;
       this.settings.mmapZoom = this.mmapZoom;
       this.ui.toast("MAP " + (this.mmapZoom ? "WHOLE LOOP" : "CLOSE-UP"));
+      track("minimap_zoom", { zoom: this.mmapZoom ? "loop" : "near" });
     }
     /* In-dash music transport. P / , / . are the only free keys left that map
        to the convention people already have in their fingers (P for play-
@@ -3162,6 +3175,9 @@ export class Game {
       read, because the whole point is to catch a press the per-frame read
       never sees. Idempotent: re-arming mid-honk just refreshes the floor. */
   private armHorn() {
+    /* Throttled: every press edge (key, puck, wheel hub) lands here, and a
+       "beep beep beep" burst is one use of the horn, not three events. */
+    trackThrottled("horn_used", undefined, 8000);
     this.hornMinT = HORN_MIN_S;
   }
 
@@ -3248,6 +3264,7 @@ export class Game {
       camBtn.addEventListener("pointerdown", () => {
         this.camMode = nextCam(this.camMode);
         this.ui.toast(CAM_NAMES[this.camMode]);
+        track("camera_change", { camera: CAM_NAMES[this.camMode], source: "touch" });
       });
   }
 
@@ -3321,6 +3338,7 @@ export class Game {
     cam: () => {
       this.camMode = nextCam(this.camMode);
       this.ui.toast(CAM_NAMES[this.camMode]);
+      track("camera_change", { camera: CAM_NAMES[this.camMode], source: "gamepad" });
     },
     lights: () => {
       this.car.lightsUser = !this.car.lightsUser;
@@ -3458,6 +3476,7 @@ export class Game {
     // change has to land on the same frame the settings panel applies it
     this.renderTier = resolveRenderTier(s, this.isTouch, this.renderer.getContext());
     this.tierCaps = TIER_CAPS[this.renderTier];
+    registerSuper({ tier: this.renderTier });
     // a tier flip changes the mirror/reflection RT policy even when the pixel
     // ratio happens not to move — force the target rebuild path below
     if (this.post.setMobile(this.tierCaps.mirrorHalf)) this.lastPR = -1;
@@ -5233,6 +5252,7 @@ export class Game {
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
       this.photoShots++;
       this.ui.toast("SAVED " + name);
+      track("photo_taken", { session_shot: this.photoShots });
     }, "image/png");
   }
 
@@ -5651,6 +5671,7 @@ export class Game {
   private statsUpdate(dt: number) {
     const st = this.stats;
     const sp = Math.abs(this.car.u);
+    this.camT[this.camMode] += dt;
     if (sp > STATS.moveFloor) {
       st.dist += sp * dt;
       st.driveT += dt;
