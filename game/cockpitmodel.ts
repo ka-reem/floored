@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
-import type { Cockpit } from "./cockpit";
+import type { Cockpit, SideGlassFit } from "./cockpit";
 
 /* Swaps an imported interior in over the procedural one.
 
@@ -255,6 +255,135 @@ export function attachCockpitModel(
       );
     })
     .catch((e) => fail("manifest failed to load", e));
+}
+
+/* ---------------------------------------------------------- door mirrors -- */
+
+/** What makes a `sideMirror` part the mirror PLATE rather than the housing
+    around it: flat to within this (metres, along its own normal)... */
+const PLATE_MAX_THICK = 0.004;
+/** ...and at least this wide in both in-plane directions. Rules out the
+    signal lens strips (14 cm x 1.5 cm) and the little sensor squares (1 cm)
+    while a real mirror glass (this donor's is 17 x 11 cm) clears it easily. */
+const PLATE_MIN_SPAN = 0.06;
+/** Two outline points closer than this are one point: the plate's front and
+    back faces both contribute a boundary loop, and they sit ~1.5 mm apart. */
+const PLATE_DEDUPE = 0.0015;
+
+/** Fit for one side's door-mirror glass, measured off the donor's own mirror
+    plate — or null when no part of the role reads as a plate on that side.
+
+    The plate is identified by geometry, never by name: among the role's parts,
+    the vertices on side `s` of a part that lie in one plane (thinnest axis
+    under PLATE_MAX_THICK) and span a mirror's worth of that plane. Its
+    boundary loop — every edge with a single triangle on it — is the outline
+    the glass takes, and the plane's normal is the glass's aim. The Volvo's
+    "chrome bezel" is exactly this: not a ring but a filled plate with one
+    boundary loop, which is what made the old inscribed rectangle wrong.
+
+    Everything is in cockpit-local metres: `m.matrix` is already cockpit-local
+    (see wire()) and `scale` is the donor scene's counter-scale. */
+function platePlane(m: THREE.Mesh, s: 1 | -1, scale: THREE.Vector3): { fit: SideGlassFit; area: number } | null {
+  const geo = m.geometry as THREE.BufferGeometry;
+  const idx = geo.index;
+  const pos = geo.getAttribute("position");
+  if (!idx || !pos) return null;
+  const P: THREE.Vector3[] = [];
+  const on: boolean[] = [];
+  const c = new THREE.Vector3();
+  let n0 = 0;
+  for (let i = 0; i < pos.count; i++) {
+    const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(m.matrix).multiply(scale);
+    P.push(v);
+    const ok = Math.sign(v.x) === s;
+    on.push(ok);
+    if (ok) { c.add(v); n0++; }
+  }
+  if (n0 < 8) return null;
+  c.divideScalar(n0);
+  /* covariance, and its smallest-eigenvalue direction by power iteration on
+     (trace*I - C): the same numbers a PCA would give, without a solver */
+  const C = [0, 0, 0, 0, 0, 0]; // xx xy xz yy yz zz
+  const d = new THREE.Vector3();
+  for (let i = 0; i < P.length; i++) {
+    if (!on[i]) continue;
+    d.copy(P[i]).sub(c);
+    C[0] += d.x * d.x; C[1] += d.x * d.y; C[2] += d.x * d.z;
+    C[3] += d.y * d.y; C[4] += d.y * d.z; C[5] += d.z * d.z;
+  }
+  const tr = C[0] + C[3] + C[5];
+  const M = [tr - C[0], -C[1], -C[2], -C[1], tr - C[3], -C[4], -C[2], -C[4], tr - C[5]];
+  const n = new THREE.Vector3(0.3, 0.1, 0.9);
+  for (let k = 0; k < 60; k++) {
+    n.set(M[0] * n.x + M[1] * n.y + M[2] * n.z, M[3] * n.x + M[4] * n.y + M[5] * n.z, M[6] * n.x + M[7] * n.y + M[8] * n.z);
+    if (n.lengthSq() < 1e-30) return null;
+    n.normalize();
+  }
+  if (n.z < 0) n.negate(); // forward, the convention placeSideGlass wants
+  const u = new THREE.Vector3(n.z, 0, -n.x).normalize();
+  const v = new THREE.Vector3().crossVectors(n, u);
+  let du0 = Infinity, du1 = -Infinity, dv0 = Infinity, dv1 = -Infinity, dn0 = Infinity, dn1 = -Infinity;
+  for (let i = 0; i < P.length; i++) {
+    if (!on[i]) continue;
+    d.copy(P[i]).sub(c);
+    const a = d.dot(u), b = d.dot(v), e = d.dot(n);
+    du0 = Math.min(du0, a); du1 = Math.max(du1, a);
+    dv0 = Math.min(dv0, b); dv1 = Math.max(dv1, b);
+    dn0 = Math.min(dn0, e); dn1 = Math.max(dn1, e);
+  }
+  if (dn1 - dn0 > PLATE_MAX_THICK || du1 - du0 < PLATE_MIN_SPAN || dv1 - dv0 < PLATE_MIN_SPAN) return null;
+
+  /* boundary loop: edges used by exactly one triangle, on this side only */
+  const count = new Map<number, number>();
+  const key = (a: number, b: number) => (a < b ? a * 1048576 + b : b * 1048576 + a);
+  for (let i = 0; i + 2 < idx.count; i += 3) {
+    const a = idx.getX(i), b = idx.getX(i + 1), e = idx.getX(i + 2);
+    if (!on[a] || !on[b] || !on[e]) continue;
+    for (const k of [key(a, b), key(b, e), key(e, a)]) count.set(k, (count.get(k) ?? 0) + 1);
+  }
+  const rim = new Set<number>();
+  for (const [k, cnt] of count) if (cnt === 1) { rim.add(Math.floor(k / 1048576)); rim.add(k % 1048576); }
+  if (rim.size < 6) return null;
+  /* outline in the plate frame about the rim's bbox centre (the same centre
+     convention cockpit.ts's measured default uses), walked by angle — the
+     plate is star-shaped about its centre, so that IS its boundary order —
+     with the back face's twin of each point dropped */
+  const pts: [number, number][] = [];
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const i of rim) {
+    d.copy(P[i]).sub(c);
+    const a = d.dot(u), b = d.dot(v);
+    pts.push([a, b]);
+    u0 = Math.min(u0, a); u1 = Math.max(u1, a); v0 = Math.min(v0, b); v1 = Math.max(v1, b);
+  }
+  const uc = (u0 + u1) / 2, vc = (v0 + v1) / 2;
+  const ang = pts.map(([a, b]) => ({ a: a - uc, b: b - vc, t: Math.atan2(b - vc, a - uc) })).sort((p, q) => p.t - q.t);
+  const outline: [number, number][] = [];
+  for (const q of ang) {
+    const last = outline[outline.length - 1];
+    if (last && Math.hypot(last[0] - q.a, last[1] - q.b) < PLATE_DEDUPE) continue;
+    outline.push([q.a, q.b]);
+  }
+  if (outline.length < 6) return null;
+  /* the glass covers the face NEAREST the driver (least depth along n) */
+  const centre = c.clone().addScaledVector(u, uc).addScaledVector(v, vc).addScaledVector(n, dn0);
+  return { fit: { centre, normal: n, outline }, area: (u1 - u0) * (v1 - v0) };
+}
+
+/** Re-fit both door glasses to the donor's mirror plates — see platePlane.
+    Largest plate wins a side; a side with none keeps cockpit.ts's default. */
+function fitDoorMirrors(cockpit: Cockpit, parts: THREE.Object3D[], scale: THREE.Vector3) {
+  for (const s of [1, -1] as const) {
+    let best: { fit: SideGlassFit; area: number } | null = null;
+    for (const o of parts) {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) continue;
+      const r = platePlane(m, s, scale);
+      if (r && (!best || r.area > best.area)) best = r;
+    }
+    if (best) cockpit.fitSideMirror(s, best.fit);
+    else console.warn(`[cockpitmodel] no door-mirror plate found on side ${s > 0 ? "L" : "R"}; keeping the built-in glass`);
+  }
 }
 
 function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModelHandle {
@@ -636,6 +765,21 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
   scene.add(fill);
 
   const setFillLight = (k: number) => { fill.intensity = DONOR_FILL * k; };
+
+  /* --- door mirrors ------------------------------------------------------ */
+
+  /* Our RT-fed door glasses take the shape and plane of the donor's own
+     mirror plates. The `sideMirror` role is a bag of parts (this donor brings
+     seven: cap, base, signal lenses, sensors, a chrome plate) and the plate is
+     found by what it is, not what it is called — see platePlane. The glass
+     was an inscribed rectangle that neither fit the plate's trapezoid nor
+     covered it, which is the "squares that don't fit inside the mirrors"
+     report; see SIDE_GLASS_OUTLINE in cockpit.ts. The parts stay visible:
+     the plate is what the glass is drawn over, 1 mm proud. Fail-soft — a
+     side with no plate keeps cockpit.ts's default, which is the PROCEDURAL
+     cabin's placement (a good 10 cm above this donor's plate, over its own
+     belt rail), so the warning below is worth acting on. */
+  fitDoorMirrors(cockpit, byRole("sideMirror"), scene.scale);
 
   /* --- attach ------------------------------------------------------------- */
 
