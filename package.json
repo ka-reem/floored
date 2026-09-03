@@ -10,7 +10,8 @@
     "start": "next start",
     "lint": "next lint",
     "smoke": "node test/smoke.mjs",
-    "engine-rpm": "node test/engine-rpm-check.mjs"
+    "engine-rpm": "node test/engine-rpm-check.mjs",
+    "qa:ui": "node test/ui-qa.mjs"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
