@@ -899,6 +899,12 @@ const CABIN_VIBE = { amp: 0.65, pow: 2, slip: 1 };
      cannot overshoot and cannot ring. Take these out and the camera becomes a
      rigid boom: every kerb strike and every steering input is transmitted to
      the frame at full amplitude, which is the opposite of what was asked for.
+     They act on the RESIDUAL only: the car's own displacement is fed forward
+     into both points before they ease (the FEED-FORWARD block in the chase
+     branch), so forward motion never builds a lag. It used to — a lag of
+     v/k that at speed dragged the aim point back past the camera, which is
+     the "points down, then shakes" report, and the one genuine oscillator
+     left in this branch after the spring below was zeroed.
    - the trail-length clamps, the minimum radius, and the terrain height floor.
      Those stop the camera stretching away at speed, cutting through the car
      mid-swing, and sinking into the deck.
@@ -1640,6 +1646,15 @@ export class Game {
   private amb: THREE.AmbientLight;
   private chasePos = new THREE.Vector3();
   private lookPos = new THREE.Vector3();
+  /* Where the car was on the last chase frame — the FEED-FORWARD reference,
+     see updateCamera(). chasePos/lookPos are carried along by the car's own
+     displacement before they ease, so the eases only ever act on the
+     residual (heading changes, bumps) and never on plain forward motion.
+     `chaseRefOk` false means there is no valid reference (fresh entry, reset,
+     teleport, respawn): snap instead of carrying a stale one. Every seed
+     site that writes chasePos directly clears it. */
+  private chaseRef = new THREE.Vector3();
+  private chaseRefOk = false;
   // camMode as of the last updateCamera() call — lets the chase branch detect
   // a fresh switch into chase mode and snap instead of easing from whatever
   // stale position chasePos/lookPos were left at while another mode was active
@@ -1925,6 +1940,7 @@ export class Game {
         this.car.wvz = 0;
         this.chasePos.set(this.car.x - Math.sin(this.car.h) * 4.4, this.car.y + 2.15, this.car.z - Math.cos(this.car.h) * 4.4);
         this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
+        this.chaseRefOk = false;
       },
       setCam: (i: number) => (this.camMode = i % CAM_COUNT),
       setInput: (o: Partial<DriverInput> | null) => (this.debug.override = o),
@@ -1945,6 +1961,7 @@ export class Game {
         this.car.wvz = 0;
         this.chasePos.set(p.x - Math.sin(p.h) * 4.4, p.y + 2.15, p.z - Math.cos(p.h) * 4.4);
         this.lookPos.set(p.x, p.y + 0.95, p.z);
+        this.chaseRefOk = false;
       },
       // derived from the tunnel itself, so it still lands on the approach if
       // the mouth ever moves — 80 m out is clear of the fade but close enough
@@ -1971,6 +1988,7 @@ export class Game {
         this.car.wvz = 0;
         this.chasePos.set(p.x - Math.sin(h) * 4.4, p.y + 2.15, p.z - Math.cos(h) * 4.4);
         this.lookPos.set(p.x, p.y + 0.95, p.z);
+        this.chaseRefOk = false;
       },
       /* Drop the car onto the mountain road at arclength s, in lane (0 =
          forward/rock side, 1 = oncoming/river side), at speed. */
@@ -1991,6 +2009,7 @@ export class Game {
         this.car.wvz = 0;
         this.chasePos.set(p.x - Math.sin(h0) * 4.4, p.y + 2.15, p.z - Math.cos(h0) * 4.4);
         this.lookPos.set(p.x, p.y + 0.95, p.z);
+        this.chaseRefOk = false;
       },
       state: () => ({
         x: this.car.x, y: this.car.y, z: this.car.z, h: this.car.h,
@@ -2277,6 +2296,7 @@ export class Game {
           this.buildRig();
           this.chasePos.set(this.car.x, this.car.y + 2.15, this.car.z - 7);
           this.lookPos.set(this.car.x, this.car.y + 0.95, this.car.z);
+          this.chaseRefOk = false;
           // re-run now that mats exists: the constructor's call could only
           // reach the renderer/post half of it (see applySettings)
           this.applySettings(this.settings);
@@ -3757,6 +3777,7 @@ export class Game {
     this.pitchVis = 0;
     this.chasePos.set(car.x - Math.sin(car.h) * 4.4, car.y + 2.15, car.z - Math.cos(car.h) * 4.4);
     this.lookPos.set(car.x, car.y + 0.95, car.z);
+    this.chaseRefOk = false;
   }
 
   /* ---------------- per-frame systems ---------------- */
@@ -3857,6 +3878,7 @@ export class Game {
     if (this.loops > this.stats.laps) this.stats.laps = this.loops;
     this.chasePos.z += dz;
     this.lookPos.z += dz;
+    this.chaseRef.z += dz;
     this.camera.position.z += dz;
     this.rearCam.position.z += dz;
     /* Traffic needs no fix-up: its corridor cars track `s` in the canonical
@@ -5286,9 +5308,49 @@ export class Game {
       // in cockpit/hood view they're stale (wrong height after an elevation
       // change, wrong lateral offset after turns) — easing from that on
       // re-entry reads as the camera diving before it settles. Snap instead.
-      const freshEntry = this.lastCamMode !== 0;
+      const freshEntry = this.lastCamMode !== 0 || !this.chaseRefOk;
       const kc = this.chaseKnob();
       const cfx = this.chaseFx();
+      /* FEED-FORWARD: carry the rig along by the car's own displacement since
+         the last frame BEFORE anything eases, so the eases below only ever
+         act on the residual — a heading change, a bump — and never on plain
+         forward motion.
+
+         "The car in third person when it speeds up, the camera points down
+         and then it shakes." Both halves came from one thing: the position
+         and aim eases were first-order lags on WORLD points, and a
+         first-order lag chasing a target that moves at v settles v/k behind
+         it. The trail clamp below caught the camera (dist + 1.2 m), but
+         nothing caught the aim point: at 9/s it fell 1 m behind the car for
+         every 9 m/s, so from 2.8 m past the car at rest it was ON the car at
+         100 km/h and 3 m BEHIND it at 200 — 2.5 m in front of a camera that
+         sits 1.2 m higher, so the camera was looking down at its own feet.
+         Traced at a uniform 60 fps (test/chase-trace.mjs): 9.7 deg down at
+         rest, 12.5 at 100 km/h, 26.4 at 204. And once the aim point was that
+         close, the physics stepping a whole number of 1/120 s substeps
+         against a continuous camera dt turned sub-metre along-track jitter
+         into a per-frame pitch delta: same trace with dt alternating 1/40 and
+         1/120 s (a stuttering browser), the pitch changed sign every single
+         frame at 60 Hz, 0.23 deg peak. That was the shake.
+
+         With the displacement fed forward the steady state is exact at any
+         speed and any frame rate — the rig is rigid with the car under
+         uniform motion, and the look-down is the geometry's 9.7 deg at 0 km/h
+         and at 200 — while the 5.5/s and 9/s eases still filter what they
+         were kept for (see CHASE_FX): the swing on a heading change, and the
+         road rising or falling under the car. Traced after: see the numbers
+         in the commit that added this block. */
+      if (!freshEntry) {
+        const mx = car.x - this.chaseRef.x, my = car.y - this.chaseRef.y, mz = car.z - this.chaseRef.z;
+        this.chasePos.x += mx;
+        this.chasePos.y += my;
+        this.chasePos.z += mz;
+        this.lookPos.x += mx;
+        this.lookPos.y += my;
+        this.lookPos.z += mz;
+      }
+      this.chaseRef.set(car.x, car.y, car.z);
+      this.chaseRefOk = true;
       /* The speed pull-back — the camera easing away from the car as it winds
          up — is an EFFECT, not the camera following, and it is off (fx 0). It
          never shook, but it is the same class of thing as the FOV speed kick,
@@ -5308,9 +5370,10 @@ export class Game {
       this.tmpV.set(car.x + ax * dist, car.y + kc.height, car.z + az * dist);
       if (freshEntry) this.chasePos.copy(this.tmpV);
       else this.chasePos.lerp(this.tmpV, 1 - Math.exp(-5.5 * dt));
-      // smoothing lags a moving target by ~speed/5.5 m; cap the trail so the
-      // camera can't drift arbitrarily far behind at high speed, and keep a
-      // minimum radius so the mid-swing shortcut never clips through the car
+      // the ease no longer lags with speed (fed forward above), so this only
+      // bounds transients now: cap the trail so a hard heading change can't
+      // leave the camera stretched far behind, and keep a minimum radius so
+      // the mid-swing shortcut never clips through the car
       const dxC = this.chasePos.x - car.x, dzC = this.chasePos.z - car.z;
       const hd = Math.hypot(dxC, dzC), maxD = dist + 1.2, minD = dist * 0.6;
       if (hd > maxD) {
