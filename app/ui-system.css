@@ -279,7 +279,8 @@
   gap: calc(18 * var(--su));
   width: min(calc(1180 * var(--su)), calc(100% - 2 * var(--sign-inset)));
   margin: calc(98 * var(--su)) auto 0;
-  padding-bottom: calc(150 * var(--su));
+  /* breathing room under the plate, sized so the root never scrolls */
+  padding-bottom: calc(40 * var(--su));
   animation: signIn 220ms var(--ease) both;
 }
 @keyframes signIn {
@@ -628,6 +629,11 @@
 .sign-plate .faint {
   opacity: 0.8;
 }
+/* one-line caption inside the board; only the landscape-compact layout
+   shows it (in place of the outside plate) */
+.sign-foot {
+  display: none;
+}
 .sign-kp {
   position: absolute;
   right: calc(96 * var(--su));
@@ -839,13 +845,6 @@
   }
 }
 
-/* ---------- short viewports (landscape phones) ---------- */
-@media (max-height: 480px) {
-  .sign-kp,
-  .sign-kp-post {
-    display: none;
-  }
-}
 
 /* ---------- phones (≤700px): post-mounted board filling the width ----------
    From the designer's HomePhone screen: a top bar and one full-height post
@@ -1069,5 +1068,185 @@
     right: calc(52px + var(--sa-right));
     width: 6px;
     height: calc(46px + var(--sa-bottom));
+  }
+}
+
+/* ---------- landscape phones (≤480px tall): compact, nothing off-screen ----------
+   The manifest declares landscape, so this is the primary phone orientation
+   and the whole sign has to FIT: a thin gantry bar, one-line header (small
+   shield · JP caption · title), five 44px rows, the plate reduced to one
+   caption line inside the board, no KP post. Comes after the ≤700px block
+   on purpose — at 667×375 both match and this one must win. */
+@media (max-height: 480px) {
+  :root {
+    --sign-border: 4px;
+    --sign-radius: 12px;
+    --sign-rule: 2px;
+    --sign-inset: 14px;
+    --sign-fs-display: 22px;
+    --sign-fs-display-jp: 12px;
+    --sign-fs-row: 17px;
+    --sign-fs-row-jp: 15px;
+    --sign-fs-row-sel: 20px;
+    --sign-fs-row-sel-jp: 17px;
+    --sign-fs-arrow: 20px;
+    --sign-fs-arrow-sel: 24px;
+    --sign-fs-dist: 13px;
+    --sign-fs-dist-sel: 15px;
+    --sign-fs-unit: 9px;
+    --sign-fs-cap: 9px;
+    --sign-fs-chip: 9px;
+    --sign-fs-shield: 15px;
+    --sign-fs-shield-jp: 7px;
+    --sign-col-arrow: 30px;
+    --sign-col-jp: 60px;
+    --sign-row-gap: 8px;
+    --sign-sp-1: 3px;
+    --sign-sp-2: 4px;
+    --sign-sp-3: 8px;
+    --sign-sp-4: 10px;
+  }
+  .menuRoot.signRoot {
+    overflow: hidden;
+  }
+  .sign-night-dash,
+  .sign-night-parapet,
+  .gantry-lattice,
+  .gantry-post,
+  .sign-hang,
+  .sign-corner,
+  .sign-plate,
+  .sign-kp,
+  .sign-kp-post {
+    display: none;
+  }
+  .sign-night-deck {
+    height: 40%;
+    clip-path: polygon(40% 0%, 60% 0%, 100% 100%, 0% 100%);
+  }
+  .sign-night-haze {
+    bottom: 0;
+    height: 45%;
+  }
+  .gantry {
+    height: 14px;
+  }
+  .gantry-truss {
+    top: calc(4px + var(--sa-top));
+    height: 8px;
+    border-top-width: 1px;
+    border-bottom-width: 1px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  }
+  .sign-stack {
+    gap: 0;
+    width: min(760px, calc(100% - 32px - var(--sa-left) - var(--sa-right)));
+    margin: calc(20px + var(--sa-top)) auto 0;
+    padding-bottom: 0;
+  }
+  .sign {
+    padding: 8px 0 6px;
+    overflow: hidden;
+    box-shadow: 0 0 40px var(--sign-backlight), 0 10px 24px rgba(0, 0, 0, 0.6);
+  }
+  .sign-head {
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 10px;
+    padding: 0 var(--sign-inset);
+  }
+  .sign-shield {
+    width: 40px;
+    height: 36px;
+    border-width: 3px;
+    border-radius: 4px 4px 20px 20px;
+  }
+  .sign-shield-code {
+    margin-top: 1px;
+  }
+  .sign-titles {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .sign-title-jp {
+    flex: 0 0 auto;
+    order: 2;
+    font-size: var(--sign-fs-display-jp);
+    letter-spacing: 0.12em;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--sign-ink-dim);
+  }
+  .sign-head .sign-title {
+    flex: 0 0 auto;
+    order: 1;
+    margin: 0;
+    font-size: var(--sign-fs-display);
+    line-height: 1;
+    white-space: nowrap;
+    text-shadow: 0 0 12px var(--sign-title-glow);
+  }
+  .sign-rule {
+    margin: 6px var(--sign-inset) 4px;
+  }
+  .sign-rows {
+    gap: 0;
+    padding: 0 var(--sign-inset);
+  }
+  .sign-row,
+  .sign-row.sel {
+    padding: 2px 8px;
+    margin: 0 -8px;
+    width: calc(100% + 16px);
+    min-height: 44px;
+    border-left-width: 4px;
+    border-radius: 6px;
+  }
+  .sign-row.sel {
+    box-shadow: 0 0 16px var(--sign-sodium-halo);
+  }
+  .sign-row.sel .sign-arrow {
+    filter: drop-shadow(0 0 6px var(--sign-sodium-glow));
+  }
+  .sign-row.sel .sign-en {
+    text-shadow: 0 0 10px rgba(255, 180, 84, 0.6);
+  }
+  .sign-jp,
+  .sign-en {
+    letter-spacing: 0.03em;
+  }
+  .sign-arrow .sign-p {
+    width: 22px;
+    height: 22px;
+    border-radius: 3px;
+    font-size: 15px;
+  }
+  .sign-chip {
+    margin-left: 6px;
+    padding: 1px 5px;
+    border-width: 1.5px;
+    letter-spacing: 0.1em;
+  }
+  .sign-dist {
+    display: flex;
+  }
+  .sign-sep {
+    height: 2px;
+    margin: 1px 0;
+  }
+  .sign-foot {
+    display: block;
+    margin: 4px var(--sign-inset) 0;
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 }

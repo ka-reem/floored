@@ -584,6 +584,12 @@ export default function GameApp() {
                 <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => setScreen("settings")} />
                 <SignRow glyph="nw" jp="操作" en="CONTROLS" dist="3.1" onClick={() => setScreen("controls")} />
               </nav>
+              {/* landscape-phone stand-in for the plate below: one caption
+                  line inside the board (ui-system.css shows it only there) */}
+              <div className="sign-foot sign-cap faint" aria-hidden="true">
+                <span className="ui-jp" lang="ja">現在の車</span> {getCar(g?.carId || DEFAULT_CAR_ID).name} ·{" "}
+                {PAINTS[(g?.paintIx || 0) % PAINTS.length].name} · TOWN SEED {g?.seed}
+              </div>
             </SignPlate>
             {/* supplementary plate: current car, then the old subtitle copy.
                 Two lines on a phone (each clipped with an ellipsis), one
