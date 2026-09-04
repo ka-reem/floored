@@ -13,7 +13,7 @@ import {
   SignHead, SignBody, SignFootbar, SignBtn, SignToggle, SignSeg, SignSelect, SignSlider,
   SignShead, SignSrow, SignPost, SignArrow, SignP,
 } from "@/components/ui/Sign";
-import { BETA_JP, BETA_LABEL, BETA_NOTE, GAME_NAME, IS_BETA, NAME_VERSION, VERSION_LABEL } from "@/lib/build";
+import { BETA_JP, BETA_LABEL, BETA_NOTE, GAME_NAME, IS_BETA, NAME_VERSION, SHOW_DEV_SETTINGS, VERSION_LABEL } from "@/lib/build";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
   speedInUnits, fmtRunDist, syncRivalMode, syncCabinMode, cabinAutoLabel,
@@ -30,9 +30,11 @@ const BUG_MAILTO =
   "mailto:bugs@example.invalid?subject=" + encodeURIComponent(`${NAME_VERSION} bug`) +
   "&body=" + encodeURIComponent(`${NAME_VERSION}\n\nWhat happened:\n`);
 
-/** The BETA supplementary plate: 試験版 over/next to BETA on a bordered plate,
-    hung beside a board's title the way a real guide sign carries a temporary
-    panel. `sm` is the sub-screen size (their titles are 56 to home's 74).
+/** The BETA mark: 試験版 · BETA on a small outline chip, sitting with the
+    corner caption rather than beside the title. It used to be a sodium plate
+    in the strongest position on the board and out-shouted DRIVE, which is the
+    only thing anyone came to press — so it keeps its words and loses its
+    sodium, its 4px border and its halo. `sm` is the sub-screen size.
 
     Renders NOTHING once lib/build.ts's IS_BETA goes false, which is why every
     screen can mount it unconditionally. Deliberately absent from the driving
@@ -583,13 +585,18 @@ export default function GameApp() {
               <header className="sign-head">
                 <SignShield />
                 <SignTitle jp="首都高ナイトドライブ" en="NEON EXPRESSWAY" />
-                <BetaMark />
+                {/* corner group: the build mark sits WITH the caption, not
+                    beside the title. The caption lines drop out on a phone
+                    (ui-system.css); the chip stays. */}
                 <div className="sign-corner sign-cap" aria-hidden="true">
-                  TOKYO METROPOLITAN
-                  <br />
-                  EXPWY · NIGHT
-                  <br />
-                  <span className="ui-jp" lang="ja">首都高速</span>
+                  <BetaMark />
+                  <span className="sign-corner-lines">
+                    TOKYO METROPOLITAN
+                    <br />
+                    EXPWY · NIGHT
+                    <br />
+                    <span className="ui-jp" lang="ja">首都高速</span>
+                  </span>
                 </div>
               </header>
               <SignRule />
@@ -634,18 +641,20 @@ export default function GameApp() {
                 <span className="sign-ver">{VERSION_LABEL}</span>
               </div>
             </SignPlate>
-            {/* supplementary plate: current car, then the old subtitle copy.
-                Two lines on a phone (each clipped with an ellipsis), one
-                run on desktop. */}
-            <div className="sign-plate">
+            {/* The same words as before, said ONCE and without a plate around
+                them: no border, no backlight, no second version chip — caption
+                text standing in whitespace under the board. (The bordered
+                .sign-plate is still what the credits screen uses.) */}
+            <div className="sign-plate flat">
               <span className="sign-plate-line">
                 <span className="ui-jp" lang="ja">現在の車</span>{" "}
                 <span>
-                  {getCar(g?.carId || DEFAULT_CAR_ID).name} · {PAINTS[(g?.paintIx || 0) % PAINTS.length].name}
+                  {getCar(g?.carId || DEFAULT_CAR_ID).name} · {PAINTS[(g?.paintIx || 0) % PAINTS.length].name} · TOWN
+                  SEED {g?.seed} · <span className="sign-ver">{VERSION_LABEL}</span>
                 </span>
               </span>
               <span className="sign-plate-line faint">
-                A PROCEDURALLY GENERATED TOWN · ELEVATED EXPRESSWAY · DENSE TRAFFIC · TOWN SEED {g?.seed}
+                A PROCEDURALLY GENERATED TOWN · ELEVATED EXPRESSWAY · DENSE TRAFFIC
               </span>
               {/* The one line of beta copy (lib/build.ts BETA_NOTE): what to
                   expect, and where the bug link already lives. It sits on the
@@ -653,9 +662,9 @@ export default function GameApp() {
                   first-run hints fire over a moving car, and the in-drive
                   frame stays clean. Gone with IS_BETA. */}
               {IS_BETA && <span className="sign-plate-line beta">{BETA_NOTE}</span>}
-              {/* build number + the way to the credits (attributions, privacy) */}
+              {/* the way to the credits (attributions, privacy); the build
+                  number is on the first line now rather than said twice */}
               <span className="sign-plate-line foot">
-                <span className="sign-ver faint">{VERSION_LABEL}</span>
                 <button type="button" className="sign-plate-btn" onClick={() => setScreen("credits")}>
                   CREDITS
                 </button>
@@ -681,7 +690,9 @@ export default function GameApp() {
           <SignPost />
           <div className="sign-stack sub narrow">
             <SignPlate screen>
-              <SignHead jp="一時停止" en="PAUSED" corner={<>Esc RESUMES<br />MUSIC PAUSED</>} mark={<BetaMark sm />} />
+              {/* No build mark and no kilometre post: this is a four-second
+                  interruption, not a landing screen. */}
+              <SignHead jp="一時停止" en="PAUSED" corner={<>Esc RESUMES<br />MUSIC PAUSED</>} />
               <SignRule />
               <SignBody>
                 <nav className="sign-rows two" aria-label="Pause menu">
@@ -691,7 +702,10 @@ export default function GameApp() {
                   <SignRow jpAttr glyph="p" jp="車庫" en="GARAGE" onClick={() => setScreen("garage")} />
                   <SignRow jpAttr glyph="nw" jp="設定" en="SETTINGS" onClick={() => setScreen("settings")} />
                   <SignRow jpAttr glyph="nw" jp="操作" en="CONTROLS" onClick={() => setScreen("controls")} />
-                  <SignSep />
+                  {/* whitespace, not a second hairline: the two rows below end
+                      or restart the drive, and they should separate from the
+                      navigation by a gap you cannot mistake for a divider */}
+                  <div className="sign-gap" aria-hidden="true" />
                   <SignRow
                     jpAttr
                     glyph={<>↺</>}
@@ -711,7 +725,6 @@ export default function GameApp() {
               </SignFootbar>
             </SignPlate>
           </div>
-          <SignKP value={g ? (g.lifetimeStats().dist / 1000).toFixed(1) : "0.0"} />
         </div>
       )}
 
@@ -803,7 +816,10 @@ function LoadingScreen({
               <div className="sign-title-jp loadJp" lang="ja">首都高ナイトドライブ</div>
               <h1 className="sign-title loadTitle">NEON EXPRESSWAY</h1>
             </div>
-            <BetaMark />
+            {/* the build chip rides in the corner here too, not on the title */}
+            <div className="sign-corner sign-cap" aria-hidden="true">
+              <BetaMark />
+            </div>
           </header>
           <SignRule />
           {error ? (
@@ -1247,8 +1263,11 @@ function QuickDrawer({
     { k: "u", en: "WIPERS", jp: "ワイパー", state: WIPER_MODE_NAMES[game.wiperMode], on: game.wiperMode > 0 },
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
     { k: "v", en: "DASHCAM FX", jp: "映像", state: game.grade ? "ON" : "OFF", on: game.grade },
-    { k: "k", en: "TEST MODE", jp: "テスト", state: game.testMode ? "ON" : "OFF", on: game.testMode },
   ];
+  /* the test-mode row only where the key behind it is bound (lib/build.ts) */
+  if (SHOW_DEV_SETTINGS) {
+    rows.push({ k: "k", en: "TEST MODE", jp: "テスト", state: game.testMode ? "ON" : "OFF", on: game.testMode });
+  }
   return (
     <div id="tcDrawer" className={open ? "open" : undefined}>
       <div className="qdHead">
@@ -1647,6 +1666,11 @@ function SettingsPanel({
 }) {
   const [, force] = useState(0);
   const [lit, setLit] = useState<string | null>(null);
+  /* ADVANCED is collapsed on arrival and expands IN PLACE: the public set
+     stays where it is and dims rather than scrolling away, so opening the
+     section never costs you your place on the screen. */
+  const [adv, setAdv] = useState(false);
+  const advRef = useRef<HTMLDivElement>(null);
   const upd = (fn: (s: GameSettings) => void) => {
     /* analytics: shallow snapshot for the key diff below — every row funnels
        through upd(), so instrumenting here covers the whole panel and any
@@ -1692,118 +1716,45 @@ function SettingsPanel({
           <SignHead
             jp="設定"
             en="SETTINGS"
-            corner={<>DEVICE TIER · {game.renderTier.toUpperCase()}<br />CHANGES APPLY LIVE</>}
+            corner={<>CHANGES APPLY LIVE</>}
             mark={<BetaMark sm />}
           />
           <SignRule />
           <SignBody>
-            <div className="sign-cols">
-              <div>
-                <SignShead en="GRAPHICS" jp="画質" />
-                <SignSrow name="Graphics preset" lit={L("preset")}>
-                  <SignSeg
-                    label="Graphics preset"
-                    value={s.preset}
-                    options={[{ v: "low", t: "LOW" }, { v: "medium", t: "MEDIUM" }, { v: "high", t: "HIGH" }]}
-                    onChange={(v) => upd((x) => applyPresetDefaults(x, v))}
-                  />
-                </SignSrow>
-                {/* device tier: caps DPR / reflections / cones etc per hardware
-                    class. "Auto" shows what detection resolved; the override
-                    persists with the profile. A `?tier=` URL param (testing)
-                    beats both. */}
-                <SignSrow name="Device tier" aside={`— ${game.renderTier}`} lit={L("tierOverride")}>
-                  <SignSelect
-                    aria-label="Device tier"
-                    value={s.tierOverride}
-                    onChange={(e) => upd((x) => (x.tierOverride = e.target.value as any))}
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="mobile-base">Mobile base</option>
-                    <option value="mobile-high">Mobile high</option>
-                    <option value="desktop">Desktop</option>
-                  </SignSelect>
-                </SignSrow>
-                {/* The imported interior, for cars that ship one (the Volvo).
-                    Directly under the device tier because that is the row that
-                    explains it: "Auto" means the real cabin everywhere except a
-                    device that fails the hardware floor in settings.ts, and the
-                    aside says which of those this device is. Forcing it on a
-                    phone that auto-declined is allowed and is the point — it is
-                    heavy, not forbidden.
-
-                    Rebuilds the rig so the choice takes effect now: the donor is
-                    fetched at build time, so without this the row would look like
-                    a setting that does nothing until the next reload. setCar is
-                    the engine's own rebuild path and is a no-op before the world
-                    is loaded, which is where this panel usually is. */}
-                <SignSrow name="Imported cabin" aside={`— auto is "${cabinAutoLabel(game.renderTier)}"`} lit={L("cabin")}>
-                  <SignSelect
-                    aria-label="Imported cabin"
-                    value={s.cabin}
-                    onChange={(e) =>
-                      upd((x) => {
-                        x.cabin = e.target.value as any;
-                        syncCabinMode(x);
-                        game.setCar(game.carId, game.paintIx);
-                      })
-                    }
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="donor">Real cabin (heavy)</option>
-                    <option value="procedural">Procedural</option>
-                  </SignSelect>
-                </SignSrow>
-                <SignSrow name="Road reflections" lit={L("reflections")}>
-                  <SignToggle label="Road reflections" checked={s.reflections} onChange={(v) => upd((x) => (x.reflections = v))} />
-                </SignSrow>
-                <SignSrow name="Bloom" lit={L("bloom")}>
-                  <SignToggle label="Bloom" checked={s.bloom} onChange={(v) => upd((x) => (x.bloom = v))} />
-                </SignSrow>
-                <SignSrow name="Day shadows" lit={L("shadows")}>
-                  <SignToggle label="Day shadows" checked={s.shadows} onChange={(v) => upd((x) => (x.shadows = v))} />
-                </SignSrow>
-                <SignSrow name="FXAA anti-aliasing" lit={L("fxaa")}>
-                  <SignToggle label="FXAA anti-aliasing" checked={s.fxaa} onChange={(v) => upd((x) => (x.fxaa = v))} />
-                </SignSrow>
-                <SignSrow name="Motion blur" lit={L("mblur")}>
-                  <SignToggle label="Motion blur" checked={s.mblur} onChange={(v) => upd((x) => (x.mblur = v))} />
-                </SignSrow>
-                {/* game.grade is the live truth — the in-game V key flips it too */}
-                <SignSrow name="Dashcam filter" aside="(V)" lit={L("dashcam")}>
-                  <SignToggle
-                    label="Dashcam filter"
-                    checked={game.grade}
-                    onChange={(v) =>
-                      upd((x) => {
-                        x.dashcam = v;
-                        game.grade = v;
-                      })
-                    }
-                  />
-                </SignSrow>
-                <SignSrow stack name="Draw distance" lit={L("drawDist")}>
-                  <SignSlider
-                    label="Draw distance"
-                    min={350} max={1100} step={50} value={s.drawDist}
-                    text={`${s.drawDist} m`}
-                    onChange={(v) => upd((x) => (x.drawDist = v))}
-                  />
-                </SignSrow>
-                <SignSrow stack last name="Field of view" lit={L("fovBase")}>
-                  <SignSlider
-                    label="Field of view"
-                    min={58} max={100} value={s.fovBase}
-                    text={`${s.fovBase}°`}
-                    onChange={(v) => upd((x) => (x.fovBase = v))}
-                  />
-                </SignSrow>
-              </div>
+            {/* THE PUBLIC SET — the twelve rows a first-time player sees (plus
+                touch steering, which the touch lane owns). Everything niche is
+                one tap away in ADVANCED below; the three developer rows only
+                exist behind lib/build.ts's SHOW_DEV_SETTINGS; and reflections /
+                bloom / day shadows / FXAA are no longer rows at all, because
+                applyPresetDefaults and the device tier already decide all four
+                and a second control could only fight them. */}
+            <div className={adv ? "sign-cols dim" : "sign-cols"}>
               <div>
                 <SignShead en="DRIVING" jp="運転" />
                 <SignSrow name="Traction control" lit={L("tc")}>
                   <SignToggle label="Traction control" checked={s.tc} onChange={(v) => upd((x) => (x.tc = v))} />
                 </SignSrow>
+                {/* The rival pace car. A mode rather than a difficulty: it costs
+                    nothing at all while it is off (game/traffic.ts claims its pool
+                    slot on the toggle, not at construction). */}
+                <SignSrow name="Rival car" aside="— chase the orange one" lit={L("rival")}>
+                  <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd((x) => (x.rival = v))} />
+                </SignSrow>
+                {/* The clean-run readout: distance since the last real impact
+                    (game/engine.ts's runUpdate). On by default. */}
+                <SignSrow name="Clean run" aside="— distance since your last crash" lit={L("cleanRunScore")}>
+                  <SignToggle label="Clean run" checked={s.cleanRunScore} onChange={(v) => upd((x) => (x.cleanRunScore = v))} />
+                </SignSrow>
+                <SignSrow name="Speed units" lit={L("units")}>
+                  <SignSeg
+                    label="Speed units"
+                    value={s.units}
+                    options={[{ v: "mph", t: "MPH" }, { v: "kmh", t: "KM/H" }]}
+                    onChange={(v) => upd((x) => (x.units = v as SpeedUnits))}
+                  />
+                </SignSrow>
+                {/* Phone control, kept on every device because the touch-controls
+                    lane owns whether it should hide itself on a mouse. */}
                 <SignSrow name="Touch steering" lit={L("steerMode")}>
                   <SignSelect
                     aria-label="Touch steering"
@@ -1821,46 +1772,7 @@ function SettingsPanel({
                     <option value="tilt">Tilt</option>
                   </SignSelect>
                 </SignSrow>
-                <SignSrow name="Speed units" lit={L("units")}>
-                  <SignSeg
-                    label="Speed units"
-                    value={s.units}
-                    options={[{ v: "mph", t: "MPH" }, { v: "kmh", t: "KM/H" }]}
-                    onChange={(v) => upd((x) => (x.units = v as SpeedUnits))}
-                  />
-                </SignSrow>
-                {/* game.testMode is a view onto s.testMode (see Game.testMode), so
-                    writing either one here is the same write — but go through the
-                    setting, which is what persist() copies out. The K key in game
-                    flips the same value. */}
-                <SignSrow name="Test mode" aside="— extra grip, brakes & power" lit={L("testMode")}>
-                  <SignToggle label="Test mode" checked={s.testMode} onChange={(v) => upd((x) => (x.testMode = v))} />
-                </SignSrow>
-                {/* The rival pace car. A mode rather than a difficulty: it costs
-                    nothing at all while it is off (game/traffic.ts claims its pool
-                    slot on the toggle, not at construction). */}
-                <SignSrow name="Rival car" aside="— chase the orange one" lit={L("rival")}>
-                  <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd((x) => (x.rival = v))} />
-                </SignSrow>
-                {s.rival && (
-                  <SignSrow sub name="⤷ rival uses its indicators" lit={L("rivalSignals")}>
-                    <SignToggle label="Rival uses its indicators" checked={s.rivalSignals} onChange={(v) => upd((x) => (x.rivalSignals = v))} />
-                  </SignSrow>
-                )}
-                {/* The clean-run readout: distance since the last real impact
-                    (game/engine.ts's runUpdate). On by default. This is the
-                    old "No Hesi score" toggle under a new name and a new
-                    meaning — settings.ts carries a stored value across. */}
-                <SignSrow name="Clean run" aside="— distance since your last crash" lit={L("cleanRunScore")}>
-                  <SignToggle label="Clean run" checked={s.cleanRunScore} onChange={(v) => upd((x) => (x.cleanRunScore = v))} />
-                </SignSrow>
-                {/* Gates game/hints.ts wholesale. Which tips have already fired is
-                    stored separately from the settings (see settings.ts), so DEFAULTS
-                    re-enabling this does not replay them. */}
-                <SignSrow name="First-run hints" aside="— one-time tips" lit={L("hints")}>
-                  <SignToggle label="First-run hints" checked={s.hints} onChange={(v) => upd((x) => (x.hints = v))} />
-                </SignSrow>
-                <SignSrow stack name="Traffic density" lit={L("traffic")}>
+                <SignSrow stack last name="Traffic density" lit={L("traffic")}>
                   <SignSlider
                     label="Traffic density"
                     min={20} max={100} value={Math.round(s.traffic * 100)}
@@ -1868,25 +1780,9 @@ function SettingsPanel({
                     onChange={(v) => upd((x) => (x.traffic = v / 100))}
                   />
                 </SignSrow>
-                <SignSrow stack last name="Volume" lit={L("vol")}>
-                  <SignSlider
-                    label="Volume"
-                    min={0} max={100} value={Math.round(s.vol * 100)}
-                    text={`${Math.round(s.vol * 100)}%`}
-                    onChange={(v) => upd((x) => (x.vol = v / 100))}
-                  />
-                </SignSrow>
               </div>
               <div>
-                <SignShead en="WORLD & WEATHER" jp="天候" />
-                <SignSrow name="Fog / haze" lit={L("fog")}>
-                  <SignSeg
-                    label="Fog / haze"
-                    value={s.fog}
-                    options={[{ v: "off", t: "OFF" }, { v: "light", t: "LIGHT" }, { v: "medium", t: "MED" }, { v: "heavy", t: "HEAVY" }]}
-                    onChange={(v) => upd((x) => (x.fog = v as GameSettings["fog"]))}
-                  />
-                </SignSrow>
+                <SignShead en="WORLD" jp="天候" />
                 <SignSrow stack name="Time of day" lit={L("time")}>
                   <SignSlider
                     label="Time of day"
@@ -1902,7 +1798,7 @@ function SettingsPanel({
                 <SignSrow name="Day/night cycle" lit={L("autoTime")}>
                   <SignToggle label="Day/night cycle" checked={s.autoTime} onChange={(v) => upd((x) => (x.autoTime = v))} />
                 </SignSrow>
-                <SignSrow name="Rain" lit={L("rain")}>
+                <SignSrow last name="Rain" lit={L("rain")}>
                   <SignToggle
                     label="Rain"
                     checked={game.rain}
@@ -1913,37 +1809,195 @@ function SettingsPanel({
                     }}
                   />
                 </SignSrow>
-                <SignShead en="SESSION" jp="セッション" />
-                <SignSrow name="Town seed" aside={`— ${game.seed}`}>
-                  <SignBtn sm onClick={onReseed}>
-                    NEW TOWN <span className="sign-cap">RELOADS</span>
-                  </SignBtn>
-                </SignSrow>
-                <SignSrow last name="Reset all settings">
-                  <SignBtn
-                    sm
-                    variant="ghost"
-                    onClick={() => {
-                      Object.assign(game.settings, defaultSettings());
-                      game.applySettings(game.settings);
-                      /* Every other write to settings goes through upd(), which calls
-                         this; DEFAULTS assigns straight onto game.settings and so
-                         skipped it. applySettings does not cover the rival — it is
-                         driven separately — so resetting left the rival in whatever
-                         state it was in while the panel claimed it was back to
-                         default. */
-                      syncRivalMode(game.settings);
-                      syncCabinMode(game.settings);
-                      // one event, not a diff of every key the reset touched
-                      track("settings_change", { setting: "reset_defaults", value: true });
-                      setLit(null);
-                      force((n) => n + 1);
-                    }}
-                  >
-                    DEFAULTS
-                  </SignBtn>
+                <SignShead en="SOUND" jp="音" />
+                <SignSrow stack last name="Volume" lit={L("vol")}>
+                  <SignSlider
+                    label="Volume"
+                    min={0} max={100} value={Math.round(s.vol * 100)}
+                    text={`${Math.round(s.vol * 100)}%`}
+                    onChange={(v) => upd((x) => (x.vol = v / 100))}
+                  />
                 </SignSrow>
               </div>
+              <div>
+                <SignShead en="PICTURE" jp="画質" />
+                {/* The one quality control. It writes reflections, bloom, day
+                    shadows, FXAA and motion blur itself (applyPresetDefaults),
+                    and TIER_CAPS caps what the device can actually do — which
+                    is why none of those is a row of its own any more. */}
+                <SignSrow name="Graphics quality" lit={L("preset")}>
+                  <SignSeg
+                    label="Graphics quality"
+                    value={s.preset}
+                    options={[{ v: "low", t: "LOW" }, { v: "medium", t: "MEDIUM" }, { v: "high", t: "HIGH" }]}
+                    onChange={(v) => upd((x) => applyPresetDefaults(x, v))}
+                  />
+                </SignSrow>
+                <SignSrow stack name="Field of view" lit={L("fovBase")}>
+                  <SignSlider
+                    label="Field of view"
+                    min={58} max={100} value={s.fovBase}
+                    text={`${s.fovBase}°`}
+                    onChange={(v) => upd((x) => (x.fovBase = v))}
+                  />
+                </SignSrow>
+                {/* game.grade is the live truth — the in-game V key flips it too */}
+                <SignSrow last name="Dashcam filter" aside="(V)" lit={L("dashcam")}>
+                  <SignToggle
+                    label="Dashcam filter"
+                    checked={game.grade}
+                    onChange={(v) =>
+                      upd((x) => {
+                        x.dashcam = v;
+                        game.grade = v;
+                      })
+                    }
+                  />
+                </SignSrow>
+                {/* DEVELOPER — not in a public build (lib/build.ts). The three
+                    rows here are testing levers, and each one RESOLVES to its
+                    auto/off answer while this group is hidden (game/settings.ts
+                    resolveRenderTier / syncCabinMode / resolveTestMode), so a
+                    value set in dev can never strand a player in a state with
+                    no control for it. Nothing is written back: ?debug=1 shows
+                    all three exactly as they were left. */}
+                {SHOW_DEV_SETTINGS && (
+                  <>
+                    <SignShead en="DEVELOPER" jp="開発" />
+                    <SignSrow name="Device tier" aside={`— ${game.renderTier}`} lit={L("tierOverride")}>
+                      <SignSelect
+                        aria-label="Device tier"
+                        value={s.tierOverride}
+                        onChange={(e) => upd((x) => (x.tierOverride = e.target.value as any))}
+                      >
+                        <option value="auto">Auto</option>
+                        <option value="mobile-base">Mobile base</option>
+                        <option value="mobile-high">Mobile high</option>
+                        <option value="desktop">Desktop</option>
+                      </SignSelect>
+                    </SignSrow>
+                    <SignSrow name="Imported cabin" aside={`— auto is "${cabinAutoLabel(game.renderTier)}"`} lit={L("cabin")}>
+                      <SignSelect
+                        aria-label="Imported cabin"
+                        value={s.cabin}
+                        onChange={(e) =>
+                          upd((x) => {
+                            x.cabin = e.target.value as any;
+                            syncCabinMode(x);
+                            game.setCar(game.carId, game.paintIx);
+                          })
+                        }
+                      >
+                        <option value="auto">Auto</option>
+                        <option value="donor">Real cabin (heavy)</option>
+                        <option value="procedural">Procedural</option>
+                      </SignSelect>
+                    </SignSrow>
+                    <SignSrow last name="Test mode" aside="— extra grip, brakes & power (K)" lit={L("testMode")}>
+                      <SignToggle label="Test mode" checked={s.testMode} onChange={(v) => upd((x) => (x.testMode = v))} />
+                    </SignSrow>
+                  </>
+                )}
+              </div>
+            </div>
+            {/* ADVANCED — real settings, one tap away rather than in the way. */}
+            <div className={adv ? "sign-adv open" : "sign-adv"} ref={advRef}>
+              <button
+                type="button"
+                className="sign-adv-head"
+                aria-expanded={adv}
+                onClick={() => {
+                  const open = !adv;
+                  setAdv(open);
+                  track("settings_advanced", { open });
+                  /* On a phone the seven rows open BELOW the fold, so without
+                     this the tap reads as "everything dimmed and nothing
+                     happened". `nearest` is a no-op wherever the section is
+                     already fully visible, which is every desktop layout. */
+                  if (open) {
+                    requestAnimationFrame(() =>
+                      advRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+                    );
+                  }
+                }}
+              >
+                <span className="sign-adv-caret" aria-hidden="true" />
+                <span className="sign-adv-title">
+                  ADVANCED <span className="ui-jp" lang="ja">詳細</span>
+                </span>
+                <span className="sign-cap faint sign-adv-note">
+                  {adv
+                    ? "niche but real — nothing here changes what the game is"
+                    : "draw distance · fog · motion blur · rival indicators · first-run hints · new town · reset"}
+                </span>
+              </button>
+              {adv && (
+                <div className="sign-cols">
+                  <div>
+                    <SignSrow stack name="Draw distance" lit={L("drawDist")}>
+                      <SignSlider
+                        label="Draw distance"
+                        min={350} max={1100} step={50} value={s.drawDist}
+                        text={`${s.drawDist} m`}
+                        onChange={(v) => upd((x) => (x.drawDist = v))}
+                      />
+                    </SignSrow>
+                    <SignSrow last name="Motion blur" lit={L("mblur")}>
+                      <SignToggle label="Motion blur" checked={s.mblur} onChange={(v) => upd((x) => (x.mblur = v))} />
+                    </SignSrow>
+                  </div>
+                  <div>
+                    <SignSrow name="Fog / haze" lit={L("fog")}>
+                      <SignSeg
+                        label="Fog / haze"
+                        value={s.fog}
+                        options={[{ v: "off", t: "OFF" }, { v: "light", t: "LIGHT" }, { v: "medium", t: "MED" }, { v: "heavy", t: "HEAVY" }]}
+                        onChange={(v) => upd((x) => (x.fog = v as GameSettings["fog"]))}
+                      />
+                    </SignSrow>
+                    <SignSrow last name="Rival indicators" aside="— the rival signals its lane changes" lit={L("rivalSignals")}>
+                      <SignToggle label="Rival uses its indicators" checked={s.rivalSignals} onChange={(v) => upd((x) => (x.rivalSignals = v))} />
+                    </SignSrow>
+                  </div>
+                  <div>
+                    {/* Gates game/hints.ts wholesale. Which tips have already fired is
+                        stored separately from the settings (see settings.ts), so DEFAULTS
+                        re-enabling this does not replay them. */}
+                    <SignSrow name="First-run hints" aside="— one-time tips" lit={L("hints")}>
+                      <SignToggle label="First-run hints" checked={s.hints} onChange={(v) => upd((x) => (x.hints = v))} />
+                    </SignSrow>
+                    <SignSrow name="New town" aside={`— seed ${game.seed} · reloads`}>
+                      <SignBtn sm onClick={onReseed}>
+                        NEW TOWN
+                      </SignBtn>
+                    </SignSrow>
+                    <SignSrow last name="Reset everything">
+                      <SignBtn
+                        sm
+                        variant="ghost"
+                        onClick={() => {
+                          Object.assign(game.settings, defaultSettings());
+                          game.applySettings(game.settings);
+                          /* Every other write to settings goes through upd(), which calls
+                             this; DEFAULTS assigns straight onto game.settings and so
+                             skipped it. applySettings does not cover the rival — it is
+                             driven separately — so resetting left the rival in whatever
+                             state it was in while the panel claimed it was back to
+                             default. */
+                          syncRivalMode(game.settings);
+                          syncCabinMode(game.settings);
+                          // one event, not a diff of every key the reset touched
+                          track("settings_change", { setting: "reset_defaults", value: true });
+                          setLit(null);
+                          force((n) => n + 1);
+                        }}
+                      >
+                        DEFAULTS
+                      </SignBtn>
+                    </SignSrow>
+                  </div>
+                </div>
+              )}
             </div>
           </SignBody>
           <SignFootbar caption="changes apply live · the orange row is the one you just changed">
@@ -1985,24 +2039,29 @@ const KEYS_A: [string, string][] = [
   ["T", "time-lapse: ×150 → ×1500 → off"],
   ["V", "dashcam grade (the DASHCAM view forces its own, harder)"],
 ];
+/* K (test mode) is not in this list: it is a developer control, gated with
+   its settings row on lib/build.ts's SHOW_DEV_SETTINGS, and pushed in below
+   only where it actually works. */
 const KEYS_B: [string, string][] = [
   ["X", "minimap"],
   ["Z", "map zoom: close-up ↔ whole loop (or click the map)"],
   ["N", "reset to nearest road"],
-  ["K", "test mode: extra grip, brakes & power (also in settings; persists)"],
   ["O", "photo mode: orbit the car, Space captures a PNG"],
   ["I", "interior light — desktop only (off by default; the cabin is meant to be dark)"],
   ["P", "in-dash music: play / pause — desktop only"],
   [", / .", "previous / next piece"],
   ["ESC", "pause menu (music pauses with it)"],
 ];
+if (SHOW_DEV_SETTINGS) {
+  KEYS_B.splice(3, 0, ["K", "test mode: extra grip, brakes & power (also in settings; persists)"]);
+}
 const KEYS_MOUSE: [string, string][] = [
   ["DASH SCREEN", "click to switch panes — map / music / trip (desktop)"],
   ["ROOF CONSOLE", "click the overhead panel — interior light"],
 ];
 const KEYS_TOUCH: [string, string][] = [
   ["PUCKS", "steer · pedals · CAM · LTS (high beams) · HORN"],
-  ["⋯", "quick controls drawer: lights, map, mirrors, rain, wipers, time-lapse, dashcam FX, test mode, reset, photo mode"],
+  ["⋯", "quick controls drawer: lights, map, mirrors, rain, wipers, time-lapse, dashcam FX, reset, photo mode"],
   ["TOP EDGE", "tap the middle — interior light"],
   ["STEERING", "buttons / touch wheel / swipe slider / tilt — pick in settings"],
 ];

@@ -4,7 +4,7 @@ import {
   runStages, withBudget, type LoadReport, type LoadStage,
 } from "./loading";
 import {
-  fogMultiplier, speedInUnits, unitLabel, fmtRunDist, resolveRenderTier, TIER_CAPS,
+  fogMultiplier, speedInUnits, unitLabel, fmtRunDist, resolveRenderTier, resolveTestMode, TIER_CAPS,
   defaultLifetimeStats,
   type GameSettings, type LifetimeStats, type Profile, type RenderTier,
   type TierCaps,
@@ -41,6 +41,7 @@ import { PostFX } from "./post";
 import { drawMiniMap, type MiniMapOpts } from "./minimap";
 import { track, trackThrottled, registerSuper } from "../lib/analytics";
 import { DEBUG_HOOKS } from "./debug";
+import { SHOW_DEV_SETTINGS } from "@/lib/build";
 import { showGfxFail } from "./gfxfail";
 
 const WX_SVG = (body: string) =>
@@ -1218,7 +1219,7 @@ export class Game {
       toggle, which works but has to be remembered at every write site.)
       persist() copies this.settings out, so it survives a reload — it used to
       be deliberately session-only, and that is no longer true. */
-  get testMode() { return this.settings.testMode; }
+  get testMode() { return resolveTestMode(this.settings); }
   set testMode(v: boolean) { this.settings.testMode = v; }
 
   /** Read-only: metres since the last real impact, and the best-ever clean
@@ -2814,7 +2815,10 @@ export class Game {
        right hand next to the other A/B toggles (J, L), and W is the throttle.
        The toast is the only way to tell the two states apart from inside the
        car, so it is not optional decoration. */
-    if (k === "k") {
+    if (k === "k" && SHOW_DEV_SETTINGS) {
+      /* Gated with the settings row it mirrors (lib/build.ts): a public build
+         has no control for test mode anywhere, so this key is not a second,
+         unlabelled way in. Reachable in dev and behind ?debug, like the row. */
       this.testMode = !this.testMode;
       this.ui.toast("TEST MODE " + (this.testMode ? "ON" : "OFF"));
     }
