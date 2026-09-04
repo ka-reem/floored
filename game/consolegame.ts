@@ -80,7 +80,7 @@ interface GameState {
       first-move advantage doesn't compound across a session */
   playerOpens: boolean;
   /** ms of "thinking" left before the CPU's chosen move lands. Counted down
-      inside drawGamePane only, and only below walking speed — see below. */
+      inside drawGamePane only — see the clock in drawGamePane below. */
   aiWait: number;
   /** the move the CPU committed to when its turn began. Chosen once, up
       front, so the wait is theatre rather than compute. */
@@ -390,11 +390,10 @@ function paint(hover: ScreenAction | null, dots: number) {
     calls this, and only while the games view is up — which is the whole
     update loop, so closing the pane freezes the game exactly where it was.
 
-    `speed` is |car.u| in m/s: above a walking pace the CPU's think timer
-    holds, so the opponent never resolves the game while the player's eyes
-    are (hopefully) on the road. Their own moves stay possible — playing
-    while driving is the owner's own risk, the car merely refuses to play
-    back until things calm down. */
+    `speed` is |car.u| in m/s. It no longer gates the CPU's clock — that gate
+    made the pane look broken while driving — and is kept in the signature
+    because carscreen passes it and a future rule (a hint, a pause on a
+    corner) would want it back. */
 export function drawGamePane(
   g: CanvasRenderingContext2D, scale: number, hover: ScreenAction | null,
   speed: number, ms: number,
@@ -410,13 +409,28 @@ export function drawGamePane(
   }
 
   /* CPU clock. dt is clamped so the first frame after the pane was away —
-     however long — cannot land the move as a jump-scare. */
+     however long — cannot land the move as a jump-scare.
+
+     The clock used to hold above `speed < 2` m/s, so that the opponent never
+     resolved the board while the car was moving. On paper that is the safe
+     behaviour; in the car it reads as a broken game, because the pane says
+     "CPU IS THINKING …" forever with nothing to say it is waiting on the
+     speedometer rather than on itself, and a player who opened the game at
+     all has already decided to play. The gate is gone: the CPU answers at
+     any speed.
+
+     `aiMove` is also re-picked when the cell it committed to is no longer
+     empty. It is chosen once when the turn begins, so it can only go stale
+     through a re-entry or a restart — but when it did, the guard below
+     silently skipped the move and the turn never ended. */
   const dt = Math.min(120, ms - st.lastMs);
   st.lastMs = ms;
-  if (st.outcome === 0 && st.turn === 2 && speed < 2) {
+  if (st.outcome === 0 && st.turn === 2) {
     st.aiWait -= dt;
-    if (st.aiWait <= 0 && st.aiMove >= 0 && st.board[st.aiMove] === 0)
-      place(st.aiMove, 2);
+    if (st.aiWait <= 0) {
+      if (st.aiMove < 0 || st.board[st.aiMove] !== 0) st.aiMove = cpuPick();
+      if (st.aiMove >= 0) place(st.aiMove, 2);
+    }
   }
 
   const dots = st.turn === 2 && st.outcome === 0 ? ((ms / 420) | 0) % 3 : 0;
