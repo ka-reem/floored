@@ -114,11 +114,13 @@ export function SignTitle({ jp, en, as: Tag = "h1" }: { jp: string; en: string; 
     The board's own header row, sized for the 1320-wide screens (System sheet:
     56/22 title, 72×66 shield).
 
-    `mark` is the supplementary-plate slot: a small bordered plate hung off the
-    end of the title, the way a real guide sign carries a 試験 / 工事中 panel.
-    Presentational only — the caller decides what it says (GameApp's BetaMark is
-    the one user today). It comes before the corner caption so the caption keeps
-    its margin-left:auto and stays hard right. */
+    `mark` is the build-mark slot: a small outline chip, the way a real guide
+    sign carries a 試験 / 工事中 panel. Presentational only — the caller decides
+    what it says (GameApp's BetaMark is the one user today). It sits INSIDE the
+    corner group, above the caption lines, rather than beside the title: hung
+    off the title it took the strongest position on the board and out-shouted
+    the primary row. The caption lines are their own span so a phone can drop
+    them and keep the chip. */
 export function SignHead({
   jp, en, corner, glyph, mark,
 }: {
@@ -132,10 +134,10 @@ export function SignHead({
     <header className="sign-head sub">
       {glyph ?? <SignShield />}
       <SignTitle jp={jp} en={en} as="h2" />
-      {mark}
-      {corner !== undefined && (
+      {(mark !== undefined || corner !== undefined) && (
         <div className="sign-corner sign-cap" aria-hidden="true">
-          {corner}
+          {mark}
+          {corner !== undefined && <span className="sign-corner-lines">{corner}</span>}
         </div>
       )}
     </header>

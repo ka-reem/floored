@@ -23,6 +23,32 @@ export const VERSION: string = pkg.version;
 /** THE SWITCH. `true` while the game is a public beta. */
 export const IS_BETA = true;
 
+/** DEVELOPER SETTINGS. The three rows in the settings panel that are not for
+ *  players — device tier, imported cabin, test mode — plus the K key that
+ *  flips test mode from inside the car.
+ *
+ *  Same gate as game/debug.ts's DEBUG_HOOKS (on in any non-production build,
+ *  and in production only behind `?debug`), with one addition: an EXPLICIT
+ *  `?debug=0` turns it off in a dev build too, so the public screen can be
+ *  reviewed — and screenshotted, and tested — from `next dev` without making
+ *  a production build. It is not imported from debug.ts because of that extra
+ *  branch and because lib/ does not otherwise reach into game/.
+ *
+ *  Hiding a row never rewrites the stored value: game/settings.ts RESOLVES
+ *  the three settings as auto / auto / false while this is false and writes
+ *  nothing back, so `?debug=1` shows every one of them exactly as the player
+ *  left it and flipping this flag is reversible in both directions. */
+export const SHOW_DEV_SETTINGS: boolean = (() => {
+  let q: string | null = null;
+  try {
+    if (typeof location !== "undefined") q = new URLSearchParams(location.search).get("debug");
+  } catch {
+    /* ignore malformed URLs */
+  }
+  if (q !== null) return q !== "0" && q !== "false";
+  return process.env.NODE_ENV !== "production";
+})();
+
 /** The game's own name, unqualified. */
 export const GAME_NAME = "NEON EXPRESSWAY";
 

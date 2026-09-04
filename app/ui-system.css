@@ -22,7 +22,7 @@
    Tokens (all on :root):
      colour   --sign-bg  --sign-blue  --sign-blue-deep (text on sodium)
               --sign-ink  --sign-ink-dim (captions)  --sign-ink-faint
-              --sign-sodium (+ -tint, -glow)  --sign-backlight (blue halo)
+              --sign-sodium (+ -tint, -halo)  --sign-backlight (blue halo)
               --sign-ok  --sign-danger  --steel-* (hardware)  --deck
      type     --font-sign (Latin) --font-sign-jp (JP)
               ramp: --sign-fs-display 82 · --sign-fs-display-jp 46 ·
@@ -70,12 +70,10 @@
   --sign-wash: rgba(238, 243, 255, 0.08);
   --sign-sodium: #ffb454;
   --sign-sodium-tint: rgba(255, 180, 84, 0.16);
-  --sign-sodium-glow: rgba(255, 180, 84, 0.85);
   --sign-sodium-halo: rgba(255, 180, 84, 0.35);
   --sign-sodium-pale: #ffd9a6;
   --sign-backlight: rgba(95, 141, 255, 0.45);
   --sign-backlight-soft: rgba(95, 141, 255, 0.3);
-  --sign-title-glow: rgba(127, 216, 255, 0.35);
   --sign-drop: 0 30px 70px rgba(0, 0, 0, 0.65);
   --sign-ok: #57ff9a;
   --sign-danger: #ff4d5e;
@@ -103,14 +101,19 @@
   --sign-fs-display: calc(82 * var(--su));
   --sign-fs-display-jp: calc(46 * var(--su));
   --sign-fs-row: calc(36 * var(--su));
-  --sign-fs-row-jp: calc(32 * var(--su));
+  /* the row JP is a KICKER, not a second headline: it was 32 against the
+     36px English and the eye had to parse two co-equal labels per row. The
+     identity lives in the 46px title JP, which keeps its size. */
+  --sign-fs-row-jp: calc(22 * var(--su));
   --sign-fs-row-sel: calc(46 * var(--su));
-  --sign-fs-row-sel-jp: calc(40 * var(--su));
+  --sign-fs-row-sel-jp: calc(26 * var(--su));
   --sign-fs-arrow: calc(40 * var(--su));
   --sign-fs-arrow-sel: calc(54 * var(--su));
-  --sign-fs-dist: calc(30 * var(--su));
-  --sign-fs-dist-sel: calc(34 * var(--su));
-  --sign-fs-unit: calc(15 * var(--su));
+  /* the five distances encode nothing — they are sign furniture, not data,
+     and at 30px they read as a second column of content */
+  --sign-fs-dist: calc(14 * var(--su));
+  --sign-fs-dist-sel: calc(14 * var(--su));
+  --sign-fs-unit: calc(14 * var(--su));
   --sign-fs-btn: calc(20 * var(--su));
   --sign-fs-name: calc(17 * var(--su));
   --sign-fs-cap: calc(14 * var(--su));
@@ -394,7 +397,8 @@
   line-height: 0.95;
   letter-spacing: -0.01em;
   white-space: nowrap;
-  text-shadow: 0 0 calc(34 * var(--su)) var(--sign-title-glow);
+  /* no text-glow: the board's own backlight is what makes the sign lit, and
+     a glowing title competed with the one warm row */
   color: var(--sign-ink);
 }
 /* The home board shares its title line with the corner caption, so its
@@ -402,29 +406,17 @@
 .sign-head .sign-title {
   font-size: calc(74 * var(--su));
 }
-/* …and when the BETA plate is hung beside it too, the line is shield + title
-   + plate + corner caption, all nowrap. Give the title the plate's width back
-   rather than letting .sign-titles (min-width:0) squeeze it under the plate —
-   home, the sub-screens and the 900-wide toll board each in their own ratio.
-   Guarded to the DESKTOP layout: the phone blocks below re-lay the header
-   (it wraps at ≤700, it is one nowrap line at ≤480) and set their own title
-   sizes, and a :has() selector would out-specify them from up here. Reverts
-   by itself the day lib/build.ts's IS_BETA goes false and BetaMark stops
-   rendering. */
-@media (min-width: 701px) and (min-height: 481px) {
-  .sign-head:has(.sign-beta) .sign-title {
-    font-size: calc(62 * var(--su));
-  }
-  .sign-head.sub:has(.sign-beta) .sign-title {
-    font-size: calc(48 * var(--su));
-  }
-  .sign.loadboard .sign-head:has(.sign-beta) .sign-title {
-    font-size: calc(54 * var(--su));
-  }
-}
+/* The BETA mark used to hang between the title and the corner caption and
+   the title had to give up 12px of size to fit it. It is a chip inside the
+   corner group now, so every board's title keeps its full size and the type
+   ramp is one step shorter. */
 .sign-corner {
   margin-left: auto;
   align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: calc(8 * var(--su));
   text-align: right;
   line-height: 1.5;
   white-space: nowrap;
@@ -449,6 +441,12 @@
   height: calc(3 * var(--su));
   background: var(--sign-ink-75);
   margin: calc(4 * var(--su)) 0;
+}
+/* the same job as a .sign-sep, done with blue instead of a line: what
+   separates the two rows that end or restart a drive from the four that
+   just navigate (System sheet: whitespace before a second rule) */
+.sign-gap {
+  height: calc(34 * var(--su));
 }
 
 /* rows */
@@ -542,6 +540,9 @@
 }
 .sign-arrow {
   flex-shrink: 0;
+  /* the arrows encode row TYPE (mainline / parking / service exit) so they
+     stay — at caption weight rather than full white */
+  color: var(--sign-ink-dim);
   width: var(--sign-col-arrow);
   display: flex;
   align-items: center;
@@ -556,7 +557,6 @@
 }
 .sign-row.sel .sign-arrow {
   font-size: var(--sign-fs-arrow-sel);
-  filter: drop-shadow(0 0 calc(11 * var(--su)) var(--sign-sodium-glow));
 }
 .sign-arrow .sign-p {
   width: calc(44 * var(--su));
@@ -573,6 +573,7 @@
 }
 .sign-jp {
   flex-shrink: 0;
+  color: var(--sign-ink-dim);
   width: var(--sign-col-jp);
   font-family: var(--font-sign-jp);
   font-size: var(--sign-fs-row-jp);
@@ -590,6 +591,10 @@
 .sign-jp[data-jp]::before {
   content: attr(data-jp);
 }
+.sign-row.sel .sign-jp,
+.sign-row.sel .sign-arrow {
+  color: inherit;
+}
 .sign-row.sel .sign-jp {
   font-size: var(--sign-fs-row-sel-jp);
 }
@@ -603,7 +608,6 @@
 }
 .sign-row.sel .sign-en {
   font-size: var(--sign-fs-row-sel);
-  text-shadow: 0 0 calc(22 * var(--su)) rgba(255, 180, 84, 0.6);
 }
 .sign-chip {
   flex-shrink: 0;
@@ -621,15 +625,16 @@
   background: var(--sign-sodium);
   border-color: var(--sign-sodium);
   color: var(--sign-blue-deep);
-  box-shadow: 0 0 calc(18 * var(--su)) rgba(255, 180, 84, 0.7);
 }
 .sign-dist {
   margin-left: auto;
   display: flex;
   align-items: baseline;
-  gap: var(--sign-sp-1);
+  gap: calc(4 * var(--su));
+  color: var(--sign-ink-faint);
   font-family: var(--font-sign);
-  font-weight: 900;
+  font-weight: 800;
+  letter-spacing: 0.1em;
   font-size: var(--sign-fs-dist);
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -641,6 +646,8 @@
 }
 .sign-row.sel .sign-dist {
   font-size: var(--sign-fs-dist-sel);
+  color: inherit;
+  opacity: 0.75;
 }
 
 /* ---------- supplementary plate + kilometre post ---------- */
@@ -666,6 +673,35 @@
 .sign-plate.sm {
   border-width: calc(3 * var(--su));
   border-radius: calc(6 * var(--su));
+}
+/* …and flat: the home board's caption block, which says the same things it
+   always did with no border, no backlight and no box around them. A two-column
+   grid so CREDITS rides at the TOP right — level with the first caption line
+   and clear of the kilometre post, which stands in the bottom-right corner. */
+.sign-plate.flat {
+  display: grid;
+  /* full width, so CREDITS sits at the board's right edge rather than
+     wherever the longest caption line happens to end (.sign-stack is a
+     flex column with align-items:flex-start, so a plate is otherwise
+     shrink-to-fit) */
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  background: none;
+  border: 0;
+  box-shadow: none;
+  border-radius: 0;
+  padding: calc(4 * var(--su)) calc(2 * var(--su));
+  gap: calc(2 * var(--su)) calc(18 * var(--su));
+  color: var(--sign-ink-dim);
+}
+.sign-plate.flat > .sign-plate-line {
+  grid-column: 1;
+}
+.sign-plate.flat > .sign-plate-line.foot {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
 }
 .sign-plate-line {
   display: inline-flex;
@@ -703,34 +739,28 @@
 .sign-beta {
   flex-shrink: 0;
   align-self: flex-end;
-  margin-bottom: calc(14 * var(--su));
   display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: calc(2 * var(--su));
-  padding: calc(6 * var(--su)) calc(12 * var(--su)) calc(5 * var(--su));
-  border: calc(4 * var(--su)) solid var(--sign-sodium);
-  border-radius: calc(8 * var(--su));
-  background: var(--sign-blue-deep);
-  color: var(--sign-sodium);
-  line-height: 1;
-  box-shadow: 0 0 calc(22 * var(--su)) var(--sign-sodium-halo);
+  align-items: baseline;
+  gap: calc(6 * var(--su));
+  padding: calc(3 * var(--su)) calc(9 * var(--su)) calc(2 * var(--su));
+  border: calc(2 * var(--su)) solid var(--sign-ink-18);
+  border-radius: calc(5 * var(--su));
+  background: none;
+  color: var(--sign-ink-dim);
+  line-height: 1.3;
 }
 .sign-beta.sm {
-  margin-bottom: calc(8 * var(--su));
-  padding: calc(5 * var(--su)) calc(10 * var(--su)) calc(4 * var(--su));
-  border-width: calc(3 * var(--su));
-  border-radius: calc(6 * var(--su));
+  padding: calc(2 * var(--su)) calc(8 * var(--su)) calc(1 * var(--su));
 }
 .sign-beta-jp {
-  font-size: calc(12 * var(--su));
+  font-size: calc(11 * var(--su));
   font-weight: 900;
   letter-spacing: 0.14em;
-  color: var(--sign-sodium-pale);
+  color: var(--sign-ink-faint);
 }
 .sign-beta-en {
   font-family: var(--font-sign);
-  font-size: calc(22 * var(--su));
+  font-size: calc(14 * var(--su));
   font-weight: 900;
   letter-spacing: 0.14em;
   /* the tracking is on the right of the last glyph too — pull it back so the
@@ -738,15 +768,16 @@
   text-indent: 0.14em;
 }
 .sign-beta.sm .sign-beta-jp {
-  font-size: calc(9 * var(--su));
+  font-size: calc(10 * var(--su));
 }
 .sign-beta.sm .sign-beta-en {
-  font-size: calc(18 * var(--su));
+  font-size: calc(13 * var(--su));
 }
-/* the beta copy line on the home plate: sodium on blue, one line */
+/* the beta copy line under the home board: caption text, said once. It used
+   to be the third sodium object on a screen with one primary action. */
 .sign-plate-line.beta {
-  color: var(--sign-sodium);
-  font-weight: 900;
+  color: var(--sign-ink-faint);
+  font-weight: 800;
 }
 .sign-kp {
   position: absolute;
@@ -851,13 +882,11 @@
 .sign-toggle.on {
   border-color: var(--sign-sodium);
   background: var(--sign-sodium-tint);
-  box-shadow: 0 0 18px rgba(255, 180, 84, 0.45);
 }
 .sign-toggle.on i {
   left: auto;
   right: 3px;
   background: var(--sign-sodium);
-  box-shadow: 0 0 10px rgba(255, 180, 84, 0.9);
 }
 .sign-seg {
   display: inline-flex;
@@ -915,13 +944,17 @@
   letter-spacing: 0.04em;
   color: var(--sign-ink);
 }
+/* A group LABEL, not a highlight: four sodium heads on a settings screen
+   were four more warm objects competing with the row the player just
+   changed. Caption ink, with a hairline under it doing the grouping. */
 .sign-shead {
   font-family: var(--font-sign);
   font-weight: 900;
   font-size: 13px;
   letter-spacing: 0.24em;
-  color: var(--sign-sodium);
+  color: var(--sign-ink-faint);
   padding: var(--sign-sp-4) 0 var(--sign-sp-1);
+  border-bottom: 2px solid var(--sign-ink-18);
 }
 
 /* ---------- motion ---------- */
@@ -975,8 +1008,13 @@
   .gantry-lattice,
   .gantry-post.r,
   .sign-hang.h3,
-  .sign-corner {
+  .sign-corner-lines {
     display: none;
+  }
+  /* the corner group keeps only the build chip on a phone */
+  .sign-corner {
+    gap: 0;
+    line-height: 1;
   }
   .sign-night-haze {
     bottom: 0;
@@ -1057,31 +1095,46 @@
     line-height: 0.98;
     white-space: normal;
     overflow-wrap: normal;
-    text-shadow: 0 0 18px var(--sign-title-glow);
   }
-  /* the head wraps here (.sign-titles is display:contents), so the mark takes
-     its own line under the title — left aligned with it, at phone pixels */
+  /* the head wraps here (.sign-titles is display:contents), so the chip takes
+     its own line under the title — a quiet outline mark, at phone pixels */
   .sign-beta,
   .sign-beta.sm {
     align-self: auto;
-    margin-bottom: 0;
-    gap: 1px;
-    padding: 4px 9px 3px;
-    border-width: 3px;
-    border-radius: 6px;
-    box-shadow: 0 0 14px var(--sign-sodium-halo);
+    gap: 5px;
+    padding: 2px 7px 1px;
+    border-width: 2px;
+    border-radius: 4px;
   }
   .sign-beta-jp,
   .sign-beta.sm .sign-beta-jp {
-    font-size: 8px;
+    font-size: 9px;
   }
   .sign-beta-en,
   .sign-beta.sm .sign-beta-en {
-    font-size: 15px;
+    font-size: 11px;
   }
   .sign-plate-line.beta {
     font-size: 10px;
     white-space: normal;
+  }
+  /* one column on a phone: the caption lines stack and CREDITS sits under
+     them rather than beside them */
+  .sign-plate.flat {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0 2px;
+  }
+  /* wrap rather than clip: with no plate around them these are three short
+     caption lines, and an ellipsis was eating the build number */
+  .sign-plate.flat > .sign-plate-line,
+  .sign-plate.flat > .sign-plate-line.faint {
+    white-space: normal;
+  }
+  .sign-plate.flat > .sign-plate-line.foot {
+    grid-column: 1;
+    grid-row: auto;
+    justify-self: start;
+    margin: 4px 0 0;
   }
   .sign-rule {
     margin: 12px var(--sign-inset) 10px;
@@ -1100,12 +1153,8 @@
     min-height: 64px;
     box-shadow: 0 0 24px var(--sign-sodium-halo);
   }
-  .sign-row.sel .sign-arrow {
-    filter: drop-shadow(0 0 8px var(--sign-sodium-glow));
-  }
   .sign-row.sel .sign-en {
     letter-spacing: 0.04em;
-    text-shadow: 0 0 14px rgba(255, 180, 84, 0.6);
   }
   .sign-jp {
     letter-spacing: 0.02em;
@@ -1225,10 +1274,20 @@
   .gantry-lattice,
   .gantry-post,
   .sign-hang,
-  .sign-corner,
+  .sign-corner-lines,
   .sign-plate,
   .sign-kp,
   .sign-kp-post {
+    display: none;
+  }
+  .sign-corner {
+    gap: 0;
+    line-height: 1;
+  }
+  /* the flat caption block goes with the bordered one it replaced: the
+     landscape stand-in is the single .sign-foot line INSIDE the board, and
+     showing both would say the same words twice, 18px apart */
+  .sign-plate.flat {
     display: none;
   }
   .sign-night-deck {
@@ -1300,18 +1359,15 @@
     font-size: var(--sign-fs-display);
     line-height: 1;
     white-space: nowrap;
-    text-shadow: 0 0 12px var(--sign-title-glow);
   }
   /* the head is one nowrap line here and the outside plate is gone, so the
      mark shrinks to a single-line chip riding at the right of the title */
   .sign-beta,
   .sign-beta.sm {
     align-self: center;
-    margin-bottom: 0;
-    padding: 2px 6px 1px;
-    border-width: 2px;
-    border-radius: 4px;
-    box-shadow: 0 0 10px var(--sign-sodium-halo);
+    padding: 1px 5px 0;
+    border-width: 1.5px;
+    border-radius: 3px;
   }
   .sign-beta-jp,
   .sign-beta.sm .sign-beta-jp {
@@ -1341,12 +1397,6 @@
   }
   .sign-row.sel {
     box-shadow: 0 0 16px var(--sign-sodium-halo);
-  }
-  .sign-row.sel .sign-arrow {
-    filter: drop-shadow(0 0 6px var(--sign-sodium-glow));
-  }
-  .sign-row.sel .sign-en {
-    text-shadow: 0 0 10px rgba(255, 180, 84, 0.6);
   }
   .sign-jp,
   .sign-en {
@@ -1414,9 +1464,11 @@
   --sign-col-jp: calc(120 * var(--su));
   --sign-col-arrow: calc(56 * var(--su));
   --sign-fs-row: calc(26 * var(--su));
-  --sign-fs-row-jp: calc(22 * var(--su));
-  --sign-fs-row-sel: calc(30 * var(--su));
-  --sign-fs-row-sel-jp: calc(24 * var(--su));
+  --sign-fs-row-jp: calc(16 * var(--su));
+  /* RESUME is what a paused player wants, and MAIN MENU ends the drive: the
+     two used to be the same 26px weight, separated by a hairline. */
+  --sign-fs-row-sel: calc(34 * var(--su));
+  --sign-fs-row-sel-jp: calc(20 * var(--su));
   --sign-fs-arrow: calc(32 * var(--su));
   --sign-fs-arrow-sel: calc(40 * var(--su));
   --sign-row-gap: calc(18 * var(--su));
@@ -1610,12 +1662,10 @@ a.sign-btn {
 .sign-toggle.on i {
   border-color: var(--sign-sodium);
   background: var(--sign-sodium-tint);
-  box-shadow: 0 0 18px rgba(255, 180, 84, 0.45);
 }
 .sign-toggle.on i::after {
   transform: translateX(calc(64 * var(--su) - 20 * var(--su) - 12px));
   background: var(--sign-sodium);
-  box-shadow: 0 0 10px rgba(255, 180, 84, 0.9);
 }
 .sign-toggle:has(input:focus-visible) i {
   outline: 3px solid var(--sign-sodium);
@@ -1723,9 +1773,11 @@ a.sign-btn {
 .sign-slider b {
   width: var(--sign-thumb-pos);
   background: var(--sign-sodium);
-  /* glow scaled with --su: 12px at the desktop size as before, tighter on a
-     phone, where a fixed 12px blur on a 4px track smeared the whole row */
-  box-shadow: 0 0 calc(12 * var(--su)) rgba(255, 180, 84, 0.8);
+  /* NO glow. Every slider fill, every lit toggle and every section head used
+     to carry one, and 34 glows on one screen meant the row you had just
+     changed — the one thing genuinely worth lighting — looked exactly like
+     the fifteen that were already lit when the screen opened. Sodium is
+     still the fill; the light is now spent only on .sign-srow.lit. */
 }
 .sign-slider i {
   position: absolute;
@@ -1739,7 +1791,6 @@ a.sign-btn {
   background: var(--sign-sodium);
   border: 3px solid var(--sign-ink);
   border-radius: calc(5 * var(--su));
-  box-shadow: 0 0 calc(14 * var(--su)) rgba(255, 180, 84, 0.8);
 }
 .sign-slider input {
   position: absolute;
@@ -1839,6 +1890,81 @@ a.sign-btn {
 }
 .sign-cols > div {
   min-width: 0;
+}
+
+/* ---------- ADVANCED (settings) ----------
+   Seven real-but-niche settings, one tap away instead of in the way. It
+   expands IN PLACE: the public set above stays exactly where it is and dims,
+   so opening this never costs you your place on the screen. The head is the
+   one sodium object on the settings board apart from the row you just
+   changed — it is the only thing here that asks to be pressed. */
+.sign-adv {
+  margin-top: calc(16 * var(--su));
+  border-top: 2px solid var(--sign-ink-18);
+}
+.sign-adv.open {
+  margin-top: calc(20 * var(--su));
+  border: calc(2 * var(--su)) solid var(--sign-sodium);
+  border-radius: calc(10 * var(--su));
+  padding: 0 calc(16 * var(--su)) calc(10 * var(--su));
+}
+.sign-adv-head {
+  appearance: none;
+  -webkit-appearance: none;
+  background: none;
+  border: 0;
+  display: flex;
+  align-items: baseline;
+  gap: calc(12 * var(--su));
+  width: 100%;
+  min-height: 44px;
+  padding: calc(10 * var(--su)) 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--sign-sodium);
+  font-family: var(--font-sign);
+}
+.sign-adv-head:focus-visible {
+  outline: 3px solid var(--sign-sodium);
+  outline-offset: 2px;
+}
+.sign-adv-title {
+  flex-shrink: 0;
+  font-weight: 900;
+  font-size: calc(15 * var(--su));
+  letter-spacing: 0.22em;
+}
+.sign-adv-title .ui-jp {
+  color: var(--sign-sodium);
+  margin-left: calc(6 * var(--su));
+  letter-spacing: 0.1em;
+}
+/* the disclosure caret: a triangle that turns a quarter when it opens */
+.sign-adv-caret {
+  flex-shrink: 0;
+  align-self: center;
+  width: 0;
+  height: 0;
+  border-left: calc(9 * var(--su)) solid currentColor;
+  border-top: calc(6 * var(--su)) solid transparent;
+  border-bottom: calc(6 * var(--su)) solid transparent;
+  transition: transform 0.15s var(--ease);
+}
+.sign-adv.open .sign-adv-caret {
+  transform: rotate(90deg);
+}
+.sign-adv-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+  letter-spacing: 0.1em;
+}
+/* what the public set does while ADVANCED is open: it stays put and recedes */
+.sign-cols.dim {
+  opacity: 0.42;
+  transition: opacity 0.15s var(--ease);
 }
 
 /* ---------- controls screen ---------- */
@@ -2475,7 +2601,8 @@ a.sign-plate-btn {
 }
 .sign.loadboard .loadTitle {
   letter-spacing: -0.01em;
-  text-shadow: 0 0 calc(34 * var(--su)) var(--sign-title-glow);
+  /* no glow, same as every other board title */
+  text-shadow: none;
 }
 .sign.loadboard .sign-head {
   gap: calc(24 * var(--su));
@@ -2916,6 +3043,27 @@ body.touch .tc.pressed,
     font-size: 11px;
     padding: 12px 0 2px;
   }
+  .sign-adv.open {
+    padding: 0 10px 8px;
+    border-width: 2px;
+    border-radius: 8px;
+  }
+  .sign-adv-head {
+    padding: 8px 0;
+    gap: 8px;
+  }
+  .sign-adv-title {
+    font-size: 13px;
+  }
+  /* the row list under the head is the note, on a phone */
+  .sign-adv-note {
+    display: none;
+  }
+  .sign-adv-caret {
+    border-left-width: 7px;
+    border-top-width: 5px;
+    border-bottom-width: 5px;
+  }
   .sign-keys {
     font-size: 12px;
     gap: 6px 10px;
@@ -3223,6 +3371,32 @@ body.touch .tc.pressed,
     font-size: 10px;
     padding: 8px 0 2px;
   }
+  .sign-adv {
+    margin-top: 8px;
+  }
+  .sign-adv.open {
+    padding: 0 10px 6px;
+    border-width: 2px;
+    border-radius: 6px;
+  }
+  .sign-adv-head {
+    /* the tap target for the whole section stays 44 tall even in the
+       compressed landscape layout (ui-qa rule e) */
+    min-height: 44px;
+    padding: 6px 0;
+    gap: 8px;
+  }
+  .sign-adv-title {
+    font-size: 11px;
+  }
+  .sign-adv-note {
+    display: none;
+  }
+  .sign-adv-caret {
+    border-left-width: 6px;
+    border-top-width: 4px;
+    border-bottom-width: 4px;
+  }
   .sign-srow {
     min-height: 38px;
     padding: 2px 0;
@@ -3403,7 +3577,8 @@ body.touch .tc.pressed,
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0 10px;
   }
-  .sign-rows.two .sign-sep {
+  .sign-rows.two .sign-sep,
+  .sign-rows.two .sign-gap {
     display: none;
   }
   .sign-rows.two .sign-row,

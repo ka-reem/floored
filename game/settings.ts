@@ -1,4 +1,5 @@
 import { DEFAULT_CAR_ID, isPlayableCar } from "./carspecs";
+import { SHOW_DEV_SETTINGS } from "@/lib/build";
 
 export type SpeedUnits = "mph" | "kmh";
 export type FogLevel = "off" | "light" | "medium" | "heavy";
@@ -378,7 +379,11 @@ const cabinLive: { mode: CabinMode } = { mode: "auto" };
 /** Push a settings object into the live cabin preference. Called wherever
  *  syncRivalMode is — engine creation, and every settings write. */
 export function syncCabinMode(s: GameSettings) {
-  cabinLive.mode = isCabinMode(s.cabin) ? s.cabin : "auto";
+  /* A public build has no row for this, so the stored value is IGNORED rather
+     than honoured: nobody is left on a forced cabin with no control to undo
+     it. The profile keeps whatever it says — nothing is written back — so
+     ?debug=1 shows the developer's choice exactly as they left it. */
+  cabinLive.mode = SHOW_DEV_SETTINGS && isCabinMode(s.cabin) ? s.cabin : "auto";
 }
 
 /** May a car that configures a donor cabin actually load it here?
@@ -413,9 +418,20 @@ export function resolveRenderTier(
   } catch {
     /* ignore malformed URLs */
   }
-  if (isRenderTier(s.tierOverride)) return s.tierOverride;
+  /* The stored override is a developer row (lib/build.ts SHOW_DEV_SETTINGS):
+     when it is not on screen it does not apply either, so a public build
+     always gets the detected tier — as if the setting said "auto". The value
+     stays in the profile untouched. */
+  if (SHOW_DEV_SETTINGS && isRenderTier(s.tierOverride)) return s.tierOverride;
   return detectRenderTier(isTouch, gl);
 }
+
+/** Effective test mode: the buffed physics of testDriveSpec(). A developer
+ *  row like the two above, so it resolves FALSE wherever its control is not
+ *  reachable — otherwise a player who once flipped it in a dev build would be
+ *  stuck driving a cheat with nothing on screen to turn it off. The stored
+ *  flag is left alone; `?debug=1` shows it as it was. */
+export const resolveTestMode = (s: GameSettings): boolean => SHOW_DEV_SETTINGS && s.testMode;
 
 /** Density multiplier applied to the engine's base time-of-day fog curve. */
 const FOG_MULT: Record<FogLevel, number> = {
