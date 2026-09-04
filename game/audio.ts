@@ -779,20 +779,29 @@ const TUNNEL_TUNE_DEFAULT: TunnelTune = Object.fromEntries(
    window.__audioTune / window.__tunnel), so the three candidate settings can
    be A/B'd without a reload. Shipping a pick is one line: change the `d`
    values below. */
+/* SHIPPING VALUES ARE THE "chest" VARIANT, picked by the owner from four
+   recorded clips (see docs/handoff/reports/engine-growl.md). He asked for the
+   deep growl a tunnel gives without the tunnel's echo, and chest is the one
+   that adds a bottom octave rather than making the existing one louder: the
+   118Hz boost sits UNDER the engine's own 165Hz body peak, Q 2.2 keeps it a
+   thump rather than a mud shelf, and the top is left fully open because a
+   tunnel's dullness belongs to its echo -- without one, the same cut just
+   reads as a blanket over the car. Set db back to 0 for today's engine,
+   bit-exact. */
 const ROAD_GROWL_SPEC = {
   /** Peaking boost on the engine bus, dB. THE knob. The tunnel runs +7dB at
       full strength; that number assumes a 3.2s tail underneath it carrying
       the loudness, so on the open road it is a starting ceiling, not a
       target. 0 = today's engine, untouched. */
-  db: { d: 0, lo: 0, hi: 12 },
+  db: { d: 6.0, lo: 0, hi: 12 },
   /** Centre of the boost, Hz. Stacks on the engine's own fixed +6dB body
       resonance at 165Hz; the tunnel picks 170 for exactly that reason.
       Lower = chestier, higher = more nasal/boxy. */
-  hz: { d: 170, lo: 60, hi: 400 },
+  hz: { d: 118, lo: 60, hi: 400 },
   /** Q of the boost. The tunnel uses 1.2 (broad honk). Higher = a tighter,
       more pitched resonance that tracks the firing note rather than smearing
       a whole octave of low-mid. */
-  q: { d: 1.2, lo: 0.3, hi: 6 },
+  q: { d: 2.2, lo: 0.3, hi: 6 },
   /** Fraction of `db` handed back broadband as trim, so the boost costs no
       peak headroom. The tunnel uses 0.5 (half back), measured: uncompensated
       its +7dB raised the engine bus PEAK by ~4.4dB at every rpm and there is
