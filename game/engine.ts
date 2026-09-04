@@ -726,23 +726,37 @@ const CAR_ENV = { night: 5 };
    `dist` is the STANDOFF BEFORE the car-length term, not the whole distance —
    the camera sits at `dist + L * 0.25` metres back, plus up to another 0.9 m
    that the speed term adds, so a longer car is framed the same way a short one
-   is. On the Kaze (L 4.42) that is 4.11 m at rest against the 4.86 m it used
-   to be: ~15% closer, asked for as "a bit closer". Everything downstream is
-   derived from it rather than fixed — the trail cap at dist + 1.2 and the
-   minimum swing radius at dist * 0.6 both follow it in — so moving this one
-   number does not need three others moved with it.
+   is. Everything downstream is derived from it rather than fixed — the trail
+   cap at dist + 1.2 and the minimum swing radius at dist * 0.6 both follow it
+   in — so moving this one number does not need three others moved with it.
+
+   It has been three numbers: 3.75 originally, 3.0 for "a bit closer", and 3.6
+   now for "a little bit back" — most of that pull-in handed back, not all of
+   it. On the shipping Volvo (L 4.96) the standoff goes 4.24 -> 4.84 m at rest,
+   on the Kaze (L 4.42) 4.11 -> 4.71; the trail cap follows to 6.04 m and the
+   minimum swing radius to 2.90 m (Volvo), so the transient bounds keep the
+   proportion to the framing they had at 3.0. The car loses about a tenth of
+   its on-screen height and still fills a third of the frame's width.
+
+   PULLING BACK DOES NOT STEEPEN THE LOOK-DOWN, which is the thing to check
+   here given what the aim point once did (see the feed-forward block in
+   updateCamera). The aim sits 2.8 m PAST the car at 0.95 m while the camera
+   sits at `height`, so the pitch is -atan(1.2 / (dist + L * 0.25 + 2.8)):
+   moving the camera back FLATTENS it. Measured over a 0 -> 205 km/h launch
+   (test/chase-trace.mjs): -9.67 deg before, -8.93 after, identical at rest,
+   at 100 and at 200 km/h, at a uniform 60 fps and under 40/120 fps jitter.
 
    `height` is the camera's own height above the car's contact point. It is
-   unchanged: the aim point sits 2.8 m PAST the car, so pulling the camera in
-   by 0.75 m steepens the look-down by less than a degree, and there is nothing
-   here for the height to correct.
+   unchanged through all three of those distances: the aim point sits 2.8 m
+   past the car, so a metre of standoff either way moves the look-down by well
+   under a degree, and there is nothing here for the height to correct.
 
    Live: `window.__chase.dist = 2.6`. The menu/intro orbit seeds and the reset
    snaps keep their own hard-coded 4.4 m and are deliberately NOT on this knob:
    they are one-frame starting points that the spring eases into whatever this
    says within about half a second, and pinning them to it would drag the menu
    framing around with a gameplay setting. */
-const CHASE_CAM = { dist: 3, height: 2.15 };
+const CHASE_CAM = { dist: 3.6, height: 2.15 };
 /* How fast the chase camera's terrain floor (updateCamera, chasePos.y) eases
    up when the ground rises under it, in 1/s. The floor used to be a hard
    Math.max — an instant teleport onto the rising terrain height the moment it
@@ -4821,6 +4835,14 @@ export class Game {
     const inside = this.inCar();
     rig.cockpit.group.visible = inside;
     rig.exteriorG.visible = !inside;
+    /* Privacy glass: the exterior's windows go opaque near-black whenever the
+       lens is outside the car, so CHASE and HOOD stop showing the hollow
+       inside of the shell through the side glass. See player.ts. Driven off
+       the same `inside` as the two lines above rather than off camMode,
+       because it is exactly the same question — and it is a guarantee rather
+       than an observable change on the in-car branch, since those two lines
+       have already taken the exterior out of the frame. */
+    rig.setPrivacyGlass(!inside);
     this.hoodUpdate();
     this.lampWash(inside);
     this.cabinLightUpdate(dt);

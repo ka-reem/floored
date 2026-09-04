@@ -484,6 +484,173 @@ function lightDonorBody(
   });
 }
 
+/* ------------------------------------------------------ privacy glass ----
+
+   "Would you happen to know how to make the windows black so that you don't
+   see the interior of the car in third person specifically?"
+
+   WHAT WAS ACTUALLY SHOWING THROUGH, because it was not the interior. The
+   imported cabin has been hidden from every outside view since the camera
+   switch went in (engine.ts updateCarVisual: cockpit.group.visible = inside,
+   exteriorG.visible = !inside), and it is genuinely not on screen in CHASE.
+   The donor shell is a SURFACE, not a solid, and every material it ships is
+   doubleSided — so what the side glass showed was the car's own inside-out
+   bodywork: the inner faces of the far-side pillars and door frames, the
+   underside of the roof, the far window's own glazing, and past all of it the
+   parapet and its lights through the opposite window. It reads as a hollow
+   car, which is a worse thing to see than a cabin would have been.
+
+   WHAT THE GLAZING IS. One mesh, `MIrror_Glass_0`, one material, `Glass`
+   (alphaMode BLEND, alpha 0.68) — and the name tells only half the story.
+   Measured per triangle in car-local metres, 6438 of its 6582 triangles are
+   the greenhouse (|x| <= 0.889: side glass, quarter lights, backlight) and the
+   remaining 144 are the two door-mirror plates, out at |x| 1.005..1.028. So
+   the material cannot simply be turned opaque: that would take the door
+   mirrors with it, and they are a mirror rather than a window.
+
+   THE SPLIT. The two sets do not overlap in x at all: the greenhouse stops at
+   |x| = 0.8889 and the nearest mirror triangle starts at 0.9387, 5.0 cm of
+   completely empty x between them, against a spacing of well under a
+   millimetre anywhere else in the distribution. So one pass over the index
+   buffer sorts the triangles into a greenhouse run and a mirror run, gives the
+   geometry a group for each, and hands the mesh a two-material array: a clone
+   for the greenhouse to drive, and the authored `Glass` left alone on the
+   mirrors.
+
+   The cut is FOUND rather than written down — mirrorCut() takes the widest gap
+   in the sorted |x| distribution over the outboard half of the mesh — and that
+   is not neatness. The first version of this used a fixed fraction of the
+   mesh's half-width, 0.95, which reads as safely inside 5 cm of clear air and
+   is not: the mirror plate is 9 cm deep in x, so 0.95 * 1.0285 = 0.977 landed
+   a third of the way INTO it and put 90 of the 144 mirror triangles in the
+   window run. Nothing about the counts said so — 6528 and 54 look as plausible
+   as 6438 and 144 — and it took painting the two groups and photographing the
+   car to see the seam. A threshold aimed at a gap should be derived from the
+   gap.
+
+   If there is no such gap — under MIRROR_GLASS_MIN_GAP of clear air, no
+   outboard run at all, or one big enough to be windows — the split is
+   abandoned and the car keeps exactly the glass it has today. An asset rebuild
+   that reshapes the glazing loses the effect, not the car: the same quiet
+   fallback a missing GLB gets.
+
+   WHAT "PRIVACY" ACTUALLY CHANGES. Two fields — `opacity` and `depthWrite` —
+   and the list of what it deliberately does NOT touch is the interesting half:
+
+   - not the colour. The donor's glazing is already #020202 and the procedural
+     shell's is #0a0f18, so at alpha 1 they ARE the near-black asked for.
+     Painting something blacker on top would only cost the glass its tint.
+   - not `transparent`. That flag is part of three's program cache key, so
+     flipping it would recompile the shader on every camera change; alpha 1 in
+     the transparent bucket composites to precisely the same pixels for free.
+   - not roughness or envMapIntensity, and this is the part that keeps it
+     reading as glass instead of as a hole cut in the car. The env reflection
+     is added to the outgoing radiance and only the ALPHA moved, so the sheet
+     of street lamps that used to arrive at 68% now arrives whole — opaque
+     glass reflects MORE, not less. Leaving roughness where it is also leaves
+     the glazing below carenv.ts's LIFT_SHARP_ROUGH, which is what keeps the
+     night lift off it and stops a lamp landing on it as a white pinpoint.
+
+   depthWrite is the one thing that has to come on with the opacity: the near
+   and the far glass are the same mesh, drawn in index order rather than sorted
+   back-to-front, so without it the far side's sheet paints over the near
+   side's and the car looks inside-out again for a different reason. */
+
+/** Clear air the greenhouse/mirror gap must carry, in metres, before the split
+    is believed. The donor's is 0.050 m (|x| 0.8889 -> 0.9387) and every other
+    step in that distribution is sub-millimetre, so 0.02 is comfortably below
+    the real gap and far above the noise. */
+const MIRROR_GLASS_MIN_GAP = 0.02;
+/** Sanity bound on the mirror run: the two plates are 2.2% of the mesh. A run
+    past this is not the geometry this was measured against, so the split is
+    refused rather than guessed at. */
+const MIRROR_GLASS_MAX = 0.1;
+
+/** Where the greenhouse stops and the door-mirror glass starts, in the metres
+    `cx` is measured in: the middle of the widest empty run of |x| in the
+    outboard half of the mesh. Null when nothing there is wide enough to be a
+    gap rather than ordinary spacing between triangles. */
+function mirrorCut(cx: Float32Array): number | null {
+  const ax = Float32Array.from(cx, Math.abs).sort();
+  const halfW = ax[ax.length - 1];
+  let widest = 0, cut = 0;
+  for (let i = 1; i < ax.length; i++) {
+    if (ax[i] < halfW * 0.5) continue; // only the outboard half can be a mirror
+    const gap = ax[i] - ax[i - 1];
+    if (gap > widest) {
+      widest = gap;
+      cut = (ax[i] + ax[i - 1]) / 2;
+    }
+  }
+  return widest >= MIRROR_GLASS_MIN_GAP ? cut : null;
+}
+
+/** Flip one glazing material between the glass it was authored as and privacy
+    glass. The authored values are stashed on first sight, so repeated toggles
+    restore rather than compound. */
+function setGlassPrivacy(mat: THREE.Material, on: boolean) {
+  const m = mat as THREE.MeshPhysicalMaterial;
+  if (m.userData.clearGlass === undefined)
+    m.userData.clearGlass = { opacity: m.opacity, depthWrite: m.depthWrite };
+  const clear = m.userData.clearGlass as { opacity: number; depthWrite: boolean };
+  m.opacity = on ? 1 : clear.opacity;
+  m.depthWrite = on ? true : clear.depthWrite;
+}
+
+/** Sort the donor's glazing mesh into a greenhouse group and a door-mirror
+    group and hand the greenhouse a material of its own, which is returned for
+    the privacy switch to drive. Null — and the mesh untouched — if the donor
+    does not carry the glazing this was measured against. */
+function splitDonorGlazing(
+  scene: THREE.Object3D, exteriorG: THREE.Object3D,
+): THREE.Material | null {
+  let mesh: THREE.Mesh | null = null;
+  scene.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (mesh || !m.isMesh || Array.isArray(m.material)) return;
+    if ((m.material as THREE.Material | undefined)?.name === "Glass") mesh = m;
+  });
+  if (!mesh) return null;
+  const target = mesh as THREE.Mesh;
+  const geo = target.geometry;
+  const idx = geo.index;
+  const pos = geo.attributes.position as THREE.BufferAttribute | undefined;
+  if (!idx || !pos || idx.count < 3) return null;
+
+  /* Centroids in exteriorG space, where the car's centreline is x = 0 and the
+     units are metres. Taken relative to exteriorG rather than in world space
+     so a stale car transform cancels out of both sides. */
+  exteriorG.updateMatrixWorld(true);
+  const rel = exteriorG.matrixWorld.clone().invert().multiply(target.matrixWorld);
+  const v = new THREE.Vector3();
+  const nTri = idx.count / 3;
+  const cx = new Float32Array(nTri);
+  for (let t = 0; t < nTri; t++) {
+    let x = 0;
+    for (let k = 0; k < 3; k++)
+      x += v.fromBufferAttribute(pos, idx.getX(t * 3 + k)).applyMatrix4(rel).x / 3;
+    cx[t] = x;
+  }
+  const cut = mirrorCut(cx);
+  if (cut === null) return null;
+  const win: number[] = [], mir: number[] = [];
+  for (let t = 0; t < nTri; t++) {
+    const run = Math.abs(cx[t]) > cut ? mir : win;
+    run.push(idx.getX(t * 3), idx.getX(t * 3 + 1), idx.getX(t * 3 + 2));
+  }
+  if (!mir.length || !win.length || mir.length > idx.count * MIRROR_GLASS_MAX) return null;
+
+  const mirrors = target.material as THREE.Material;
+  const windows = mirrors.clone();
+  windows.name = "Glass_Greenhouse";
+  geo.setIndex([...win, ...mir]);
+  geo.clearGroups();
+  geo.addGroup(0, win.length, 0);
+  geo.addGroup(win.length, mir.length, 1);
+  target.material = [windows, mirrors];
+  return windows;
+}
+
 /* --------------------------------------------- the cabin's texture budget --
  *
  * Drop the donor cabin's normal and metallic-roughness maps, keeping its base
@@ -800,6 +967,13 @@ export interface PlayerRig {
   /** Settles once the donor dash has landed or been given up on; already
       settled on a tier that configures no donor. Never rejects. */
   readonly cockpitReady: Promise<void>;
+  /** Windows opaque (true) or the glass they were authored as (false).
+      Cheap and idempotent — engine.ts calls it every frame off inCar(), and it
+      returns immediately unless the answer changed. See privacy glass below;
+      it reaches the greenhouse of whichever body is on show and nothing else,
+      so the lamp lenses, the door-mirror glass and the light glows are outside
+      its reach by construction rather than by care. */
+  setPrivacyGlass(on: boolean): void;
   /** The imported exterior body once it has loaded, else null — null is the
       normal steady state for every car but the Volvo, and for a failed fetch.
       It shows itself when it lands and is never switched off again; the car it
@@ -910,13 +1084,30 @@ export function buildPlayerCar(
   const paint = withEnv(paintMaterial(paintByHex(paintHex), env));
   /* Glass is a dielectric, not a dark metal: metalness 0 with a low roughness
      and a strong env term gives the hard, angle-dependent sheet reflection
-     that reads as automotive glazing. Slightly transparent so the cabin shows
-     through as a suggestion — no transmission, which would cost a whole
-     backbuffer sample per pixel for a surface this dark. */
+     that reads as automotive glazing. No transmission, which would cost a
+     whole backbuffer sample per pixel for a surface this dark. The authored
+     0.88 is what the glass is from INSIDE the car; the privacy switch below
+     takes it to 1 for every view from outside, which is where letting the
+     shell's own inner faces show through was never a suggestion of a cabin,
+     only a hollow car. */
   const darkGlass = withEnv(tameSpecular(new THREE.MeshPhysicalMaterial({
     color: 0x0a0f18, metalness: 0, roughness: 0.05, envMap: env, envMapIntensity: 1.7,
     clearcoat: 1, clearcoatRoughness: 0.03, transparent: true, opacity: 0.88,
   })));
+  /* Every material that is a WINDOW, and nothing else: this list is what
+     setPrivacyGlass drives, so the lamp lenses, the indicator glass and the
+     door-mirror plates are out of its reach by construction. The donor's
+     greenhouse joins when the body lands. Privacy starts ON because every
+     consumer that renders this rig without engine.ts driving it — the garage
+     card — is looking at the car from outside. */
+  const glazing: THREE.Material[] = [darkGlass];
+  let privacyOn = true;
+  setGlassPrivacy(darkGlass, privacyOn);
+  const setPrivacyGlass = (on: boolean) => {
+    if (on === privacyOn) return;
+    privacyOn = on;
+    for (const m of glazing) setGlassPrivacy(m, on);
+  };
   /* Mirror caps get a real mirror: fully metallic and near-perfectly smooth,
      so they pick out point lights the paint only smears. */
   const mirrorFaceM = withEnv(tameSpecular(new THREE.MeshStandardMaterial({
@@ -1322,6 +1513,15 @@ export function buildPlayerCar(
            registration in lightDonorBody will stash as this material's base. */
         if (h) {
           tintDonorPaint(h.group, paintByHex(paintHex));
+          /* Split the glazing BEFORE the lighting pass, so the greenhouse
+             clone is already in the mesh's material array when lightDonorBody
+             walks it and picks up the env, the specular knee and the carenv
+             registration along with everything else the donor ships. */
+          const windows = splitDonorGlazing(h.group, exteriorG);
+          if (windows) {
+            glazing.push(windows);
+            setGlassPrivacy(windows, privacyOn);
+          }
           lightDonorBody(h.group, env, withEnv);
         }
         /* Its own try/catch, and not for tidiness: bodymodel.ts runs this
@@ -1342,7 +1542,7 @@ export function buildPlayerCar(
       });
 
   return {
-    spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR,
+    spec, carGroup, bodyG, exteriorG, cockpit, pivFL, pivFR, setPrivacyGlass,
     get hood() { return bodyRef.hood; },
     get cockpitModel() { return rigRef.model; },
     cockpitReady,
