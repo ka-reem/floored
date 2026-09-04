@@ -92,6 +92,13 @@ export interface CockpitModelHandle {
   setMirrorFraming(mode: MirrorFraming): void;
 }
 
+/** The rim shrink the wheel-center pass measured, kept as its own factor so
+    the owner's framing scale below multiplies it rather than replacing it. */
+const RIM_SHRINK = 0.97;
+/** Owner's framing call -- see the long note at the seat below. 1 is the real
+    car's 379.5 mm rim; 1.60 is the 607 mm one he picked off the render. */
+const WHEEL_SCALE = 1.60;
+
 const BASE = "/models/cockpits/";
 
 /** Full-on level of the donor's fill light — see the light itself for why it is
@@ -731,17 +738,30 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
        every millimetre here is a millimetre of gap between the wheel boss and
        the shroud behind it. At 56 mm the boss still covers it in all three
        in-car views (CONSOLE sees the most of it); much past that and the
-       wheel starts floating off its own column. The wheel's SIZE is not the
-       lever and must not be touched: it renders 379.5 mm across against a
-       real S90's 370, and growing it RAISES the arc across the cluster.
+       wheel starts floating off its own column. WHEEL_SCALE is the owner's call and
+       deliberately not realistic. He sent a photograph of a BMW's
+       driver's-eye view and asked for the cluster to sit inside the wheel's
+       opening the way it does there. The sweep that answered it
+       (test/wheel-scale-shots.mjs, cameras untouched) found the rim's top arc
+       starts 0.199 diameters BELOW the cluster's top edge and climbs as the
+       wheel grows, crossing zero only at about 1.44 -- so every step short of
+       that walks the arc UP ACROSS the dials and looks worse than shipping.
+       1.30 matches the reference's binnacle proportion exactly (0.729 against
+       0.73) and is the worst frame in the set. 1.60 is the first that reads
+       like the photograph, and he picked it off the render. It is a 607 mm
+       rim against a real S90's 370: a deliberate cheat, because the camera
+       cannot come forward far enough to make an honest one without reopening
+       the settled mirror framing. Set WHEEL_SCALE to 1 for the real car's
+       proportions; the near plane is never at risk either way, the closest
+       rim point being 0.630 m against a 0.08 m near plane.
 
        Applied AFTER the re-parenting above, deliberately: the locals were
        taken against the un-nudged axisG matrix, so the rim sits exactly on
-       the fitted pivot and the whole assembly — pivot and rim together —
-       drops and shrinks as one. Nudging before that inverse would bake the
+       the fitted pivot and the whole assembly -- pivot and rim together --
+       drops and scales as one. Nudging before that inverse would bake the
        offset into the locals and move nothing while un-centering the spin. */
     axisG.position.y -= 0.056;
-    axisG.scale.setScalar(0.97);
+    axisG.scale.setScalar(RIM_SHRINK * WHEEL_SCALE);
   }
 
   /* --- fill light --------------------------------------------------------- */
