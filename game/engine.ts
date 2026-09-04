@@ -284,6 +284,12 @@ const BEAM_FLOOR = 0.13;
     few hundred ms — and short enough to be a deliberate press, not a wait. */
 const HI_HOLD = 2;
 
+/** How long a TAP control stays lit after it fires, ms. Holds light for as
+    long as the finger is down; a tap has no duration of its own, so it
+    borrows one. Short enough not to trail behind a quick double-tap of the
+    camera button, long enough to be seen at arm's length. */
+const TAP_FLASH_MS = 140;
+
 /* touchHolds key for the steering-wheel hub horn. Not an element id — the hub
    is a painted disc with pointer-events:none and no listeners of its own; the
    wheel's existing handlers do the hit test — so it needs a name that cannot
@@ -3336,6 +3342,15 @@ export class Game {
     const camBtn = document.getElementById("tcC");
     if (camBtn)
       camBtn.addEventListener("pointerdown", () => {
+        /* CAM is a TAP, not a hold, so it never went through bindPointerHold
+           and never got the `pressed` class with the pucks. It is also the
+           case where :active is least trustworthy — the press is over in a
+           frame or two — so it gets its own brief flash of the same class
+           rather than being left to the browser. FLASH_MS is long enough to
+           read on a phone and short enough that it is gone before the next
+           tap. */
+        camBtn.classList.add("pressed");
+        window.setTimeout(() => camBtn.classList.remove("pressed"), TAP_FLASH_MS);
         this.camMode = nextCam(this.camMode);
         this.ui.toast(CAM_NAMES[this.camMode]);
         track("camera_change", { camera: CAM_NAMES[this.camMode], source: "touch" });
