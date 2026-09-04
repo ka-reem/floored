@@ -1222,7 +1222,8 @@ function QuickDrawer({
   // playing implies loaded, but a guard against a not-yet-built car is free
   if (!game.car) return null;
   const rows: { k: string; en: string; jp: string; state: string; on: boolean }[] = [
-    { k: "l", en: "HEADLIGHTS", jp: "ライト", state: game.car.lightsUser ? "ON" : "AUTO", on: game.car.lightsUser },
+    { k: "l", en: "HEADLIGHTS", jp: "ライト", state: game.car.lightsMode.toUpperCase(),
+      on: game.car.lightsMode === "on" },
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
     { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
@@ -1956,7 +1957,7 @@ const KEYS_A: [string, string][] = [
   ["B", "look back (chase & cockpit)"],
   ["Q / E", "turn signals"],
   ["F", "horn (traffic speeds up)"],
-  ["L", "headlights on / auto"],
+  ["L", "headlights: auto / on / off"],
   ["G", "high beams: tap to flash, hold 2s to latch on / off"],
   ["M", "cockpit mirrors"],
   ["R", "rain"],
@@ -1968,7 +1969,6 @@ const KEYS_B: [string, string][] = [
   ["X", "minimap"],
   ["Z", "map zoom: close-up ↔ whole loop (or click the map)"],
   ["N", "reset to nearest road"],
-  ["H", "this help screen"],
   ["K", "test mode: extra grip, brakes & power (also in settings; persists)"],
   ["O", "photo mode: orbit the car, Space captures a PNG"],
   ["I", "interior light — desktop only (off by default; the cabin is meant to be dark)"],

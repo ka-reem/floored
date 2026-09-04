@@ -137,7 +137,10 @@ export interface CarState {
   odo: number; shiftT: number; cut: number; absOn: boolean; tcOn: boolean;
   /** Auto-hold: stopped and staying stopped until the driver asks to move. */
   hold: boolean;
-  sigL: boolean; sigR: boolean; lightsUser: boolean; lightsOn: boolean;
+  sigL: boolean; sigR: boolean;
+  /** What the driver asked for: "auto" lights up at dusk and in rain,
+      "on" forces them lit, "off" keeps them out whatever the sky does. */
+  lightsMode: "auto" | "on" | "off"; lightsOn: boolean;
   damage: number;
 }
 
@@ -152,7 +155,7 @@ export function freshCarState(x: number, y: number, z: number, h: number, u = 0)
     shiftLen: 0.24, rpmShiftFrom: 1200, revHang: 0, thrPrev: 0, engSeeded: false,
     thrEff: 0, brkEff: 0, slipAmt: 0, slipDemand: 0,
     slope: 0, pitchDyn: 0, rollDyn: 0, odo: 0, shiftT: 0, cut: 0, absOn: false, hold: true,
-    tcOn: false, sigL: false, sigR: false, lightsUser: false, lightsOn: true,
+    tcOn: false, sigL: false, sigR: false, lightsMode: "auto", lightsOn: true,
     damage: 0,
   };
 }

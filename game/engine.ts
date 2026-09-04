@@ -2633,10 +2633,7 @@ export class Game {
       this.ui.toast(CAM_NAMES[this.camMode]);
       track("camera_change", { camera: CAM_NAMES[this.camMode], source: "key" });
     }
-    if (k === "l") {
-      this.car.lightsUser = !this.car.lightsUser;
-      this.ui.toast("LIGHTS " + (this.car.lightsUser ? "ON" : "AUTO"));
-    }
+    if (k === "l") this.cycleLights();
     /* Stalk click on the toggle edge, both engage and cancel — the click
        volumes that used to give the signals their mechanical clunk are gone
        (keyboard-only now, owner's call), but the stalk itself still moves.
@@ -2721,7 +2718,6 @@ export class Game {
        panel the lamp is actually in. The key stays — asked for explicitly, and
        it is the one that works with the console out of frame. */
     if (k === "i" && !this.isTouch) this.toggleCabinLight();
-    if (k === "h") this.ui.helpRequest();
     if (k === "x") {
       this.mmap = !this.mmap;
       this.settings.mmap = this.mmap;
@@ -3382,16 +3378,23 @@ export class Game {
      rate and these two closures never change. Bodies are deliberately the
      same as the `c` and `l` key handlers — the pad is an extra way to press
      the same controls, not a second set of semantics. */
+  /* L cycles AUTO -> ON -> OFF. AUTO is the default and lights up at dusk and
+     in rain; ON forces the lamps lit in daylight; OFF is the one the old
+     two-state toggle could not express — at night AUTO and ON look identical,
+     so there was no way to switch the headlights off at all. */
+  private cycleLights(): void {
+    const next = { auto: "on", on: "off", off: "auto" } as const;
+    this.car.lightsMode = next[this.car.lightsMode];
+    this.ui.toast("LIGHTS " + this.car.lightsMode.toUpperCase());
+  }
+
   private padEdge: PadEdge = {
     cam: () => {
       this.camMode = nextCam(this.camMode);
       this.ui.toast(CAM_NAMES[this.camMode]);
       track("camera_change", { camera: CAM_NAMES[this.camMode], source: "gamepad" });
     },
-    lights: () => {
-      this.car.lightsUser = !this.car.lightsUser;
-      this.ui.toast("LIGHTS " + (this.car.lightsUser ? "ON" : "AUTO"));
-    },
+    lights: () => this.cycleLights(),
   };
 
   private readInput(dt: number) {
@@ -4309,7 +4312,9 @@ export class Game {
         0.35 + 0.6 * (Math.sin(now * 2.4) * 0.5 + 0.5);
     sky.towersMat.opacity = (now % 1.6 < 0.8 ? 1 : 0.25) * (1 - f * 0.7);
     if (world.rampPostMat) world.rampPostMat.opacity = 0.6 + 0.35 * (Math.sin(now * 4) * 0.5 + 0.5);
-    car.lightsOn = car.lightsUser || f < 0.35 || this.rain;
+    car.lightsOn =
+      car.lightsMode === "off" ? false
+        : car.lightsMode === "on" || f < 0.35 || this.rain;
     /* Flash-to-pass lights the lamps even with the headlights off — that is the
        entire point of it in daylight — but it deliberately leaves car.lightsOn
        alone, so the tail lights, the side-light tell-tale and anything else
