@@ -2,9 +2,18 @@
 
      node --max-old-space-size=12288 tools/build-car-body.mjs <donor.glb> \
        [--out NAME] [--tris N] [--tex N] [--rest] [--compress MODE] [--no-join] \
-       [--rear-bias] [--tex-rear N] [--strip] [--dry]
+       [--chase-bias] [--tex-hi N] [--rear-bias] [--tex-rear N] [--strip] [--dry]
 
    Run offline, not at build time — the GLB it writes is committed.
+
+   --chase-bias: the budget follows the THIRD-PERSON CAMERA, measured rather
+   than named — every mesh is scored by the solid angle it subtends from the
+   chase lens and the two rear three-quarters, and that score scales its share
+   of the triangle budget and the size of its textures (--tex-hi). The roof,
+   the rear screen, the C-pillars, the tailgate and the upper flanks come out
+   sharp; the nose, the grille and the front wings come out cheap, which is
+   what the owner asked for and what --rear-bias only approximated. Supersedes
+   --rear-bias (which biased the tail LAMPS by name and starved the roof).
 
    --rear-bias: this asset is a THIRD-PERSON body — the dashcam that ships
    the game never sees it (AGENTS.md), only the chase cam, the mirror, and
@@ -84,9 +93,18 @@ const OUT_DIR = path.resolve(flag("--outdir", path.resolve(import.meta.dirname, 
 const REAR_BIAS = argv.includes("--rear-bias");
 const TEX_REAR = Number(flag("--tex-rear", 512));
 const STRIP = argv.includes("--strip");
+/* --chase-bias supersedes --rear-bias: same intent ("spend the budget where the
+   third-person camera looks"), but measured off the chase lens instead of
+   guessed from part names. See CHASE_EYES below. --tex-hi is its texture half:
+   the maps on the surfaces that fill the chase frame get the big size, the
+   nose's maps get --tex. */
+const CHASE_BIAS = argv.includes("--chase-bias");
+const TEX_HI = Number(flag("--tex-hi", 0));
+/** Fraction of the peak visibility score at which a material's maps get TEX_HI. */
+const TEX_HI_AT = Number(flag("--tex-hi-at", 0.22));
 
 if (!SRC || !fs.existsSync(SRC)) {
-  console.error("usage: node tools/build-car-body.mjs <donor.glb> [--out NAME] [--tris N] [--tex N] [--error E] [--rest] [--exterior] [--interior] [--compress none|quantize|meshopt|draco] [--no-join] [--tangents] [--rear-bias] [--tex-rear N] [--strip] [--outdir DIR] [--debug] [--dry]");
+  console.error("usage: node tools/build-car-body.mjs <donor.glb> [--out NAME] [--tris N] [--tex N] [--error E] [--rest] [--exterior] [--interior] [--compress none|quantize|meshopt|draco] [--no-join] [--tangents] [--chase-bias] [--tex-hi N] [--rear-bias] [--tex-rear N] [--strip] [--outdir DIR] [--debug] [--dry]");
   process.exit(1);
 }
 
@@ -286,7 +304,11 @@ for (const node of root.getDefaultScene().listChildren()) {
   const mesh = node.getMesh(); if (!mesh) continue;
   const [, ruleWeight, lock] = ruleFor(node.getName());
   let weight = ruleWeight;
-  if (REAR_BIAS) {
+  if (CHASE_BIAS) {
+    /* handled in a second pass below — the factor is relative to the best-seen
+       surface on the car, so every mesh has to be measured before any of them
+       can be weighted. */
+  } else if (REAR_BIAS) {
     const z = meshWorldZCenter(mesh, node.getMatrix());
     if (z < -1.5) weight *= 3;
     /* Demote the front by ratio only, gently: 0.5 was enough to push the
@@ -297,9 +319,130 @@ for (const node of root.getDefaultScene().listChildren()) {
        front 3/4. */
     else if (z > 1.0) weight *= 0.7;
   }
-  const info = meshInfo.get(mesh) ?? { weight, ruleWeight, lock, instances: 0, tris: meshTris(mesh) };
+  const info = meshInfo.get(mesh) ?? { weight, ruleWeight, lock, instances: 0, tris: meshTris(mesh), name: node.getName(), matrix: node.getMatrix() };
   info.instances++;
   meshInfo.set(mesh, info);
+}
+
+/* --chase-bias: measure, don't guess.
+
+   The owner's rule is "whatever the third-person camera sees stays sharp, the
+   nose and front flanks can be cheap". --rear-bias tried to spell that out as
+   a list of part NAMES and got it wrong in both directions: it pinned the tail
+   LAMPS (56% of the shipped file's triangles sit in the lamp cluster) while the
+   roof, the rear screen and the upper flanks — which the chase camera stares
+   at for the whole race — fell through to the generic rule and were cut with
+   the underbody.
+
+   So ask the geometry instead. CHASE_EYES are the real third-person lenses in
+   the donor's own space (+Z forward, y = 0 at the road): engine.ts parks the
+   chase camera at CHASE_CAM.dist + shell.L * 0.25 = 4.84 m behind the car and
+   CHASE_CAM.height = 2.15 m up, and photo mode / the live mirror swing that
+   around to the rear three-quarters. For every sampled vertex of every mesh we
+   take the best over those eyes of
+
+       max(0, n . d) / |d|^2          d = eye - p
+
+   which is exactly the differential solid angle a surface element subtends —
+   screen area per unit of surface area. Averaged over the mesh and normalised
+   against the best-lit mesh on the car, that is "how much of the third-person
+   frame is this part", between 0 and 1. A surface facing away scores 0, and so
+   does one so far from the lens it is a few pixels.
+
+   The score SCALES the name rule rather than replacing it: the name table
+   carries the two things geometry cannot see — lockBorder (which edges may not
+   be collapsed) and the escalation-gate exemption that stops paint tearing —
+   and those must not depend on where a panel happens to sit. */
+const CHASE_EYES = [
+  [0, 2.15, -4.84],      // CHASE, straight behind (engine.ts CHASE_CAM)
+  [3.5, 2.30, -3.90],    // rear three-quarter, right (photo mode, mirror)
+  [-3.5, 2.30, -3.90],   // rear three-quarter, left
+];
+/** Mean solid angle per unit area of a mesh's surface as seen from the chase
+    lenses — sampled, since a 400k-triangle donor panel does not need every
+    vertex to answer "is this on screen from behind". */
+function meshChaseVis(mesh, m) {
+  const cof = [
+    m[5]*m[10] - m[6]*m[9],  m[6]*m[8] - m[4]*m[10], m[4]*m[9] - m[5]*m[8],
+    m[2]*m[9] - m[1]*m[10],  m[0]*m[10] - m[2]*m[8], m[1]*m[8] - m[0]*m[9],
+    m[1]*m[6] - m[2]*m[5],   m[2]*m[4] - m[0]*m[6],  m[0]*m[5] - m[1]*m[4],
+  ];
+  let sum = 0, n = 0, el = [], nl = [];
+  for (const prim of mesh.listPrimitives()) {
+    const pos = prim.getAttribute("POSITION"), nor = prim.getAttribute("NORMAL");
+    if (!pos || !nor) continue;
+    const count = pos.getCount();
+    const stride = Math.max(1, Math.floor(count / 2000));
+    for (let i = 0; i < count; i += stride) {
+      pos.getElement(i, el); nor.getElement(i, nl);
+      const px = m[0]*el[0] + m[4]*el[1] + m[8]*el[2]  + m[12];
+      const py = m[1]*el[0] + m[5]*el[1] + m[9]*el[2]  + m[13];
+      const pz = m[2]*el[0] + m[6]*el[1] + m[10]*el[2] + m[14];
+      let nx = cof[0]*nl[0] + cof[3]*nl[1] + cof[6]*nl[2];
+      let ny = cof[1]*nl[0] + cof[4]*nl[1] + cof[7]*nl[2];
+      let nz = cof[2]*nl[0] + cof[5]*nl[1] + cof[8]*nl[2];
+      const ln = Math.hypot(nx, ny, nz) || 1; nx /= ln; ny /= ln; nz /= ln;
+      let best = 0;
+      for (const [ex, ey, ez] of CHASE_EYES) {
+        const dx = ex - px, dy = ey - py, dz = ez - pz;
+        const d2 = dx*dx + dy*dy + dz*dz, d = Math.sqrt(d2);
+        const c = (nx*dx + ny*dy + nz*dz) / d;
+        if (c > 0) best = Math.max(best, c / d2);
+      }
+      sum += best; n++;
+    }
+  }
+  return n ? sum / n : 0;
+}
+/** Weight multiplier from the visibility score. Never 0: the front of the car
+    is CHEAP, not absent — it is still on the silhouette from every rear
+    three-quarter and it is the whole subject of a photo-mode front shot. */
+const CHASE_LO = Number(flag("--chase-lo", 0.30));
+const CHASE_HI = Number(flag("--chase-hi", 2.6));
+if (CHASE_BIAS) {
+  let peak = 0;
+  for (const [mesh, info] of meshInfo) {
+    info.vis = meshChaseVis(mesh, info.matrix);
+    peak = Math.max(peak, info.vis);
+  }
+  for (const [, info] of meshInfo) {
+    /* sqrt, not linear: the raw score falls off as 1/r^2, so a linear map puts
+       everything but the tailgate at the floor. The square root is the same
+       curve in "screen LENGTH per unit length", which is what a silhouette
+       reads by. */
+    let f = CHASE_LO + (CHASE_HI - CHASE_LO) * Math.sqrt(peak ? info.vis / peak : 0);
+    /* The hood is the one front part with a shipping-view job: player.ts lifts
+       its connected component into the DASHCAM frame (AGENTS.md), where it is
+       the silhouette band along the bottom. Cheap, but not polygonal. */
+    if (/^Hood[ _]/i.test(info.name)) f = Math.max(f, 1.0);
+    info.chaseF = f;
+    info.weight = info.ruleWeight * f;
+  }
+}
+/* Same score, spent on pixels instead of triangles: a material is worth a big
+   map only if some surface wearing it fills part of the chase frame. Recorded
+   here, while the meshes still exist un-joined, and consumed by the texture
+   pass far below. */
+const matVis = new Map();
+/** Texture ids (URI, or name for a packed donor) that earn TEX_HI. Resolved to
+    strings HERE and not at texture time, because join()/dedup() in between may
+    have merged the material object this hung off. */
+const hiTexIds = new Set();
+if (CHASE_BIAS) {
+  let peak = 0;
+  for (const [, info] of meshInfo) peak = Math.max(peak, info.vis ?? 0);
+  for (const [mesh, info] of meshInfo)
+    for (const prim of mesh.listPrimitives()) {
+      const mat = prim.getMaterial(); if (!mat) continue;
+      const rel = peak ? (info.vis ?? 0) / peak : 0;
+      matVis.set(mat, Math.max(matVis.get(mat) ?? 0, rel));
+    }
+  for (const [mat, v] of matVis) {
+    if (v < TEX_HI_AT) continue;
+    for (const t of [mat.getBaseColorTexture(), mat.getNormalTexture(), mat.getMetallicRoughnessTexture(),
+                     mat.getEmissiveTexture(), mat.getOcclusionTexture()])
+      if (t) hiTexIds.add(t.getURI() || t.getName());
+  }
 }
 
 /* Solve the one free scalar: ratio_i = min(1, k * weight_i), chosen so the
@@ -364,6 +507,12 @@ if (argv.includes("--debug")) {
     .filter((o) => o.got > o.want * 1.1).sort((a, b) => (b.got - b.want) * b.x - (a.got - a.want) * a.x);
   console.log("  over budget:");
   for (const o of over.slice(0, 15)) console.log(`    ${o.n.padEnd(40)} want ${o.want} got ${o.got}  (w ${o.w}, x${o.x})`);
+  if (CHASE_BIAS) {
+    const rows = [...meshInfo].map(([m, i]) => ({ n: i.name, got: Math.round(meshTris(m)), f: i.chaseF, w: i.weight }))
+      .sort((a, b) => b.f - a.f);
+    console.log("  chase visibility (weight multiplier, tris kept):");
+    for (const r of rows) console.log(`    ${r.n.padEnd(44)} x${r.f.toFixed(2)}  w ${r.w.toFixed(2)}  ${r.got}`);
+  }
 }
 await doc.transform(dedup());
 const simplified = drawn();
@@ -467,7 +616,29 @@ if (JOIN) { bakeTransforms(); await doc.transform(join({ keepNamed: false }), pr
    works off the untouched source texture, not an already-downsized one —
    and the general pass then excludes anything it already sized. */
 const REAR_TEX = /Taillight|TrunkTaillight|ReverseLight|Bumper[ _]?Rear|^Trunk|Quarter|Lettering[ _]?Rear/i;
-if (TEX && REAR_BIAS) {
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+if (TEX && CHASE_BIAS && TEX_HI > TEX) {
+  /* The chase-visible half of the atlas at TEX_HI, everything else at TEX.
+     Which textures those are is not a guess either: it is matVis, the same
+     per-surface score the triangle budget was solved with, carried through the
+     material each map hangs off. Big-map first, off the untouched source. */
+  const ids = [...hiTexIds].filter(Boolean).map(esc);
+  console.log(`  tex-hi    : ${ids.length} maps at ${TEX_HI}px (materials scoring >= ${TEX_HI_AT} of peak chase visibility)`);
+  if (ids.length) {
+    const hiRe = new RegExp(`^(?:${ids.join("|")})$`, "i");
+    await doc.transform(textureCompress({
+      encoder: sharp, targetFormat: "webp", resize: [TEX_HI, TEX_HI], resizeFilter: "lanczos3", pattern: hiRe,
+    }));
+    await doc.transform(textureCompress({
+      encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
+      pattern: new RegExp(`^(?!(?:${ids.join("|")})$).*$`, "i"),
+    }));
+  } else {
+    await doc.transform(textureCompress({
+      encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
+    }));
+  }
+} else if (TEX && REAR_BIAS) {
   await doc.transform(textureCompress({
     encoder: sharp, targetFormat: "webp", resize: [TEX_REAR, TEX_REAR], resizeFilter: "lanczos3", pattern: REAR_TEX,
   }));
@@ -497,12 +668,12 @@ else if (COMPRESS === "draco") await doc.transform(quantize(), draco());
 const after = drawn();
 const pc = (a, b) => `${((100 * a) / b).toFixed(1)}%`;
 
-console.log(`\n${path.basename(SRC)} -> ${OUT_NAME}.glb   ${INTERIOR ? (REST ? "(cabin only, minus the cockpit dash)" : "(cabin only)") : EXTERIOR ? "(exterior only: cabin dropped)" : REST ? "(rest-of-car: cockpit parts dropped)" : "(whole car)"}${REAR_BIAS ? " [rear-bias]" : ""}${STRIP ? " [wheels stripped]" : ""}`);
+console.log(`\n${path.basename(SRC)} -> ${OUT_NAME}.glb   ${INTERIOR ? (REST ? "(cabin only, minus the cockpit dash)" : "(cabin only)") : EXTERIOR ? "(exterior only: cabin dropped)" : REST ? "(rest-of-car: cockpit parts dropped)" : "(whole car)"}${CHASE_BIAS ? " [chase-bias]" : ""}${REAR_BIAS ? " [rear-bias]" : ""}${STRIP ? " [wheels stripped]" : ""}`);
 console.log(`  selected  : ${donor.tris.toLocaleString()} -> ${selected.tris.toLocaleString()} drawn tris  (${pc(selected.tris, donor.tris)} of donor)`);
 console.log(`  decimated : ${selected.tris.toLocaleString()} -> ${simplified.tris.toLocaleString()} drawn tris  (target ${TRIS.toLocaleString()}, passes ${passes.map((p) => p.toLocaleString()).join(" -> ")})`);
 console.log(`  triangles : ${after.tris.toLocaleString()} drawn, ${Math.round(unique()).toLocaleString()} distinct`);
 console.log(`  draw calls: ${after.calls}  (donor: ${donor.calls}),  ${root.listMaterials().length} materials`);
-console.log(`  textures  : ${donor.img} -> ${root.listTextures().length}${TEX ? (REAR_BIAS ? ` @ ${TEX}px webp (${TEX_REAR}px for rear-lamp maps)` : ` @ ${TEX}px webp`) : " (source resolution)"}`);
+console.log(`  textures  : ${donor.img} -> ${root.listTextures().length}${TEX ? (CHASE_BIAS && TEX_HI > TEX ? ` @ ${TEX}px webp (${TEX_HI}px on the chase-visible maps)` : REAR_BIAS ? ` @ ${TEX}px webp (${TEX_REAR}px for rear-lamp maps)` : ` @ ${TEX}px webp`) : " (source resolution)"}`);
 console.log(`  VRAM      : ${(vramBytes / 1e6).toFixed(1)} MB decoded RGBA8 + mips  (donor: 3,500 MB)`);
 console.log(`  compress  : ${COMPRESS}${TANGENTS ? " +tangents" : ""}`);
 

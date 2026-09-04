@@ -13,7 +13,7 @@ import { envFaceCanvas, glowTexF } from "./textures";
    still what goes up first — a card that starts empty and fills in a beat later
    is worse than one that improves.
 
-   Pass two swaps in the real donor body (volvo-s90-body-lite.glb, 0.5 MB and
+   Pass two swaps in the real donor body (volvo-s90-body-lite.glb, 1.4 MB and
    already shipped for the game itself) and re-shoots the SAME frame: same
    camera solve off the same shell length, same three lights, same floor disc,
    same transparent background. That is the whole reason it is done through
@@ -196,7 +196,7 @@ function shootProcedural(spec: CarSpec, paintHex: number): string {
      SYNCHRONOUSLY and the rig is disposed immediately after, so neither
      fetch could arrive in time to appear in it — the cabin's 5.7 MB would
      buy nothing but a wire() call against a disposed cockpit, and the
-     body's 0.5 MB is pass two's job and is cached there.
+     body's 1.4 MB is pass two's job and is cached there.
 
      It used to say this by asking for tier "mobile-base" and leaning on that
      row of COCKPIT_MODEL being empty. It is not empty any more (a player who

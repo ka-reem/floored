@@ -47,9 +47,11 @@ export function attachBodyModel(
   const procedural = exteriorG.children.filter((c) => !keepSet.has(c));
 
   const loader = new GLTFLoader();
-  /* The asset is meshopt-encoded (0.5 MB against 4.9 MB quantized-only). The
-     decoder is a bundled JS+wasm module, not a file to serve — unlike draco,
-     which is why the build was re-encoded rather than shipped as-is. */
+  /* The asset is meshopt-encoded (1.4 MB — the first build of it measured
+     0.5 MB meshopt against 4.9 MB quantize-only, and the ratio is why this
+     encoding is worth a decoder at all). The decoder is a bundled JS+wasm
+     module, not a file to serve — unlike draco, which is why the build was
+     re-encoded rather than shipped as-is. */
   loader.setMeshoptDecoder(MeshoptDecoder);
   loader.load(
     `${BASE}${name}.glb`,
