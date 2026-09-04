@@ -2738,8 +2738,16 @@ a.sign-plate-btn {
   color: var(--sign-ink-dim);
   margin-left: 10px;
 }
-/* pressed puck: sodium fill, #ffd280 rim, outer glow (HUDPhone.dc.html) */
+/* pressed puck: sodium fill, #ffd280 rim, outer glow (HUDPhone.dc.html).
+
+   `.pressed` is set by engine.ts's bindPointerHold from the same down/up the
+   input reads. :active alone was not enough: under a captured pointer the
+   browser stopped reporting a held puck as :active, so on touch the glow
+   could fail to appear while the control was working. Both selectors ship —
+   :active still covers mouse and the controls that are taps rather than
+   holds. */
 body.touch .tc:active,
+body.touch .tc.pressed,
 #tcMore:active,
 .qdRow:active {
   border-color: #ffd280;

@@ -1095,7 +1095,8 @@ body.touch .paintDot::before {
 body.touch .tc {
   display: flex;
 }
-body.touch .tc:active {
+body.touch .tc:active,
+body.touch .tc.pressed {
   border-color: var(--accent-line);
   background: rgba(30, 40, 75, 0.35);
 }

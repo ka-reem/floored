@@ -1788,7 +1788,11 @@ export class Game {
       puck it never pressed must not release the first finger's hold — see
       bindHold — so release is "the ids we captured minus the one that left,"
       not "any pointerup that reaches this element." */
-  private touchHolds = new Map<string, { key: string; ids: Set<number> }>();
+  /* `el` is carried so the two paths that clear a hold WITHOUT going through
+     bindPointerHold's own release — the frame watchdog and the blur/pause
+     sweep — can put the press light out too. A puck left lit with nothing
+     holding it is the same lie as one that never lights. */
+  private touchHolds = new Map<string, { key: string; ids: Set<number>; el?: HTMLElement }>();
   private fogC = new THREE.Color();
   private prevBlinkOn = false;
   private crashCooldown = 0;
@@ -2495,7 +2499,10 @@ export class Game {
     this.wheelVal = this.tiltVal = 0;
     this.wheelPointerId = null;
     this.hornMinT = 0;
-    for (const hold of this.touchHolds.values()) hold.ids.clear();
+    for (const hold of this.touchHolds.values()) {
+      hold.ids.clear();
+      hold.el?.classList.remove("pressed");
+    }
   }
 
   /* Window-level, capture phase: fires before any element's own listener can
@@ -3146,17 +3153,37 @@ export class Game {
       must never be able to veto the press itself. */
   private bindPointerHold(el: HTMLElement, onDown: () => void, onUp: () => void): Set<number> {
     const ids = new Set<number>();
+    /* The press state is a CLASS, not :active.
+
+       The sodium press glow used to hang off `body.touch .tc:active`, and
+       :active is the browser's own idea of "being pressed" — which, under a
+       captured pointer, is not the same as this element's idea of it. Driven
+       with real touch input on the live page a held puck reported
+       `:active = false` and `box-shadow: none` while the engine had its key
+       down: the press was working and only the light was missing, which is
+       the one thing the player uses to know the control took. The same puck
+       under a mouse lit correctly, which is why it survived this long.
+
+       These three lines are the whole fix: the element is lit from the same
+       down/up the input reads, so what the player sees and what the car does
+       cannot disagree. `pressed` is additive — the :active rule stays for
+       mouse and keyboard focus. */
+    const lit = (on: boolean) => el.classList.toggle("pressed", on);
     el.addEventListener("pointerdown", (e) => {
       const first = ids.size === 0;
       ids.add(e.pointerId);
       if (first) onDown();
+      lit(true);
       try {
         el.setPointerCapture(e.pointerId);
       } catch {}
     });
     const release = (e: PointerEvent) => {
       if (!ids.delete(e.pointerId)) return; // not a pointer this element is holding — ignore
-      if (ids.size === 0) onUp();
+      if (ids.size === 0) {
+        lit(false);
+        onUp();
+      }
     };
     el.addEventListener("pointerup", release);
     el.addEventListener("pointercancel", release);
@@ -3192,7 +3219,10 @@ export class Game {
       for (const id of hold.ids) if (!this.livePointers.has(id)) hold.ids.delete(id);
       // ...and when this hold's last finger is gone, the key is only released
       // if no OTHER control is still holding it (the puck/hub pair).
-      if (hold.ids.size === 0 && !this.keyStillHeld(hold.key)) this.keydown[hold.key] = 0;
+      if (hold.ids.size === 0) {
+        hold.el?.classList.remove("pressed");
+        if (!this.keyStillHeld(hold.key)) this.keydown[hold.key] = 0;
+      }
     }
     if (this.wheelPointerId !== null && !this.livePointers.has(this.wheelPointerId)) {
       this.wheelVal = 0;
@@ -3281,7 +3311,7 @@ export class Game {
           if (!this.keyStillHeld(key)) this.keydown[key] = 0;
         },
       );
-      this.touchHolds.set(id, { key, ids });
+      this.touchHolds.set(id, { key, ids, el });
     };
     bindHold("tcL", "a");
     bindHold("tcR", "d");
