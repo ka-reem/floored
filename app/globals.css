@@ -183,16 +183,26 @@ html.cursor-idle * {
 }
 
 /* ---------- HUD ---------- */
+/* A flex COLUMN, not a block, purely so the clean-run readout can move
+   between "under the speedo" and "under the gear" by `order` alone — see the
+   three .runDist treatments below. GameApp.tsx therefore only ever sets
+   display:none inline; when playing, this rule owns the display. */
 #hud {
   position: fixed;
   left: calc(18px + var(--sa-left));
   bottom: calc(16px + var(--sa-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   color: var(--ink);
   z-index: var(--z-hud);
   pointer-events: none;
   text-shadow: 0 1px 8px rgba(0, 20, 60, 0.8);
   letter-spacing: 0.02em;
 }
+#hud .spd { order: 1; }
+#hud .gear { order: 3; }
+#hud .runDist { order: 4; }
 #hud .spd {
   font-family: var(--font-display);
   font-size: 44px;
@@ -211,25 +221,79 @@ html.cursor-idle * {
   opacity: 0.85;
   margin-top: 3px;
 }
-/* No Hesi score/combo (engine.ts noHesiUpdate writes the text and toggles
-   .combo-hot; empty text when the setting is off). Styled here instead of the
-   inline placeholder rival-whiteline shipped, on the same display face and
-   tabular numerals as the speedo so the corner reads as one instrument. */
-#hud .noHesi {
+/* ---------- CLEAN RUN readout ----------
+
+   Distance since the last real impact (engine.ts's runUpdate writes the text;
+   empty text when the setting is off). THE BRIEF IS "not in your face": small,
+   dim, out of the sightline, no pulse, no toast. So the base rule below is
+   deliberately smaller and dimmer than everything else in the corner — 11px
+   against the gear line's 15px and the speedo's 44px, and roughly half the
+   opacity — and the only motion it is ever allowed is the reset settle.
+
+   Three treatments, selected by the data-run attribute the engine stamps on
+   #hud (RUN_HUD in game/engine.ts — one line to swap):
+     corner  the figure on its own line under the gear (DEFAULT)
+     speed   the figure folded into the speed block as a second line
+     ghost   invisible until the number changes or a run ends            */
+#hud .runDist {
   font-family: var(--font-display);
-  font-size: var(--fs-md);
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--ink-dim);
-  margin-top: var(--sp-1);
-  letter-spacing: 0.04em;
-  transition: color 0.3s var(--ease), text-shadow 0.3s var(--ease);
+  opacity: 0.5;
+  margin-top: 5px;
+  letter-spacing: 0.1em;
+  /* the readout carries no glow of its own; the corner's shared text-shadow
+     is enough to keep it legible over a bright wall */
+  transition: opacity 0.45s var(--ease), color 0.45s var(--ease);
 }
-/* Combo above x3 warms the readout toward the accent rather than popping a
-   new element in — same restraint rule as the world's lights: fade, never
-   snap. */
-#hud .noHesi.combo-hot {
-  color: var(--accent-2);
-  text-shadow: 0 0 12px var(--accent-glow);
+
+/* (b) SPEED BLOCK. Same figure, moved between the big number and the gear and
+   hung tight under the speedo's baseline so the two read as one instrument
+   rather than as a second thing to look at. */
+#hud[data-run="speed"] .runDist {
+  order: 2;
+  margin-top: 1px;
+  margin-bottom: 2px;
+}
+
+/* (c) GHOST. Nothing on screen at all until the figure CHANGES (engine adds
+   .run-blip on each new value) or a run ends. One fade in, a hold, one fade
+   out — and because the tenth only turns over every ~160 m, that is a few
+   seconds of visible readout per minute of driving and an empty corner the
+   rest of the time. */
+#hud[data-run="ghost"] .runDist {
+  opacity: 0;
+}
+#hud[data-run="ghost"] .runDist.run-blip {
+  animation: runBlip 2.6s var(--ease) forwards;
+}
+@keyframes runBlip {
+  0% { opacity: 0; }
+  12% { opacity: 0.55; }
+  62% { opacity: 0.55; }
+  100% { opacity: 0; }
+}
+
+/* THE RESET — the one moment the player has to notice, and it still gets no
+   banner. The figure dims almost out and comes back over CLEAN_RUN.flash
+   seconds, so what is read is a number settling to 0.0, not an alarm.
+
+   Written as an animation rather than a transition so it composes with the
+   ghost treatment: it deliberately carries the SAME specificity as the ghost
+   blip rule above and sits after it, so on a reset this is the animation that
+   runs in all three treatments — and with no `forwards`, each one falls back
+   to its own resting opacity afterwards (0.5 in the corner and speed blocks,
+   0 for the ghost, which vanishes again on its own). */
+#hud[data-run] .runDist.run-reset {
+  color: var(--ink);
+  animation: runReset 1.4s var(--ease);
+}
+@keyframes runReset {
+  0% { opacity: 0.5; }
+  16% { opacity: 0.05; }
+  55% { opacity: 0.05; }
+  100% { opacity: 0.5; }
 }
 #topbar {
   position: fixed;
@@ -876,7 +940,7 @@ body:not(.touch) #mmap {
   color: var(--ink);
 }
 /* A session value that IS the lifetime record warms to the accent — the
-   same fade-not-pop restraint as #hud .noHesi.combo-hot. */
+   same fade-not-pop restraint the HUD keeps: fade, never snap. */
 .statsGrid .sval.rec {
   color: var(--accent-2);
   text-shadow: 0 0 10px var(--accent-glow);

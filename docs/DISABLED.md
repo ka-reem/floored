@@ -39,7 +39,9 @@ exception noted in the migration row.
 
 *Re-verified 2026-08-29: all of the above still default off. The overhaul
 added `noHesiScore` (the No Hesi score HUD), which defaults **on** — listed
-here only so nobody hunts for it in this table.*
+here only so nobody hunts for it in this table. Renamed 2026-09-04 to
+`cleanRunScore` when the score became the clean-run distance; still on by
+default, and `loadProfile` carries a stored `noHesiScore` across to it once.*
 
 **Re-enable:** tick the box in the pause → Settings panel (`components/GameApp.tsx`
 ~line 594 onward), or press the in-game key (V / R / K / X). To change the

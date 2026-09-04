@@ -16,7 +16,7 @@ import {
 import { BETA_JP, BETA_LABEL, BETA_NOTE, GAME_NAME, IS_BETA, NAME_VERSION, VERSION_LABEL } from "@/lib/build";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
-  speedInUnits, syncRivalMode, syncCabinMode, cabinAutoLabel,
+  speedInUnits, fmtRunDist, syncRivalMode, syncCabinMode, cabinAutoLabel,
   type Profile, type GameSettings, type SpeedUnits,
 } from "@/game/settings";
 
@@ -143,6 +143,12 @@ export default function GameApp() {
       session_crashes: s.crashes,
       session_near_misses: s.nearMisses,
       session_laps: s.laps,
+      /* THE SCORE, per run: how far the car got between crashes at the moment
+         the run ended, and the profile's best-ever clean run. Both metres —
+         the same engine unit distance_m above is in, converted for display
+         only. Replaces nothing: run_end never carried the No Hesi points. */
+      clean_run_m: Math.round(g.cleanRunDist),
+      clean_best_m: Math.round(g.cleanRunBest),
     });
   }, []);
 
@@ -258,7 +264,7 @@ export default function GameApp() {
     p.paintIx = g.paintIx;
     p.seed = g.seed;
     p.camMode = g.camMode;
-    p.noHesiBest = g.noHesiBest;
+    p.cleanRunBest = g.cleanRunBest;
     /* Lifetime totals: construction-time seed + this session, recomputed on
        every call (see Game.lifetimeStats) — writing it repeatedly is safe. */
     p.stats = g.lifetimeStats();
@@ -353,7 +359,7 @@ export default function GameApp() {
     setScreen("main");
     /* Leaving for the menu is how a drive ends — bank it. resume() and
        drive() already persist; this was the one exit that didn't, and it is
-       the natural end of a session for the lifetime stats (and noHesiBest). */
+       the natural end of a session for the lifetime stats (and cleanRunBest). */
     persist();
   };
   const backFrom = (sub: boolean) => {
@@ -460,14 +466,19 @@ export default function GameApp() {
         <span id="wx"></span>
         <span id="indR" className="ind">▶</span>
       </div>
-      <div id="hud" style={{ display: playing ? "block" : "none" }}>
+      {/* display comes from globals.css when playing (the HUD stack is a flex
+          column so the clean-run readout can sit under the speedo or under
+          the gear by `order` alone) — the inline style only ever HIDES. */}
+      <div id="hud" style={playing ? undefined : { display: "none" }}>
         <div className="spd" id="spd">0<small>{unitLabel(g ? g.settings.units : "mph")}</small></div>
         <div className="gear" id="gearTxt">D1</div>
-        {/* No Hesi score + combo (game/engine.ts's noHesiUpdate writes the
-            text; hidden via the setting, not via this style, so the engine
-            is the one source of truth for whether it's on). Styled in
-            globals.css with the HUD tokens — see #hud .noHesi. */}
-        <div className="noHesi" id="noHesi" />
+        {/* Clean-run distance (game/engine.ts's hud() writes the text and the
+            .run-reset/.run-blip classes; hidden via the setting, not via this
+            style, so the engine is the one source of truth for whether it's
+            on). Which of the three treatments is worn is the data-run
+            attribute the engine stamps on #hud — see RUN_HUD in engine.ts and
+            the #hud .runDist rules in globals.css. */}
+        <div className="runDist" id="runDist" />
       </div>
       <div id="toast" style={{ opacity: toast ? 1 : 0 }}>{toast}</div>
       <div id="exitHint" style={{ opacity: exitHint && playing ? 1 : 0 }}>{exitHint}</div>
@@ -1332,8 +1343,10 @@ function PhotoHint({ game }: { game: Game }) {
    Stats.dc.html: a 900-wide board, label · SESSION · LIFETIME columns, the
    session value that IS the lifetime record lit sodium. */
 
-const fmtDist = (m: number, u: SpeedUnits) =>
-  u === "mph" ? (m / 1609.344).toFixed(1) + " mi" : (m / 1000).toFixed(1) + " km";
+/* Distances on the board are the clean-run readout's own format (settings.ts)
+   — one formatter, so the DISTANCE row and the CLEAN RUN row can never
+   disagree about what "1.4 mi" means. */
+const fmtDist = fmtRunDist;
 
 const fmtSpeed = (v: number, u: SpeedUnits) =>
   Math.round(speedInUnits(v, u)) + " " + unitLabel(u);
@@ -1363,11 +1376,16 @@ function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
       sv: String(s.nearMisses), lv: String(l.nearMisses),
     },
     {
-      en: "NO HESI SCORE", jp: "スコア",
-      sv: String(Math.round(game.noHesiScore)), lv: String(Math.round(game.noHesiBest)),
-      rec: game.noHesiScore > 0 && Math.round(game.noHesiScore) >= Math.round(game.noHesiBest),
+      /* THE SCORE. Session column = the run on screen right now (it zeroes
+         when the player crashes, which is the point); lifetime = the best
+         clean run ever driven on this profile. */
+      en: "CLEAN RUN", jp: "無事故走行",
+      sv: fmtRunDist(game.cleanRunDist, u), lv: fmtRunDist(game.cleanRunBest, u),
+      rec: game.cleanRunDist > 0 && game.cleanRunDist >= game.cleanRunBest,
     },
     {
+      /* Kept from the retired No Hesi loop: the streak still runs (silently)
+         because a stored bestCombo is a record players already hold. */
       en: "BEST COMBO", jp: "最高コンボ",
       sv: "×" + s.bestCombo.toFixed(1), lv: "×" + l.bestCombo.toFixed(1),
       rec: s.bestCombo > 1 && s.bestCombo >= l.bestCombo,
@@ -1829,10 +1847,12 @@ function SettingsPanel({
                     <SignToggle label="Rival uses its indicators" checked={s.rivalSignals} onChange={(v) => upd((x) => (x.rivalSignals = v))} />
                   </SignSrow>
                 )}
-                {/* No Hesi scoring: speed + near misses build a combo, contact
-                    resets it (game/engine.ts's noHesiUpdate). On by default. */}
-                <SignSrow name="No Hesi score" aside="— speed + near misses" lit={L("noHesiScore")}>
-                  <SignToggle label="No Hesi score" checked={s.noHesiScore} onChange={(v) => upd((x) => (x.noHesiScore = v))} />
+                {/* The clean-run readout: distance since the last real impact
+                    (game/engine.ts's runUpdate). On by default. This is the
+                    old "No Hesi score" toggle under a new name and a new
+                    meaning — settings.ts carries a stored value across. */}
+                <SignSrow name="Clean run" aside="— distance since your last crash" lit={L("cleanRunScore")}>
+                  <SignToggle label="Clean run" checked={s.cleanRunScore} onChange={(v) => upd((x) => (x.cleanRunScore = v))} />
                 </SignSrow>
                 {/* Gates game/hints.ts wholesale. Which tips have already fired is
                     stored separately from the settings (see settings.ts), so DEFAULTS

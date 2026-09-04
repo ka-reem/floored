@@ -433,6 +433,22 @@ export const speedInUnits = (u: number, units: SpeedUnits) =>
 
 export const unitLabel = (units: SpeedUnits) => (units === "mph" ? "mph" : "km/h");
 
+/** Convert a distance (metres, the engine's own unit) to the DISTANCE that
+    goes with the configured speed unit — miles on mph, kilometres on km/h.
+    There is deliberately no second unit control: the owner's ask was "by
+    miles or smth", and a player already told us which system they think in
+    when they picked the speedo. */
+export const distInUnits = (m: number, units: SpeedUnits) =>
+  m / (units === "mph" ? 1609.344 : 1000);
+
+export const distLabel = (units: SpeedUnits) => (units === "mph" ? "mi" : "km");
+
+/** One decimal, in the player's own unit — the clean-run readout's format,
+    shared by the HUD (game/engine.ts) and the STATS board (GameApp.tsx) so
+    the two can never disagree about a number the player compares. */
+export const fmtRunDist = (m: number, units: SpeedUnits) =>
+  distInUnits(m, units).toFixed(1) + " " + distLabel(units);
+
 export interface GameSettings {
   preset: "low" | "medium" | "high";
   reflections: boolean;
@@ -479,11 +495,14 @@ export interface GameSettings {
       cuts through traffic and still signals is a contradiction, and the
       ABSENCE of a blinker is characterisation the player reads immediately. */
   rivalSignals: boolean;
-  /** the No Hesi scoring loop — speed + near misses build a combo, contact
-      resets it (see NOHESI in game/engine.ts). On by default, same pattern
-      as `rival`: it costs nothing while driving clean and reads immediately
-      as this game's version of the reference title's vibe bar. */
-  noHesiScore: boolean;
+  /** the clean-run readout: distance since the last real impact, in the
+      player's own distance unit (see runUpdate in game/engine.ts). This is
+      the successor to `noHesiScore` — the toggle survived the scoring
+      change, its meaning is now "show the clean-run readout", and
+      loadProfile carries a stored noHesiScore across to it once. On by
+      default: it costs nothing while driving clean and it is now a quiet
+      corner figure rather than a running arcade total. */
+  cleanRunScore: boolean;
   /** first-run discovery hints (game/hints.ts): one-shot in-context tips.
       This toggle gates the whole system; WHICH tips have already fired is
       not a setting and lives separately (hintSeen below), so "Reset all
@@ -529,11 +548,15 @@ export interface Profile {
   paintIx: number;
   seed: number;
   camMode: number;
-  /** best-ever No Hesi score, across every drive on this profile — see
-      game/engine.ts's noHesiUpdate. Only ever grows. */
-  noHesiBest: number;
+  /** best-ever CLEAN RUN on this profile: the furthest the car has been
+      driven between two real impacts, in metres (converted at display time
+      like every other stored distance). Only ever grows. Replaces the old
+      `noHesiBest`, which held arcade POINTS — there is no honest conversion
+      from points to metres, so that key is dropped rather than migrated
+      (see loadProfile). */
+  cleanRunBest: number;
   /** lifetime drive statistics — see the DRIVE STATS block in engine.ts.
-      Written by GameApp.tsx's persist() the same way noHesiBest is. */
+      Written by GameApp.tsx's persist() the same way cleanRunBest is. */
   stats: LifetimeStats;
   /** head-unit tic-tac-toe record, the player's side (game/consolegame.ts).
       Bound into the pane at engine construction and mutated in place there,
@@ -590,7 +613,7 @@ export const defaultSettings = (): GameSettings => ({
   rival: false,
   rivalSignals: false,
   testMode: false,
-  noHesiScore: true,
+  cleanRunScore: true,
   hints: true,
 });
 
@@ -606,7 +629,7 @@ export const defaultProfile = (): Profile => ({
      looking for the camera control. Only affects first run: an existing
      profile keeps whatever camera it was last left on. */
   camMode: 3,
-  noHesiBest: 0,
+  cleanRunBest: 0,
   stats: defaultLifetimeStats(),
   ttt: { w: 0, l: 0, d: 0 },
 });
@@ -650,11 +673,11 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
   "autoTime", "rain", "mmap", "mmapZoom", "rival", "rivalSignals", "testMode",
-  "noHesiScore", "hints",
+  "cleanRunScore", "hints",
 ] as const;
 
 /** Lifetime-stats fields, all "non-negative finite number or the default" —
- *  the same scrub noHesiBest gets, driven off a key list like NUM_KEYS so a
+ *  the same scrub cleanRunBest gets, driven off a key list like NUM_KEYS so a
  *  new statistic is one entry here rather than a hand-written guard. */
 const STAT_KEYS = [
   "dist", "topSpeed", "driveT", "nearMisses", "bestCombo", "crashes",
@@ -700,6 +723,19 @@ export function loadProfile(): Profile {
        or indices instead of falling back. */
     if (!p || typeof p !== "object" || Array.isArray(p)) return base;
     const settings = { ...base.settings, ...(p.settings || {}) };
+    /* RENAME CARRY: noHesiScore -> cleanRunScore.
+
+       The scoring changed underneath this toggle but the toggle did not: it
+       still answers "do I want the score readout on the HUD?", and a player
+       who turned it off does not want the clean-run figure either. Carried
+       across once, only when the new key is absent (so a real choice made
+       against the new name always wins), then the old key is dropped so the
+       next save stops writing it. No flag needed — the carry is idempotent
+       because it deletes its own source. */
+    const legacyScore = (settings as unknown as Record<string, unknown>).noHesiScore;
+    if (typeof legacyScore === "boolean" && typeof (p.settings || {}).cleanRunScore !== "boolean")
+      settings.cleanRunScore = legacyScore;
+    delete (settings as unknown as Record<string, unknown>).noHesiScore;
     /* ONE-TIME: clear a stored mblur:true.
 
        Motion blur defaulted ON for the whole life of the v3 profile, and the
@@ -785,8 +821,18 @@ export function loadProfile(): Profile {
        player again — someone who picks the KAZE GT after this keeps it. */
     if (migrateCar && prof.carId === "kaze") prof.carId = DEFAULT_CAR_ID;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
-    if (typeof prof.noHesiBest !== "number" || !Number.isFinite(prof.noHesiBest) || prof.noHesiBest < 0)
-      prof.noHesiBest = base.noHesiBest;
+    if (
+      typeof prof.cleanRunBest !== "number" || !Number.isFinite(prof.cleanRunBest) ||
+      prof.cleanRunBest < 0
+    )
+      prof.cleanRunBest = base.cleanRunBest;
+    /* The retired No Hesi points best. NOT migrated: it counted
+       speed x combo x seconds, and the record that replaced it counts
+       metres — any mapping between the two would be invented, and inventing
+       a personal best is worse than starting one. Deleted here so the next
+       save stops carrying a dead key forward (the `...p` spread above would
+       otherwise preserve it for the life of the profile). */
+    delete (prof as unknown as Record<string, unknown>).noHesiBest;
     /* Lifetime stats: rebuilt field-by-field off the defaults, the same
        shape as the settings spread above — a stored non-object would spread
        its characters/indices into the profile otherwise, and any single
