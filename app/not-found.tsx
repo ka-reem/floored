@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { NAME_LABEL } from "@/lib/build";
+
 /* 404 for the whole app (app/not-found.tsx is the root fallback per
    node_modules/next/dist/docs/.../file-conventions/not-found.md). The game is
    one route; anything else is a typo or a stale link, so this only has to
@@ -33,7 +35,7 @@ export default function NotFound() {
             textShadow: "0 0 12px var(--accent-glow)",
           }}
         >
-          NEON EXPRESSWAY
+          {NAME_LABEL}
         </div>
         <div style={{ marginTop: 6, fontSize: 12, letterSpacing: "0.4em", color: "var(--jp, #ff6f9c)" }}>
           首都高

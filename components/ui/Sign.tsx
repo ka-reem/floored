@@ -109,21 +109,30 @@ export function SignTitle({ jp, en, as: Tag = "h1" }: { jp: string; en: string; 
   );
 }
 
-/** A sub-screen header: glyph (shield by default) · JP-over-EN title · a
-    two-line corner caption. The board's own header row, sized for the
-    1320-wide screens (System sheet: 56/22 title, 72×66 shield). */
+/** A sub-screen header: glyph (shield by default) · JP-over-EN title · an
+    optional supplementary plate beside the title · a two-line corner caption.
+    The board's own header row, sized for the 1320-wide screens (System sheet:
+    56/22 title, 72×66 shield).
+
+    `mark` is the supplementary-plate slot: a small bordered plate hung off the
+    end of the title, the way a real guide sign carries a 試験 / 工事中 panel.
+    Presentational only — the caller decides what it says (GameApp's BetaMark is
+    the one user today). It comes before the corner caption so the caption keeps
+    its margin-left:auto and stays hard right. */
 export function SignHead({
-  jp, en, corner, glyph,
+  jp, en, corner, glyph, mark,
 }: {
   jp: string;
   en: string;
   corner?: ReactNode;
   glyph?: ReactNode;
+  mark?: ReactNode;
 }) {
   return (
     <header className="sign-head sub">
       {glyph ?? <SignShield />}
       <SignTitle jp={jp} en={en} as="h2" />
+      {mark}
       {corner !== undefined && (
         <div className="sign-corner sign-cap" aria-hidden="true">
           {corner}

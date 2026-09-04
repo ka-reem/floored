@@ -13,7 +13,7 @@ import {
   SignHead, SignBody, SignFootbar, SignBtn, SignToggle, SignSeg, SignSelect, SignSlider,
   SignShead, SignSrow, SignPost, SignArrow, SignP,
 } from "@/components/ui/Sign";
-import pkg from "../package.json";
+import { BETA_JP, BETA_LABEL, BETA_NOTE, GAME_NAME, IS_BETA, NAME_VERSION, VERSION_LABEL } from "@/lib/build";
 import {
   loadProfile, saveProfile, defaultSettings, applyPresetDefaults, unitLabel,
   speedInUnits, syncRivalMode, syncCabinMode, cabinAutoLabel,
@@ -22,14 +22,32 @@ import {
 
 type Screen = "main" | "garage" | "settings" | "controls" | "stats" | "credits" | "loading" | "playing" | "paused" | "photo";
 
-/** package.json's version, shown small on the home plate, the pause board
-    and the credits screen so a bug report can say which build it saw. */
-const VERSION: string = pkg.version;
 /** The "Report a bug" link (pause + credits): a plain mailto with the
-    subject filled in and the version in the body. */
+    subject filled in and the build — beta flag included — in the body, so a
+    report always says which build it saw. Everything about the build's
+    identity comes from lib/build.ts; nothing here reads package.json. */
 const BUG_MAILTO =
-  "mailto:bugs@example.invalid?subject=" + encodeURIComponent("NEON EXPRESSWAY bug") +
-  "&body=" + encodeURIComponent(`NEON EXPRESSWAY v${VERSION}\n\nWhat happened:\n`);
+  "mailto:bugs@example.invalid?subject=" + encodeURIComponent(`${NAME_VERSION} bug`) +
+  "&body=" + encodeURIComponent(`${NAME_VERSION}\n\nWhat happened:\n`);
+
+/** The BETA supplementary plate: 試験版 over/next to BETA on a bordered plate,
+    hung beside a board's title the way a real guide sign carries a temporary
+    panel. `sm` is the sub-screen size (their titles are 56 to home's 74).
+
+    Renders NOTHING once lib/build.ts's IS_BETA goes false, which is why every
+    screen can mount it unconditionally. Deliberately absent from the driving
+    HUD and the phone HUD — the in-drive frame stays clean. */
+function BetaMark({ sm }: { sm?: boolean }) {
+  if (!IS_BETA) return null;
+  return (
+    <span className={sm ? "sign-beta sm" : "sign-beta"}>
+      <span className="sign-beta-jp ui-jp" lang="ja">
+        {BETA_JP}
+      </span>
+      <span className="sign-beta-en">{BETA_LABEL}</span>
+    </span>
+  );
+}
 
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
@@ -554,6 +572,7 @@ export default function GameApp() {
               <header className="sign-head">
                 <SignShield />
                 <SignTitle jp="首都高ナイトドライブ" en="NEON EXPRESSWAY" />
+                <BetaMark />
                 <div className="sign-corner sign-cap" aria-hidden="true">
                   TOKYO METROPOLITAN
                   <br />
@@ -601,7 +620,7 @@ export default function GameApp() {
               <div className="sign-foot sign-cap faint" aria-hidden="true">
                 <span className="ui-jp" lang="ja">現在の車</span> {getCar(g?.carId || DEFAULT_CAR_ID).name} ·{" "}
                 {PAINTS[(g?.paintIx || 0) % PAINTS.length].name} · TOWN SEED {g?.seed} ·{" "}
-                <span className="sign-ver">v{VERSION}</span>
+                <span className="sign-ver">{VERSION_LABEL}</span>
               </div>
             </SignPlate>
             {/* supplementary plate: current car, then the old subtitle copy.
@@ -617,9 +636,15 @@ export default function GameApp() {
               <span className="sign-plate-line faint">
                 A PROCEDURALLY GENERATED TOWN · ELEVATED EXPRESSWAY · DENSE TRAFFIC · TOWN SEED {g?.seed}
               </span>
+              {/* The one line of beta copy (lib/build.ts BETA_NOTE): what to
+                  expect, and where the bug link already lives. It sits on the
+                  home plate rather than in game/hints.ts on purpose — the
+                  first-run hints fire over a moving car, and the in-drive
+                  frame stays clean. Gone with IS_BETA. */}
+              {IS_BETA && <span className="sign-plate-line beta">{BETA_NOTE}</span>}
               {/* build number + the way to the credits (attributions, privacy) */}
               <span className="sign-plate-line foot">
-                <span className="sign-ver faint">v{VERSION}</span>
+                <span className="sign-ver faint">{VERSION_LABEL}</span>
                 <button type="button" className="sign-plate-btn" onClick={() => setScreen("credits")}>
                   CREDITS
                 </button>
@@ -645,7 +670,7 @@ export default function GameApp() {
           <SignPost />
           <div className="sign-stack sub narrow">
             <SignPlate screen>
-              <SignHead jp="一時停止" en="PAUSED" corner={<>Esc RESUMES<br />MUSIC PAUSED</>} />
+              <SignHead jp="一時停止" en="PAUSED" corner={<>Esc RESUMES<br />MUSIC PAUSED</>} mark={<BetaMark sm />} />
               <SignRule />
               <SignBody>
                 <nav className="sign-rows two" aria-label="Pause menu">
@@ -670,7 +695,7 @@ export default function GameApp() {
                   <SignRow jpAttr glyph={<>↩</>} jp="出口" en="MAIN MENU" note="ENDS THE DRIVE" onClick={backToMenu} />
                 </nav>
               </SignBody>
-              <SignFootbar keep caption={<>NEON EXPRESSWAY <span className="sign-ver">v{VERSION}</span></>}>
+              <SignFootbar keep caption={<>{GAME_NAME} <span className="sign-ver">{VERSION_LABEL}</span></>}>
                 <a className="sign-btn ghost sm" href={BUG_MAILTO}>REPORT A BUG</a>
               </SignFootbar>
             </SignPlate>
@@ -767,6 +792,7 @@ function LoadingScreen({
               <div className="sign-title-jp loadJp" lang="ja">首都高ナイトドライブ</div>
               <h1 className="sign-title loadTitle">NEON EXPRESSWAY</h1>
             </div>
+            <BetaMark />
           </header>
           <SignRule />
           {error ? (
@@ -1355,7 +1381,7 @@ function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
       <Gantry />
       <div className="sign-stack sub mid">
         <SignPlate hangers screen>
-          <SignHead jp="記録" en="STATS" corner={<>DRIVE STATISTICS<br />SNAPSHOT · PAUSED</>} />
+          <SignHead jp="記録" en="STATS" corner={<>DRIVE STATISTICS<br />SNAPSHOT · PAUSED</>} mark={<BetaMark sm />} />
           <SignRule />
           <SignBody>
             <div className="statsGrid">
@@ -1479,6 +1505,7 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
             en="GARAGE"
             glyph={<SignP big />}
             corner={<>PICK YOUR MACHINE<br />{nPlayable} DRIVEABLE · {nSoon} COMING SOON</>}
+            mark={<BetaMark sm />}
           />
           <SignRule />
           <SignBody>
@@ -1647,6 +1674,7 @@ function SettingsPanel({
             jp="設定"
             en="SETTINGS"
             corner={<>DEVICE TIER · {game.renderTier.toUpperCase()}<br />CHANGES APPLY LIVE</>}
+            mark={<BetaMark sm />}
           />
           <SignRule />
           <SignBody>
@@ -1989,7 +2017,7 @@ function ControlsScreen({
       <Gantry />
       <div className="sign-stack sub">
         <SignPlate hangers screen>
-          <SignHead jp="操作方法" en="CONTROLS" corner={<>H TOGGLES THIS SCREEN<br />IN-GAME</>} />
+          <SignHead jp="操作方法" en="CONTROLS" corner={<>H TOGGLES THIS SCREEN<br />IN-GAME</>} mark={<BetaMark sm />} />
           <SignRule />
           <SignBody>
             <div className="sign-cols ctrl">
@@ -2098,7 +2126,12 @@ function CreditsScreen({ loaded, onBack }: { loaded: boolean; onBack: () => void
       <Gantry />
       <div className="sign-stack sub mid">
         <SignPlate hangers screen>
-          <SignHead jp="クレジット" en="CREDITS" corner={<>NEON EXPRESSWAY v{VERSION}<br />ATTRIBUTIONS · PRIVACY</>} />
+          <SignHead
+            jp="クレジット"
+            en="CREDITS"
+            corner={<>{NAME_VERSION}<br />ATTRIBUTIONS · PRIVACY</>}
+            mark={<BetaMark sm />}
+          />
           <SignRule />
           <SignBody>
             <SignShead en="THIRD-PARTY ASSETS" jp="素材" />
@@ -2146,7 +2179,7 @@ function CreditsScreen({ loaded, onBack }: { loaded: boolean; onBack: () => void
               turns it back on.
             </div>
           </SignBody>
-          <SignFootbar keep caption={<>every asset&apos;s provenance is in ATTRIBUTIONS.md · <span className="sign-ver">v{VERSION}</span></>}>
+          <SignFootbar keep caption={<>every asset&apos;s provenance is in ATTRIBUTIONS.md · <span className="sign-ver">{VERSION_LABEL}</span></>}>
             <a className="sign-btn ghost sm" href={BUG_MAILTO}>REPORT A BUG</a>
             <SignBtn variant="ghost" back onClick={onBack}>
               BACK
