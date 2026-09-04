@@ -121,6 +121,9 @@ function run(sp, opts, kmh, script, seconds) {
       beta: beta(car) * DEG,
       head: (car.h - h0) * DEG,
       delta: car.delta * DEG,
+      // world pose, so the trace can be drawn as a path with the car's own
+      // heading on it — which is how a drift ANGLE is actually read
+      x: car.x, z: car.z, h: car.h,
       hb: inp.hb, th: inp.th, st: inp.st,
     });
   }
@@ -338,8 +341,8 @@ if (CSV) {
       useHB(cfg);
       const rows = run(spec(), OPTS_TC, kmh, pullScript({ stick, thr: CSV_THR }), 6);
       writeFileSync(path.join(CSV, `${cname}.${sname}.csv`),
-        "t,kmh,r,ar,beta,head,delta,hb\n" +
-        rows.map((s) => [s.t, s.kmh, s.r, s.ar, s.beta, s.head, s.delta, s.hb]
+        "t,kmh,r,ar,beta,head,delta,hb,x,z,h\n" +
+        rows.map((s) => [s.t, s.kmh, s.r, s.ar, s.beta, s.head, s.delta, s.hb, s.x, s.z, s.h]
           .map((v) => (+v).toFixed(4)).join(",")).join("\n") + "\n");
     }
   }
