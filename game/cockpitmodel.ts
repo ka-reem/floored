@@ -711,12 +711,36 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
        within a real car's column/trim spread, and the hub stays below the
        frame edge in POV, so nothing reads as floating.
 
+       28 -> 56 mm BECAUSE THE DASHCAM IS THE ONLY VIEW THAT NUMBER WAS FITTED
+       IN, and it is not the view the wheel covers. Same sightline, different
+       eye: CAM_COCKPIT sits 310 mm further BACK (cockpit-local z 0.0 against
+       the dashcam lens at 0.31), so its eye-to-cluster over eye-to-rim ratio
+       is 1.42 rather than 1.86 and the rim's arc lands 65% up the cluster
+       face instead of 32% — straight across the digital speed. Measured
+       rather than eyeballed (test/wheel-cluster-measure.mjs; the whole table
+       is in docs/handoff/reports/wheel-cluster.md): of the speed readout's
+       own pixels, 79% were behind the rim in COCKPIT and 12% in CONSOLE, at
+       every steering angle, parked and at 120 km/h, on desktop and phone
+       frames alike. Another 28 mm takes those to 4% and 0%, and the dashcam —
+       judged first, and not allowed to go backwards — improves as well:
+       cluster face 17.3% -> 4.0% hidden, gear digit 63% -> 0%, which closes
+       the item the wheel-center pass left open.
+
+       The bound on this is the COLUMN, not the rim: the donor's `column`
+       shroud and its stalks are separate roles and do NOT move with axisG, so
+       every millimetre here is a millimetre of gap between the wheel boss and
+       the shroud behind it. At 56 mm the boss still covers it in all three
+       in-car views (CONSOLE sees the most of it); much past that and the
+       wheel starts floating off its own column. The wheel's SIZE is not the
+       lever and must not be touched: it renders 379.5 mm across against a
+       real S90's 370, and growing it RAISES the arc across the cluster.
+
        Applied AFTER the re-parenting above, deliberately: the locals were
        taken against the un-nudged axisG matrix, so the rim sits exactly on
        the fitted pivot and the whole assembly — pivot and rim together —
        drops and shrinks as one. Nudging before that inverse would bake the
        offset into the locals and move nothing while un-centering the spin. */
-    axisG.position.y -= 0.028;
+    axisG.position.y -= 0.056;
     axisG.scale.setScalar(0.97);
   }
 
