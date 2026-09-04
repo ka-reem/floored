@@ -96,6 +96,173 @@ try {
   /* non-browser (SSR, tests) — the sim imports the object directly */
 }
 
+/* ---- Handbrake / drift ------------------------------------------------
+   WHAT WAS WRONG (test/handbrake-drift-sim.mjs, before this block existed).
+   The old lever was three inline numbers: rear lateral force scaled by
+   `1 - 0.66*hb`, a flat 5600 N bolted onto the rear brake, and ESC plus TC
+   switched off outright above hb 0.3. Traced at 60 km/h with half a stick and
+   45% throttle, that is not a drift, it is a pirouette to a dead stop:
+
+     t=1.00 pull   67.6 km/h  yaw 0.42 rad/s  rear slip  -2.6 deg
+     t=1.50        59.1 km/h  yaw 1.75        rear slip -25.3
+     t=1.75        40.1 km/h  yaw 2.80        rear slip -53.4
+     t=2.00         3.5 km/h  yaw 0.45        rear slip -83.4   <- stopped
+     t=2.25 .. 4.00 the car sits still for the rest of the pull
+
+   Every stick position from 15% to 100% did the same thing, and full throttle
+   bought 10.8 km/h at the end of the pull against 0.0 km/h at no throttle —
+   i.e. the pedal was worth nothing. Three causes, all of them here:
+
+     1. NO EQUILIBRIUM. Rear lateral was crushed to 0.34 and then the friction
+        ellipse took another x0.71 off it (FxR sat at -5600 N against an
+        8011 N cap), leaving the rear a quarter of the front's grip. Past the
+        Pacejka peak more slip means LESS force, so nothing ever pushed back:
+        the yaw rate ran to its 3.6 rad/s hard clamp every time.
+     2. NOTHING CAUGHT IT. ESC and TC both switch off at hb 0.3, deliberately,
+        so a deliberate slide works — but there was then no other bound of any
+        kind on yaw or sideslip.
+     3. THE PEDAL LOST TO THE LEVER. driveF and the 5600 N are summed into the
+        same FxR, so the lever simply won; and once the car is at 80 deg of
+        slip the drive force points across the direction of travel anyway.
+
+   WHAT THIS DOES INSTEAD. `lat`/`long` take grip off the rear axle (a locked
+   tyre loses BOTH, which the old model never did), `force` and `thrRelief`
+   let the throttle out-pull the lever so the slide is sustained rather than
+   scrubbed off, and `holdDeg`/`catchDeg`/`catchGrip` hand the rear its grip
+   back progressively once the angle goes past what the lever is meant to
+   hold. That last part is the whole trick: inside the band nothing pushes
+   back and the angle is the driver's to hold, outside it the restoring force
+   grows with the angle, so a big slide is BOUNDED instead of divergent.
+
+   NOTHING HERE CAN MOVE NORMAL DRIVING. Every consumer is a lerp on `hbG`,
+   which is exactly 0 whenever the lever has been down for `releaseT`, and
+   HB_VARIANTS.stock reproduces the old arithmetic bit for bit. The sim drives
+   this object to absurd values and requires every lever-never-touched row to
+   come out identical — a property check, not a golden file.
+
+   Live on the console as `window.__handbrake`, same as __arcadeSteer: read
+   fresh every physics step, so the feel can be retuned between one corner and
+   the next with no rebuild. */
+export interface HandbrakeTune {
+  /** Rear LATERAL grip left while the lever is up, as a fraction of normal.
+   *  This is what breaks the axle loose. Lower is looser — but on its own it
+   *  only makes the car diverge faster, which is what the old 0.34 did. */
+  lat: number;
+  /** Rear LONGITUDINAL grip cap while the lever is up, as a fraction. The old
+   *  model left this at 1, i.e. a "locked" rear tyre kept every newton of its
+   *  drive and braking authority, which is why the lever could out-pull the
+   *  engine. Ceilings the lever's own force too, so it is also what stops the
+   *  handbrake being a stronger brake than the brakes. */
+  long: number;
+  /** The lever's rear brake force, N. 5600 was enough to take 28 km/h out of
+   *  the car in a second before the slide had even developed. */
+  force: number;
+  /** What the lever's force is multiplied by at FULL throttle. 1 = the pedal
+   *  and the lever fight each other in the same FxR the way they used to;
+   *  0.4 means standing on it releases 60% of the lever, which is the owner's
+   *  "still push out power". Faded out at parking speed (see `minSpeed`) so
+   *  throttle can never drive out from under the lever in a car park. */
+  thrRelief: number;
+  /** Sideslip, degrees, the lever will hold with nothing pushing back. This
+   *  is the drift angle the car settles at, and the single most useful knob:
+   *  raise it for a looser car, drop it for one that only rotates. */
+  holdDeg: number;
+  /** Degrees beyond `holdDeg` over which the rear takes its grip back. Small
+   *  is a wall you bounce off, large is a soft ceiling you can lean on. */
+  catchDeg: number;
+  /** How much of the lost rear grip comes back at the top of that ramp.
+   *  1 = the axle is fully gripping again by holdDeg+catchDeg (cannot spin,
+   *  but the ceiling is firm); 0 = the old divergent behaviour. */
+  catchGrip: number;
+  /** Yaw damping multiplier while the lever is up and inside the band. Under
+   *  1 lets the car rotate freely onto its angle. */
+  yawDampMul: number;
+  /** Seconds of LOOKAHEAD the catch reads the slide angle through. Without
+   *  it the catch is pure proportional control on an angle that is already
+   *  moving, which overshoots and turns the drift into a pendulum (measured:
+   *  a 3 s pull that ended anywhere between 0 and 41 deg of sideslip for the
+   *  same inputs, and once swung 14 deg past straight the other way). The
+   *  lookahead extrapolates the LATERAL VELOCITY along its own derivative —
+   *  `v + (ayS - u*r)*t`, i.e. last step's dv — which is the derivative term.
+   *  It has to be dv and not `-u*r*t`: a steady drift has a large yaw rate by
+   *  definition, so `-u*r*t` reads a settled 22 deg slide as a runaway and
+   *  the catch never lets the angle past half of holdDeg. dv is 0 in a
+   *  steady slide, whatever the yaw rate, and large exactly when the angle is
+   *  actually running away. Set 0 for pure proportional. */
+  catchLead: number;
+  /** Yaw acceleration, rad/s^2, of CATCH at the top of that ramp: a
+   *  corrective moment that rotates the car back toward its own velocity
+   *  vector, which is exactly what a driver's counter-steer does. This is the
+   *  term that turns the slide from divergent into bounded — grip coming back
+   *  at 70 deg of sideslip is worth almost nothing, because the Pacejka curve
+   *  is long past its peak there, so the catch has to act on the ANGLE
+   *  directly. Zero inside the band, so it never fights a held drift. */
+  catchYaw: number;
+  /** Yaw damping multiplier at the top of the catch ramp. Over 1 stops the
+   *  rotation dead once the angle is past the band, so the catch settles the
+   *  car rather than bouncing it. */
+  catchDamp: number;
+  /** Seconds for the lever to take full effect. Non-zero mostly so a tapped
+   *  lever flicks the tail rather than snapping it. */
+  engageT: number;
+  /** Seconds for grip to come back on RELEASE. The reason the car settles
+   *  instead of snapping straight; 0 is the old instant restore. */
+  releaseT: number;
+  /** Below this road speed, m/s, the lever is a plain parking brake again:
+   *  no grip loss, no throttle relief, full force. Keeps auto-hold, the
+   *  standstill and low-speed manoeuvring exactly as they are. */
+  minSpeed: number;
+  /** m/s over which that fades in above `minSpeed`. */
+  speedRamp: number;
+}
+
+/** The three tunings the feel was chosen from. Swapping the default below is
+ *  a one-line change; nothing else in the file names a variant.
+ *
+ *  stock   the handbrake exactly as it shipped — kept so the sim can measure
+ *          against it rather than remember it, and as an instant revert.
+ *  nudge   "nudges the back out": rotates the car into a corner and tucks
+ *          straight back in. Barely a drift, very hard to get wrong.
+ *  drift   "holds a slide if you stay on the power" — the recommended one.
+ *  loose   "hangs it right out and lets you steer on the throttle": a big
+ *          lazy angle that needs the pedal and the counter-steer to hold. */
+export const HB_VARIANTS: Record<string, HandbrakeTune> = {
+  stock: {
+    lat: 0.34, long: 1, force: 5600, thrRelief: 1,
+    holdDeg: 0, catchDeg: 1, catchGrip: 0, catchYaw: 0, catchLead: 0,
+    yawDampMul: 1, catchDamp: 1,
+    engageT: 0, releaseT: 0, minSpeed: -1, speedRamp: 1,
+  },
+  nudge: {
+    lat: 0.62, long: 0.84, force: 5600, thrRelief: 0.45,
+    holdDeg: 12, catchDeg: 10, catchGrip: 1, catchYaw: 12, catchLead: 0.4,
+    yawDampMul: 0.9, catchDamp: 2.6,
+    engageT: 0.1, releaseT: 0.45, minSpeed: 1.5, speedRamp: 4,
+  },
+  drift: {
+    lat: 0.5, long: 0.76, force: 4800, thrRelief: 0.3,
+    holdDeg: 22, catchDeg: 14, catchGrip: 1, catchYaw: 11, catchLead: 0.4,
+    yawDampMul: 0.8, catchDamp: 2.4,
+    engageT: 0.1, releaseT: 0.5, minSpeed: 1.5, speedRamp: 4,
+  },
+  loose: {
+    lat: 0.4, long: 0.7, force: 4000, thrRelief: 0.22,
+    holdDeg: 34, catchDeg: 20, catchGrip: 0.95, catchYaw: 10, catchLead: 0.42,
+    yawDampMul: 0.68, catchDamp: 2.1,
+    engageT: 0.09, releaseT: 0.55, minSpeed: 1.5, speedRamp: 4,
+  },
+};
+
+/** The live tuning. ONE-LINE VARIANT SWAP: change `drift` to `nudge`, `loose`
+ *  or `stock` here and nothing else in the game needs to know. */
+export const HANDBRAKE: HandbrakeTune = { ...HB_VARIANTS.drift };
+
+try {
+  (window as unknown as { __handbrake?: unknown }).__handbrake = HANDBRAKE;
+} catch {
+  /* non-browser (SSR, tests) — the sim imports the object directly */
+}
+
 export interface CarState {
   x: number; y: number; z: number; h: number;
   u: number; v: number; r: number; delta: number;
@@ -115,6 +282,14 @@ export interface CarState {
       the flywheel model above. Physics reads this; humans read `rpm`. */
   rpmDrive: number;
   onLimiter: boolean; thrEff: number; brkEff: number; slipAmt: number;
+  /** How loose the handbrake currently has the rear axle, 0..1. Ramps up over
+      HANDBRAKE.engageT and, more importantly, back DOWN over releaseT, so grip
+      returns on a short ramp instead of the instant the key comes up — that is
+      what makes the car settle out of a slide rather than snap straight. Every
+      handbrake term reads this rather than input.hb, so all of them share one
+      release. Exactly 0 once the ramp has run out, which is what keeps normal
+      driving bit-identical. */
+  hbGrip: number;
   /** Flywheel-model state (see stepEngineSpeed). `shiftLen` is the duration
       the in-flight shift was scheduled for and `rpmShiftFrom` the engine
       speed it started at, which together let the needle sweep across the
@@ -153,7 +328,7 @@ export function freshCarState(x: number, y: number, z: number, h: number, u = 0)
     x, y, z, h, u, v: 0, r: 0, delta: 0, gear: 1, rev: false, revT: 0,
     wvx: 0, wvz: 0, axS: 0, ayS: 0, rpm: 1200, rpmDrive: IDLE_RPM, onLimiter: false,
     shiftLen: 0.24, rpmShiftFrom: 1200, revHang: 0, thrPrev: 0, engSeeded: false,
-    thrEff: 0, brkEff: 0, slipAmt: 0, slipDemand: 0,
+    thrEff: 0, brkEff: 0, slipAmt: 0, slipDemand: 0, hbGrip: 0,
     slope: 0, pitchDyn: 0, rollDyn: 0, odo: 0, shiftT: 0, cut: 0, absOn: false, hold: true,
     tcOn: false, sigL: false, sigR: false, lightsMode: "auto", lightsOn: true,
     damage: 0,
@@ -354,7 +529,23 @@ export function stepPhysics(
   // raw pedal demand: shift scheduling must not react to the limiter's own
   // fuel cut (or a crash cut), which zeroes `thr` below
   const thrCmd = input.th;
-  const hb = input.hb;
+  const hb = clamp(input.hb, 0, 1);
+  /* ---- handbrake state -------------------------------------------------
+     One ramp feeds every handbrake term below, so the lever engages and (the
+     point of it) releases as one thing. `hbGrip` is the lever itself; `hbG`
+     is the lever gated by road speed, and is what takes grip away — below
+     HANDBRAKE.minSpeed it collapses to 0 and the lever is a plain parking
+     brake again, which is what leaves auto-hold and low-speed manoeuvring
+     alone. With HB_VARIANTS.stock (engageT/releaseT 0, minSpeed -1) hbGrip
+     and hbG are both exactly input.hb and every lerp below collapses onto the
+     old inline arithmetic. */
+  const HB = HANDBRAKE;
+  const hbUp = HB.engageT > 0 ? dt / HB.engageT : Infinity;
+  const hbDn = HB.releaseT > 0 ? dt / HB.releaseT : Infinity;
+  car.hbGrip = clamp((car.hbGrip || 0) + clamp(hb - (car.hbGrip || 0), -hbDn, hbUp), 0, 1);
+  const hbSpd = clamp((Math.abs(car.u) - HB.minSpeed) / Math.max(HB.speedRamp, 1e-6), 0, 1);
+  const hbLever = car.hbGrip;
+  const hbG = hbLever * hbSpd;
   if (car.cut > 0) {
     car.cut -= dt;
     thr = 0;
@@ -502,12 +693,33 @@ export function stepPhysics(
   const muR = mu * spec.gripR * (1 - 4e-6 * Math.max(0, Fzr - (FzT * LA) / LWB));
   let Fyf = pacejka(af, 10.4, muF * Fzf * gf);
   car.tcOn = false;
-  if (opts.tcEnabled && thr > 0.1 && Math.abs(ar) > 0.13 && Math.abs(car.u) > 4 && !car.rev && hb < 0.3) {
+  if (opts.tcEnabled && thr > 0.1 && Math.abs(ar) > 0.13 && Math.abs(car.u) > 4 && !car.rev && hbLever < 0.3) {
     thr *= clamp(1 - (Math.abs(ar) - 0.13) * (spec.awd ? 7.5 : 5.5), spec.awd ? 0.3 : 0.18, 1);
     car.tcOn = true;
   }
+  /* ---- how loose the rear is, and how far out it may go ----------------
+     `over` is how far past the angle the lever is meant to HOLD the car has
+     already swung, normalised across the catch ramp. Inside the band it is 0
+     and the rear keeps the reduced `lat` grip: that is the driver's angle to
+     hold, and nothing pushes back. Past it the rear takes its grip back in
+     proportion, which turns a divergent slide (the old behaviour: rear at a
+     quarter of the front's grip, past the Pacejka peak, nothing to stop it)
+     into one with a ceiling you can lean on. Read from sideslip rather than
+     yaw rate deliberately — a spin is an ANGLE, and the old car reached 83 deg
+     of it with the yaw rate already back down to 0.45 rad/s.
+
+     Read through a short lookahead (HB.catchLead) rather than off the
+     instantaneous angle, so the catch leads the slide instead of chasing it
+     and lets go the moment the driver's counter-steer has it coming back.
+     Pure proportional control on the angle alone measured as a pendulum: the
+     same 3 s pull finishing anywhere between 0 and 41 deg of sideslip for the
+     same inputs, and once 14 deg past straight the other way. */
+  const hbLook = car.v + (car.ayS - car.u * car.r) * HB.catchLead;
+  const hbBeta = Math.abs(Math.atan2(hbLook, Math.max(Math.abs(car.u), 4))) * (180 / Math.PI);
+  const hbOver = clamp((hbBeta - HB.holdDeg) / Math.max(HB.catchDeg, 1e-6), 0, 1);
+  const hbLat = lerp(1, lerp(HB.lat, lerp(HB.lat, 1, HB.catchGrip), hbOver), hbG);
   // rear-axle grip bias lives in spec.gripR (legacy's inline 1.04)
-  let Fyr = pacejka(ar, 11.8, muR * Fzr * gf) * (1 - 0.66 * hb);
+  let Fyr = pacejka(ar, 11.8, muR * Fzr * gf) * hbLat;
 
   /* longitudinal */
   const sgn = Math.tanh(car.u * 2.5);
@@ -521,7 +733,14 @@ export function stepPhysics(
     (car.rpmDrive < 1400 && Math.abs(car.u) < 6 ? 1.55 : 1);
   const driveF = (driveT * gearRatio(spec, car.gear) * FINAL) / WR;
   const fSplit = spec.awd ? 0.42 : 0;
-  const capF = muF * Fzf, capR = muR * Fzr;
+  /* A locked tyre gives up its LONGITUDINAL grip as well as its lateral —
+     the old model took only the lateral, so the lever kept full authority to
+     both brake and drive and could simply out-pull the engine. capR0 is the
+     ungoverned cap and stays the friction ellipse's reference (the ellipse is
+     about how much of the REAL tyre the drive force is using); capR is what
+     actually limits FxR. */
+  const capF = muF * Fzf, capR0 = muR * Fzr;
+  const capR = capR0 * lerp(1, HB.long, hbG);
 
   /* Brake demand is resolved separately from drive force so ABS can modulate it
      alone, and each axle is capped by what the friction circle has left once the
@@ -549,7 +768,13 @@ export function stepPhysics(
   const bias = opts.arcade
     ? clamp(Fzf / FzT + 0.28 * lat, 0.62, 0.94)
     : clamp(Fzf / FzT + 0.1 * lat, 0.62, 0.88);
-  let bF = bias * brakeF, bR = (1 - bias) * brakeF + hb * 5600;
+  /* The lever's own force, and how much of it the throttle lets go of. This
+     is the owner's "still push out power": at full throttle the lever keeps
+     only HB.thrRelief of its pull, so drive wins the FxR sum and the slide is
+     sustained instead of scrubbed to a stop. Speed-gated through hbSpd so a
+     stationary car cannot drive out from under its own parking brake. */
+  const hbForce = hbLever * HB.force * lerp(1, HB.thrRelief, thr * hbSpd);
+  let bF = bias * brakeF, bR = (1 - bias) * brakeF + hbForce;
   if (brk > 0.02 && Math.abs(car.u) > 2.5) {
     // reserve < 1 on the front lets a little braking bleed past the pure-circle
     // answer (load transfer really does buy the front grip); the floors keep the
@@ -561,13 +786,13 @@ export function stepPhysics(
       lerp(0.97, opts.arcade ? 0.45 : 0.84, lat) * Math.sqrt(Math.max(0, 1 - useR * useR))
     );
     if (bF > lF) { bF = lF; car.absOn = true; }
-    if (bR > lR + hb * 5600) { bR = lR + hb * 5600; car.absOn = true; }
+    if (bR > lR + hbForce) { bR = lR + hbForce; car.absOn = true; }
   }
   let FxR = (car.rev ? -revF : driveF * (1 - fSplit)) - bR * sgn;
   let FxF = (car.rev ? 0 : driveF * fSplit) - bF * sgn;
 
   // traction side: unchanged wheelspin ceiling on drive force
-  if (!car.rev && thr < 0.02 && Math.abs(FxR) > capR * 0.99 && hb < 0.5 && Math.abs(car.u) > 3) {
+  if (!car.rev && thr < 0.02 && Math.abs(FxR) > capR * 0.99 && hbLever < 0.5 && Math.abs(car.u) > 3) {
     FxR = Math.sign(FxR) * capR * 0.97;
     car.absOn = true;
   }
@@ -576,7 +801,7 @@ export function stepPhysics(
 
   /* friction ellipse */
   Fyf *= Math.sqrt(clamp(1 - Math.pow(FxF / (muF * Fzf), 2), 0.05, 1));
-  Fyr *= Math.sqrt(clamp(1 - Math.pow(FxR / (muR * Fzr), 2), 0.05, 1));
+  Fyr *= Math.sqrt(clamp(1 - Math.pow(FxR / capR0, 2), 0.05, 1));
 
   /* creep + resistances */
   const creep =
@@ -594,7 +819,7 @@ export function stepPhysics(
      the deadband leaves room for a playful slide, and the handbrake switches it
      off entirely so deliberate drifts still work. */
   let escMz = 0, escDrag = 0, slipDemand = 0;
-  if (opts.tcEnabled && hb < 0.3 && Math.abs(car.u) > 4) {
+  if (opts.tcEnabled && hbLever < 0.3 && Math.abs(car.u) > 4) {
     /* The second term is a grip ceiling: the yaw rate a tyre of this mu can
        sustain at this speed. 10.5 m/s² is a road-car number, and an arcade
        tyre holds nearly three times it — left alone, ESC caps a steady
@@ -648,8 +873,23 @@ export function stepPhysics(
     slopeF +
     car.v * car.r;
   const dv = (Fyf * Math.cos(car.delta) + Fyr) / M - car.u * car.r;
-  const yawDamp = opts.arcade ? ARCADE_STEER.yawDamp : 1450;
-  const dr = (LA * Fyf * Math.cos(car.delta) - LB * Fyr - car.r * yawDamp + escMz) / IZ;
+  /* Yaw damping is softened while the lever is up so the car rotates onto
+     its angle freely, and stiffened again across the same catch ramp the rear
+     grip rides, so the two agree about where the band ends and the catch
+     settles the car instead of letting it bounce off the grip wall. */
+  const yawDamp = (opts.arcade ? ARCADE_STEER.yawDamp : 1450) *
+    lerp(1, lerp(HB.yawDampMul, HB.catchDamp, hbOver), hbG);
+  /* Drift catch. Beyond the band the car is handed a yaw moment toward the
+     sign of its own lateral velocity, i.e. it counter-steers itself: rotating
+     the nose into the slide is what shrinks the rear slip angle and lets the
+     tyre bite again. It has to be the ANGLE that is caught, not the yaw rate —
+     the old car reached 83 deg of rear slip with the yaw rate already back
+     down to 0.45 rad/s, and grip handed back that far past the Pacejka peak
+     is worth almost nothing. Ramped through hbLook rather than
+     switched on its sign, so it cannot chatter around a straight line, and
+     exactly 0 inside holdDeg, so a held drift is never fought. */
+  const hbMz = hbG * hbOver * HB.catchYaw * clamp(hbLook / 1.5, -1, 1) * IZ;
+  const dr = (LA * Fyf * Math.cos(car.delta) - LB * Fyr - car.r * yawDamp + escMz + hbMz) / IZ;
   car.axS = lerp(car.axS, du, clamp(9 * dt, 0, 1));
   car.ayS = lerp(car.ayS, dv + car.u * car.r, clamp(9 * dt, 0, 1));
   car.u += du * dt;
