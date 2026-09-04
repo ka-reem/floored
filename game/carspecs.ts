@@ -16,6 +16,12 @@ export interface ShellParams {
   wzR: number; // rear axle z (positive; negated internally)
   wheelR: number; // tire radius
   wheelWidth: number;
+  /** Visual track (metre, wheel centre to wheel centre). Optional: without it
+   *  player.ts derives the track from the procedural fenders, which is right
+   *  for a car wearing its own generated shell and wrong for one wearing an
+   *  imported body whose arches are somewhere else. Give it to a car with a
+   *  donor body, measured off that body's arch band. */
+  track?: number;
   spoiler?: "wing" | "lip" | "roofcap" | null;
   hoodBulge?: boolean;
 }
@@ -281,7 +287,14 @@ export const CARS: CarSpec[] = [
     shell: {
       L: 4.96, W: 1.88, ride: 0.36, nose: 0.58, tail: 0.62, belt: 0.92, roof: 1.44,
       hood: 1.24, trunk: 1.08, rakeF: 0.82, rakeR: 0.7, archR: 0.45, wzF: 1.5,
-      wzR: 1.44, wheelR: 0.34, wheelWidth: 0.25, spoiler: null,
+      /* wheelR 0.35, not the 0.34 an S90's 245/45R19 measures to the
+         millimetre: the donor's arch opening is 0.40 m from the hub, and at
+         0.34 the tyre left a 6 cm crescent of daylight all the way round that
+         no real car has. 0.35 halves it and still touches the road at y = 0,
+         because the pivots sit at y = wheelR — a bigger wheel fills the arch
+         without lifting the body a millimetre. track measured off the same
+         donor: see player.ts axX. */
+      wzR: 1.44, wheelR: 0.35, wheelWidth: 0.25, track: 1.6, spoiler: null,
     },
     phys: SHARED_PHYS,
     stats: SHARED_STATS,

@@ -5028,7 +5028,12 @@ export class Game {
     this.mmapWasOn = mmapOn;
     rig.pivFL.rotation.y = car.delta;
     rig.pivFR.rotation.y = car.delta;
-    const spin = (-car.u / this.spec.phys.WR) * dt;
+    /* The VISUAL radius, not the drivetrain's. phys.WR is 0.325 for every car
+       in the roster (it is part of the shared gearing) while the wheel on
+       screen is 0.35 on the Volvo, so the tread was running 7.7% faster than
+       the road under it. Nobody can see 7.7% on a blurred rim, but it is free
+       to be right and the number is now the one the arch was fitted to. */
+    const spin = (-car.u / this.rig.spec.shell.wheelR) * dt;
     for (const w of rig.wheels) w.rotation.x += spin;
     rig.cockpit.wheelGroup.rotation.z = -car.delta * 4.6;
     this.sky.ferris.rotation.z += dt * 0.06;
@@ -5036,10 +5041,23 @@ export class Game {
     if (this.world.goreBeaconMat)
       this.world.goreBeaconMat.opacity = (now * 1.4) % 1 < 0.55 ? 0.95 : 0.15;
     const braking = (car.brkEff > 0.12 && !car.rev) || this.input.hb > 0;
-    rig.tailMat.emissiveIntensity = braking ? 3.6 : car.lightsOn ? 0.95 : 0.12;
     const bOn = this.blinkOnNow(now);
-    rig.sigMatL.emissiveIntensity = car.sigL && bOn ? 3 : 0;
-    rig.sigMatR.emissiveIntensity = car.sigR && bOn ? 3 : 0;
+    /* One call for every rear lamp, on the procedural body and on the imported
+       one — see player.ts setLamps and game/donorlamps.ts. This used to be
+       three lines writing three procedural materials, which stopped being on
+       screen the day the donor body landed on top of them. */
+    rig.setLamps({
+      running: car.lightsOn,
+      brake: braking,
+      /* Selected AND moving backwards. A reverse lamp that lights the instant
+         the gear is chosen, while the car is still rolling forward, is the
+         thing every other car on the road reads as "he is backing into me". */
+      reverse: car.rev && car.u < -0.15,
+      sigL: car.sigL && bOn,
+      sigR: car.sigR && bOn,
+      high: this.highBeam,
+      day: this.dayFactor(),
+    });
     let wiping = false;
     if (this.wiperMode > 0) {
       /* Mode-driven sweep (was: always-on sin while raining). The state
