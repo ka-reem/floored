@@ -537,7 +537,7 @@ function rollRoad(seed: number): { steps: LaneStep[]; tunnels: TunnelSpec[] } {
      bunch it against the next one. */
   const t0 = planTunnel(
     rng, TAPER_BAND[0], WIDE_PIN[0], TAPER_BAND[0], -930,
-    320, 520, [0.12, 0.23, 0.65], BASE_LANES, null);
+    300, 620, [0.12, 0.23, 0.65], BASE_LANES, null);
   /* How wide the bridge / bypass-diverge section runs. Rolled before the east
      tube because it is what the tube's approach taper starts from. */
   let wr = rng(), wideLanes = WIDE_WEIGHTS[WIDE_WEIGHTS.length - 1][0];
