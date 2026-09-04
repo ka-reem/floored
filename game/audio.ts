@@ -63,6 +63,7 @@
    live-editable from the console via window.__tunnel, echo and growl on
    separate knobs so a bad mix can be diagnosed to one half —
    see TUNNEL_TUNE_SPEC. */
+import { DEBUG_HOOKS } from "./debug";
 
 /** Per-car engine character. Chosen by setCar(); "generic" is the fallback. */
 export interface EngineProfile {
@@ -747,6 +748,90 @@ const TUNNEL_TUNE_DEFAULT: TunnelTune = Object.fromEntries(
   TUNNEL_KEYS.map((k) => [k, TUNNEL_TUNE_SPEC[k].d])
 ) as TunnelTune;
 
+/* ---- Open-road growl: the tunnel's TUBE without the tunnel's ECHO -------
+   The owner's ask, verbatim: "the tunnel has that loud deep growl, i want to
+   replicate that sound but not echoey like a tunnel."
+
+   TUNNEL_TUNE_SPEC already splits those two halves: `wet` is the ECHO (the
+   convolver tail) and `growl` is the TUBE (a resonant low-mid boost with the
+   top rolled off). This block is the TUBE half, unhooked from the tunnel and
+   available on the open road, with the wet left at exactly 0 outside tunnels.
+
+   It sits on the ENGINE BUS ONLY — after engGrowlTrim, so it stacks with
+   (rather than fights) the tunnel's own growl when the car is actually in a
+   tunnel — and it is the last thing before master:
+
+     engMakeup -> engGrowl -> engGrowlTrim -> rgPeak -> rgTop -> rgTrim -┬-> master
+                                                                        └-> rgSat -┘
+
+   Post-limiter for the same reason the tunnel growl is: a boost in front of
+   engLim is a boost the limiter hands straight back as gain reduction.
+
+   EVERY VALUE DEFAULTS TO OFF, and off is exactly today's audio, not
+   approximately: an RBJ peaking biquad at 0dB has b == a, so H(z) = 1
+   identically; a highshelf at 0dB likewise; rgTrim is unity; and the
+   saturation branch is a PARALLEL send at gain 0, so its WaveShaper — which
+   clamps its input to [-1,1] before the curve lookup and is therefore never
+   transparent — contributes literal silence until `sat` is raised. Nothing
+   here is in the dry path uncancelled.
+
+   Live from the console as `window.__roadGrowl` (same pattern as
+   window.__audioTune / window.__tunnel), so the three candidate settings can
+   be A/B'd without a reload. Shipping a pick is one line: change the `d`
+   values below. */
+const ROAD_GROWL_SPEC = {
+  /** Peaking boost on the engine bus, dB. THE knob. The tunnel runs +7dB at
+      full strength; that number assumes a 3.2s tail underneath it carrying
+      the loudness, so on the open road it is a starting ceiling, not a
+      target. 0 = today's engine, untouched. */
+  db: { d: 0, lo: 0, hi: 12 },
+  /** Centre of the boost, Hz. Stacks on the engine's own fixed +6dB body
+      resonance at 165Hz; the tunnel picks 170 for exactly that reason.
+      Lower = chestier, higher = more nasal/boxy. */
+  hz: { d: 170, lo: 60, hi: 400 },
+  /** Q of the boost. The tunnel uses 1.2 (broad honk). Higher = a tighter,
+      more pitched resonance that tracks the firing note rather than smearing
+      a whole octave of low-mid. */
+  q: { d: 1.2, lo: 0.3, hi: 6 },
+  /** Fraction of `db` handed back broadband as trim, so the boost costs no
+      peak headroom. The tunnel uses 0.5 (half back), measured: uncompensated
+      its +7dB raised the engine bus PEAK by ~4.4dB at every rpm and there is
+      no master limiter downstream to catch it. Keep this at or above 0.5
+      unless a mix check says otherwise. 1 = fully peak-neutral (pure tone
+      change, no loudness), 0 = all of it is level. */
+  trim: { d: 0.5, lo: 0, hi: 1 },
+  /** High-shelf on the engine bus, dB, above `topHz`. The tunnel cuts -2.5dB
+      on the MASTER bus; a tunnel's dullness is part of its echo character,
+      so outside one the same cut can just read as muffled. Negative cuts,
+      positive opens the top back up. */
+  topDb: { d: 0, lo: -8, hi: 4 },
+  /** Corner of that shelf, Hz. */
+  topHz: { d: 3200, lo: 800, hi: 12000 },
+  /** Parallel harmonic saturation, 0-1: how much of a tanh-shaped copy of
+      the (already growl-EQ'd) engine bus is mixed in ALONGSIDE the dry path.
+      Parallel, not in-line, on purpose — the existing soft-clip stage in the
+      engine tone chain (shaperCurve, ~2.6x drive) is the one that owns the
+      dry path's character, and pushing more level into it is the "I turned
+      it up and it just got dirtier" failure. This adds grunt without moving
+      the dry signal at all. */
+  sat: { d: 0, lo: 0, hi: 1 },
+  /** Input gain into the saturation branch's shaper. Higher = more harmonics
+      generated per unit of level, i.e. dirtier at the same mix. The branch
+      output is scaled by 1/tanh(drive) so `sat` stays a mix control rather
+      than a second volume. */
+  satDrive: { d: 3, lo: 1, hi: 12 },
+  /** Lowpass on the saturation branch, Hz. Harmonics of a 100-200Hz firing
+      note that land above ~2kHz read as fizz rather than as grunt; this is
+      what keeps "harder" from becoming "buzzier". */
+  satHz: { d: 1600, lo: 200, hi: 12000 },
+} as const;
+
+export type RoadGrowlTune = { -readonly [K in keyof typeof ROAD_GROWL_SPEC]: number };
+const ROAD_GROWL_KEYS = Object.keys(ROAD_GROWL_SPEC) as (keyof RoadGrowlTune)[];
+const ROAD_GROWL_DEFAULT: RoadGrowlTune = Object.fromEntries(
+  ROAD_GROWL_KEYS.map((k) => [k, ROAD_GROWL_SPEC[k].d])
+) as RoadGrowlTune;
+
 /** One voice in the NPC doppler pool: a cheap oscillator (not the full
     player engine graph) routed through a StereoPanner. Assigned to nearby
     traffic cars by updateNpcs() with simple position-tracked voice
@@ -893,6 +978,16 @@ export class GameAudio {
   /** Broadband trim that gives back HALF of engGrowl's boost in dB. Keeps
       the growl a tone change rather than a level change — see applyTunnel. */
   private engGrowlTrim!: GainNode;
+  /* Open-road growl (ROAD_GROWL_SPEC). Flat/silent at the shipped defaults;
+     see the spec block for why "flat" here is exact and not approximate. */
+  private rgPeak!: BiquadFilterNode;
+  private rgTop!: BiquadFilterNode;
+  private rgTrim!: GainNode;
+  private rgSatLP!: BiquadFilterNode;
+  private rgDry!: GainNode;
+  private rgSat!: WaveShaperNode;
+  private rgSatOut!: GainNode;
+  private rgSatDrive = -1;
 
   /* reverb bus: feedback-delay network, no IR assets. Fed by fixed-ratio
      sends from the engine, tire, event and ambience buses; overall wet level
@@ -926,6 +1021,7 @@ export class GameAudio {
   private convWidth: DelayNode | null = null;
   /** Live tunnel knobs, refreshed from window.__tunnel by update(). */
   private tun: TunnelTune = { ...TUNNEL_TUNE_DEFAULT };
+  private rg: RoadGrowlTune = { ...ROAD_GROWL_DEFAULT };
 
   /* recorded-sample layers (lazy-loaded in init(), wired when decoded) */
   private engineMode: EngineMode = "sampled";
@@ -1051,6 +1147,21 @@ export class GameAudio {
     for (let i = 0; i < n; i++) {
       const x = (i / (n - 1)) * 2 - 1;
       c[i] = Math.tanh(x);
+    }
+    return c;
+  }
+
+  /** Saturation curve for the open-road growl branch: tanh(drive * x),
+      normalised so the curve itself spans [-1,1]. Unlike shaperCurve() the
+      drive is a parameter, because it is a live console knob
+      (`__roadGrowl.satDrive`) and the alternative — a fixed curve with a
+      pre-gain in front — would clamp rather than compress, see the note at
+      the construction site. */
+  private satCurve(drive: number) {
+    const n = 1024, c = new Float32Array(n), t = Math.tanh(drive);
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1;
+      c[i] = Math.tanh(drive * x) / t;
     }
     return c;
   }
@@ -1255,6 +1366,45 @@ export class GameAudio {
       this.engGrowl.gain.value = 0;
       this.engGrowlTrim = ctx.createGain();
       this.engGrowlTrim.gain.value = 1;
+      /* THE OPEN-ROAD GROWL — the tunnel's tube tone without the tunnel's
+         tail, see ROAD_GROWL_SPEC. Every node here is an identity at the
+         shipped defaults (0dB biquads, unity trim, a parallel saturation
+         send at gain 0), so the open-road engine is unchanged until someone
+         raises a knob. */
+      this.rgPeak = ctx.createBiquadFilter();
+      this.rgPeak.type = "peaking";
+      this.rgPeak.frequency.value = ROAD_GROWL_DEFAULT.hz;
+      this.rgPeak.Q.value = ROAD_GROWL_DEFAULT.q;
+      this.rgPeak.gain.value = ROAD_GROWL_DEFAULT.db;
+      this.rgTop = ctx.createBiquadFilter();
+      this.rgTop.type = "highshelf";
+      this.rgTop.frequency.value = ROAD_GROWL_DEFAULT.topHz;
+      this.rgTop.gain.value = ROAD_GROWL_DEFAULT.topDb;
+      this.rgTrim = ctx.createGain();
+      this.rgTrim.gain.value = 1;
+      /* Dry/wet, not dry-plus-wet: `sat` CROSSFADES between the clean bus and
+         a saturated copy of it, so turning it up changes the harmonic
+         content without changing the loudness. The first cut of this added
+         the branch on top instead and the harder candidate came back 7dB
+         hotter than the reference, which would have decided the owner's A/B
+         by level rather than by character. */
+      this.rgDry = ctx.createGain();
+      this.rgDry.gain.value = 1 - ROAD_GROWL_DEFAULT.sat;
+      this.rgSat = ctx.createWaveShaper();
+      /* The drive is baked INTO the curve rather than applied as a pre-gain.
+         A WaveShaper clamps its input to [-1,1] before the lookup, so a 4.5x
+         pre-gain on a bus that peaks near 0.3 would hard-clip the top of
+         every loud note instead of soft-clipping it — the one failure mode
+         this whole branch exists to avoid. */
+      this.rgSat.curve = this.satCurve(ROAD_GROWL_DEFAULT.satDrive);
+      this.rgSatDrive = ROAD_GROWL_DEFAULT.satDrive;
+      this.rgSat.oversample = "4x"; // the branch exists to make harmonics — don't alias them
+      this.rgSatLP = ctx.createBiquadFilter();
+      this.rgSatLP.type = "lowpass";
+      this.rgSatLP.frequency.value = ROAD_GROWL_DEFAULT.satHz;
+      this.rgSatLP.Q.value = 0.7;
+      this.rgSatOut = ctx.createGain();
+      this.rgSatOut.gain.value = 0; // silent until `sat` is raised
       this.engG.connect(this.engLevel);
       this.engLevel
         .connect(this.engShelf)
@@ -1262,7 +1412,13 @@ export class GameAudio {
         .connect(this.engMakeup)
         .connect(this.engGrowl)
         .connect(this.engGrowlTrim)
+        .connect(this.rgPeak)
+        .connect(this.rgTop)
+        .connect(this.rgTrim)
+        .connect(this.rgDry)
         .connect(this.master);
+      this.rgTrim.connect(this.rgSat)
+        .connect(this.rgSatLP).connect(this.rgSatOut).connect(this.master);
 
       // rev-limiter stutter: a square LFO added into the engine gain param
       const limLfo = ctx.createOscillator();
@@ -1917,6 +2073,15 @@ export class GameAudio {
       tunnelTopCutDb: this.tunShelf.gain.value,
       tunnelTailHz: this.convLP ? this.convLP.frequency.value : null,
       tunnelTune: this.tun,
+      /* the open-road growl — all zero/flat on a shipped build */
+      roadGrowlDb: this.rgPeak.gain.value,
+      roadGrowlHz: this.rgPeak.frequency.value,
+      roadGrowlQ: this.rgPeak.Q.value,
+      roadGrowlTrim: this.rgTrim.gain.value,
+      roadGrowlTopDb: this.rgTop.gain.value,
+      roadGrowlSat: this.rgSatOut.gain.value,
+      roadGrowlDry: this.rgDry.gain.value,
+      roadGrowlTune: this.rg,
       npcVoicesActive: this.npcVoices.filter((v) => v.active).length,
       npcOscSum,
       npcNearest: nearest,
@@ -1925,6 +2090,22 @@ export class GameAudio {
           unsmoothed model values, for the headless mix test */
       mix: this.lastMix,
     };
+  }
+
+  /** Debug-only handle on the FINAL master node — the same point
+      getOutputPeak listens to, i.e. exactly what the speakers get, post
+      cabin EQ and post tunnel EQ. Returned so a headless script
+      (test/growl-record.mjs) can hang a capture node off it and record the
+      real running mix, together with the AudioContext for its sampleRate.
+
+      Whatever the caller connects is a read-only FAN-OUT: an extra edge out
+      of this node does not alter the existing master -> ctx.destination
+      path, so what gets recorded is the shipped signal and not a signal
+      shaped by being recorded. Gated on DEBUG_HOOKS the same way __neonx and
+      the other live handles are, so a production tab cannot reach it. */
+  debugRecordTap(): { node: AudioNode; ctx: AudioContext } | null {
+    if (!this.ok || !DEBUG_HOOKS) return null;
+    return { node: this.tunShelf, ctx: this.ctx };
   }
 
   /** Instantaneous |peak| of the final output (post cabin EQ, i.e. what the
@@ -2840,6 +3021,7 @@ export class GameAudio {
        it. In the common case (nobody at the console) this is a handful of
        number compares and no param writes at all. */
     if (this.readTunnelTune()) this.applyTunnel();
+    if (this.readRoadGrowl()) this.applyRoadGrowl();
     this.sp(this.engLevel.gain, tune.level, 0.05);
     this.sp(this.engShelf.gain, tune.rumbleDb, 0.05);
     this.sp(this.engShelf.frequency, tune.rumbleHz, 0.05);
@@ -3413,6 +3595,56 @@ export class GameAudio {
       }
     }
     return changed;
+  }
+
+  /** Poll window.__roadGrowl into this.rg, same contract as readTunnelTune:
+      in-place, allocation-free, returns true only when something moved. */
+  private readRoadGrowl(): boolean {
+    if (typeof window === "undefined") return false;
+    const w = window as unknown as { __roadGrowl?: RoadGrowlTune };
+    if (!w.__roadGrowl) w.__roadGrowl = { ...ROAD_GROWL_DEFAULT };
+    const t = w.__roadGrowl;
+    let changed = false;
+    for (const k of ROAD_GROWL_KEYS) {
+      const sp = ROAD_GROWL_SPEC[k];
+      const v = Number.isFinite(t[k]) ? clampRange(t[k], sp.lo, sp.hi) : sp.d;
+      if (v !== this.rg[k]) {
+        this.rg[k] = v;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** Push this.rg onto the open-road growl chain. Smoothed writes, because
+      these are console knobs and a .value write on a live filter zippers.
+
+      The trim is the headroom contract: `db` dB of peaking boost costs up to
+      ~0.63 * db of extra PEAK on a harmonically dense engine bus, and there
+      is no master-bus limiter downstream, so `trim` hands db*trim of it back
+      broadband. The saturation branch's output is scaled by 1/tanh(drive) so
+      that raising `satDrive` changes the HARMONIC content at a fixed
+      loudness instead of doubling as a second volume control — otherwise
+      "harder" and "louder" would be the same knob and the owner's A/B would
+      be decided by level rather than by character. */
+  private applyRoadGrowl() {
+    const k = this.rg;
+    this.sp(this.rgPeak.frequency, k.hz, 0.05);
+    this.sp(this.rgPeak.Q, k.q, 0.05);
+    this.sp(this.rgPeak.gain, k.db, 0.06);
+    this.sp(this.rgTop.frequency, k.topHz, 0.05);
+    this.sp(this.rgTop.gain, k.topDb, 0.06);
+    this.sp(this.rgTrim.gain, Math.pow(10, (-k.db * k.trim) / 20), 0.06);
+    if (k.satDrive !== this.rgSatDrive) {
+      this.rgSat.curve = this.satCurve(k.satDrive);
+      this.rgSatDrive = k.satDrive;
+    }
+    this.sp(this.rgSatLP.frequency, k.satHz, 0.05);
+    this.sp(this.rgDry.gain, 1 - k.sat, 0.06);
+    /* satCurve has slope drive/tanh(drive) at the origin; undoing that here
+       is what makes `satDrive` a character control and `sat` a mix control,
+       instead of both of them doubling as volume. */
+    this.sp(this.rgSatOut.gain, (k.sat * Math.tanh(k.satDrive)) / k.satDrive, 0.06);
   }
 
   /** Push the current tunnel factor (this.lastReverbT) and the current knob
