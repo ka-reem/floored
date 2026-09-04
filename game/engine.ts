@@ -2049,8 +2049,11 @@ export class Game {
         npcs: this.traffic.npcs.filter((n) => n.active).length,
         npcsBypass: this.traffic.npcs.filter((n) => n.active && n.route === BYPASS_EDGE).length,
         npcsMtn: this.traffic.npcs.filter((n) => n.active && n.route === MOUNTAIN_EDGE).length,
-        npcsMtnOncoming: this.traffic.npcs.filter(
-          (n) => n.active && n.route === MOUNTAIN_EDGE && n.dir < 0).length,
+        /* the pass is one-way, so what is worth watching is not a direction
+           but the let-by: a pass car signalling into the turnout to wave the
+           player past (traffic.ts updateMountain) */
+        npcsMtnYielding: this.traffic.npcs.filter(
+          (n) => n.active && n.route === MOUNTAIN_EDGE && n.blink === 1).length,
         onBypass: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === BYPASS_EDGE,
         onMountain: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === MOUNTAIN_EDGE,
         stats: { ...this.stats },

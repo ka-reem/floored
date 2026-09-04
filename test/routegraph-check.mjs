@@ -474,33 +474,47 @@ for (const cr of g.crossings) {
     if (yMax - 10 < 4) bad("the pass never climbs high enough to read as a climb");
   }
 
-  // both lane centres stay on pavement wherever the width is fully open,
-  // and the oncoming lane (+lat, river side) dies into the lay-by cleanly
+  /* ONE-WAY, ONE LANE. The lane centre (there is only one, and it is the
+     road's own centreline) stays on pavement wherever the width is fully
+     open, the running road is honestly narrow for a single lane, and the
+     turnout — the repurposed lay-by — really opens. */
   {
-    let laybyMax = 0;
+    if (MTN.lanes !== 1) bad(`MTN.lanes is ${MTN.lanes} — the pass is a single lane`);
+    if (Math.abs(mt.laneOffset(0, 100)) > 1e-9)
+      bad("the single lane is not on the road's centreline");
+    const running = 2 * MTN.half;
+    if (running > 6.2) bad(`the running road is ${f(running)} m wide — that is still two lanes`);
+    if (running < 4.4) bad(`the running road is ${f(running)} m wide — too narrow to drive`);
+    let turnoutMax = 0;
     for (const p of mt.stations) {
-      laybyMax = Math.max(laybyMax, p.hwL - MTN.half);
+      turnoutMax = Math.max(turnoutMax, p.hwL - MTN.half);
       if (p.hwL < MTN.half - 0.01 || p.hwR < MTN.half - 0.01) continue;
-      for (const off of [MTN.laneW / 2, -MTN.laneW / 2]) {
+      for (let k = 0; k < MTN.lanes; k++) {
+        const off = mt.laneOffset(k, p.s);
         if (off > p.hwL - 0.9 || off < -(p.hwR - 0.9))
           bad(`a mtn lane centre runs off the pavement at s=${f(p.s)}`);
       }
     }
-    console.log(`  lay-by pocket: +${f(laybyMax)} m over` +
-      ` s ∈ [${MTN.laybyS0}, ${MTN.laybyS1}]`);
-    if (laybyMax < MTN.laybyW - 0.15) bad("the oncoming lay-by never opens");
+    console.log(`  one lane, ${f(running)} m of running road; turnout pocket:` +
+      ` +${f(turnoutMax)} m over s ∈ [${MTN.turnoutS0}, ${MTN.turnoutS1}]` +
+      ` (${f(running + turnoutMax)} m across there)`);
+    if (turnoutMax < MTN.turnoutW - 0.15) bad("the turnout never opens");
+    /* it is not a trap: the turnout has to be wide enough to turn a car
+       round in, which is this road's answer to a player who U-turns */
+    if (running + turnoutMax < 9)
+      bad("the turnout is too narrow to come about in — a one-way road needs one place that is");
     const mw = g.mergeWindow(mt);
     console.log(`  merge window: s ∈ [${f(mw.s0)}, ${f(mw.s1)}] (${f(mw.s1 - mw.s0)} m)`);
     if (mw.s1 - mw.s0 < 25) bad("the mtn merge window is too short");
     if (mw.s0 < mt.len / 2) bad("the mtn merge window reaches back past mid-route");
   }
 
-  // surface attachment along both lane centres (the physics path)
+  // surface attachment along the lane centre and both edges (the physics path)
   {
     let worst = 0, misses = 0;
     for (let s = 4; s < mt.len - 4; s += 5) {
       const { hwL, hwR } = mt.halfWidths(s);
-      for (const off of [MTN.laneW / 2, -MTN.laneW / 2]) {
+      for (const off of [0, MTN.laneW / 2 - 0.4, -(MTN.laneW / 2 - 0.4)]) {
         if (off > hwL - 1 || off < -(hwR - 1)) continue;
         const w = mt.worldOf(s, off);
         const hit = g.surfaceAt(w.x, w.z, 0.5);

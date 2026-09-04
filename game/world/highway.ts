@@ -974,7 +974,7 @@ export function buildHighway(
   });
 
   /* ---------------- the mountain road (route graph, EXIT 4) ----------------
-     Swept from routegraph.ts's mtn stations: a two-way rock-shelf pass above
+     Swept from routegraph.ts's mtn stations: a one-way rock-shelf pass above
      the river bank. Rock faces both sides (the cut face west, the drop to the
      bank east), a low stone parapet on the river edge, double-yellow centre
      line, retroreflective delineators, sparse warm lamps, the gore kit, and
@@ -3767,6 +3767,7 @@ function MTN_BOARD_Z(): number[] {
     w(MTN.divergeZ - 390), // "400 m" board
     w(MTN.divergeZ - 190), // "200 m" board
     w(MTN.divergeZ - 24), // gore board
+    w(MTN.divergeZ - 96), // "one way" warning for the exit
     MTN.mergeZ - 90, // merge warning, mid-band already
   ];
 }
@@ -3840,19 +3841,22 @@ function buildMountainRoad(
     lampPts.push(x, y, z, lampCol.r, lampCol.g, lampCol.b);
   };
 
-  /* rock: its own dark, rough material — vertex colour carries the per-facet
-     variation so the whole hillside is still one draw call per copy */
+  /* Rock: its own dark, rough material — vertex colour carries the per-facet
+     variation so the whole hillside is still one draw call per copy.
+
+     DoubleSide, deliberately. The winding of every face below is now correct
+     (see the cut-face note in the sweep), so FrontSide would draw the right
+     thing from the road — but this hillside is an open SHELL, not a solid,
+     and the cameras that ship do get behind its skin: CHASE swings out over
+     the river drop and looks back through the east bank faces, and at the
+     crest it can rise past the cut face's top edge. A shell you can see
+     through from a shipped camera is the bug this lane was opened for, so
+     the cheap structural guarantee is worth one hillside's worth of
+     backface culling. three.js flips the normal for backfacing fragments,
+     so the shading stays right on both sides. */
   const rockMat = new THREE.MeshStandardMaterial({
-    color: 0x35322e, roughness: 1.0, vertexColors: true,
+    color: 0x35322e, roughness: 1.0, vertexColors: true, side: THREE.DoubleSide,
   });
-  const yellowMat = new THREE.MeshBasicMaterial({
-    // against the grade: a centre line at night is paint under headlights,
-    // not a light source — sits well below the blowout ceiling and the beam
-    // retro-multiply (addBeam) is what actually lights it up
-    color: 0x9a7526, fog: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-  });
-  mats.addBeam(yellowMat, { near: 18, far: 62, spread: 0.95 });
   const mtnRailMat = new THREE.MeshStandardMaterial({
     color: 0x4a5262, roughness: 0.5, metalness: 0.7, side: THREE.DoubleSide,
   });
@@ -3916,7 +3920,23 @@ function buildMountainRoad(
       if (!sh.shR && K > 0.02) {
         /* west: the cut face the road hugs, rising to a crest, then the
            hill's own flank falling to the bank behind it. The face leans
-           BACK as it rises (a real cut face batters away from the road). */
+           BACK as it rises (a real cut face batters away from the road).
+
+           WINDING — this is the see-through bug (owner, 2026-09-04: "there's
+           no mountain once you drive on the mountain road, but on the highway
+           side you actually see the mountain"). All three bands of this face
+           used to be emitted station-first (a, b, upper-b, upper-a), which
+           winds them so the generated normal points AWAY from the pavement
+           and downward: on a FrontSide material every one of them was a
+           back-face from the driver's seat, so the massif simply was not
+           drawn from the road. The back flank below — the one facet that
+           faces the EXPRESSWAY — happened to be written the other way round
+           and was therefore the only piece that ever rendered, which is
+           exactly why the hill read fine from the deck and vanished on the
+           pass. The bands are now emitted lateral-first (a, upper-a,
+           upper-b, b), the same sense as the pavement quad, so their normals
+           face the road. Checked numerically, not by eye: 0 of 282 bands
+           faced the driver before, all of them do now. */
         const f0a = mpt(i, -(a.hwR + 0.22), -0.35);
         const f0b = mpt(i + step, -(e.hwR + 0.22), -0.35);
         const f1a = mpt(i, -(a.hwR + 0.9 + j(i, 0) * 0.9), (1.7 + j(i, 1) * 0.8) * K);
@@ -3927,9 +3947,9 @@ function buildMountainRoad(
         const c3b = mpt(i + step, -(e.hwR + 4.6 + j(i + step, 1) * 1.6), (5.0 + j(i + step, 0) * 1.4) * K2);
         const g4a = apt(i, -(a.hwR + 12), 0.02);
         const g4b = apt(i + step, -(e.hwR + 12), 0.02);
-        rquad(f0a, f0b, f1b, f1a, 0.95 + j(i, 3) * 0.25);
-        rquad(f1a, f1b, f2b, f2a, 0.8 + j(i, 2) * 0.3);
-        rquad(f2a, f2b, c3b, c3a, 0.7 + j(i, 1) * 0.3);
+        rquad(f0a, f1a, f1b, f0b, 0.95 + j(i, 3) * 0.25);
+        rquad(f1a, f2a, f2b, f1b, 0.8 + j(i, 2) * 0.3);
+        rquad(f2a, c3a, c3b, f2b, 0.7 + j(i, 1) * 0.3);
         // the back flank, seen from the expressway: crest straight down to
         // the flat bank, one dark facet
         rquad(c3b, c3a, g4a, g4b, 0.5 + j(i, 0) * 0.2);
@@ -4022,9 +4042,14 @@ function buildMountainRoad(
       }
     }
 
-    /* markings. Centre line: solid double yellow, the two-way tell — absent
-       through the gore wedges like a real junction throat. Edge lines: white
-       where the width is fully open (the lay-by inherits its own outline). */
+    /* Markings. There is NO centre line: this is one lane running one way,
+       and a double yellow down the middle of it would be a lie about the
+       road (it was the two-way tell, and it went with the second lane).
+       What a one-way single lane needs instead is a direction it cannot be
+       mistaken about, so the paint is white edge lines either side — the
+       turnout inherits its own outline from them — plus periodic pavement
+       ARROWS in the running direction, in the same beam-lit paint the deck's
+       lane arrows use. */
     const mstripe = (
       into: Soup, s0: number, s1: number, lat0: number, lat1: number, wd: number
     ) => {
@@ -4038,11 +4063,22 @@ function buildMountainRoad(
         [0, v0], [0, v1], [1, v1], [1, v0]
       );
     };
-    const yMark = new Soup();
-    for (const s of mt.sLattice(6, 26)) {
-      if (s + 6 > mt.len - 28) continue;
-      mstripe(yMark, s, s + 6, -0.16, -0.16, 0.11);
-      mstripe(yMark, s, s + 6, 0.16, 0.16, 0.11);
+    const arw = new Soup();
+    {
+      /* one arrow every ~58 m, clear of both gore throats and of the turnout
+         mouth (where the pavement is doing something else) */
+      const AL = 4.6, AW = 1.9, Y = 0.024;
+      for (const s of mt.sLattice(58, 34)) {
+        if (s < 26 || s > mt.len - 34) continue;
+        if (s > MTN.turnoutS0 - 8 && s < MTN.turnoutS1 + 8) continue;
+        const p0 = mt.worldOf(s - AL / 2, -AW / 2), p1 = mt.worldOf(s + AL / 2, -AW / 2);
+        const p2 = mt.worldOf(s + AL / 2, AW / 2), p3 = mt.worldOf(s - AL / 2, AW / 2);
+        arw.quadUv(
+          [p0.x, p0.y + Y, p0.z + dz], [p1.x, p1.y + Y, p1.z + dz],
+          [p2.x, p2.y + Y, p2.z + dz], [p3.x, p3.y + Y, p3.z + dz],
+          [0, 0], [0, 1], [1, 1], [1, 0]
+        );
+      }
     }
     for (const s of mt.sLattice(8)) {
       if (s + 8 > mt.len) continue;
@@ -4059,7 +4095,7 @@ function buildMountainRoad(
       [wall, mats.barrierDouble, false, true],
       [rail, mtnRailMat, false, false],
       [mark, mats.markMat, true, false],
-      [yMark, yellowMat, true, false],
+      [arw, arrowMat, true, false],
     ] as const) {
       if (S2.empty) continue;
       const mesh = new THREE.Mesh(S2.geom(uv), m as THREE.Material);
@@ -4090,8 +4126,10 @@ function buildMountainRoad(
       delinPts.push(w.x, w.y + 1.02, w.z + dz);
     }
 
-    /* chevron boards on the outside of the three tightest corners, doubled
-       back-to-back so both streams read them. Dimmed well below the texture's
+    /* chevron boards on the outside of the three tightest corners. ONE board
+       each now, facing the single stream — the pair was back-to-back so the
+       oncoming lane could read one too, and there is no oncoming lane.
+       Dimmed well below the texture's
        full level — an unlit basic material at night is effectively emissive,
        and at full brightness the board read as a floodlit sign filling the
        windshield (realistic-light: a bright thing must still be under the
@@ -4109,11 +4147,10 @@ function buildMountainRoad(
       const latB = out > 0 ? hwL + 1.1 : -(hwR + 0.95);
       const w = mt.worldOf(cs, latB);
       chevPosts.push({ x: w.x, y: w.y + 0.55, z: w.z + dz });
-      for (const flip of [0, Math.PI])
-        chevBoards.push({
-          x: w.x, y: w.y + 1.5, z: w.z + dz, h: p.h + flip,
-          sx: 1.15, sy: 0.72, tint: 0x6f6f6f,
-        });
+      chevBoards.push({
+        x: w.x, y: w.y + 1.5, z: w.z + dz, h: p.h + Math.PI,
+        sx: 1.15, sy: 0.72, tint: 0x6f6f6f,
+      });
     }
 
     /* sparse, warm lamps: one at each gore mouth, one over each of the two
@@ -4123,6 +4160,10 @@ function buildMountainRoad(
     const lampSs = [
       14,
       mt.len - 16,
+      /* the turnout: the one place on the pass a car stops, and the place a
+         player who turned round comes about — it has to read as a place at
+         night, not as a wider patch of black */
+      (MTN.turnoutS0 + MTN.turnoutS1) / 2,
       ...corners.slice(0, 2),
     ];
     for (const ls of lampSs) {
@@ -4297,10 +4338,13 @@ function buildMountainRoad(
     word(z, latA(z), wordMat("分岐"), 2);
   }
 
-  const [b400, b200, bGore, bMerge] = MTN_BOARD_Z();
+  const [b400, b200, bGore, bOneWay, bMerge] = MTN_BOARD_Z();
   board(b400, 7.4, 2.8, exitSignTexF(4, "400 m", "峠"));
   board(b200, 7.4, 2.8, exitSignTexF(4, "200 m", "峠"));
   board(bGore, 7.4, 2.8, exitSignTexF(4, "出口", "峠"));
+  // the pass is a single lane in one direction — say so before the gore, not
+  // after it, since the gore is the last place a driver can decline it
+  board(bOneWay, 6.6, 2.5, warnTexF("一方通行 一車線", "ONE WAY · SINGLE LANE"));
   board(bMerge, 6.6, 2.5, warnTexF("合流注意", "MERGING TRAFFIC"));
 }
 

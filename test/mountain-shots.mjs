@@ -2,16 +2,16 @@
 
    Two jobs, one boot (SwiftShader sessions are expensive on a loaded box):
 
-   1. DRIVE the pass end to end under the real engine — physics heightAt,
-      collidePlayer, the analytic walls — with a small pure-pursuit
-      controller injected into the page. Asserts the car stays supported and
-      on the road the whole way, completes the merge back onto the deck, and
-      then runs the oncoming lane southbound to the lay-by (a human can drive
-      the pass in either lane; both must hold the car up).
+   1. DRIVE the pass under the real engine — physics heightAt, collidePlayer,
+      the analytic walls. The pass is ONE lane in ONE direction now, so the
+      probes walk the lane centre and both edges rather than two lane
+      centres — and they also face BACKWARDS at every station, because a
+      one-way road that traps a player who turns round is the failure this
+      lane cares about: the car has to be held up either way it points.
    2. Photograph it from the dashcam (CAM_POV is the shipped view): the exit
       gore across the seam, the approach boards, mid-corner with the rock
-      face, the lay-by, oncoming headlights (waits for a real oncoming NPC to
-      come around a bend), and the merge back onto the expressway.
+      face, the turnout, a pass car using the turnout to let the player by,
+      and the merge back onto the expressway.
 
    Usage: node test/mountain-shots.mjs --url http://localhost:3000 */
 
@@ -69,39 +69,52 @@ const shoot = async (name) => {
    already drive the REAL terrain.heightAt + collidePlayer for hours of sim
    time) is the fully BUILT world: the real collider index and the staged
    loader's actual output. So verify exactly that, fast:
-   - settled teleport probes: park the car at 30+ stations along both lanes,
-     facing both directions, let real frames run (physics + clamps + ground
-     follow), and assert it settles ON the road at road height;
+   - settled teleport probes: park the car at 30+ stations along the lane and
+     its two edges, facing both directions, let real frames run (physics +
+     clamps + ground follow), and assert it settles ON the road at road
+     height;
    - a collider sweep of the driven line: nothing highway.ts built (nose
-     blocks, lamp poles, sign masts) may stand inside either lane. */
+     blocks, lamp poles, sign masts) may stand inside the lane. */
 console.log("live probes (real physics frames at each station):");
 const mtLen = await page.evaluate(() => window.__neonx.game.world.routes.mtn.len);
 {
   let worstDy = 0, off = 0, probes = 0;
   for (let s0 = 10; s0 < mtLen - 10; s0 += 12) {
-    const lane = (probes % 2 === 0) ? 0 : 1;
-    const r = await page.evaluate(({ s0, lane }) => {
+    /* lane centre, then a metre inside each edge — and every third probe
+       faces backwards, the U-turn case a one-way road must survive */
+    const lat = [0, 1, -1][probes % 3];
+    const back = probes % 3 === 2;
+    await page.evaluate(({ s0, lat, back }) => {
       const g = window.__neonx;
-      g.toMountain(s0, 14, lane);
-      return null;
-    }, { s0, lane });
-    void r;
+      g.toMountain(s0, 14, 0);
+      if (lat) {
+        const mt = g.game.world.routes.mtn;
+        const h = mt.halfWidths(s0);
+        const d = lat > 0 ? Math.max(0, h.hwL - 1.0) : -Math.max(0, h.hwR - 1.0);
+        const p = mt.poseAt(s0);
+        g.game.car.x += d * p.nx;
+        g.game.car.z += d * p.nz;
+      }
+      if (back) g.game.car.h += Math.PI;
+    }, { s0, lat, back });
     await sleep(320);
-    const st = await page.evaluate(({ s0, lane }) => {
+    const st = await page.evaluate(({ s0 }) => {
       const g = window.__neonx;
       const mt = g.game.world.routes.mtn;
-      const w = mt.worldOf(s0, mt.laneOffset(lane, s0));
+      const w = mt.worldOf(s0, 0);
       const s2 = g.state();
       return { y: s2.y, ey: w.y, on: s2.onMountain, x: s2.x, z: s2.z, ex: w.x, ez: w.z };
-    }, { s0, lane });
+    }, { s0 });
     probes++;
     const dy = Math.abs(st.y - st.ey);
     worstDy = Math.max(worstDy, dy);
     if (!st.on) off++;
     if (dy > 1.4)
-      errors.push(`probe s=${s0} lane ${lane}: y ${st.y.toFixed(2)} vs road ${st.ey.toFixed(2)}`);
+      errors.push(`probe s=${s0} lat ${lat}${back ? " (facing back)" : ""}: ` +
+        `y ${st.y.toFixed(2)} vs road ${st.ey.toFixed(2)}`);
   }
-  console.log(`  ${probes} probes, worst |y - road| ${worstDy.toFixed(2)} m, off-surface ${off}`);
+  console.log(`  ${probes} probes (lane centre + both edges, every third facing` +
+    ` backwards), worst |y - road| ${worstDy.toFixed(2)} m, off-surface ${off}`);
   if (off) errors.push(`${off} probes settled off the mountain surface`);
 
   const colliders = await page.evaluate(() => {
@@ -130,20 +143,19 @@ const mtLen = await page.evaluate(() => window.__neonx.game.world.routes.mtn.len
     return bad.slice(0, 8);
   });
   if (colliders.length) for (const c of colliders) errors.push(c);
-  else console.log("  collider sweep: nothing stands in either lane");
+  else console.log("  collider sweep: nothing stands in the lane");
 }
 
 /* ---- 2. the photographs ------------------------------------------------- */
 console.log("photographs (dashcam):");
 /* park helper: place on the pass, idle throttle so the dashcam reads alive */
-const parkMtn = async (s, lane, facing = 1) => {
-  await page.evaluate(({ s, lane, facing }) => {
+const parkMtn = async (s, _lane = 0, facing = 1) => {
+  await page.evaluate(({ s, facing }) => {
     const g = window.__neonx;
-    g.toMountain(s, 8, lane);
-    if (facing < 0 && lane === 0) g.game.car.h += Math.PI;
-    if (facing > 0 && lane === 1) g.game.car.h += Math.PI;
+    g.toMountain(s, 8, 0);
+    if (facing < 0) g.game.car.h += Math.PI; // the U-turn view
     g.setInput({ th: 0.12, br: 0, st: 0, hb: 0, horn: 0 });
-  }, { s, lane, facing });
+  }, { s, facing });
   await sleep(1700);
 };
 
@@ -166,38 +178,33 @@ await shoot("mountain-crest");
 await parkMtn(mtLen - 42, 0);
 await shoot("mountain-rejoin");
 
-/* oncoming headlights: park mid-route in the forward lane and wait for a
-   real oncoming NPC to close inside the money-shot window */
-await parkMtn(214, 0);
-/* the pass runs at ~1% sim speed here, so let the game's own teleport
-   seeding do the work: warpSeed spawns the two-way flow anywhere in range,
-   visible or not, exactly as a real >150 m teleport does */
-/* frames are seconds apart here, so force the seed flag on every poll (it
-   is consumed per update) and, if the shared spawn budget is starved by the
-   deck fleet, call the real spawner directly on an idle slot — the same code
-   path, just without waiting for the budget loop to reach it */
+/* the LET-BY: park just short of the turnout and put a real pass car into
+   it, so the photograph shows what replaced the oncoming stream — a slower
+   car pulling into the pocket to wave the player through. The pass runs at
+   ~1% sim speed in this sandbox, so the seeding is forced the same way the
+   old oncoming shot forced it: warpSeed every poll (it is consumed per
+   update) and, if the shared spawn budget is starved by the deck fleet,
+   call the real spawner directly on an idle slot. */
+await parkMtn(46, 0);
 let got = false;
-for (let i = 0; i < 80; i++) {
-  await page.evaluate(({ direct }) => {
+for (let i = 0; i < 60; i++) {
+  await page.evaluate(() => {
     const g = window.__neonx;
     const tr = g.game.traffic;
     tr.warpSeed = true;
-    if (direct) {
-      const s2 = g.state();
-      if (s2.npcsMtnOncoming === 0) {
-        const idle = tr.npcs.find((n) =>
-          !n.active && !n.rival && tr.ready[n.style] &&
-          n.type !== "truck" && n.type !== "bus");
-        if (idle) tr.trySpawnMountain(idle, g.game.car, 0, 1, 140);
-      }
+    const s2 = g.state();
+    if (s2.npcsMtn === 0) {
+      const idle = tr.npcs.find((n) =>
+        !n.active && !n.rival && tr.ready[n.style] &&
+        n.type !== "truck" && n.type !== "bus");
+      if (idle) tr.trySpawnMountain(idle, g.game.car, 0, 1, 140);
     }
     return null;
-  }, { direct: true });
-  /* the sandbox runs sim time at ~1%, so an NPC spawned 40+ m out cannot
-     close the gap on any sane wall clock — after a few polls, stage the
-     photograph: take the real seeded oncoming car and set it 27 m out in
-     its own lane (photography only; the sim suite owns the dynamics) */
-  if (i === 24) {
+  });
+  /* frames are seconds apart here, so after a few polls stage the picture:
+     take the real seeded pass car and put it in the turnout window, 26 m
+     ahead — photography only; the sim suite owns the dynamics */
+  if (i === 18) {
     await page.evaluate(() => {
       const g = window.__neonx;
       const tr = g.game.traffic;
@@ -205,13 +212,12 @@ for (let i = 0; i < 80; i++) {
       const st = g.state();
       const me = mt.project(st.x, st.z, 12);
       if (!me) return;
-      let bestN = null, bestDs = 1e9;
       for (const n of tr.npcs) {
-        if (!n.active || n.route !== 10 || n.dir >= 0) continue;
-        const ds = n.s - me.s;
-        if (ds > 8 && ds < bestDs) { bestDs = ds; bestN = n; }
+        if (!n.active || n.route !== 10) continue;
+        n.s = Math.max(me.s + 26, 70);
+        n.v = 3;
+        break;
       }
-      if (bestN) bestN.s = me.s + 27;
     });
   }
   const d = await page.evaluate(() => {
@@ -222,29 +228,34 @@ for (let i = 0; i < 80; i++) {
     if (!me) return null;
     let best = null;
     for (const n of g.traffic.npcs) {
-      if (!n.active || n.route !== 10 || n.dir >= 0) continue;
-      const hit = mt.project(n.x, n.z, 10);
+      if (!n.active || n.route !== 10) continue;
+      const hit = mt.project(n.x, n.z, 12);
       if (!hit) continue;
       const ds = hit.s - me.s;
-      if (ds > 8 && ds < 85 && (best === null || ds < best)) best = ds;
+      if (ds > 4 && ds < 85 && (best === null || ds < best)) best = ds;
     }
     return best;
   });
-  if (d !== null && d < 34) {
+  if (d !== null && d < 40) {
     got = true;
-    console.log(`  oncoming NPC at ${d.toFixed(1)} m — shooting`);
-    await shoot("mountain-oncoming");
+    console.log(`  pass car in the turnout at ${d.toFixed(1)} m — shooting`);
+    await shoot("mountain-letby");
     break;
   }
   await sleep(900);
 }
 if (!got) {
-  errors.push("no oncoming NPC ever closed within 55 m — the two-way flow is not alive");
-  await shoot("mountain-oncoming");
+  errors.push("no pass car ever appeared ahead — the one-way flow is not alive");
+  await shoot("mountain-letby");
 }
-// hold a beat and take a second candidate as the car passes
 await sleep(1100);
-await shoot("mountain-oncoming-2");
+await shoot("mountain-letby-2");
+
+// the turnout itself, and the view a player who turned round gets
+await parkMtn(74, 0);
+await shoot("mountain-turnout");
+await parkMtn(210, 0, -1);
+await shoot("mountain-wrong-way");
 
 // the ridge as seen from the expressway below
 await page.evaluate(() => {

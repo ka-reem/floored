@@ -22,12 +22,14 @@ import { buildRamps, parapetGap, type Ramp } from "./ramps";
    (a Shuto-style fast-lane merge) at MERGE_Z.
 
    The second new route is the MOUNTAIN ROAD (corridor.MTN, EXIT 4): a
-   two-lane, TWO-WAY riverside pass off an east gore at MTN.divergeZ, over a
-   rock shelf above the river bank, back on at MTN.mergeZ. Same PolyRouteEdge
-   machinery as the bypass; the two-way part is a traffic-level fiction (the
-   graph edge is the forward direction; oncoming cars drive it s-descending
-   and stop in a lay-by before the diverge wedge, so the wrong-way lane can
-   never feed the one-way deck).
+   single-lane, ONE-WAY riverside pass off an east gore at MTN.divergeZ, over
+   a rock shelf above the river bank, back on at MTN.mergeZ. Same
+   PolyRouteEdge machinery as the bypass — and unlike the two-way road this
+   replaced, the edge's own direction is now the ONLY direction anything
+   drives: every pass NPC runs s-ascending, from the diverge nose to the
+   merge, and there is no second stream to keep off the deck. One-way here
+   means markings, signs and traffic; the pavement itself is never walled
+   against a player who turns round (see the turnout note on corridor.MTN).
 
    Design rules that keep the endless-splice architecture alive:
 
@@ -1316,11 +1318,11 @@ function buildMountain(cor: Corridor): RouteStation[] {
     p.hwL = Math.min(p.hwL, MTN.half * sst(p.s / MTN.nose));
     p.hwL = Math.min(p.hwL, MTN.half * sst((len - p.s) / MTN.nose));
   }
-  /* the oncoming lay-by: a paved pocket on the river side (+lat) where the
-     wrong-way stream pulls in and stops before the diverge wedge */
+  /* the turnout: a paved pocket on the river side (+lat) — the let-by a
+     one-way single lane needs, and the place to turn round */
   for (const p of st) {
     const w =
-      sst((p.s - MTN.laybyS0) / 14) * sst((MTN.laybyS1 - p.s) / 14) * MTN.laybyW;
+      sst((p.s - MTN.turnoutS0) / 14) * sst((MTN.turnoutS1 - p.s) / 14) * MTN.turnoutW;
     if (w > 0.001) p.hwL = Math.max(p.hwL, MTN.half + w);
   }
 

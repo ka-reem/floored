@@ -1,34 +1,30 @@
-/* Browser-free simulation of the mountain pass's two-way traffic
+/* Browser-free simulation of the mountain pass's ONE-WAY traffic
    (traffic.ts updateMountain / trySpawnMountain).
 
-   The pass is one narrow lane each direction with ONCOMING flow — the one
-   place in the game where two NPC streams drive at each other — so the thing
-   to prove is that "zero overlaps" holds structurally, not by luck: each
-   stream owns its lane centre, neither ever targets the other's, the corner
-   speed caps keep the following model inside its stopping distance, and the
-   wrong-way stream dies in the lay-by pocket before the one-way wedge.
+   EXIT 4 峠 Tōge is a single-lane, single-direction road: one stream, no
+   oncoming, no overtaking. The thing to prove is therefore different from
+   the two-way version this file used to be:
+
+     - the road is one-way STRUCTURALLY, not by luck — no code path ever
+       puts an NPC on the pass facing backwards;
+     - a stream that cannot overtake still flows: the turnout at
+       MTN.turnoutS0..S1 is the repurposed lay-by, and a car the player is
+       closing on pulls into it, stops clear of the lane and lets them by,
+       then RESUMES and leaves through the merge. A let-by that never
+       resumes is a rolling roadblock, which is the failure mode a
+       single-lane road has, so it is asserted against directly;
+     - the pull-in stays inside the pocket that is actually open at that
+       station (the assert that caught the old lay-by opening late);
+     - zero body overlaps, with the game's own SAT;
+     - forward cars leave only through the merge window and never land
+       inside a deck car.
 
    traffic.ts itself pulls in three.js and a live scene, so — same contract
    as test/traffic-merge-sim.mjs — this reimplements the mountain driving
-   arithmetic (corner caps + IDM + the lay-by stop + the deck merge) against
-   the REAL routegraph geometry. If the formulas here drift from traffic.ts,
-   that's a bug in this file, not evidence either way — keep them in lockstep
-   by eye.
-
-   Assertions, over every seed:
-     - zero body overlaps (SAT, the same obb2 the game collides with) between
-       every pair of mountain cars, oncoming pairs included, at every tick;
-     - every car stays inside its own lane's clamp envelope (lay-by pull-in
-       excepted, which must stay inside the pocket);
-     - no oncoming car ever proceeds past the lay-by floor toward the wedge,
-       and every oncoming car eventually stops (the deck is unreachable);
-     - forward cars leave only through the merge window, and a merging car
-       enters the deck stream without overlapping it;
-     - source guard: the rival's update path knows nothing about the pass,
-       and the only way onto MOUNTAIN_EDGE is the mountain spawner (which the
-       rival slot never reaches) — greps over game/traffic.ts, so a refactor
-       that quietly gives deck traffic (or the rival) a route onto the pass
-       fails here before it ships.
+   arithmetic (corner caps + IDM + the turnout let-by + the deck merge)
+   against the REAL routegraph geometry. If the formulas here drift from
+   traffic.ts, that's a bug in this file, not evidence either way — keep them
+   in lockstep by eye.
 
    Usage: node test/mountain-traffic-sim.mjs [seeds]   (default 14) */
 
@@ -73,9 +69,27 @@ const f = (n) => n.toFixed(2);
   const writes = [...src.matchAll(/route = MOUNTAIN_EDGE/g)].length;
   if (writes !== 1)
     bad(`route = MOUNTAIN_EDGE is assigned ${writes} time(s) — only trySpawnMountain may`);
-  if (!/trySpawnMountain[\s\S]{0,400}n\.type === "truck" \|\| n\.type === "bus"/.test(src))
+  const spawnBody = src.slice(
+    src.indexOf("private trySpawnMountain("),
+    src.indexOf("/** clamp(drv.bias)", src.indexOf("private trySpawnMountain(")),
+  );
+  if (!/n\.type === "truck" \|\| n\.type === "bus"/.test(spawnBody))
     bad("the mountain spawner no longer bars heavies");
-  console.log("source guards: rival path clean, one spawner writes the route, no heavies");
+  /* ONE-WAY, structurally: the spawner is the only thing that puts a car on
+     the pass, and the only direction it may write is +1. A future lane that
+     re-introduces a backwards stream has to delete this line to do it. */
+  if (!/n\.dir = 1;/.test(spawnBody))
+    bad("trySpawnMountain no longer pins n.dir = 1 — the pass must be one-way");
+  if (/dir\s*=\s*-1|dir\s*<\s*0/.test(spawnBody))
+    bad("trySpawnMountain still knows about a backwards direction");
+  const updBody = src.slice(
+    src.indexOf("private updateMountain("),
+    src.indexOf("/* ---------------- instanced rendering", src.indexOf("private updateMountain(")),
+  );
+  if (/n\.dir\s*<\s*0/.test(updBody))
+    bad("updateMountain still branches on a backwards pass car");
+  console.log("source guards: rival path clean, one spawner writes the route," +
+    " no heavies, the pass is one-way by construction");
 }
 
 /* ---- the ported driving model ------------------------------------------- */
@@ -90,7 +104,7 @@ function mulberry32(a) {
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const rand2 = (rng, a, b) => a + (b - a) * rng();
 const LANE_FOLLOW_RATE = 3.4;
-const CAP_FWD = 2, CAP_ONC = 3;
+const CAP = 3;
 
 /* corner caps, as traffic.ts builds them (A_LAT 3.4, ±8-station smoothing) */
 const mtnCap = (() => {
@@ -143,57 +157,52 @@ const dt = 1 / 60;
 function runSeed(seed, report) {
   const rng = mulberry32(seed);
   const cars = [];
-  let overlaps = 0, worstPen = 0, laneBreaks = 0, wedgeBreaches = 0;
-  let merged = 0, mergedBad = 0, parked = 0, spawnFail = 0;
+  let overlaps = 0, worstPen = 0, laneBreaks = 0, backwards = 0;
+  let merged = 0, mergedBad = 0, letBys = 0, resumed = 0, stuck = 0, spawnFail = 0;
   /* a synthetic deck stream through the merge window: three lanes, the fast
      lane half-occupied, constant-ish IDM pace — what a merging car must
      thread into */
   const deck = [];
   for (let z = MTN.mergeZ - 260; z < MTN.mergeZ + 160; z += rand2(rng, 34, 90))
     deck.push({ z, v: rand2(rng, 22, 30), lane: rng() < 0.5 ? 2 : (rng() < 0.5 ? 0 : 1) });
-  /* the player proxy rides the forward lane at mountain pace — spawning is
-     keyed off them the way the game keys off playerMt */
-  let pS = 6, pV = 13;
+  /* the player proxy drives the pass in the ONE legal direction — spawning
+     and the turnout let-by are both keyed off them the way the game keys
+     off playerMt */
+  let pS = 6, pV = 15;
 
   const spawn = () => {
-    let fwd = 0, onc = 0;
-    for (const c of cars) (c.dirn < 0 ? onc++ : fwd++);
-    const wantOnc = onc < CAP_ONC && (rng() < 0.65 || fwd >= CAP_FWD);
-    if (!wantOnc && fwd >= CAP_FWD) return;
-    const dirn = wantOnc ? -1 : 1;
+    if (cars.length >= CAP) return;
     const s = pS + rand2(rng, 40, 230);
-    if (s > mt.len - (dirn < 0 ? 40 : 60)) return;
-    if (dirn < 0 && s < MTN.laybyS1 + 30) return;
-    const laneK = dirn < 0 ? 1 : 0;
+    if (s > mt.len - 60) return;
     for (const c of cars)
-      if (c.laneK === laneK && Math.abs(c.s - s) < 30) { spawnFail++; return; }
+      if (Math.abs(c.s - s) < 30) { spawnFail++; return; }
     const W = rand2(rng, 1.72, 1.98), L = rand2(rng, 4.2, 5.0);
     const bias = clamp(rand2(rng, -0.6, 0.6), -(MTN.laneW / 2 - W / 2 - 0.2), MTN.laneW / 2 - W / 2 - 0.2);
     const drv = { acc: rand2(rng, 0.8, 1.2), gap: rand2(rng, 0.85, 1.3), spd: rand2(rng, 0.85, 1.1) };
     cars.push({
-      dirn, laneK, s, off: mt.laneOffset(laneK, s) + bias, bias, W, L, drv,
-      v: rand2(rng, 10, 15), v0: rand2(rng, 12, 17) * drv.spd, stopped: 0,
+      s, off: mt.laneOffset(0, s) + bias, bias, W, L, drv,
+      v: rand2(rng, 10, 15), v0: rand2(rng, 12, 17) * drv.spd, held: 0, didLetBy: false,
     });
   };
 
   for (let t = 0; t < 300; t += dt) {
-    // the player loops the pass; spawn attempts a few times a second
+    // the player runs the pass, in the legal direction only, and laps it
     pS += pV * dt;
     if (pS > mt.len - 30) pS = 6;
     if (rng() < 3 * dt) spawn();
 
     for (const c of cars) {
-      /* leader: nearest same-direction car ahead in the same lane (no lane
-         changes on the pass, so "same lane" is exact) */
+      /* leader: nearest car ahead. One lane, one direction, no lane changes,
+         so "ahead" is just a larger s. */
       let lead = null, ds = 1e9;
       for (const m of cars) {
-        if (m === c || m.laneK !== c.laneK) continue;
-        const ahead = (m.s - c.s) * c.dirn;
+        if (m === c) continue;
+        const ahead = m.s - c.s;
         if (ahead <= 0 || ahead > 70) continue;
         const d = ahead - (m.L + c.L) / 2;
         if (d < ds) { ds = Math.max(0.1, d); lead = m; }
       }
-      let v0 = Math.min(c.v0 * 0.7 * 1.0, capAt(c.s, c.dirn, c.v) * (0.8 + 0.25 * c.drv.spd));
+      let v0 = Math.min(c.v0 * 0.7 * 1.0, capAt(c.s, 1, c.v) * (0.8 + 0.25 * c.drv.spd));
       const aMax = 1.5 * c.drv.acc, bCom = 2.6, T = 1.4 * c.drv.gap,
         s0 = 2.3 + 1.4 * (c.drv.gap - 1);
       let acc;
@@ -202,10 +211,17 @@ function runSeed(seed, report) {
         const sStar = s0 + c.v * T + (c.v * dv) / (2 * Math.sqrt(aMax * bCom));
         acc = aMax * (1 - Math.pow(c.v / v0, 4) - Math.pow(sStar / ds, 2));
       } else acc = aMax * (1 - Math.pow(c.v / v0, 4));
-      if (c.dirn < 0) {
-        const stopS = MTN.laybyS0 + 18;
-        const dstop = c.s - stopS - c.L / 2;
-        if (dstop < Math.max(30, c.v * 4)) {
+
+      /* THE LET-BY (traffic.ts updateMountain): inside the turnout window,
+         with the player closing from behind, the car pulls into the pocket
+         and stops against a virtual wall short of the pocket's end. */
+      const gap = c.s - pS;
+      const yielding = c.s > MTN.turnoutS0 && c.s < MTN.turnoutS1 && gap > 0 && gap < 90;
+      if (yielding) {
+        if (!c.didLetBy) { c.didLetBy = true; letBys++; }
+        const stopS = MTN.turnoutS1 - 6;
+        const dstop = stopS - c.s - c.L / 2;
+        if (dstop < Math.max(25, c.v * 4)) {
           const sStar = 2.0 + c.v * T + (c.v * c.v) / (2 * Math.sqrt(aMax * bCom));
           acc = Math.min(acc,
             aMax * (1 - Math.pow(c.v / Math.max(4, v0), 4) - Math.pow(sStar / Math.max(dstop, 0.4), 2)));
@@ -213,9 +229,8 @@ function runSeed(seed, report) {
       } else if (c.s >= mw.s0) {
         /* the merge: port of the gap acceptance against the deck stream
            (laneClearAt with route −1, fast lane) */
-        const zc = cor.wrapZ(cor.zAt(
-          mt.poseAt(c.s).x + c.off * mt.poseAt(c.s).nx,
-          mt.poseAt(c.s).z + c.off * mt.poseAt(c.s).nz));
+        const pp = mt.poseAt(c.s);
+        const zc = cor.wrapZ(cor.zAt(pp.x + c.off * pp.nx, pp.z + c.off * pp.nz));
         let clear = true;
         for (const d2 of deck) {
           if (d2.lane !== 2) continue;
@@ -227,7 +242,7 @@ function runSeed(seed, report) {
         }
         if (clear || c.s > mw.s1 - 6) {
           merged++;
-          // entering the deck stream: must not overlap the car it slots by
+          if (c.didLetBy) resumed++;
           for (const d2 of deck) {
             if (d2.lane !== 2) continue;
             if (Math.abs(cor.deltaZ(zc, d2.z)) < (4.6 + c.L) / 2) mergedBad++;
@@ -237,58 +252,58 @@ function runSeed(seed, report) {
         }
         acc = Math.min(acc, c.s > mw.s1 - 20 ? -2.8 : -1.4);
       }
+
       acc = clamp(acc, -8.5, 2.8);
       c.v = Math.max(0, c.v + acc * dt);
-      c.s += c.dirn * c.v * dt;
-      if (c.dirn > 0) c.s = Math.min(mt.len - 0.5, c.s);
-      else {
-        if (c.s < MTN.laybyS0 - 2) wedgeBreaches++;
-        c.s = Math.max(MTN.laybyS0 - 2, c.s);
-        if (c.v < 0.25 && c.s < MTN.laybyS1 + 6) c.stopped += dt;
-      }
-      let latT = mt.laneOffset(c.laneK, c.s) + c.bias;
-      if (c.dirn < 0) {
-        const pocket = Math.max(0, mt.halfWidths(c.s).hwL - MTN.half - 0.35);
-        if (pocket > 0) latT += Math.min(pocket, MTN.laybyW - 0.35);
-      }
+      const before = c.s;
+      c.s += c.v * dt;                       // one direction, always
+      if (c.s < before - 1e-9) backwards++;  // structural: never reverses
+      c.s = Math.min(mt.len - 0.5, c.s);
+      /* a car that has let the player by and is still crawling in the pocket
+         long after they are gone is a rolling roadblock, not a let-by */
+      if (c.didLetBy && !yielding && c.v < 0.5) c.held += dt; else if (!yielding) c.held = 0;
+      if (c.held > 20) stuck++;
+
+      let latT = mt.laneOffset(0, c.s) + c.bias;
+      const pocket = Math.max(0, mt.halfWidths(c.s).hwL - MTN.half - 0.35);
+      if (yielding && pocket > 0) latT += Math.min(pocket, MTN.turnoutW - 0.35);
       const dOff = latT - c.off;
       c.off += clamp(dOff, -LANE_FOLLOW_RATE * dt, LANE_FOLLOW_RATE * dt);
 
-      /* lane envelope: the car's body must stay inside its own half of the
-         road (or the pocket) — the structural half of "zero overlaps" */
-      const half = c.laneK === 1 ? mt.halfWidths(c.s).hwL : 0;
-      const inLane = c.laneK === 0
-        ? c.off - c.W / 2 > -MTN.half - 0.01 && c.off + c.W / 2 < 0.25
-        : c.off - c.W / 2 > -0.25 && c.off + c.W / 2 < half + 0.05;
+      /* Lane envelope: the body must stay on the pavement that is actually
+         open here — the lane when running, the lane plus the open pocket
+         when letting by. A SHARED edge is skipped: through the two gore
+         throats the road's west edge is the deck's edge and the pavement is
+         continuous across it (routegraph shL/shR, and collide.ts exempts the
+         same edges), so hanging past the clipped half-width there is being
+         on the deck, not being off the road. */
+      const hw = mt.halfWidths(c.s);
+      const sh = mt.sharedSides(c.s);
+      const inLane =
+        (sh.shR || c.off - c.W / 2 > -hw.hwR - 0.01) &&
+        (sh.shL || c.off + c.W / 2 < hw.hwL + 0.05);
       if (!inLane) {
         laneBreaks++;
         if (laneBreaks < 4 && report)
-          console.log(`    BREAK dir ${c.dirn} laneK ${c.laneK} s ${c.s.toFixed(1)} off ${c.off.toFixed(2)} W ${c.W.toFixed(2)} half ${half.toFixed(2)}`);
+          console.log(`    BREAK s ${c.s.toFixed(1)} off ${c.off.toFixed(2)} W ${c.W.toFixed(2)} hwL ${hw.hwL.toFixed(2)} hwR ${hw.hwR.toFixed(2)} sh ${sh.shL ? "L" : "-"}${sh.shR ? "R" : "-"}`);
       }
     }
-    for (let i = cars.length - 1; i >= 0; i--) {
-      const c = cars[i];
-      // recycle: merged away, or parked long enough to have been recycled
-      if (c.gone || c.stopped > 25) {
-        if (c.stopped > 25) parked++;
-        cars.splice(i, 1);
-      }
-    }
+    for (let i = cars.length - 1; i >= 0; i--) if (cars[i].gone) cars.splice(i, 1);
     for (const d2 of deck) d2.z = cor.wrapZ(d2.z + d2.v * dt);
 
-    /* the core assertion: no two bodies on the pass ever overlap, oncoming
-       pairs included — checked with the game's own SAT */
+    /* the core assertion: no two bodies on the pass ever overlap — checked
+       with the game's own SAT */
     for (let i = 0; i < cars.length; i++) {
       const a = cars[i];
       const pa = mt.poseAt(a.s);
       const ax = pa.x + a.off * pa.nx, az = pa.z + a.off * pa.nz;
-      const ah = Math.atan2(pa.tx, pa.tz) + (a.dirn < 0 ? Math.PI : 0);
+      const ah = Math.atan2(pa.tx, pa.tz);
       for (let j = i + 1; j < cars.length; j++) {
         const b = cars[j];
         if (Math.abs(a.s - b.s) > 12) continue;
         const pb = mt.poseAt(b.s);
         const bx2 = pb.x + b.off * pb.nx, bz2 = pb.z + b.off * pb.nz;
-        const bh = Math.atan2(pb.tx, pb.tz) + (b.dirn < 0 ? Math.PI : 0);
+        const bh = Math.atan2(pb.tx, pb.tz);
         const pen = obb2(
           ax, az, Math.sin(ah), Math.cos(ah), a.W / 2, a.L / 2,
           bx2, bz2, Math.sin(bh), Math.cos(bh), b.W / 2, b.L / 2);
@@ -298,26 +313,30 @@ function runSeed(seed, report) {
   }
   if (report)
     console.log(`  seed ${String(seed).padStart(3)}: ` +
-      `${merged} merged, ${parked} parked+recycled, ${spawnFail} spawn rejects — ` +
+      `${merged} merged, ${letBys} let-bys (${resumed} resumed + merged), ` +
+      `${spawnFail} spawn rejects — ` +
       `${overlaps} overlap ticks (worst ${f(worstPen)} m), ` +
-      `${laneBreaks} lane breaks, ${wedgeBreaches} wedge breaches, ${mergedBad} bad merges`);
-  return { overlaps, worstPen, laneBreaks, wedgeBreaches, merged, mergedBad, parked };
+      `${laneBreaks} lane breaks, ${backwards} reversals, ${stuck} stuck, ${mergedBad} bad merges`);
+  return { overlaps, worstPen, laneBreaks, backwards, merged, mergedBad, letBys, resumed, stuck };
 }
 
 const seeds = +(process.argv[2] || 14);
-console.log(`mountain two-way traffic, ${seeds} seeds × 300 s:`);
-let sumMerged = 0, sumParked = 0;
+console.log(`mountain one-way traffic, ${seeds} seeds × 300 s:`);
+let sumMerged = 0, sumLetBy = 0, sumResumed = 0;
 for (let k = 0; k < seeds; k++) {
   const r = runSeed(0x5eed + k * 7919, true);
   sumMerged += r.merged;
-  sumParked += r.parked;
+  sumLetBy += r.letBys;
+  sumResumed += r.resumed;
   if (r.overlaps) bad(`seed ${k}: ${r.overlaps} overlapping ticks (worst ${f(r.worstPen)} m)`);
   if (r.laneBreaks) bad(`seed ${k}: a car left its lane envelope ${r.laneBreaks} tick(s)`);
-  if (r.wedgeBreaches) bad(`seed ${k}: an oncoming car pushed past the lay-by floor`);
+  if (r.backwards) bad(`seed ${k}: a pass car moved backwards — the pass is not one-way`);
+  if (r.stuck) bad(`seed ${k}: ${r.stuck} car(s) stayed stopped after the let-by — rolling roadblock`);
   if (r.mergedBad) bad(`seed ${k}: a merge landed inside a deck car`);
 }
-if (sumMerged === 0) bad("no forward car ever merged onto the deck — the exit path is dead");
-if (sumParked === 0) bad("no oncoming car ever parked — the lay-by path is dead");
+if (sumMerged === 0) bad("no car ever merged onto the deck — the exit path is dead");
+if (sumLetBy === 0) bad("no car ever used the turnout — the let-by path is dead");
+if (sumResumed === 0) bad("no car resumed after a let-by — the turnout is a trap");
 
 console.log(fail ? `\n${fail} FAILURE(S)` : "\nall mountain traffic checks passed");
 process.exit(fail ? 1 : 0);

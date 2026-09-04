@@ -1196,7 +1196,7 @@ export const OVERPASSES = [
   { ...OVERPASS, z: -720, clear: 9.6 },
   OVERPASS,
 ];
-/** The mountain road (EXIT 4, 峠 Tōge): a two-lane, two-way riverside pass
+/** The mountain road (EXIT 4, 峠 Tōge): a single-lane, ONE-WAY riverside pass
     that leaves the deck through an east-side gore, climbs a rock shelf above
     the river bank, winds, and merges back through a second east gore. The
     geometry itself is a routegraph PolyRouteEdge (routegraph.ts buildMountain
@@ -1229,22 +1229,35 @@ export const MTN = {
   /** gore noses, east side (+lat) both — the lap's first left exit */
   divergeZ: -1968,
   mergeZ: -1644,
-  /** one narrow lane each way; keep-right, oncoming on the river side */
-  lanes: 2,
-  laneW: 3.3,
-  shoulder: 0.55,
-  /** pavement half width when fully open */
-  half: 3.3 + 0.55,
+  /** ONE lane, ONE direction of travel: diverge → merge, the way the deck
+      runs. 4.20 m is a wide single lane, NOT half of the old pair — the 17 m
+      hairpin has to stay drivable by a car that is now allowed to use the
+      whole road, and an old lane exactly (3.30 m) puts the rock wall 2.2 m
+      off the mirror through it. Nothing on the pass is two-way any more:
+      no centre line, no oncoming stream, no wrong-way lay-by. */
+  lanes: 1,
+  laneW: 4.2,
+  shoulder: 0.6,
+  /** pavement half width when fully open (lanes · laneW / 2 + shoulder) */
+  half: (1 * 4.2) / 2 + 0.6,
   /** gore taper length */
   nose: 14,
   /** structural skirt depth below the pavement */
   deckT: 0.9,
-  /** oncoming turnout (lay-by) near the diverge, in edge arclength from the
-      diverge nose: the pocket oncoming traffic pulls into and stops, so the
-      wrong-way lane can never feed the one-way deck. Extra width on +lat. */
-  laybyS0: 52,
-  laybyS1: 96,
-  laybyW: 2.6,
+  /** The TURNOUT — the old oncoming lay-by, repurposed, in edge arclength
+      from the diverge nose. A one-way single lane has nothing to dodge and
+      nowhere to overtake, so this pocket does the two jobs a real 待避所
+      does: a slower pass car you are closing on pulls in and lets you by
+      (traffic.ts updateMountain), and it is deep enough — ~10 m of pavement
+      across, against 5.4 m of running lane — to be the signed place to turn
+      round. That is this road's answer to "what if the player U-turns on a
+      one-way road": nothing walls them (the gore throats take a car both
+      ways, and the previous lane's three phantom-wall fixes are what make
+      that true), and there is somewhere built to come about. Extra width on
+      +lat, the fill side, where a shelf road's turnout is really built. */
+  turnoutS0: 52,
+  turnoutS1: 96,
+  turnoutW: 4.6,
   /** the river's near-bank riprap starts at x≈622 (scenery.ts) — the road,
       its skirt included, must stay west of it */
   xMax: 614,

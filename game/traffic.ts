@@ -2682,15 +2682,16 @@ export class Traffic {
     return false;
   }
 
-  /** Seed a car onto the mountain pass while the player drives it. Two-way:
-      most of the flow is ONCOMING — headlights coming around a rock face are
-      the whole point of the road — with a thin same-direction trickle to
-      overtake. Hard per-direction caps keep it a mountain road, not a
-      mountain jam: the road is one narrow lane each way, so density IS
-      difficulty, and past ~3 cars a side there is nowhere to dodge to.
+  /** Seed a car onto the mountain pass while the player drives it. ONE-WAY:
+      the pass is a single lane running diverge → merge, so there is exactly
+      one stream and every car faces the same way the player does. The old
+      oncoming flow (and its lay-by terminator) is gone with the second lane.
+      A hard cap keeps it a mountain road and not a mountain jam — on one
+      lane you cannot overtake, so every extra car is a car you are stuck
+      behind, and the turnout let-by in updateMountain is what keeps that
+      from being a rolling roadblock.
       Same hidden-spawn contract as the other spawners; no heavies. */
-  private static readonly MTN_CAP_FWD = 2;
-  private static readonly MTN_CAP_ONC = 3;
+  private static readonly MTN_CAP = 3;
   private trySpawnMountain(
     n: Npc, player: CarState, camFx: number, camFz: number, hd: number
   ): boolean {
@@ -2699,26 +2700,18 @@ export class Traffic {
     const pm = this.playerMt;
     if (!pm) return false;
     const mt = this.routes.mtn;
-    let fwd = 0, onc = 0;
+    let on = 0;
     for (const m of this.npcs) {
       if (!m.active || !m.hw || m.route !== MOUNTAIN_EDGE) continue;
-      if (m.dir < 0) onc++;
-      else fwd++;
+      on++;
     }
+    if (on >= Traffic.MTN_CAP) return false;
     this.rollDriver(n);
     for (let attempt = 0; attempt < 6; attempt++) {
-      const wantOnc =
-        onc < Traffic.MTN_CAP_ONC && (this.rng() < 0.65 || fwd >= Traffic.MTN_CAP_FWD);
-      if (!wantOnc && fwd >= Traffic.MTN_CAP_FWD) return false;
-      const dir = wantOnc ? -1 : 1;
-      /* both directions seed AHEAD of the player along their travel — an
-         oncoming car ahead is one about to come at them */
+      /* seeded AHEAD of the player, in the one direction this road runs */
       const s = pm.s + rand(40, 230);
-      if (s > mt.len - (dir < 0 ? 40 : 60)) return false;
-      /* oncoming cars below the lay-by have already parked — never seed one
-         mid-manoeuvre */
-      if (dir < 0 && s < MTN.laybyS1 + 30) return false;
-      const laneK = dir < 0 ? 1 : 0;
+      if (s > mt.len - 60) return false;
+      const laneK = 0;
       const off = mt.laneOffset(laneK, s);
       const p = mt.worldOf(s, off, this._cw);
       if (!this.warpSeed && !this.hidden(player, camFx, camFz, p.x, p.y, p.z, hd, false))
@@ -2732,7 +2725,10 @@ export class Traffic {
       n.active = true;
       n.hw = true;
       n.edge = null;
-      n.dir = dir;
+      /* the ONLY direction anything drives the pass. test/mountain-traffic-
+         sim.mjs greps for this line: a lane that wants a backwards stream
+         back has to delete it, and the sim will say so. */
+      n.dir = 1;
       n.route = MOUNTAIN_EDGE;
       n.wantBypass = 0;
       n.laneK = laneK;
@@ -2746,7 +2742,7 @@ export class Traffic {
       n.turnCd = rand(2, 8);
       n.blink = 0;
       this.placeHwy(n, player.z);
-      n.hVis = this.routes.mtn.poseAt(s, this.mpose).h + (dir < 0 ? Math.PI : 0);
+      n.hVis = this.routes.mtn.poseAt(s, this.mpose).h;
       return true;
     }
     return false;
@@ -4635,8 +4631,8 @@ export class Traffic {
       if (n.hw && n.route === BYPASS_EDGE) {
         targetH = this.routes.bypass.poseAt(n.s, this.bpose).h;
       } else if (n.hw && n.route === MOUNTAIN_EDGE) {
-        // oncoming cars face down the edge the other way
-        targetH = this.routes.mtn.poseAt(n.s, this.mpose).h + (n.dir < 0 ? Math.PI : 0);
+        // one-way: every pass car faces the way the edge runs
+        targetH = this.routes.mtn.poseAt(n.s, this.mpose).h;
       } else if (n.hw) {
         // the rival points where it is actually going, slide included
         targetH = n.rival ? this.riv.hTarget : this.cor.pose(n.s, this.cpose).h;
@@ -5715,17 +5711,15 @@ export class Traffic {
     return cap;
   }
 
-  /* Mountain-pass driving: one narrow lane each way, no lane changes, corner
-     speed caps, and a direction. Forward (dir +1) runs the pass and merges
-     onto the deck through the mtn merge window exactly the way the bypass
-     merges. ONCOMING (dir −1) runs s-descending in its own (+lat, river-side)
-     lane and can never reach the one-way deck: it pulls into the lay-by
-     pocket before the diverge wedge, stops, and waits to be recycled — the
-     queue behind a parked car is ordinary IDM against a stopped leader.
-     Cross-stream safety is structural, not behavioural: each direction holds
-     its own lane centre (±laneW/2, bias clamped inside the lane), neither
-     ever targets the other's, so the streams are laterally disjoint by
-     construction — test/mountain-traffic-sim.mjs asserts exactly that. */
+  /* Mountain-pass driving: ONE lane, ONE direction, no lane changes, corner
+     speed caps. Every pass car runs s-ascending and merges onto the deck
+     through the mtn merge window exactly the way the bypass merges. There is
+     no second stream and therefore no cross-stream safety problem to solve —
+     what a single lane has instead is the OVERTAKING problem, since a car
+     you catch cannot be passed. That is what the turnout let-by below is
+     for, and it is the thing test/mountain-traffic-sim.mjs now asserts: a
+     car that lets the player by has to RESUME and leave through the merge,
+     or it is a rolling roadblock rather than a courtesy. */
   private updateMountain(
     n: Npc, dt: number, v0: number,
     lead: { ds: number; v: number } | null, panic = false
@@ -5743,12 +5737,24 @@ export class Traffic {
       acc = aMax * (1 - Math.pow(n.v / v0, 4) - Math.pow(sStar / Math.max(lead.ds, 0.55), 2));
     } else acc = aMax * (1 - Math.pow(n.v / v0, 4));
 
-    if (n.dir < 0) {
-      /* the lay-by stop: an IDM stop against a virtual wall at the stop
-         line, plus the pull into the pocket over the last stretch */
-      const stopS = MTN.laybyS0 + 18;
-      const ds = n.s - stopS - n.L / 2;
-      if (ds < Math.max(30, n.v * 4)) {
+    /* THE LET-BY. One lane, one way: a car you catch cannot be overtaken, so
+       the turnout does what a 待避所 does on a real single-track road — the
+       car ahead pulls in, stops clear of the lane, and waves you through.
+       This is the old oncoming lay-by's machinery, repurposed whole: same
+       pocket, same IDM stop against a virtual wall, same pull-in clamped to
+       however much of the pocket is OPEN at this station — driven by the
+       player closing from behind instead of by a wrong-way stream. When the
+       player is not on the pass (playerMt null) nothing yields and the
+       stream just runs. */
+    const pm = this.playerMt;
+    const yielding =
+      pm !== null && n.s > MTN.turnoutS0 && n.s < MTN.turnoutS1 &&
+      n.s - pm.s > 0 && n.s - pm.s < 90;
+    if (yielding) {
+      n.blink = 1; // pulling right, into the pocket on the fill side
+      const stopS = MTN.turnoutS1 - 6;
+      const ds = stopS - n.s - n.L / 2;
+      if (ds < Math.max(25, n.v * 4)) {
         const sStar = 2.0 + n.v * T + (n.v * n.v) / (2 * Math.sqrt(aMax * bCom));
         acc = Math.min(acc,
           aMax * (1 - Math.pow(n.v / Math.max(4, v0), 4) - Math.pow(sStar / Math.max(ds, 0.4), 2)));
@@ -5782,28 +5788,26 @@ export class Traffic {
     acc = clamp(acc, -8.5, 2.8);
     n.brake = acc < (n.brake ? -0.12 : -0.35);
     n.v = Math.max(0, n.v + acc * dt);
-    n.s += n.dir * n.v * dt;
-    if (n.dir > 0) n.s = Math.min(mt.len - 0.5, n.s);
-    /* belt and braces: whatever the following model does, a wrong-way car
-       never proceeds past the lay-by toward the one-way wedge */
-    else n.s = Math.max(MTN.laybyS0 - 2, n.s);
+    n.s += n.v * dt; // one-way: n.dir is pinned to +1 on this edge
+    n.s = Math.min(mt.len - 0.5, n.s);
 
-    /* lane hold. No lane changes on a pass — the only lateral motion is the
-       oncoming stream easing into the lay-by pocket as it stops. */
+    /* lane hold. No lane changes on a pass — there is only one lane; the
+       only lateral motion is a car easing into the turnout pocket to let
+       the player by. */
     let latT = mt.laneOffset(n.laneK, n.s) + this.biasAtMtn(n);
-    if (n.dir < 0) {
-      /* pull into the pocket by however much of it is actually OPEN here —
-         a fixed target had the body leaning on the stone parapet before the
+    if (yielding) {
+      /* pull in by however much of the pocket is actually OPEN here — a
+         fixed target had the body leaning on the stone parapet before the
          pocket's own taper had opened (the sim's lane-envelope assert) */
       const pocket = Math.max(0, mt.halfWidths(n.s, this.mtnHw).hwL - MTN.half - 0.35);
-      if (pocket > 0) latT += Math.min(pocket, MTN.laybyW - 0.35);
+      if (pocket > 0) latT += Math.min(pocket, MTN.turnoutW - 0.35);
     }
     n.offT = latT;
     const dOff = n.offT - n.offCur;
     const rate = LANE_FOLLOW_RATE;
     if (Math.abs(dOff) > 0.02) n.offCur += clamp(dOff, -rate * dt, rate * dt);
     else n.offCur = n.offT;
-    if (n.blink !== 0 && n.dir > 0 && n.s < mw.s0 - 60) n.blink = 0;
+    if (n.blink !== 0 && !yielding && n.s < mw.s0 - 60) n.blink = 0;
   }
 
   /* ---------------- instanced rendering ----------------

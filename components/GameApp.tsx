@@ -2046,13 +2046,14 @@ function ControlsScreen({
                       <div className="sign-exitboard-title">
                         EXIT 4 <span className="ui-jp" lang="ja">峠</span>
                       </div>
-                      <span className="sign-cap">MOUNTAIN ROAD · TWO-WAY</span>
+                      <span className="sign-cap">MOUNTAIN ROAD · ONE-WAY</span>
                     </div>
                   </div>
                   <p>
                     Follow the green EXIT boards on the expressway — each numbered exit has a
                     lit off-ramp down into the town on both sides, and EXIT 4 leads onto the
-                    two-way mountain road. Crashed cars keep their hazards on, smoke, and get
+                    one-way mountain road — a single lane, one direction, with a turnout
+                    where slower cars let you by. Crashed cars keep their hazards on, smoke, and get
                     towed away shortly.
                   </p>
                 </div>
