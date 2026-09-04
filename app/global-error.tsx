@@ -1,5 +1,7 @@
 "use client";
 
+import { NAME_LABEL } from "@/lib/build";
+
 /* Last-resort error boundary: replaces the ROOT layout when it (or anything
    under it that no nearer boundary caught) throws during render, so it must
    render its own <html>/<body> and cannot rely on globals.css or the font
@@ -43,7 +45,7 @@ export default function GlobalError({
               textShadow: "0 0 12px rgba(95,141,255,0.4)",
             }}
           >
-            NEON EXPRESSWAY
+            {NAME_LABEL}
           </div>
           <div style={{ marginTop: 6, fontSize: 12, letterSpacing: "0.4em", color: "#ff6f9c" }}>首都高</div>
           <h1 style={{ margin: "28px 0 12px", fontSize: 22, fontWeight: 600, letterSpacing: "0.04em" }}>

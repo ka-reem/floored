@@ -1,5 +1,7 @@
 import type { MetadataRoute } from "next";
 
+import { NAME_LABEL } from "@/lib/build";
+
 /* Home-screen install manifest (served at /manifest.webmanifest — Next builds
    the route from this file, per node_modules/next/dist/docs/.../manifest.md).
 
@@ -19,7 +21,7 @@ import type { MetadataRoute } from "next";
      emblem inside Android's safe circle so adaptive masks don't clip it. */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "NEON EXPRESSWAY",
+    name: NAME_LABEL,
     short_name: "首都高",
     description:
       "Night driving through a procedurally generated Japanese town and its elevated expressway. Sim-grade tire physics, dense AI traffic, rain, neon.",

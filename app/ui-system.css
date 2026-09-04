@@ -402,6 +402,26 @@
 .sign-head .sign-title {
   font-size: calc(74 * var(--su));
 }
+/* …and when the BETA plate is hung beside it too, the line is shield + title
+   + plate + corner caption, all nowrap. Give the title the plate's width back
+   rather than letting .sign-titles (min-width:0) squeeze it under the plate —
+   home, the sub-screens and the 900-wide toll board each in their own ratio.
+   Guarded to the DESKTOP layout: the phone blocks below re-lay the header
+   (it wraps at ≤700, it is one nowrap line at ≤480) and set their own title
+   sizes, and a :has() selector would out-specify them from up here. Reverts
+   by itself the day lib/build.ts's IS_BETA goes false and BetaMark stops
+   rendering. */
+@media (min-width: 701px) and (min-height: 481px) {
+  .sign-head:has(.sign-beta) .sign-title {
+    font-size: calc(62 * var(--su));
+  }
+  .sign-head.sub:has(.sign-beta) .sign-title {
+    font-size: calc(48 * var(--su));
+  }
+  .sign.loadboard .sign-head:has(.sign-beta) .sign-title {
+    font-size: calc(54 * var(--su));
+  }
+}
 .sign-corner {
   margin-left: auto;
   align-self: flex-start;
@@ -664,6 +684,69 @@
    shows it (in place of the outside plate) */
 .sign-foot {
   display: none;
+}
+
+/* ---------- BETA supplementary plate ----------
+   The build mark (components/GameApp.tsx BetaMark, mounted through
+   SignHead's `mark` slot and directly in the home / loading headers).
+
+   It is a supplementary panel in the same language as .sign-plate — a
+   bordered plate carrying 試験版 over BETA — but drawn in sodium OUTLINE
+   rather than the sodium FILL the selected row wears, so the System sheet's
+   "one lit thing per screen" still points at DRIVE / RESUME and this reads
+   as the caution panel bolted under a route name. No animation: menus have
+   exactly one slow hum and it belongs to the selected row.
+
+   Sits on the title's baseline via align-self:flex-end + the descender-sized
+   bottom margin; the corner caption keeps margin-left:auto so it stays hard
+   right of this. */
+.sign-beta {
+  flex-shrink: 0;
+  align-self: flex-end;
+  margin-bottom: calc(14 * var(--su));
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(2 * var(--su));
+  padding: calc(6 * var(--su)) calc(12 * var(--su)) calc(5 * var(--su));
+  border: calc(4 * var(--su)) solid var(--sign-sodium);
+  border-radius: calc(8 * var(--su));
+  background: var(--sign-blue-deep);
+  color: var(--sign-sodium);
+  line-height: 1;
+  box-shadow: 0 0 calc(22 * var(--su)) var(--sign-sodium-halo);
+}
+.sign-beta.sm {
+  margin-bottom: calc(8 * var(--su));
+  padding: calc(5 * var(--su)) calc(10 * var(--su)) calc(4 * var(--su));
+  border-width: calc(3 * var(--su));
+  border-radius: calc(6 * var(--su));
+}
+.sign-beta-jp {
+  font-size: calc(12 * var(--su));
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: var(--sign-sodium-pale);
+}
+.sign-beta-en {
+  font-family: var(--font-sign);
+  font-size: calc(22 * var(--su));
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  /* the tracking is on the right of the last glyph too — pull it back so the
+     word sits centred between the borders (audit rule f) */
+  text-indent: 0.14em;
+}
+.sign-beta.sm .sign-beta-jp {
+  font-size: calc(9 * var(--su));
+}
+.sign-beta.sm .sign-beta-en {
+  font-size: calc(18 * var(--su));
+}
+/* the beta copy line on the home plate: sodium on blue, one line */
+.sign-plate-line.beta {
+  color: var(--sign-sodium);
+  font-weight: 900;
 }
 .sign-kp {
   position: absolute;
@@ -976,6 +1059,30 @@
     overflow-wrap: normal;
     text-shadow: 0 0 18px var(--sign-title-glow);
   }
+  /* the head wraps here (.sign-titles is display:contents), so the mark takes
+     its own line under the title — left aligned with it, at phone pixels */
+  .sign-beta,
+  .sign-beta.sm {
+    align-self: auto;
+    margin-bottom: 0;
+    gap: 1px;
+    padding: 4px 9px 3px;
+    border-width: 3px;
+    border-radius: 6px;
+    box-shadow: 0 0 14px var(--sign-sodium-halo);
+  }
+  .sign-beta-jp,
+  .sign-beta.sm .sign-beta-jp {
+    font-size: 8px;
+  }
+  .sign-beta-en,
+  .sign-beta.sm .sign-beta-en {
+    font-size: 15px;
+  }
+  .sign-plate-line.beta {
+    font-size: 10px;
+    white-space: normal;
+  }
   .sign-rule {
     margin: 12px var(--sign-inset) 10px;
   }
@@ -1194,6 +1301,27 @@
     line-height: 1;
     white-space: nowrap;
     text-shadow: 0 0 12px var(--sign-title-glow);
+  }
+  /* the head is one nowrap line here and the outside plate is gone, so the
+     mark shrinks to a single-line chip riding at the right of the title */
+  .sign-beta,
+  .sign-beta.sm {
+    align-self: center;
+    margin-bottom: 0;
+    padding: 2px 6px 1px;
+    border-width: 2px;
+    border-radius: 4px;
+    box-shadow: 0 0 10px var(--sign-sodium-halo);
+  }
+  .sign-beta-jp,
+  .sign-beta.sm .sign-beta-jp {
+    display: none;
+  }
+  .sign-beta-en,
+  .sign-beta.sm .sign-beta-en {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-indent: 0.1em;
   }
   .sign-rule {
     margin: 6px var(--sign-inset) 4px;
@@ -2889,6 +3017,11 @@ body.touch .tc:active,
     gap: 8px;
     white-space: normal;
     overflow: visible;
+    /* The kilometre post is anchored to the viewport corner and floats over
+       the bottom right of the plate; keep the foot row's CREDITS button out
+       from under it. (It already grazed the post before the BETA line pushed
+       this row down — 64px clears both.) */
+    padding-right: 64px;
   }
   /* loading */
   .toll {

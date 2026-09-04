@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Space_Grotesk } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import PostHogProvider from "@/components/PostHogProvider";
+import { NAME_LABEL } from "@/lib/build";
 import "./globals.css";
 import "./fonts.css";
 import "./ui-system.css";
@@ -38,11 +39,18 @@ const SITE_URL =
 const DESCRIPTION =
   "Night driving through a procedurally generated Japanese town and its elevated expressway. Sim-grade tire physics, dense AI traffic, rain, neon.";
 
+/* The tab title and the share card. NAME_LABEL is "NEON EXPRESSWAY (BETA)"
+   while lib/build.ts's IS_BETA is true and plain "NEON EXPRESSWAY" after it
+   goes false — the browser tab, the OG card and the Twitter card all read the
+   same one constant. public/og.png is untouched: it is a committed render and
+   the beta mark lives in the text metadata only. */
+const TITLE = `${NAME_LABEL} — 首都高 Night Drive`;
+
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: "NEON EXPRESSWAY — 首都高 Night Drive",
+  title: TITLE,
   description: DESCRIPTION,
-  applicationName: "NEON EXPRESSWAY",
+  applicationName: NAME_LABEL,
   alternates: { canonical: "/" },
   /* Share card. public/og.png is a static 1200×630 render (night palette,
      title, 首都高ナイトドライブ, sodium-orange road deck) — a committed file
@@ -51,15 +59,15 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     url: "/",
-    siteName: "NEON EXPRESSWAY",
-    title: "NEON EXPRESSWAY — 首都高 Night Drive",
+    siteName: NAME_LABEL,
+    title: TITLE,
     description: DESCRIPTION,
     locale: "en_US",
     images: [{ url: "/og.png", width: 1200, height: 630, alt: "NEON EXPRESSWAY — 首都高ナイトドライブ" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "NEON EXPRESSWAY — 首都高 Night Drive",
+    title: TITLE,
     description: DESCRIPTION,
     images: ["/og.png"],
   },

@@ -15,6 +15,8 @@
    fallbacks) rather than classes there, so the panel reads as the game even
    if the stylesheet is what failed to load. */
 
+import { NAME_LABEL } from "@/lib/build";
+
 export type GfxFailKind = "nowebgl" | "lost";
 
 const PANEL_ID = "gfxFail";
@@ -81,7 +83,7 @@ export function showGfxFail(host: HTMLElement, kind: GfxFailKind): HTMLElement {
   box.style.cssText = "max-width:460px;width:100%;";
 
   const title = doc.createElement("div");
-  title.textContent = "NEON EXPRESSWAY";
+  title.textContent = NAME_LABEL;
   title.style.cssText =
     "font-family:var(--font-display,'Segoe UI',system-ui,sans-serif);font-weight:700;" +
     "letter-spacing:0.28em;font-size:14px;color:var(--accent-2,#7fd8ff);" +
