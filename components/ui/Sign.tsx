@@ -16,7 +16,7 @@
 
    Keep these presentational: no game imports, no state. */
 
-import type { ButtonHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, CSSProperties, ReactNode, SelectHTMLAttributes } from "react";
 
 /* ---------- glyphs ---------- */
 
@@ -308,12 +308,17 @@ export function SignSlider({
   text: string;
 }) {
   const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+  /* --pct (a plain 0..100 number) is all the CSS needs: ui-system.css turns it
+     into --sign-thumb-pos, the thumb-centre offset with the travel inset by
+     half a thumb at each end, and paints both the fill's width and the thumb's
+     left from that one expression. A raw `left: pct%` hung half the thumb off
+     the track at both ends. */
   return (
     <div className="sign-sval">
-      <div className="sign-slider">
+      <div className="sign-slider" style={{ "--pct": pct } as CSSProperties}>
         <u aria-hidden="true" />
-        <b aria-hidden="true" style={{ width: `${pct}%` }} />
-        <i aria-hidden="true" style={{ left: `${pct}%` }} />
+        <b aria-hidden="true" />
+        <i aria-hidden="true" />
         <input
           type="range"
           min={min}

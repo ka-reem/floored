@@ -451,8 +451,13 @@
   align-items: center;
   gap: var(--sign-row-gap);
   padding: var(--sign-sp-1) var(--sign-sp-3);
-  /* the lane-edge line: 6px, transparent until selected */
-  border-left: calc(6 * var(--su)) solid transparent;
+  /* the lane-edge line: the gutter is still reserved by a transparent
+     border, so every row's box is unchanged, but the sodium stripe itself is
+     painted by ::before. Colouring the border bent it around border-radius
+     into a stray "(" floating left of the selected row. */
+  --sign-row-edge: calc(6 * var(--su));
+  position: relative;
+  border-left: var(--sign-row-edge) solid transparent;
   border-radius: calc(10 * var(--su));
   color: var(--sign-ink);
   font-family: var(--font-sign);
@@ -463,6 +468,22 @@
 .sign-row:hover,
 .sign-row:focus-visible {
   background: var(--sign-wash);
+}
+/* the lane-edge stripe itself: a straight, square-ended bar filling the
+   border gutter, so it cannot be curved by the row's rounded corners */
+.sign-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * var(--sign-row-edge));
+  width: var(--sign-row-edge);
+  background: transparent;
+  border-radius: 0;
+  pointer-events: none;
+}
+.sign-row.sel::before {
+  background: var(--sign-sodium);
 }
 .sign-row:active {
   background: rgba(238, 243, 255, 0.16);
@@ -480,7 +501,6 @@
   padding: var(--sign-sp-2) var(--sign-sp-3);
   background: var(--sign-sodium-tint);
   color: var(--sign-sodium);
-  border-left-color: var(--sign-sodium);
   box-shadow: 0 0 calc(34 * var(--su)) var(--sign-sodium-halo);
   animation: signHum 3s ease-in-out infinite;
 }
@@ -797,33 +817,6 @@
   background: transparent;
   cursor: pointer;
 }
-.sign-slider {
-  position: relative;
-  flex: 1;
-  height: 6px;
-  background: var(--sign-ink-faint);
-  border-radius: 3px;
-}
-.sign-slider b {
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 100%;
-  background: var(--sign-sodium);
-  border-radius: 3px;
-  box-shadow: 0 0 12px rgba(255, 180, 84, 0.8);
-}
-.sign-slider i {
-  position: absolute;
-  top: 50%;
-  width: 22px;
-  height: 30px;
-  margin: -15px 0 0 -11px;
-  background: var(--sign-sodium);
-  border: 3px solid var(--sign-ink);
-  border-radius: 5px;
-  box-shadow: 0 0 14px rgba(255, 180, 84, 0.8);
-}
 .sign-srow {
   display: flex;
   align-items: center;
@@ -992,7 +985,7 @@
   .sign-row {
     padding: 10px 8px;
     min-height: 56px;
-    border-left-width: 4px;
+    --sign-row-edge: 4px;
     border-radius: 8px;
   }
   .sign-row.sel {
@@ -1215,7 +1208,7 @@
     margin: 0 -8px;
     width: calc(100% + 16px);
     min-height: 44px;
-    border-left-width: 4px;
+    --sign-row-edge: 4px;
     border-radius: 6px;
   }
   .sign-row.sel {
@@ -1566,6 +1559,20 @@ a.sign-btn {
   flex: 1;
   min-width: calc(120 * var(--su));
   height: calc(30 * var(--su));
+  /* the two sizes the geometry below is built from, resolved once here so the
+     fill and the thumb cannot drift apart. max() rather than min-width /
+     min-height, because the maths needs the SETTLED value, not a clamp that
+     the browser applies after the fact. */
+  --sign-thumb-w: max(calc(18 * var(--su)), 12px);
+  --sign-track-h: max(calc(6 * var(--su)), 4px);
+  /* Where the thumb's CENTRE sits, for --pct (0..100, set by SignSlider).
+     The travel is inset by half a thumb at each end, so the thumb's outer
+     edge is flush with the track at 0% and 100% instead of hanging half off
+     it — and the fill, which uses the same expression as its width, always
+     ends exactly under the thumb's centre. */
+  --sign-thumb-pos: calc(
+    var(--sign-thumb-w) / 2 + (100% - var(--sign-thumb-w)) * var(--pct, 0) / 100
+  );
   background: none;
   border-radius: 0;
 }
@@ -1574,10 +1581,11 @@ a.sign-btn {
   position: absolute;
   left: 0;
   top: 50%;
-  height: calc(6 * var(--su));
-  min-height: 4px;
-  margin-top: calc(-3 * var(--su));
-  border-radius: 3px;
+  height: var(--sign-track-h);
+  /* centred by transform, not by a margin that has to equal half the height:
+     the margin was wrong wherever the height hit its floor */
+  transform: translateY(-50%);
+  border-radius: calc(var(--sign-track-h) / 2);
 }
 .sign-slider u {
   right: 0;
@@ -1585,23 +1593,25 @@ a.sign-btn {
   text-decoration: none;
 }
 .sign-slider b {
+  width: var(--sign-thumb-pos);
   background: var(--sign-sodium);
-  box-shadow: 0 0 12px rgba(255, 180, 84, 0.8);
+  /* glow scaled with --su: 12px at the desktop size as before, tighter on a
+     phone, where a fixed 12px blur on a 4px track smeared the whole row */
+  box-shadow: 0 0 calc(12 * var(--su)) rgba(255, 180, 84, 0.8);
 }
 .sign-slider i {
   position: absolute;
   top: 50%;
-  width: calc(18 * var(--su));
-  height: calc(26 * var(--su));
-  min-width: 12px;
-  min-height: 18px;
+  left: var(--sign-thumb-pos);
+  width: var(--sign-thumb-w);
+  height: max(calc(26 * var(--su)), 18px);
   margin: 0;
   box-sizing: border-box;
   transform: translate(-50%, -50%);
   background: var(--sign-sodium);
   border: 3px solid var(--sign-ink);
   border-radius: calc(5 * var(--su));
-  box-shadow: 0 0 14px rgba(255, 180, 84, 0.8);
+  box-shadow: 0 0 calc(14 * var(--su)) rgba(255, 180, 84, 0.8);
 }
 .sign-slider input {
   position: absolute;
