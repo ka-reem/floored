@@ -71,12 +71,23 @@ const CLAMP_STEP = 0.35;
    the search radius. */
 const WALL_REACH = 1.2;
 
-function collideAABB(car: CarState, px: number, pz: number, rr: number, bb: any): boolean {
-  if (bb.y0 !== undefined && (car.y + 1.4 < bb.y0 || car.y > bb.y1)) return false;
+/* CONTACT SEVERITY. Both static-geometry helpers return the CLOSING SPEED
+   along the contact normal (m/s, >= 0), or NO_CONTACT when they did not
+   touch — the thing every contact site here already computes as `vn` and
+   then threw away. It is the only honest severity number in this file:
+   collidePlayer's wallImpact is |Δv| across the whole call and therefore
+   carries the flat 0.965 velocity scale applied to ANY hit, so at 60 m/s a
+   pure sideways scrape reads 2.1 before the wall has done anything. The
+   normal component does not care how fast the car was travelling ALONG the
+   wall — which is exactly the scrape-vs-impact distinction. */
+export const NO_CONTACT = -1;
+
+function collideAABB(car: CarState, px: number, pz: number, rr: number, bb: any): number {
+  if (bb.y0 !== undefined && (car.y + 1.4 < bb.y0 || car.y > bb.y1)) return NO_CONTACT;
   const cx = Math.max(bb.x0, Math.min(px, bb.x1));
   const cz = Math.max(bb.z0, Math.min(pz, bb.z1));
   const dx = px - cx, dz = pz - cz, d2 = dx * dx + dz * dz;
-  if (d2 >= rr * rr) return false;
+  if (d2 >= rr * rr) return NO_CONTACT;
   let pen: number;
   if (d2 > 1e-8) {
     const d = Math.sqrt(d2);
@@ -108,12 +119,13 @@ function collideAABB(car: CarState, px: number, pz: number, rr: number, bb: any)
   if (vn < 0) {
     car.wvx -= tmpN.x * vn * 1.07;
     car.wvz -= tmpN.z * vn * 1.07;
+    return -vn;
   }
-  return true;
+  return 0;
 }
 
-function collideObb(car: CarState, px: number, pz: number, rr: number, o: any): boolean {
-  if (car.y + 1.4 < o.y0 || car.y > o.y1) return false;
+function collideObb(car: CarState, px: number, pz: number, rr: number, o: any): number {
+  if (car.y + 1.4 < o.y0 || car.y > o.y1) return NO_CONTACT;
   // into building local frame
   const dx = px - o.x, dz = pz - o.z;
   const lx = dx * o.cos - dz * o.sin;
@@ -121,7 +133,7 @@ function collideObb(car: CarState, px: number, pz: number, rr: number, o: any): 
   const cx = Math.max(-o.hw, Math.min(lx, o.hw));
   const cz = Math.max(-o.hd, Math.min(lz, o.hd));
   const ddx = lx - cx, ddz = lz - cz, d2 = ddx * ddx + ddz * ddz;
-  if (d2 >= rr * rr) return false;
+  if (d2 >= rr * rr) return NO_CONTACT;
   const d = Math.sqrt(d2) || 0.0001;
   let nlx: number, nlz: number, pen: number;
   if (d2 > 1e-8) {
@@ -150,8 +162,9 @@ function collideObb(car: CarState, px: number, pz: number, rr: number, o: any): 
   if (vn < 0) {
     car.wvx -= nx * vn * 1.07;
     car.wvz -= nz * vn * 1.07;
+    return -vn;
   }
-  return true;
+  return 0;
 }
 
 /* The four separating-axis candidates, as flat [ux,uz] pairs. obb2 runs once
@@ -193,10 +206,14 @@ export function collidePlayer(
   npcs: any[],
   halfW: number,
   halfL: number
-): { hit: boolean; npcHits: NpcHit[]; wallImpact: number } {
+): { hit: boolean; npcHits: NpcHit[]; wallImpact: number; normalImpact: number } {
   const fx = Math.sin(car.h), fz = Math.cos(car.h), rx = fz, rz = -fx;
   let hit = false;
   let wallImpact = 0;
+  /* Hardest contact this call, as closing speed along the contact normal —
+     see NO_CONTACT. Walls, buildings and NPCs all fold into this one number,
+     so "how hard was that?" has a single answer everywhere it is judged. */
+  let normalImpact = 0;
   const npcHits: NpcHit[] = [];
   const preVx = car.wvx, preVz = car.wvz;
 
@@ -283,6 +300,7 @@ export function collidePlayer(
       if (vn > 0) {
         car.wvx -= nx * vn * 1.07;
         car.wvz -= nz * vn * 1.07;
+        if (vn > normalImpact) normalImpact = vn;
       }
       hit = true;
     }
@@ -353,6 +371,7 @@ export function collidePlayer(
           if (vn > 0) {
             car.wvx -= nx * vn * 1.07;
             car.wvz -= nz * vn * 1.07;
+            if (vn > normalImpact) normalImpact = vn;
           }
           hit = true;
         }
@@ -366,10 +385,18 @@ export function collidePlayer(
   for (let k = 0; k < 2; k++) {
     const off = k === 0 ? axle : -axle;
     const px = car.x + fx * off, pz = car.z + fz * off;
-    for (const bi of col.nearbyAabbs(px, pz))
-      if (collideAABB(car, px, pz, halfW + 0.05, col.aabbs[bi])) hit = true;
-    for (const oi of col.nearbyObbs(px, pz))
-      if (collideObb(car, px, pz, halfW + 0.1, col.obbs[oi])) hit = true;
+    for (const bi of col.nearbyAabbs(px, pz)) {
+      const im = collideAABB(car, px, pz, halfW + 0.05, col.aabbs[bi]);
+      if (im === NO_CONTACT) continue;
+      hit = true;
+      if (im > normalImpact) normalImpact = im;
+    }
+    for (const oi of col.nearbyObbs(px, pz)) {
+      const im = collideObb(car, px, pz, halfW + 0.1, col.obbs[oi]);
+      if (im === NO_CONTACT) continue;
+      hit = true;
+      if (im > normalImpact) normalImpact = im;
+    }
   }
 
   // NPC vehicles
@@ -398,6 +425,7 @@ export function collidePlayer(
         car.wvx += (res.nx * j) / carM;
         car.wvz += (res.nz * j) / carM;
         npcHits.push({ npc: n, nx: -res.nx, nz: -res.nz, relSpeed: -vn });
+        if (-vn > normalImpact) normalImpact = -vn;
       }
       hit = true;
     }
@@ -412,5 +440,5 @@ export function collidePlayer(
     const dvx = car.wvx - preVx, dvz = car.wvz - preVz;
     wallImpact = Math.hypot(dvx, dvz);
   }
-  return { hit, npcHits, wallImpact };
+  return { hit, npcHits, wallImpact, normalImpact };
 }

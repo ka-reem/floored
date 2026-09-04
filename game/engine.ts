@@ -4,7 +4,7 @@ import {
   runStages, withBudget, type LoadReport, type LoadStage,
 } from "./loading";
 import {
-  fogMultiplier, speedInUnits, unitLabel, resolveRenderTier, TIER_CAPS,
+  fogMultiplier, speedInUnits, unitLabel, fmtRunDist, resolveRenderTier, TIER_CAPS,
   defaultLifetimeStats,
   type GameSettings, type LifetimeStats, type Profile, type RenderTier,
   type TierCaps,
@@ -76,16 +76,67 @@ export interface UiBridge {
     contention with these and there is nothing to hold back for. */
 const NPC_VOICES = 8;
 
-/** No Hesi scoring loop (see noHesiUpdate/traffic.ts's scoreEvents). SPEED +
-    NEAR MISSES build score; contact resets the multiplier, never the total —
-    this is a running arcade score for the drive, not a life. */
-const NOHESI = {
-  /** minimum speed, m/s, for either scoring or combo decay to apply at all —
-      crawling through a jam should not slowly leak the multiplier */
-  speedFloor: 12,
-  /** points/second at combo x1 and speedFloor+1 m/s, roughly — points ≈
-      speed * combo * this * dt */
-  pointsScale: 9,
+/** CLEAN RUN — the game's score (see runUpdate). Distance driven since the
+    last real impact, counted in metres and shown in the player's own
+    distance unit; a real impact resets it to zero, and the profile keeps the
+    furthest one ever driven (Profile.cleanRunBest). It replaces the No Hesi
+    points total, which is retired — see the COMBO block below for what
+    survived of that loop and why. */
+const CLEAN_RUN = {
+  /** THE CRASH RULE, and the only number to retune it with.
+
+      A contact resets the run when its CLOSING SPEED ALONG THE CONTACT
+      NORMAL (collide.ts's normalImpact — walls, buildings and NPCs all fold
+      into that one figure) reaches this, in m/s. The normal component is
+      what separates a scrape from an impact: it ignores however fast the car
+      was travelling ALONG the surface, so kerbing a barrier at 200 km/h and
+      touching it at 30 km/h read the same, which is what a player means by
+      "I brushed it".
+
+      5.0 m/s, from the measurements in docs/handoff/reports/clean-distance.md
+      (test/clean-run-check.mjs re-runs them). Kerbing a barrier at a shallow
+      angle read 0.45, 0.87, 1.72 and — worst case, a 1-degree drift at 180
+      km/h left to wander — 3.24. Nudging traffic from behind at +4 m/s read
+      3.87. Then NOTHING until a rear-end at +8 m/s (7.78), +12 m/s (11.68),
+      and driving at a wall rather than along it: 17.0 at 20 degrees, 17.7 at
+      45, 25.1 head-on. The gap between 3.9 and 7.8 is empty, so 5.0 sits in
+      the middle of it and is not delicately placed: every scrape measured
+      survives with room to spare, and every genuine impact is more than
+      three times over the line.
+
+      Deliberately ABOVE the crash-sound gates (NPC relSpeed > 2.5,
+      wallImpact > 4), which are unchanged: every reset is audible, but not
+      every audible knock ends a run — a 14 km/h nudge in traffic thumps and
+      keeps the run, which is what a player means by "that was nothing". */
+  impact: 5.0,
+  /** seconds the readout spends dimmed-then-settling after a reset, so the
+      player SEES the run end without a banner (see run.flash / .run-reset) */
+  flash: 1.4,
+};
+
+/** WHICH HUD TREATMENT the clean-run readout wears. One line to swap; the
+    three are rendered side by side in
+    docs/handoff/reports/clean-distance.md.
+
+      "corner" — a small dim figure on its own line under the gear, in the
+                 existing bottom-left HUD stack. THE DEFAULT.
+      "speed"  — the same figure folded into the speed block as a second
+                 line, hung off the speedo's baseline.
+      "ghost"  — invisible until the number changes or a run ends, then a
+                 short fade in and back out.
+
+    All three are pure CSS off the data-run attribute hud() stamps on #hud;
+    the engine writes the same text and the same .run-reset / .run-blip
+    classes whichever is on. */
+const RUN_HUD: "corner" | "speed" | "ghost" = "corner";
+
+/** What is left of the No Hesi loop: the near-miss STREAK, kept because two
+    lifetime statistics are built on it (stats.nearMisses, stats.bestCombo)
+    and a stored bestCombo is a record players already hold. The points
+    total, the x-multiplier readout and the "+N CLOSE" toast are gone with
+    the old score — this runs silently now and is only ever read by the STATS
+    board. */
+const COMBO = {
   /** combo growth per near-miss event, scaled by its closeness grade (0..1
       from traffic.ts) — a graze at the grading floor barely moves it, a
       genuinely tight one moves it a lot */
@@ -94,15 +145,11 @@ const NOHESI = {
   /** seconds without a near-miss before the combo starts bleeding off, and
       the rate (combo units/s) once it does */
   decayAfter: 4, decayRate: 0.35,
-  /** only grades above this trigger the toast pulse — every near-miss counts
-      toward the combo, but not every one is worth a popup */
-  pulseGrade: 0.45,
-  pulseBase: 250, pulseCd: 1.1,
 };
 
 /** Drive statistics (see statsUpdate / the STATS panel in GameApp.tsx). One
     accumulator object folded from values the frame already computes — the
-    car state, the No Hesi feed, the crash gates — so the whole feature costs
+    car state, the near-miss feed, the crash gates — so the whole feature costs
     a handful of compares per frame, no listeners, no allocation. */
 const STATS = {
   /** below this |u| (m/s) the car is standing, not driving — time driven and
@@ -1174,10 +1221,11 @@ export class Game {
   get testMode() { return this.settings.testMode; }
   set testMode(v: boolean) { this.settings.testMode = v; }
 
-  /** Read-only: the running total and the best-ever, for GameApp.tsx's
-      persist() to copy into the profile alongside carId/seed/camMode. */
-  get noHesiScore() { return this.noHesi.score; }
-  get noHesiBest() { return this.noHesi.best; }
+  /** Read-only: metres since the last real impact, and the best-ever clean
+      run, for GameApp.tsx's persist() to copy into the profile alongside
+      carId/seed/camMode. */
+  get cleanRunDist() { return this.run.dist; }
+  get cleanRunBest() { return this.run.best; }
   get tttTally() { return gameTally(); }
 
   /** This session's drive statistics, live — the STATS panel reads fields
@@ -1742,11 +1790,30 @@ export class Game {
   private chunkT = 0;
   /** first-run discovery hints — pacing and once-ever memory (game/hints.ts) */
   private hints = new Hints();
-  /** No Hesi scoring state (see noHesiUpdate). `best` is seeded from the
-      profile at construction and only ever grows; the caller (GameApp.tsx's
-      persist()) reads it back out through the noHesiBest getter alongside
-      carId/seed/camMode. */
-  private noHesi = { score: 0, best: 0, combo: 1, sinceAction: 0, pulseCd: 0 };
+  /** Near-miss streak state (see comboUpdate). Feeds stats.bestCombo and
+      nothing else — it is not drawn anywhere. */
+  private combo = { combo: 1, sinceAction: 0 };
+  /** CLEAN RUN state (see runUpdate). `dist` is metres since the last real
+      impact and `best` is seeded from the profile at construction and only
+      ever grows; the caller (GameApp.tsx's persist()) reads it back out
+      through the cleanRunBest getter alongside carId/seed/camMode. `flash`
+      is the post-reset settle clock the HUD reads; `resets` and `lastImpact`
+      (the contact-normal closing speed that ended the last run) are what the
+      headless checks read to prove the crash rule. */
+  private run = { dist: 0, best: 0, flash: 0, resets: 0, lastImpact: 0 };
+  /** Debug builds only: contact-normal closing speeds recorded inside
+      simStep, so the crash threshold can be measured rather than guessed
+      (see __neonx.state().impacts / clearImpacts). Bounded ring. */
+  private impactLog: number[] = [];
+  /** Debug builds only: the HARDEST contact since clearImpacts(). Separate
+      from the ring above, which is bounded and would otherwise lose the peak
+      behind the hundreds of near-zero resting contacts a car parked against a
+      barrier generates. */
+  private impactMax = 0;
+  /** Debug builds only: forces one of the three clean-run HUD treatments
+      regardless of RUN_HUD, so the three can be shot from one frame
+      (__neonx.setRunHud). Null = whatever RUN_HUD says. */
+  private runHudOverride: typeof RUN_HUD | null = null;
   /** Session drive statistics (see the STATS block / statsUpdate). Engine
       units throughout — metres, m/s, seconds — converted at display time.
       The mtn* fields are the mountain-run detector's scratch: whether the
@@ -1860,7 +1927,7 @@ export class Game {
     this.paintIx = profile.paintIx;
     this.seed = profile.seed;
     this.camMode = profile.camMode;
-    this.noHesi.best = Number.isFinite(profile.noHesiBest) ? profile.noHesiBest : 0;
+    this.run.best = Number.isFinite(profile.cleanRunBest) ? profile.cleanRunBest : 0;
     // loadProfile scrubbed every field; the copy is what makes lifetimeStats()
     // idempotent (see statsSeed)
     this.statsSeed = { ...defaultLifetimeStats(), ...profile.stats };
@@ -2058,6 +2125,16 @@ export class Game {
         onMountain: this.world.routes?.surfaceAt(this.car.x, this.car.z, 2)?.edgeId === MOUNTAIN_EDGE,
         stats: { ...this.stats },
         lifetime: this.lifetimeStats(),
+        /* CLEAN RUN, for the headless checks and for the crash-threshold
+           measurements: metres this run, the profile best, the settle clock
+           and how many resets this session. */
+        run: { ...this.run },
+        /* Contact-normal closing speeds seen inside simStep since the last
+           clearImpacts(): the hardest one, and the newest few hundred (the
+           ring is bounded, so read impactMax for the peak). The raw material
+           behind CLEAN_RUN.impact. Debug builds only. */
+        impactMax: this.impactMax,
+        impacts: [...this.impactLog],
         wrecks: this.traffic.activeWrecks().length,
         chunksVisible: this.world.chunks.filter((c) => c.group.visible).length,
         chunksTotal: this.world.chunks.length,
@@ -2068,6 +2145,22 @@ export class Game {
         errors: this.debug.errors,
         frames: this.debug.frames,
       }),
+      clearImpacts: () => {
+        this.impactLog.length = 0;
+        this.impactMax = 0;
+      },
+      /* Clean-run posing, for the HUD treatment shots: force a treatment,
+         set the figure, and fire the reset settle on demand. */
+      setRunHud: (m: "corner" | "speed" | "ghost" | null) => (this.runHudOverride = m),
+      setCleanRun: (m: number) => {
+        this.run.dist = m;
+        if (m > this.run.best) this.run.best = m;
+      },
+      runReset: () => {
+        this.run.dist = 0;
+        this.run.flash = CLEAN_RUN.flash;
+        this.run.resets++;
+      },
       crashTest: () => {
         this.traffic.spawnObstacleAhead(this.car);
         this.car.u = 22;
@@ -2093,11 +2186,24 @@ export class Game {
             arcade: this.testMode,
           });
           this.loopSplice();
-          collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
+          const cr = collidePlayer(
+            this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL
+          );
+          /* The CLEAN RUN is part of the car simulation, not of rendering:
+             its reset is decided by collide.ts's normalImpact, which this
+             loop already computes, so a headless run ends a run exactly
+             where the rendered one does. The near-miss combo stays loop-only
+             because its feed is traffic, which this loop leaves out. */
+          if (DEBUG_HOOKS && cr.normalImpact > 0) {
+            if (cr.normalImpact > this.impactMax) this.impactMax = cr.normalImpact;
+            this.impactLog.push(cr.normalImpact);
+            if (this.impactLog.length > 240) this.impactLog.shift();
+          }
           // the stats integrator is part of the car simulation this mirrors
           // (distance/time/top-speed and the mountain-run probe track sim
           // driving too); the traffic-fed stats stay loop-only, like traffic
           this.statsUpdate(1 / 120);
+          this.runUpdate(1 / 120, cr.normalImpact); // same order as the loop
         }
       },
       setRain: (on: boolean) => this.setRain(on),
@@ -5773,51 +5879,57 @@ export class Game {
     rig.exteriorG.visible = ev;
   }
 
-  /** No Hesi scoring loop — see the NOHESI block. Reads traffic.ts's
-      scoreEvents() (must run after this.traffic.update() this frame) and the
-      contact flag the caller derives from collidePlayer's result, using the
-      SAME relSpeed/wallImpact thresholds the crash sound already gates on:
-      a "hit" for scoring is a hit the player would hear and feel, not every
-      depenetration nudge. Combo dies on contact; the running score does not
-      — this is an arcade total for the drive, not a life. */
-  private noHesiUpdate(dt: number, hadContact: boolean) {
-    const nh = this.noHesi;
-    const on = this.settings.noHesiScore;
+  /** Near-miss streak — see the COMBO block. Reads traffic.ts's scoreEvents()
+      (must run after this.traffic.update() this frame) and the contact flag
+      the caller derives from collidePlayer's result. Nothing here is drawn
+      any more: the streak exists so stats.nearMisses and stats.bestCombo
+      keep meaning what a stored profile says they mean. */
+  private comboUpdate(dt: number, hadContact: boolean) {
+    const nh = this.combo;
     if (hadContact) {
       nh.combo = 1;
       nh.sinceAction = 0;
-    } else {
-      const grades = this.traffic.scoreEvents();
-      if (grades.length) {
-        // stats ride the same feed — counted regardless of the score display
-        // setting, same as the combo itself is
-        this.stats.nearMisses += grades.length;
-        nh.sinceAction = 0;
-        let best = 0;
-        for (const g of grades) {
-          nh.combo = Math.min(NOHESI.comboMax, nh.combo + NOHESI.comboStep * g);
-          if (g > best) best = g;
-        }
-        if (on && best > NOHESI.pulseGrade && nh.pulseCd <= 0) {
-          const pts = Math.round(NOHESI.pulseBase * (0.5 + 0.5 * best) * nh.combo / 10) * 10;
-          this.ui.toast(`+${pts} CLOSE`);
-          nh.pulseCd = NOHESI.pulseCd;
-        }
-      } else {
-        nh.sinceAction += dt;
-        if (nh.sinceAction > NOHESI.decayAfter)
-          nh.combo = Math.max(1, nh.combo - NOHESI.decayRate * dt);
-      }
+      return;
     }
-    nh.pulseCd = Math.max(0, nh.pulseCd - dt);
-    if (on && Math.abs(this.car.u) > NOHESI.speedFloor)
-      nh.score += Math.abs(this.car.u) * nh.combo * NOHESI.pointsScale * dt;
-    if (nh.score > nh.best) nh.best = nh.score;
+    const grades = this.traffic.scoreEvents();
+    if (grades.length) {
+      this.stats.nearMisses += grades.length;
+      nh.sinceAction = 0;
+      for (const g of grades)
+        nh.combo = Math.min(COMBO.comboMax, nh.combo + COMBO.comboStep * g);
+    } else {
+      nh.sinceAction += dt;
+      if (nh.sinceAction > COMBO.decayAfter)
+        nh.combo = Math.max(1, nh.combo - COMBO.decayRate * dt);
+    }
+  }
+
+  /** CLEAN RUN — the score. Called from both the render loop and the headless
+      simStep with the frame's hardest contact (collide.ts's normalImpact), so
+      the sim and the game agree on when a run ends.
+
+      Distance itself is integrated in statsUpdate, off the same |u| and the
+      same standing-still floor the lifetime odometer uses — one integration,
+      two consumers, and the score can never drift from the DISTANCE row on
+      the stats board. All this does is decide when to zero it. */
+  private runUpdate(dt: number, impact: number) {
+    const r = this.run;
+    r.flash = Math.max(0, r.flash - dt);
+    if (impact < CLEAN_RUN.impact) return;
+    /* Already flashing = still the same wreck: a car folded into a barrier
+       goes on generating contacts for a second or more, and re-arming the
+       flash on each of them turns the quiet settle into a stutter. The run
+       is already at zero, so there is nothing else to reset. */
+    if (r.flash > 0) return;
+    r.dist = 0;
+    r.flash = CLEAN_RUN.flash;
+    r.resets++;
+    r.lastImpact = impact;
   }
 
   /** Drive statistics — see the STATS block. One in-place accumulator fed
       from values this frame already computed; near misses, crashes and laps
-      are banked at their own sources (noHesiUpdate, the crash gates,
+      are banked at their own sources (comboUpdate, the crash gates,
       loopSplice), so what's left here is the per-frame integration and the
       2 Hz mountain-run probe. Runs only inside the `running` branch: paused
       time is nobody's drive time. */
@@ -5829,8 +5941,12 @@ export class Game {
       st.dist += sp * dt;
       st.driveT += dt;
       if (sp > st.topSpeed) st.topSpeed = sp;
+      /* CLEAN RUN rides the lifetime odometer's own integration and its own
+         standing-still floor — see runUpdate, which owns only the reset. */
+      this.run.dist += sp * dt;
+      if (this.run.dist > this.run.best) this.run.best = this.run.dist;
     }
-    if (this.noHesi.combo > st.bestCombo) st.bestCombo = this.noHesi.combo;
+    if (this.combo.combo > st.bestCombo) st.bestCombo = this.combo.combo;
 
     /* Mountain-pass runs: watch which route-graph edge is under the car (the
        same surfaceAt() read the debug hook and resetCar already use — the
@@ -5891,14 +6007,34 @@ export class Game {
           ew.innerHTML = WX_ICONS[wx];
         }
       }
-      /* No Hesi score + combo — see NOHESI/noHesiUpdate. Semantic ids/classes
-         only, no layout here; ui-redesign owns the actual styling pass. */
-      const enh = this.dom("noHesi");
+      /* CLEAN RUN readout — see CLEAN_RUN/runUpdate. Semantic classes only,
+         no layout here: which of the three treatments is on is a CSS matter,
+         selected by the data-run attribute stamped just below.
+
+         The reset moment is the only thing this element ever does loudly, and
+         it is still quiet: .run-reset dims the figure and lets it settle back
+         to 0.0 over CLEAN_RUN.flash seconds. No banner, no toast. */
+      const ehud = this.dom("hud");
+      const treat = this.runHudOverride ?? RUN_HUD;
+      if (ehud && ehud.dataset.run !== treat) ehud.dataset.run = treat;
+      const enh = this.dom("runDist");
       if (enh) {
-        if (this.settings.noHesiScore) {
-          enh.textContent = `${Math.round(this.noHesi.score)} ×${this.noHesi.combo.toFixed(1)}`;
-          enh.classList.toggle("combo-hot", this.noHesi.combo > 3);
-        } else enh.textContent = "";
+        if (this.settings.cleanRunScore) {
+          const txt = fmtRunDist(this.run.dist, this.settings.units);
+          if (enh.textContent !== txt) {
+            enh.textContent = txt;
+            /* Treatment (c) only: the figure is invisible until it changes,
+               then fades back out. Re-armed by restarting the animation, so
+               a change during a fade-out reads as one new appearance. */
+            enh.classList.remove("run-blip");
+            void enh.offsetWidth;
+            enh.classList.add("run-blip");
+          }
+          enh.classList.toggle("run-reset", this.run.flash > 0);
+        } else if (enh.textContent !== "") {
+          enh.textContent = "";
+          enh.classList.remove("run-reset", "run-blip");
+        }
       }
       /* exit navigation hint */
       let exOn: { no: number; dist: number } | null = null;
@@ -5997,10 +6133,13 @@ export class Game {
       const preCX = this.car.x, preCZ = this.car.z;
       const res = collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
       this.scrapeUpdate(dt, res.hit, this.car.x - preCX, this.car.z - preCZ);
-      // No Hesi: a hit worth the crash sound is a hit that kills the combo —
-      // same relSpeed/wallImpact thresholds as the audio/damage below, so
-      // "contact" means the same thing everywhere it's judged this frame.
-      let noHesiHit = res.wallImpact > 4;
+      // Near-miss streak: a hit worth the crash sound is a hit that kills the
+      // combo — same relSpeed/wallImpact thresholds as the audio/damage below,
+      // so "contact" means the same thing everywhere it's judged this frame.
+      // The CLEAN RUN uses its own, higher bar (CLEAN_RUN.impact against the
+      // contact-normal closing speed): every reset is audible, but a knock
+      // being audible is not enough to end a run.
+      let comboHit = res.wallImpact > 4;
       for (const hitInfo of res.npcHits) {
         this.traffic.applyImpact(hitInfo);
         if (hitInfo.relSpeed > 2.5 && this.crashCooldown <= 0) {
@@ -6015,7 +6154,7 @@ export class Game {
           // the moment the player later switches into POV
           if (this.camMode === CAM_POV) this.post.dashcamHit(hitInfo.relSpeed);
         }
-        if (hitInfo.relSpeed > 2.5) noHesiHit = true;
+        if (hitInfo.relSpeed > 2.5) comboHit = true;
       }
       if (res.wallImpact > 4 && this.crashCooldown <= 0) {
         this.crashCooldown = 0.4;
@@ -6031,9 +6170,12 @@ export class Game {
       );
       this.hiFlashPulse = false; // one press, one gesture — consumed here
       // after traffic.update() — scoreEvents() reads this frame's feed
-      this.noHesiUpdate(dt, noHesiHit);
-      // after noHesiUpdate so the frame's combo is what bestCombo sees
+      this.comboUpdate(dt, comboHit);
+      // after comboUpdate so the frame's combo is what bestCombo sees
       this.statsUpdate(dt);
+      // and AFTER statsUpdate, so a reset zeroes this frame's metres too
+      // rather than leaving the frame the crash happened in on the clock
+      this.runUpdate(dt, res.normalImpact);
       /* Per SECOND, not per rendered frame. This gate was a flat 0.35 chance
          every frame, so a 120 Hz display made four times the smoke a 30 Hz one
          did — everything inside fx.ts is dt-scaled and this was the last term

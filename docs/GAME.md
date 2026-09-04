@@ -24,12 +24,14 @@ the main deck, a two-way mountain road off EXIT 4 (峠 Tōge, `corridor.MTN` /
 deck (`game/world/scenery.ts`), and a garage of five cars — two playable,
 three COMING SOON.
 
-There is no race and no timer, but there is a running arcade score: the **No
-Hesi loop** (`NOHESI` in `engine.ts`, `scoreEvents` in `traffic.ts`) — speed
-and near misses build a combo multiplier, contact resets the multiplier but
-never the total. It is HUD chrome on top of the drive (`settings.noHesiScore`
-turns it off), plus an optional **rival** pace car (`settings.rival`,
-`traffic.ts` "the rabbit"). The game is still the drive.
+There is no race and no timer, but there is a score: the **clean run**
+(`CLEAN_RUN` + `runUpdate` in `engine.ts`) — how far you have driven since
+your last real impact, in miles or kilometres depending on the speed-units
+setting. A real impact zeroes it, a scrape does not, and the profile keeps
+your furthest (`Profile.cleanRunBest`). It is deliberately quiet HUD chrome on
+top of the drive (`settings.cleanRunScore` turns it off), plus an optional
+**rival** pace car (`settings.rival`, `traffic.ts` "the rabbit"). The game is
+still the drive.
 
 Built with Next.js 16 + React 19 + Three.js (r180). Everything is client-side
 WebGL; the server does nothing but serve the bundle. Package name
@@ -636,12 +638,37 @@ Two systems the rival-whiteline lane added on top of the fleet:
   slide into an occupied space (`rivalLatClear`), with `rivalSeparate()` as a
   hard backstop that only ever moves the rival. `settings.rivalSignals`
   decides whether it indicates; the absence of a blinker is characterisation.
-- **No Hesi scoring** (`scoreEvents` in `traffic.ts`, the `NOHESI` block and
-  `noHesiUpdate` in `engine.ts`): above a speed floor, points accrue as
-  `speed × combo`; near misses step the combo up by closeness grade (cap ×8),
-  quiet seconds bleed it off, and contact resets the multiplier but never the
-  total. Best score persists in the profile (`noHesiBest`);
-  `settings.noHesiScore` (default on) shows/hides the HUD corner.
+- **No Hesi scoring** — RETIRED 2026-09-04, replaced by the clean-run
+  distance (below). What survived is the near-miss streak (`scoreEvents` in
+  `traffic.ts`, the `COMBO` block and `comboUpdate` in `engine.ts`): it still
+  runs, silently, because two lifetime statistics are built on it
+  (`stats.nearMisses`, `stats.bestCombo`) and a stored `bestCombo` is a record
+  players already hold. The points total, the `×N` multiplier readout and the
+  "+N CLOSE" toast are gone.
+
+#### The clean-run score — added 2026-09-04
+
+The game's score is now **distance driven since your last crash**
+(`CLEAN_RUN` + `runUpdate` in `engine.ts`), shown in the player's own
+distance unit — miles on mph, kilometres on km/h; there is no second unit
+control.
+
+- **Distance** is integrated in `statsUpdate`, off the same `|u|` and the same
+  standing-still floor the lifetime odometer uses, so the score can never
+  drift from the STATS board's DISTANCE row.
+- **The crash rule** is one constant, `CLEAN_RUN.impact` (3.0 m/s): a contact
+  resets the run when its *closing speed along the contact normal* reaches it.
+  That signal is `normalImpact`, returned by `collidePlayer` — the `vn` every
+  contact site in `collide.ts` already computed and threw away, maxed across
+  walls, buildings and NPCs. It ignores speed *along* a surface, which is what
+  separates kerbing a barrier from hitting one. Measurements behind the number
+  are in `docs/handoff/reports/clean-distance.md`.
+- **Persistence**: `Profile.cleanRunBest`, metres, written by `persist()` and
+  scrubbed in `loadProfile` like every other stored number. The old
+  `noHesiBest` held points and is deleted rather than converted.
+- **HUD**: one small dim figure, `#hud .runDist`, in three CSS treatments
+  selected by `RUN_HUD` in `engine.ts` (corner / speed / ghost). A reset dims
+  the figure and lets it settle back to `0.0` — no banner, no toast.
 
 #### Traffic courtesy — the yield system
 
@@ -878,7 +905,7 @@ world builders in `game/world/*` run inside startup and can't reach the `Game`
 instance mid-build.
 
 **Persistence** — one `localStorage` key, `"neonx.profile.v3"`, holding
-`{ settings, carId, paintIx, seed, camMode, noHesiBest }`. `loadProfile()` does real
+`{ settings, carId, paintIx, seed, camMode, cleanRunBest, stats, ttt }`. `loadProfile()` does real
 defensive migration: it rejects non-object JSON, migrates the old numeric fog
 multiplier onto named levels, and forces the numeric keys finite (a NaN here
 reaches the projection matrix, the audio gain, or the chunk culler) and the
@@ -1167,7 +1194,8 @@ change on its own. `engine.ts` resets `lastReverb = -1` for exactly this reason.
 | Camera placement and FOV | `game/engine.ts` — `POV_MOUNT`, `POV_TILT`, `povFov()`/`lensFov()`, `CONSOLE_CAM`, and `updateCamera()` |
 | The roadside districts | `game/world/scenery.ts` — both passes, gated by `FX_DISTRICTS` and `TierCaps.districts` |
 | The mountain road (EXIT 4) | `corridor.MTN` (spec), `routegraph.ts` (the edge), `highway.ts` (meshes), `traffic.ts` (oncoming flow) |
-| The rival, No Hesi scoring | `game/traffic.ts` ("the rival" / `scoreEvents`), `NOHESI` + `noHesiUpdate` in `engine.ts` |
+| The rival, near-miss streak | `game/traffic.ts` ("the rival" / `scoreEvents`), `COMBO` + `comboUpdate` in `engine.ts` |
+| The clean-run score | `CLEAN_RUN` + `runUpdate` in `engine.ts`, `normalImpact` in `game/collide.ts`, `#hud .runDist` in `app/globals.css` |
 
 ---
 
