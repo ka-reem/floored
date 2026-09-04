@@ -168,6 +168,107 @@ function engineTorque(spec: PhysicsSpec, rpm: number) {
   return T[T.length - 1];
 }
 
+/* ---- Top end: how the car runs out of pull -----------------------------
+   The owner's note was "the speed needs to be dropped off a little bit,
+   especially at higher speeds". Measured with the real sim
+   (test/topend-sim.mjs), the model's AIR was already honest and its THRUST
+   was not:
+
+     - spec.drag 0.4 IS 0.5*rho*Cd*A for Cd 0.28 and a 2.3 m^2 frontal area
+       (0.394) — 101% of what an S90-shaped saloon really has. Rolling
+       resistance (175 + 2.7u N) is a normal Crr ~0.013 too. Neither is the
+       problem, and neither is touched here.
+     - the 82 m/s clamp at the bottom of stepPhysics never bound the road
+       car: terminal was 74.7 m/s. It is not a hidden speed limiter and it is
+       still load-bearing for TEST MODE, which does ride it (carspecs.ts,
+       TEST_ACCEL_MULT) — so it is left exactly where it is.
+     - what was wrong is that the engine never gave up. TQ_T hands over
+       289 N.m at the 6400 rev limiter against a 335 N.m peak, so peak POWER
+       landed ON the limiter: in top gear the car made its most power at the
+       exact moment it was going its fastest. And driveF used 100% of crank
+       torque — there was no driveline loss in the model at all.
+
+   So two real terms, both on the thrust side:
+
+   1) POWER FALL-OFF. Real engines make peak power a little short of the
+      limiter and fall away after it. `taperFrom` is the fraction of revLimit
+      where the fall-off starts, `taperTo` the torque multiplier once the
+      needle is on the limiter, smoothstepped between so nothing steps.
+
+   2) DRIVELINE LOSS. A longitudinal automatic loses ~10-15% through the
+      converter, the gearsets and the final drive, and the loss grows with
+      engine speed (pumping, windage, oil churn):
+      eff = effBase - effFall*(rpm/revLimit)^2.
+
+   Why this changes the SHAPE and not just the number: both terms take a
+   percentage off thrust, and a percentage off thrust costs far more at the
+   top than at the bottom. At 60 mph drag is ~10% of what the engine is
+   making, so 15% off the engine is ~15% off the acceleration. At 150 mph
+   drag is nearly all of it, so the same 15% off the engine is most of what
+   was left. That is the taper being asked for: 0-60 stays brisk, 120-140
+   becomes genuinely hard-won.
+
+   HOW TO SWAP: change the preset TOP_END is initialised from, one line
+   below. Nothing else in the game reads these numbers.
+   `today` reproduces the pre-change arithmetic exactly (taper 1, eff 1), so
+   the bench can measure "before" through this same code path rather than
+   from memory.
+
+   Live on the console as `window.__topEnd`; test/topend-sim.mjs drives every
+   preset through the real sim and prints the segment times. */
+export interface TopEndProfile {
+  /** Fraction of revLimit where the engine's fall-off begins. */
+  taperFrom: number;
+  /** Torque multiplier once the needle is on the limiter. */
+  taperTo: number;
+  /** Driveline efficiency extrapolated to zero rpm. */
+  effBase: number;
+  /** How much of that efficiency is lost by the limiter, as (rpm/revLimit)^2. */
+  effFall: number;
+}
+export const TOP_END_PRESETS = {
+  /** Exactly what shipped before this block existed — inert, kept as the
+   *  measurement baseline. */
+  today: { taperFrom: 1, taperTo: 1, effBase: 1, effFall: 0 },
+  /** "Still pulls hard everywhere, just stops climbing sooner." Softens only
+   *  the last tenth of the rev range: 0-60 mph 4.30 -> 4.54 s, while 120-140
+   *  goes 7.9 -> 10.6 s. */
+  mild: { taperFrom: 0.9, taperTo: 0.9, effBase: 0.97, effFall: 0.07 },
+  /** SHIPPED. "Quick to 60, then the air starts winning." Matched so the car
+   *  settles at 251 km/h — a real S90's 250 — with 0-60 mph 4.74 s and
+   *  120-140 mph 14.1 s against today's 7.9. */
+  realistic: { taperFrom: 0.86, taperTo: 0.84, effBase: 0.95, effFall: 0.09 },
+  /** "You have to really want the last 20 mph." 120-140 mph takes 25.6 s and
+   *  140-150 takes 29.7. Still upshifts into 6th at the same 141 mph every
+   *  other preset does — no variant strands the car below top gear. */
+  firm: { taperFrom: 0.8, taperTo: 0.78, effBase: 0.93, effFall: 0.11 },
+} satisfies Record<string, TopEndProfile>;
+
+/** The profile in force. Swap the preset on this line to change the feel. */
+export const TOP_END: TopEndProfile = { ...TOP_END_PRESETS.realistic };
+
+/* Console handle, same pattern (and same SSR guard) as ARCADE_STEER. */
+try {
+  (window as unknown as { __topEnd?: unknown }).__topEnd = TOP_END;
+} catch {
+  /* non-browser (SSR, tests) — the sim imports the object directly */
+}
+
+/** Engine fall-off past peak power, as a multiplier on the torque table.
+    1 below TOP_END.taperFrom * revLimit, TOP_END.taperTo at the limiter. */
+function topEndTaper(rpm: number, revLimit: number) {
+  const from = TOP_END.taperFrom * revLimit;
+  if (rpm <= from || revLimit <= from) return 1;
+  return lerp(1, TOP_END.taperTo, sstep((rpm - from) / (revLimit - from)));
+}
+
+/** Driveline efficiency: what fraction of crank torque reaches the tyres.
+    Falls with engine speed, so it costs most in a tall gear at speed. */
+function drivelineEff(rpm: number, revLimit: number) {
+  const x = clamp(rpm / revLimit, 0, 1.2);
+  return clamp(TOP_END.effBase - TOP_END.effFall * x * x, 0.4, 1);
+}
+
 const IDLE_RPM = 850;
 /** Reverse speed cap, m/s (~47 km/h). */
 const REV_VMAX = 13;
@@ -517,9 +618,14 @@ export function stepPhysics(
     // driveline kinematics so the flywheel model above stays a display/audio
     // change and cannot retune how any car accelerates. See stepEngineSpeed.
     engineTorque(spec, car.rpmDrive) *
+    // the engine gives up past peak power, and the driveline takes its cut —
+    // see the TOP_END block. Both are on the thrust side on purpose: the
+    // drag term was already correct.
+    topEndTaper(car.rpmDrive, spec.revLimit) *
     limiterFactor(car.rpmDrive, spec.revLimit) *
     (car.rpmDrive < 1400 && Math.abs(car.u) < 6 ? 1.55 : 1);
-  const driveF = (driveT * gearRatio(spec, car.gear) * FINAL) / WR;
+  const driveF =
+    (driveT * gearRatio(spec, car.gear) * FINAL * drivelineEff(car.rpmDrive, spec.revLimit)) / WR;
   const fSplit = spec.awd ? 0.42 : 0;
   const capF = muF * Fzf, capR = muR * Fzr;
 
