@@ -629,7 +629,15 @@ export function applyPresetDefaults(s: GameSettings, preset: GameSettings["prese
   } else {
     s.shadows = true;
     s.reflections = true;
-    s.mblur = true;
+    /* HIGH does NOT switch motion blur on, even though it is the expensive
+       preset and blur is the expensive effect. A fresh profile ships
+       mblur:false and the one-time scrub in the loader clears a stored true,
+       both because the smear was unwanted rather than because it was slow --
+       so a HIGH that turned it back on made clicking the preset you were
+       already on silently change the picture. All three presets leave it
+       off; motion blur is a manual opt-in and stays wherever the player
+       put it. */
+    s.mblur = false;
     s.bloom = true;
     s.fxaa = true;
   }
