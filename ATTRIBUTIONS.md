@@ -348,48 +348,54 @@ glTF export.
 ## Player car body — `public/models/player/volvo-s90-body-lite.glb`
 
 Same donor, same author, same CC BY 4.0 licence as the cockpit above — see that
-section for the source URL. This is the other half of the car: the exterior
-shell the chase cameras see, which `tools/build-cockpit.mjs` throws away.
+section for the source URL. (Re-checked 2026-09-04 against the Sketchfab API for
+this model: licence "Creative Commons Attribution", `by`, 4.0, "Author must be
+credited. Commercial use is allowed." The entry below is correct as written.)
+This is the other half of the car: the exterior shell every third-person camera
+sees, which `tools/build-cockpit.mjs` throws away.
 
 Built by `tools/build-car-body.mjs` (meshoptimizer edge-collapse simplification
-under a per-part budget) in REAR-BIASED form: this asset is only ever seen by
-cameras that frame the car from behind or at a rear 3/4 — the chase cam, the
-live mirror, the garage card — so `--rear-bias` pins the tail-lamp stack,
-trunk, rear bumper and rear badges near donor resolution (the rear cluster
-holds ~74k of the file's triangles, against ~14k of 88k in the previous even
-cut) while the front and sides take the decimation. Rear-lamp textures stay at
-256 px webp, everything else at 128 px. `--strip` drops the donor's wheels,
-tyres, brake discs, calipers and hubs at selection time, because the game keeps
-its own — they steer and spin, and the donor's would not (the old ad-hoc
-post-build strip left one stray brake-disc mesh; this one leaves none). The
-hood is the one front part pinned high (weight 8): `game/player.ts` lifts its
-connected component into the shipping DASHCAM view. Encoded straight to
-meshopt: 131,376 triangles, 23 draw calls, 9 textures, 0.78 MB on disk.
+under a per-part budget) in CHASE-BIASED form. The budget is aimed by
+measurement, not by part name: every mesh is scored by the solid angle it
+subtends from the real third-person lenses — CHASE at 4.84 m behind and 2.15 m
+up (`engine.ts` `CHASE_CAM`), plus the two rear three-quarters photo mode and
+the live mirror use — and that score scales both its share of the triangles and
+the size of its textures. The tailgate, rear lamps, rear screen, C-pillars,
+roof and upper flanks come out sharp; the nose, grille, headlight internals and
+front wings come out cheap, which is what the owner asked for. The painted
+skin carries 79,846 triangles against the previous rear-biased build's 19,610 —
+that build spent 56% of the file on the tail-lamp cluster alone and starved the
+roof, which is what tore. The bonnet is floored at full name-rule weight
+because `game/player.ts` lifts its connected component into the shipping
+DASHCAM view (3,304 triangles, up from 1,172). `--strip` drops the donor's
+wheels, tyres, brake discs, calipers and hubs at selection time, because the
+game keeps its own — they steer and spin, and the donor's would not. Encoded
+straight to meshopt: 254,200 triangles, 23 draw calls, 9 textures (three
+chase-visible maps at 1024 px webp, the rest at 512 px), 1.36 MB on disk.
 
 Loaded by `game/bodymodel.ts`. It and the donor dash are two cuts of the same
 car and now belong to the same garage entry: the **VOLVO S90**, which is the
 only id in `BODY_MODEL` (`game/player.ts`) and the only one in `COCKPIT_MODEL`.
 Picking that car in the garage is what shows both; picking the KAZE GT shows
-neither. (There used to be a `J` key A/B against the procedural car, off one
-`Game.dashImported` flag — retired, because the choice is the garage's now.)
-The body is invisible in the shipping DASHCAM view, which hides the exterior
-group entirely. Fitted to the Volvo's shell box by a non-uniform scale at
-runtime — very nearly an identity scale, since that shell is the real car's
-4.96 x 1.88 x 1.44 — and lined up on the axles so the game's own wheels sit in
-its arches.
+neither. The body is invisible in the shipping DASHCAM view, which hides the
+exterior group entirely — apart from the bonnet component above. Fitted to the
+Volvo's shell box by a non-uniform scale at runtime — very nearly an identity
+scale, since that shell is the real car's 4.96 x 1.88 x 1.44 — and lined up on
+the axles so the game's own wheels sit in its arches.
 
-Rebuilt 2026-08-28 from the donor's Sketchfab glTF export (`scene.gltf` +
-`scene.bin` + `textures/`, 379 MB on disk — `NodeIO` reads the .gltf form
+Rebuilt 2026-09-04 from the donor's Sketchfab glTF export (`scene.gltf` +
+`scene.bin` + `textures/`, 369 MB on disk — `NodeIO` reads the .gltf form
 directly, no .glb repack needed) in one command, no post-steps:
 
-    node --max-old-space-size=12288 tools/build-car-body.mjs <scene.gltf> \
-      --out volvo-s90-body-lite --exterior --strip --rear-bias \
-      --tris 120000 --tex 128 --tex-rear 256 --compress meshopt
+    node --max-old-space-size=5120 tools/build-car-body.mjs <scene.gltf> \
+      --out volvo-s90-body-lite --exterior --strip --chase-bias \
+      --tris 250000 --tex 512 --tex-hi 1024 --compress meshopt
 
 The donor download is not committed (gitignored); the source URL and licence
-are above. Full before/after numbers and renders:
-`docs/handoff/reports/volvo-body-local.md` and
-`docs/gallery/img/volvo-rear-{before,after}.webp`.
+are above. Candidate table (four measured builds, 0.79-1.55 MB), size-budget
+position and before/after captures:
+`docs/handoff/reports/volvo-hd.md`. The previous rear-biased build and its
+numbers: `docs/handoff/reports/volvo-body-local.md`.
 
 ## Sourcing notes / other candidates evaluated but not shipped
 
