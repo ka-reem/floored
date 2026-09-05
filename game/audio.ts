@@ -792,8 +792,16 @@ const ROAD_GROWL_SPEC = {
   /** Peaking boost on the engine bus, dB. THE knob. The tunnel runs +7dB at
       full strength; that number assumes a 3.2s tail underneath it carrying
       the loudness, so on the open road it is a starting ceiling, not a
-      target. 0 = today's engine, untouched. */
-  db: { d: 6.0, lo: 0, hi: 12 },
+      target. 0 = today's engine, untouched.
+
+      Shipping at 8.0 rather than the 6.0 the recorded clip used: the owner
+      drove it and asked for a bit more. +2dB on a Q 2.2 peak is a clear step
+      without being a different sound, and it stays under the ceiling because
+      `trim` below hands half of it back broadband — so the extra is tone, not
+      level, and the engine bus peak barely moves. Past ~10 the resonance
+      starts to sit ON the note instead of under it and the character changes
+      rather than deepening. */
+  db: { d: 8.0, lo: 0, hi: 12 },
   /** Centre of the boost, Hz. Stacks on the engine's own fixed +6dB body
       resonance at 165Hz; the tunnel picks 170 for exactly that reason.
       Lower = chestier, higher = more nasal/boxy. */
