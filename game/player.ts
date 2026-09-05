@@ -1,12 +1,13 @@
 import * as THREE from "three";
 import {
-  brakeDiscGeo, carShellGeos, doorFurnitureGeos, grilleGeos, makeWheel,
+  brakeDiscGeo, carShellGeos, doorFurnitureGeos, grilleGeos, makeWheel, tyreTextures,
   panelLineGeo, roundedBoxGeo,
 } from "./carshape";
 import { paintTexF, carbonTexF } from "./textures";
 import { buildCockpit, COCKPIT_REF, type Cockpit } from "./cockpit";
 import { attachCockpitModel, type CockpitModelHandle } from "./cockpitmodel";
 import { attachBodyModel, type BodyModelHandle } from "./bodymodel";
+import { wireDonorLamps, type DonorLampHandle, type LampState } from "./donorlamps";
 import { donorCabinAllowed, TIER_CAPS, type RenderTier } from "./settings";
 
 import { carEnvMap, isSharedEnv, trackEnvMaterial, untrackEnvMaterial } from "./carenv";
@@ -1017,6 +1018,17 @@ export interface PlayerRig {
   sigMatR: THREE.MeshStandardMaterial;
   hlGlowMat: THREE.SpriteMaterial;
   plateGlowMat: THREE.SpriteMaterial;
+  /** The rear halo pair's shared material. Level is set by setLamps; nothing
+      outside should write it. */
+  tailGlowMat: THREE.SpriteMaterial;
+  /** The imported body's own lamps, once it has landed — null on a car with
+      no donor body, and until the fetch settles. Read it to know whether the
+      real lens shapes are what is lighting up; drive it through setLamps. */
+  readonly donorLamps: DonorLampHandle | null;
+  /** Every rear lamp — tail, brake, reverse, indicators, and the halo —
+      driven from one frame's worth of state. See the implementation for why
+      this is one call rather than a material per line in engine.ts. */
+  setLamps(s: LampState): void;
   halfW: number;
   halfL: number;
   dispose(scene: THREE.Scene): void;
@@ -1158,12 +1170,33 @@ export function buildPlayerCar(
   const linerM = new THREE.MeshStandardMaterial({
     color: 0x08090c, roughness: 1, side: THREE.DoubleSide,
   });
-  const axX = P.W / 2 - P.wheelWidth / 2 - 0.07;
+  /* Half the visual TRACK — where the wheel centres sit.
+
+     The old expression (W/2 - wheelWidth/2 - 0.07) is a rule about the
+     procedural shell's fenders, and it holds for the four cars that still wear
+     one. On the Volvo it stopped holding the day the donor body landed: it put
+     the track at 1.49 m inside a body whose arch band is 1.918 m across, so
+     each wheel's outer face sat 8.9 cm INBOARD of the fender lip and the arch
+     read as an empty cave with a small dark wheel at the back of it. A real
+     S90 runs a 1.628 m track and its tyre shoulder sits a couple of
+     centimetres inside the arch. ShellParams.track is that number when a car
+     has one, and the old formula is the default for every car that does not.
+
+     Measured against this donor (scratchpad analysis of the shipped GLB, in
+     car-local metres after bodymodel.ts's fit): fender at |x| = 0.959 at both
+     axles, so a 1.60 m track leaves 3.4 cm of tuck. It also stays inside
+     halfW (W/2 - 0.005 = 0.935), so no wheel reaches past the collision box. */
+  const axX = (P.track ?? P.W - P.wheelWidth - 0.14) / 2;
   for (const [x, z] of [
     [-axX, P.wzF], [axX, P.wzF], [-axX, -P.wzR], [axX, -P.wzR],
   ]) {
     const li = new THREE.Mesh(linerG, linerM);
-    li.position.set(x, P.ride, z);
+    /* Pulled in so a widened track cannot push the liner's dome out through
+       the procedural fender: the liner half-cylinder is 0.30 m long about its
+       own centre, and the shell's flank is at W/2. Only bites on a car whose
+       track was widened past the old formula. */
+    const lx = Math.sign(x) * Math.min(Math.abs(x), P.W / 2 - 0.16);
+    li.position.set(lx, P.ride, z);
     // rotation.z alone puts the half-cylinder axis on the axle with the dome
     // upward; adding rotation.y here flips the radius sideways so the shell
     // bulges out through the fenders
@@ -1257,18 +1290,36 @@ export function buildPlayerCar(
     envMap: env, envMapIntensity: 0.5,
   }));
   const calM = new THREE.MeshStandardMaterial({ color: 0xc2242e, roughness: 0.4, metalness: 0.4 });
+  /* Kept on show under the imported body, alongside the wheels. The donor's
+     own discs and calipers are stripped at build time (tools/build-car-body.mjs
+     --strip drops Brake Disc and Caliper with the rims), so without this the
+     wheels hang in front of open air: every one of the ten spoke gaps looked
+     straight through the wheel at the tarmac. */
+  const brakeParts: THREE.Object3D[] = [];
   for (const [x, z] of [
     [-axX, P.wzF], [axX, P.wzF], [-axX, -P.wzR], [axX, -P.wzR],
   ]) {
     const d = new THREE.Mesh(discGeo, discM);
     d.position.set(x * 0.985, P.wheelR, z);
     exteriorG.add(d);
-    box(0.05, 0.085, 0.11, calM, x * 0.985, P.wheelR + 0.02, z + 0.12, false);
+    brakeParts.push(d);
+    brakeParts.push(box(0.05, 0.085, 0.11, calM, x * 0.985, P.wheelR + 0.02, z + 0.12, false));
   }
 
   /* wheels — matte carcass, greyer sidewall shoulder, and rims whose polish
      is broken up by a brake-dust roughness map so they read as used metal */
-  const tireM = new THREE.MeshStandardMaterial({ color: 0x0b0b0f, roughness: 0.93, metalness: 0 });
+  const tyreTex = tyreTextures();
+  for (const t of [tyreTex.normal, tyreTex.rough]) SHARED_TEX.add(t);
+  /* Tread blocks and sidewall ribs come from a canvas-built normal map, not
+     from geometry — a groove is a shading break, and at chase distance that is
+     all of it. Zero bytes in the size budget. normalScale is deliberately
+     modest: the map is authored at a strength that reads on the tread crown
+     from 5 m, and doubling it turns the sidewall ribs into corduroy. */
+  const tireM = new THREE.MeshStandardMaterial({
+    color: 0x0c0c10, roughness: 0.93, metalness: 0,
+    normalMap: tyreTex.normal, normalScale: new THREE.Vector2(0.85, 0.85),
+    roughnessMap: tyreTex.rough,
+  });
   const sidewallM = new THREE.MeshStandardMaterial({ color: 0x18191e, roughness: 0.86, metalness: 0 });
   const rimM = withEnv(tameSpecular(new THREE.MeshStandardMaterial({
     color: 0x9aa2b4, metalness: 0.95, roughness: 0.42, roughnessMap: smudgeRoughTex(),
@@ -1278,8 +1329,12 @@ export function buildPlayerCar(
     color: 0x23262e, metalness: 0.9, roughness: 0.7, roughnessMap: smudgeRoughTex(),
     envMap: env, envMapIntensity: 0.7,
   }));
-  const mk = () => makeWheel(P.wheelR, P.wheelWidth, rimM, rimDark, tireM, true, sidewallM);
-  const wFL = mk(), wFR = mk(), wRL = mk(), wRR = mk();
+  /* One build per FLANK, not one per wheel: the dish of an alloy faces
+     outward, so the two sides are mirror images and the same geometry on both
+     showed the left-hand wheels their own inboard face. */
+  const mk = (side: 1 | -1) =>
+    makeWheel(P.wheelR, P.wheelWidth, rimM, rimDark, tireM, true, sidewallM, side);
+  const wFL = mk(-1), wFR = mk(1), wRL = mk(-1), wRR = mk(1);
   const pivFL = new THREE.Group(), pivFR = new THREE.Group();
   pivFL.position.set(-axX, P.wheelR, P.wzF);
   pivFR.position.set(axX, P.wheelR, P.wzF);
@@ -1305,6 +1360,16 @@ export function buildPlayerCar(
   box(P.W * 0.23, 0.1, 0.06, tailMat, hlX, tlY, -L2 - 0.16, false);
   const ledMat = new THREE.MeshStandardMaterial({ color: 0x220305, emissive: 0xff2030, emissiveIntensity: 1.4 });
   box(P.W * 0.78, 0.045, 0.03, ledMat, 0, tlY + 0.06, -L2 - 0.185, false);
+  /* Reverse lamps. The procedural shell never had a pair — the car has always
+     backed up with nothing lit — and the donor does, so this is the procedural
+     side of the same fix rather than a new idea: inboard of the tail lamps,
+     white, off unless reverse is engaged AND the car is actually going
+     backwards. */
+  const revMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1c20, emissive: 0xfff0d8, emissiveIntensity: 0,
+  });
+  for (const s of [-1, 1])
+    box(0.16, 0.055, 0.05, revMat, s * (P.W * 0.14), tlY - 0.03, -L2 - 0.155, false);
   // car-left is +x in this frame (facing +z, right side at -x)
   box(0.12, 0.08, 0.06, sigMatL, P.W / 2 - 0.08, hlY - 0.01, L2 + 0.16, false);
   box(0.12, 0.08, 0.06, sigMatL, P.W / 2 - 0.06, tlY - 0.02, -L2 - 0.15, false);
@@ -1329,6 +1394,28 @@ export function buildPlayerCar(
     sp.scale.set(0.85, 0.85, 1);
     sp.position.set(s * hlX, hlY, L2 + 0.24);
     exteriorG.add(sp);
+    glowSprites.push(sp);
+  }
+  /* Tail halo. The lens is the shape; this is the air around it — the thing
+     that makes a lamp read as a lamp from 30 m of a chase frame rather than as
+     a red decal. Additive and soft-edged, so it fades to nothing instead of
+     printing its own quad edge (realistic-light, mechanism 1).
+
+     It WIDENS as well as brightens under braking. Widening is what buys
+     visibility through the grade — more pixels above the black-crush floor —
+     where brightening alone would only push the core toward the blown-white
+     clip, and a saturated red core is exactly what must not go there. */
+  const tailGlowMat = new THREE.SpriteMaterial({
+    map: glowTex, color: 0xff2a20, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0,
+  });
+  const tailGlow: THREE.Sprite[] = [];
+  for (const s of [-1, 1]) {
+    const sp = new THREE.Sprite(tailGlowMat);
+    sp.scale.set(0.62, 0.62, 1);
+    sp.position.set(s * hlX, tlY, -L2 - 0.24);
+    exteriorG.add(sp);
+    tailGlow.push(sp);
     glowSprites.push(sp);
   }
   const plateGlowMat = new THREE.SpriteMaterial({
@@ -1497,6 +1584,10 @@ export function buildPlayerCar(
     model: null as BodyModelHandle | null,
     hood: null as THREE.Group | null,
   };
+  /* The donor's own lamps, once its body has landed. Null until then and null
+     forever on a car with no donor body — setLamps below drives the procedural
+     materials either way, so nothing downstream has to know which is up. */
+  const lampRef = { donor: null as DonorLampHandle | null };
   /* Settled when the body question is answered — landed, failed, or never
      asked. The GAME still waits on nothing (see above); this is for the garage
      card, which has to know when the shot it is about to read back is the one
@@ -1506,7 +1597,7 @@ export function buildPlayerCar(
   const bodyDonor = opts.body === false ? undefined : BODY_MODEL[spec.id];
   if (!bodyDonor) bodyDone();
   else
-    attachBodyModel(exteriorG, P, bodyDonor, [pivFL, pivFR, wRL, wRR, ...glowSprites],
+    attachBodyModel(exteriorG, P, bodyDonor, [pivFL, pivFR, wRL, wRR, ...brakeParts, ...glowSprites],
       (h) => {
         bodyRef.model = h;
         /* Paint first, light second: the tint writes the env level the
@@ -1523,6 +1614,25 @@ export function buildPlayerCar(
             setGlassPrivacy(windows, privacyOn);
           }
           lightDonorBody(h.group, env, withEnv);
+          /* Lamps last, after the paint tint and the lighting walk: both of
+             those iterate every material on the donor, and this one changes
+             what some of them ARE. Doing it here means lightDonorBody has
+             already registered the lens materials with the env tracker, so a
+             lit lamp still picks up the environment on its unlit half. */
+          try {
+            lampRef.donor = wireDonorLamps(h.group);
+            /* Move the halos onto the real lens. The procedural positions are
+               where the procedural boxes are, which on this body is 22 cm too
+               low and 12 cm too far inboard. */
+            const a = lampRef.donor.tailAnchors;
+            if (a.length === 2)
+              for (let i = 0; i < 2; i++) {
+                // anchors come back car-left first, matching tailGlow's order
+                tailGlow[i].position.set(a[i].x, a[i].y, a[i].z - 0.06);
+              }
+          } catch (e) {
+            console.warn("[player] donor lamps skipped — procedural lamps stay", e);
+          }
         }
         /* Its own try/catch, and not for tidiness: bodymodel.ts runs this
            callback inside one of its own, and a throw from here would be
@@ -1550,6 +1660,36 @@ export function buildPlayerCar(
     bodyReady,
     wheels: [wFL, wFR, wRL, wRR],
     spotL, spotR, spreadL, spreadR, headMat, tailMat, sigMatL, sigMatR, hlGlowMat, plateGlowMat,
+    tailGlowMat,
+    get donorLamps() { return lampRef.donor; },
+    /* The one place the rear lamps are driven, procedural body and donor body
+       alike. engine.ts computes the STATE (is it braking, is the indicator on
+       this half of its blink) and this decides what that looks like, which is
+       the same split the headlights already use.
+
+       Levels here are the ones the procedural lamps have always run — running
+       0.95, brake 3.6 on a 0xff2233 emissive — because they were tuned against
+       this grade and there was nothing wrong with them. The donor's own
+       numbers live in donorlamps.ts next to the material table they belong
+       to. */
+    setLamps(st: LampState) {
+      const run = st.running ? 1 - st.day * 0.55 : 0;
+      tailMat.emissiveIntensity = st.brake ? 3.6 : 0.12 + 0.83 * run;
+      ledMat.emissiveIntensity = st.brake ? 3.0 : 0.1 + 1.3 * run;
+      revMat.emissiveIntensity = st.reverse ? 2.6 : 0;
+      sigMatL.emissiveIntensity = st.sigL ? 3 : 0;
+      sigMatR.emissiveIntensity = st.sigR ? 3 : 0;
+      lampRef.donor?.set(st);
+      /* The halo. Off in daylight beyond a trace, because a glow sprite over a
+         sunlit body is the one thing that reads as a decal; at night it is the
+         lamp's air. Brake widens it by half again as much as it brightens it
+         — see the build comment above. */
+      const night = 1 - st.day * 0.85;
+      const o = st.brake ? 0.5 : run * 0.2;
+      tailGlowMat.opacity = o * night;
+      const sc = st.brake ? 0.92 : 0.62;
+      for (const sp of tailGlow) sp.scale.set(sc, sc, 1);
+    },
     beamCarpet, beamCarpetMat, beamCarpetG: carpetG,
     /* 1 cm under the visible bodyshell, matching the rule TYPE_DIM in
        traffic.ts now follows on the NPC side: the two half-widths meet in
