@@ -81,14 +81,23 @@ export const LENS_KIND = 4;
 type LensSpec = { w: number; h: number; wrap: number };
 /** Rear-quad width/height plus the width of the wrap-around wing that carries
     the lamp into rear-quarter views (chase camera). Metres, per style; sizes
-    read off each style's rear render. `wrap: 0` for the flat-backed boxes. */
-const LENS_DEFAULT: LensSpec = { w: 0.32, h: 0.13, wrap: 0.09 };
+    read off each style's rear render. `wrap: 0` for the flat-backed boxes.
+
+    Aspect is deliberate, not just size: the first pass sat near 2.4:1, which
+    with the halo skirt on top read as a rounded square block on the tailgate
+    ("looks weird/cheap with those squares"). Every horizontal lamp is now
+    ~4:1 — a real car's tail lamp is a wide, shallow bar, and the shape is
+    what the eye names the lamp by once the glow around it stops covering it
+    (see HALO in traffic.ts, sized down in the same change). The vertical
+    van/bus clusters go the other way for the same reason: narrower, so they
+    read as door-edge columns rather than squares. */
+const LENS_DEFAULT: LensSpec = { w: 0.40, h: 0.095, wrap: 0.09 };
 const TAIL_LENS: Record<string, Partial<LensSpec>> = {
-  suv:   { w: 0.36, h: 0.16 },
-  osuv:  { w: 0.34, h: 0.15 },
-  van:   { w: 0.16, h: 0.30, wrap: 0 }, // vertical door-edge clusters
-  bus:   { w: 0.17, h: 0.32, wrap: 0 },
-  truck: { w: 0.30, h: 0.11, wrap: 0 }, // bumper-bar lamps
+  suv:   { w: 0.44, h: 0.105 },
+  osuv:  { w: 0.42, h: 0.10 },
+  van:   { w: 0.11, h: 0.32, wrap: 0 }, // vertical door-edge clusters
+  bus:   { w: 0.12, h: 0.34, wrap: 0 },
+  truck: { w: 0.36, h: 0.085, wrap: 0 }, // bumper-bar lamps
 };
 
 /** Unlit look of a synthetic lens for renderers that honour vertex colour but
