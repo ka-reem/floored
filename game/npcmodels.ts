@@ -135,6 +135,27 @@ function withTailLenses(
     return (isFinite(zMin) ? zMin : a[2]) - 0.02;
   });
 
+  /* How far the body actually extends outboard of each lamp, measured on the
+     rear panel itself (vertices within 35 cm of the lens plane, in a band
+     around the lamp's own height). A fixed metre width is wrong here: the
+     owner's complaint that the lamp "doesn't match the body line" is a quad
+     that runs past the corner of a narrow car and floats in open air, and the
+     bakes span a kei van and a coach. So the authored width is a CEILING and
+     the silhouette is the limit — the quad shrinks to sit inside the panel,
+     with a 3 cm inset so it never touches the edge. */
+  const LENS_INSET = 0.03;
+  const bodyOuter = tail.map((a, li) => {
+    const s = li === 0 ? -1 : 1;
+    let far = 0;
+    for (let i = 0; i < n; i++) {
+      if (Math.abs(pos.getZ(i) - faceZ[li]) > 0.35) continue;
+      if (Math.abs(pos.getY(i) - a[1]) > 0.30) continue;
+      const x = pos.getX(i) * s; // outboard-positive, whichever side
+      if (x > far) far = x;
+    }
+    return far;
+  });
+
   const V: number[] = [], NR: number[] = [], IX: number[] = [];
   let vn = 0;
   const quad = (
@@ -148,15 +169,26 @@ function withTailLenses(
   for (let li = 0; li < 2; li++) {
     const [ax, ay] = tail[li];
     const z = faceZ[li], s = li === 0 ? -1 : 1;
-    const x0 = ax - spec.w / 2, x1 = ax + spec.w / 2;
+    /* Fit the authored width inside the panel (bodyOuter): the room from the
+       anchor out to the silhouette sets the half-width, and the quad keeps its
+       anchor centred rather than sliding inboard. Floored at 55% of the
+       authored width so a bake with a stray outlying vertex — or an anchor
+       sitting right on the corner — still gets a lamp rather than a sliver;
+       a measurement that found nothing leaves the width alone. */
+    const room = bodyOuter[li] - Math.abs(ax) - LENS_INSET;
+    const w = bodyOuter[li] > 0
+      ? Math.max(spec.w * 0.55, Math.min(spec.w, room * 2))
+      : spec.w;
+    const wrapW = spec.wrap * (w / spec.w); // the wing narrows with the lens
+    const x0 = ax - w / 2, x1 = ax + w / 2;
     const y0 = ay - spec.h / 2, y1 = ay + spec.h / 2;
     // rear face, normal -z (order chosen for a -z front face; the NPC
     // material is DoubleSide, so this only matters to offline tools)
     quad([[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]], 0, 0, -1, true);
-    if (spec.wrap > 0) {
+    if (wrapW > 0) {
       // wrap wing: carries the lens around the corner for rear-quarter views
       const xe = s > 0 ? x1 : x0;
-      const xo = xe + s * spec.wrap * 0.62, zo = z + spec.wrap * 0.78;
+      const xo = xe + s * wrapW * 0.62, zo = z + wrapW * 0.78;
       quad(
         [[xe, y0, z], [xe, y1, z], [xo, y1, zo], [xo, y0, zo]],
         s * 0.78, 0, -0.62, s < 0

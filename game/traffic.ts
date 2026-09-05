@@ -1486,6 +1486,21 @@ const HALO = {
   /** pixel cap as a fraction of the viewport height */
   max: 0.14,
 };
+
+/* Emissive level of every NPC tail lens, as a radiance multiplier on the
+   lamp-flagged vertices (see renderInstances). Emissive is
+   `diffuseColor.rgb * lvl` and the authored lens albedo is (0.55, .035, .045),
+   so `run` is what decides whether the lamp reads as a lit LENS or as a bright
+   red decal stuck on the tailgate.
+
+   It sat at run 3.1 / brake 4.4, which put the running lens near 0.55 output
+   luma — past the point where the ACES pass in post.ts starts pulling colour
+   out of a highlight, so it came through pale, flat and far too loud. The
+   owner: "the red square is too distinct ... so much more opaque." The fix is
+   DOWN, not up: below the bleach ceiling the same lens reads as deeper, more
+   saturated red, because it is spending its level on hue instead of on white.
+   `window.__npcLamp = { run, brake }` overrides these live for A/B. */
+const LAMP = { run: 3.1, brake: 4.4 };
 const HALO_STOPS = 18;
 function haloTexture(): THREE.Texture {
   const c = document.createElement("canvas");
@@ -5822,6 +5837,11 @@ export class Traffic {
     for (const st of this.styles) st.n = 0;
     let wk = 0;
     const WHEEL2 = 150 * 150;
+    /* live lamp-level knobs (window.__npcLamp, see LAMP) — one vertex
+       attribute write per car, so a change lands on the next frame with no
+       rebuild, the same way __npcHalo works for the glow around them */
+    const lk = ((window as any).__npcLamp as Partial<typeof LAMP> | undefined) || LAMP;
+    const lampRun = lk.run ?? LAMP.run, lampBrake = lk.brake ?? LAMP.brake;
     /* player-beam wash basis (see the HLW_* block): forward axis once per
        frame, and the gate mirrors engine.ts's `lamps` as closely as this
        side can see it — lightsOn covers the running-lights state; the
@@ -5945,7 +5965,7 @@ export class Traffic {
       const la = lod.lamp.array as Float32Array;
       const lit = night && !n.wreck;
       la[i * 2] = lit ? 2.2 : 0;
-      la[i * 2 + 1] = n.wreck ? 0 : n.brake ? 4.4 : lit ? 3.1 : 0;
+      la[i * 2 + 1] = n.wreck ? 0 : n.brake ? lampBrake : lit ? lampRun : 0;
       if (d2 < WHEEL2) {
         const fx = sn, fz = c, rx = fz, rz = -fx;
         for (const [lo, so] of n.wheelOffs) {
