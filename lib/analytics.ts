@@ -81,12 +81,19 @@ export function initAnalytics() {
          profile ever carries an email or a name. */
       person_profiles: "always",
       session_recording: {
-        /* Client-side sampling: record ~25% of sessions. This takes
-           precedence over the project's remote sample-rate setting
-           (posthog-js SessionRecordingOptions.sampleRate). Recording
-           itself is enabled project-side (session_recording_opt_in),
-           with maskAllInputs on by default. */
-        sampleRate: 0.25,
+        /* Client-side sampling: record every session. This takes precedence
+           over the project's remote sample-rate setting (posthog-js
+           SessionRecordingOptions.sampleRate).
+
+           It was 0.25 — sensible at scale, useless here: at a few dozen
+           visitors a quarter-sample is a handful of replays, and the owner
+           looked for recordings and found none. Sample everything until the
+           traffic is big enough for a sample to mean something.
+
+           Recording ALSO has to be switched on project-side
+           (session_recording_opt_in, PostHog → Settings → Session Replay);
+           with that off this setting records nothing, whatever it says. */
+        sampleRate: 1.0,
       },
     });
     ready = true;
