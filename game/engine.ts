@@ -2388,6 +2388,7 @@ export class Game {
              draws are unchanged for a given seed. */
           buildScenery(this.scene, this.mats, this.world, this.terrain, rng);
           this.tintLampsSodium();
+          this.freezeChunkMatrices();
         },
       },
       {
@@ -4922,6 +4923,44 @@ export class Game {
     sh.ewG.visible = p === 3;
     sh.ewY.visible = p === 4;
     sh.ewR.visible = p <= 2 || p > 4.9;
+  }
+
+  /** The town and vegetation chunk groups are built once and never move
+      again — chunksUpdate() only ever writes `visible` on them — and every
+      node inside them still pays for a transform update on every frame of
+      the game, drawn or culled.
+
+      Two things have to happen for that to stop, and doing either one alone
+      changes nothing:
+
+      1. THE ROOT. Object3D.updateMatrixWorld() passes `force` DOWN, and a
+         node sets force for its whole subtree whenever its own local matrix
+         was recomposed. THREE.Scene ships with matrixAutoUpdate on, so the
+         scene recomposes its (always identity) matrix every frame and forces
+         a world-matrix multiply through all ~1730 nodes under it. The scene
+         is never transformed by anything here, so that recompose has nothing
+         to recompose.
+      2. THE NODES. With the root quiet, a node is only re-composed and
+         re-multiplied if its own matrixAutoUpdate is set. The chunk contents
+         are final the moment they are built, so their world matrices are
+         computed once here and the flag cleared for the whole subtree.
+
+      Together those take ~920 of the ~1730 nodes out of the per-frame
+      Matrix4.compose + multiplyMatrices work. Nothing about what is drawn
+      moves: the matrices are already the ones they would recompute to, and
+      culling still runs off `visible` exactly as before.
+
+      The contract this buys is that a chunk's contents are STATIC. Anything
+      later added to (or moved inside) one of these groups has to set its own
+      matrix and call updateMatrixWorld() by hand. Both producers —
+      townmesh.ts and roadside.ts — fill a group before pushing it, and this
+      runs at the end of the build stage that owns all of them. */
+  private freezeChunkMatrices() {
+    this.scene.matrixAutoUpdate = false;
+    for (const c of this.world.chunks) {
+      c.group.updateMatrixWorld(true);
+      c.group.traverse((o) => { o.matrixAutoUpdate = false; });
+    }
   }
 
   private chunksUpdate() {
