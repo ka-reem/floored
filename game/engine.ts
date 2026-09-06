@@ -6278,7 +6278,10 @@ export class Game {
     this.sunDirW.copy(this.sun.position).sub(this.sun.target.position).normalize();
     setNpcDaylight(this.dayFactor(), this.sunDirW, cam);
     this.renderer.setRenderTarget(this.post.sceneRT);
-    this.renderer.clear();
+    /* No explicit clear: renderer.render() clears the bound target itself
+       while autoClear is on (three's WebGLBackground.render does it before
+       the first draw), so the call that used to sit here was a second full
+       clear of a 4x-MSAA half-float target every frame. */
     this.renderer.render(this.scene, cam);
     const f = this.dayFactor();
     this.post.setSpeed(Math.abs(this.car.u) * 3.6);
