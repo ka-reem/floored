@@ -75,8 +75,84 @@ const BASE = "/models/cars/";
    fleet — and the glow sprites retire near-range for every style. */
 
 /** lampKind for a runtime-authored lens quad. The NPC shader (traffic.ts,
-    npcShader) keys its albedo/roughness override on `> 3.5` — keep in sync. */
+    npcShader) keys its albedo/roughness override on the 3.5..4.5 band — keep
+    in sync. */
 export const LENS_KIND = 4;
+
+/** lampKind for "this is rear bodywork that PAINTS its own tail lens": the
+    shader lights only the texels there that test as lens red, so the lit
+    shape is the car's own artwork rather than a quad laid over it.
+    Keyed on `> 4.5` in npcShader. */
+export const SKIN_KIND = 5;
+
+/* ---- the car's own painted lens ------------------------------------------
+   The owner, on the authored quads: "u cant just overlay the taillight
+   rectangles over the actual red taillights ... shaped to the cars tailights
+   properly". Right — where the bake HAS a lamp, the lamp should be the thing
+   that lights up.
+
+   Whether it has one is a question about the texture, not the geometry, and
+   these bakes are low-poly: the lens is a few square centimetres of artwork
+   on a large flat panel, so no amount of per-triangle tagging can find its
+   shape. What can is a per-PIXEL test in the fragment shader — and then the
+   only thing decided here is which styles have a lens worth testing for.
+
+   That was measured offline over every bake (scratchpad probe: decode the
+   GLB's own base texture, sample the rear-facing triangles densely, and
+   report the share of the rear panel that reads as saturated red):
+
+     ohybrid 4.6%   osedan 3.3%   taxi 1.1%     <- two-sided, real clusters
+     van 1.1%       ocompact 0.4%  osuv 1.0%    <- ONE side only
+     truck 0.1%     police 0.0%    suv/bus 0.0% <- no red lamp in the bake
+
+   A one-sided hit means the other lamp simply is not red in that texture, and
+   lighting it would give the car a single taillight — worse than the quad. So
+   ohybrid, osedan and taxi went to a render, and only the taxi survived it:
+   the osedan carries a red trim strip across its tailgate and around the rear
+   glass, which passes the same test the lens does and lit up the whole back
+   of the car. The measurement says "there is red here", not "the red is the
+   lamp" — that part only a frame can tell you, so a style earns its place in
+   this set by being LOOKED at, not by its percentage.
+
+   Everything else keeps the authored quads: smoked, dark or unpainted lens
+   artwork gives the per-pixel test nothing to find.
+
+   (sedan/compact/hybrid are not in this list because they need nothing: the
+   hi-fi bakes already tag their real lens pixels in `_LAMP`. That hand tag is
+   what the rest of the fleet is really missing, and baking one per style is
+   the honest fix here — this is the part of it that can be had for free.) */
+const TEX_LENS = new Set(["taxi"]);
+/** how far forward of the rear-most vertex the lens artwork can reach, and how
+    far off rearward a normal may point (the wrap onto the rear quarter). Both
+    kept tight: past this the same red test starts finding body paint. */
+const SKIN_DEPTH = 0.40, SKIN_NZ = 0.30, SKIN_YBAND = 0.55;
+
+/** Flag the rear bodywork of a style whose own texture paints its tail lens.
+    Returns false (and changes nothing) if the gate found no vertices, so the
+    caller can fall back to the authored quads. */
+function tagTexturedTailSkin(
+  geo: THREE.BufferGeometry,
+  tail: [Vec3, Vec3]
+): boolean {
+  const pos = geo.attributes.position as AnyAttr;
+  const nor = geo.attributes.normal as AnyAttr;
+  const n = pos.count;
+  let zMin = Infinity;
+  for (let i = 0; i < n; i++) zMin = Math.min(zMin, pos.getZ(i));
+  const yMid = (tail[0][1] + tail[1][1]) / 2;
+  const out = new Float32Array(n);
+  let tagged = 0;
+  for (let i = 0; i < n; i++) {
+    if (pos.getZ(i) > zMin + SKIN_DEPTH) continue;
+    if (nor.getZ(i) > SKIN_NZ) continue;
+    if (Math.abs(pos.getY(i) - yMid) > SKIN_YBAND) continue;
+    out[i] = SKIN_KIND;
+    tagged++;
+  }
+  if (!tagged) return false;
+  geo.setAttribute("lampKind", new THREE.BufferAttribute(out, 1));
+  return true;
+}
 
 type LensSpec = { w: number; h: number; wrap: number };
 /** Rear-quad width/height plus the width of the wrap-around wing that carries
@@ -324,10 +400,15 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
   const extras: any = (gltf.scene.userData as any) ?? {};
   const lamps = readLamps(extras.lamps);
   if (!hasTailGeo && lamps.tail) {
-    /* No baked tail lenses — author them now (see withTailLenses above), and
-       report tail geometry as present so the glow sprites retire near-range
-       for this style exactly like the tagged bakes. */
-    geo = withTailLenses(geo, style, lamps.tail);
+    /* No baked tail lenses. Two ways to get one, and the first is always
+       better because it is the car's own artwork rather than a shape laid
+       over it: flag the rear panel and let the shader light the lens texels
+       (TEX_LENS), or, where the bake paints no lens to find, author quads
+       (withTailLenses). Either way report tail geometry as present, so the
+       glow sprites retire near-range for this style exactly like the tagged
+       bakes. */
+    if (!(TEX_LENS.has(style) && tagTexturedTailSkin(geo, lamps.tail)))
+      geo = withTailLenses(geo, style, lamps.tail);
     hasTailGeo = true;
   }
   geo.computeBoundingSphere();

@@ -385,7 +385,19 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
            authored here instead of sampled — dark red lens plastic, picked so
            the emissive levels below land near the tagged bakes' red lens
            texels (~0.62 red per the lampLvl notes). Also the daylight look. */
-        if (vLampKind > 3.5) diffuseColor.rgb = vec3(0.55, 0.035, 0.045);`
+        if (vLampKind > 3.5 && vLampKind < 4.5) diffuseColor.rgb = vec3(0.55, 0.035, 0.045);
+        /* SKIN_KIND (npcmodels.ts = 5): rear bodywork whose own texture paints
+           the tail lens. Nothing is overlaid here — the sampled texel decides.
+           The test is the saturated-red one measured against every bake in the
+           fleet; body paint and badges fail it, lens plastic passes. What
+           comes out is the lamp the artist drew, at texel resolution, which is
+           the one thing a quad can never be. */
+        float npcLens = 0.0;
+        if (vLampKind > 4.5) {
+          vec3 t = diffuseColor.rgb;
+          npcLens = (t.r > 0.12 && t.r > t.g * 1.55 && t.r > t.b * 1.35
+                     && t.r - t.g > 0.04) ? 1.0 : 0.0;
+        }`
       )
       /* The synthetic lens quads must not inherit whatever roughness/metal
          texel their meaningless uv lands on — a metalness-1 texel would kill
@@ -394,12 +406,12 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
       .replace(
         "#include <roughnessmap_fragment>",
         `#include <roughnessmap_fragment>
-        if (vLampKind > 3.5) roughnessFactor = 0.3;`
+        if (vLampKind > 3.5 && vLampKind < 4.5) roughnessFactor = 0.3;`
       )
       .replace(
         "#include <metalnessmap_fragment>",
         `#include <metalnessmap_fragment>
-        if (vLampKind > 3.5) metalnessFactor = 0.0;`
+        if (vLampKind > 3.5 && vLampKind < 4.5) metalnessFactor = 0.0;`
       )
       /* Lamps light themselves. The lamp quads are ordinary dark paint
          otherwise, so they only showed when something else lit them, and a
@@ -412,7 +424,10 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
-        if (vLampKind > 0.5) {
+        if (vLampKind > 4.5) {
+          /* the car's own painted lens: only the texels that ARE the lens */
+          totalEmissiveRadiance += diffuseColor.rgb * vLampLvl.y * npcLens;
+        } else if (vLampKind > 0.5) {
           float lvl = vLampKind > 1.5 ? vLampLvl.y : vLampLvl.x;
           totalEmissiveRadiance += diffuseColor.rgb * lvl;
         }
