@@ -79,6 +79,12 @@ const TYPE_DIM: Record<string, { L: number; W: number; wr: number; wz: number; m
   ocompact: { L: 3.94, W: 1.70, wr: 0.30, wz: 1.24, mass: 1080 },
   osuv: { L: 4.72, W: 1.89, wr: 0.36, wz: 1.46, mass: 1950 },
   hybrid: { L: 4.54, W: 1.75, wr: 0.32, wz: 1.4, mass: 1400 },
+  /* m-prefix = the Mint-generated generation, the same idea as the o-prefix
+     above: a third hybrid-class shell in traffic beside the other two, not a
+     replacement for either. Same car class, so the same numbers as `hybrid`
+     — the mesh is fitted to 1.76 and the collider stays the 1 cm under that
+     the block above explains. */
+  mhybrid: { L: 4.54, W: 1.75, wr: 0.32, wz: 1.4, mass: 1400 },
   sedan: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1380 },
   compact: { L: 3.94, W: 1.70, wr: 0.30, wz: 1.24, mass: 1080 },
   suv: { L: 4.72, W: 1.89, wr: 0.36, wz: 1.46, mass: 1950 },
@@ -138,6 +144,17 @@ const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
   ocompact: { hue: -1,    refLum: 0.636 },
   ohybrid:  { hue: 0.311, refLum: 0.481 }, // authored green
   osuv:     { hue: 0.594, refLum: 0.106 }, // authored blue
+  /* The Mint bodyshell is a PHOTOGRAPH of a silver car with no separate
+     paint material, so it is back on the texel path rather than the mask
+     path the ItsDiyor bakes use: its `paintable` is zero throughout, so
+     nothing double-paints, and going through the mask instead would mean
+     replacing the albedo with a flat swatch — throwing away the shutlines,
+     highlights and panel shading that are the reason to use this shell at
+     all. Neutral (hue -1) because the authored paint is silver; refLum
+     measured off the baked atlas (0.481 at 512px, 0.486 at 1024px).
+     `hybrid` is deliberately absent: the ItsDiyor shell beside this one
+     ships a real paintable mask and takes its colour that way. */
+  mhybrid:  { hue: -1,    refLum: 0.482 },
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
@@ -147,8 +164,16 @@ const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
    `onBeforeCompile.toString()`, so per-style GLSL would mean per-style
    programs (and a per-style compile hitch) for no gain. `uPaintRef.y` of zero
    is a style that keeps its livery. */
+/* `vLampKind < 0.5` keeps the recolour off lamp lenses. It has to: the
+   neutral branch selects "desaturated and brighter than tyre black", which
+   is a HEADLAMP lens exactly — clear glass over a chrome reflector — so a
+   red car would drive around with red headlights. Tail lenses are saturated
+   enough to fall out of the mask on their own, but the guard covers them
+   too rather than relying on that. No-op for every style that had a tint
+   before this: none of them tag lamp geometry (the runtime-authored lens
+   quads are kind 4, whose albedo is overwritten below regardless). */
 const PAINT_TINT_GLSL = `
-        if (uPaintRef.y > 0.0) {
+        if (uPaintRef.y > 0.0 && vLampKind < 0.5) {
           vec3 c = diffuseColor.rgb;
           float mx = max(max(c.r, c.g), c.b);
           float d = mx - min(min(c.r, c.g), c.b);
@@ -1902,9 +1927,14 @@ export class Traffic {
        (mobile memory): mostly regular cars, with vans/trucks/buses sprinkled
        in, plus the two forced police cruisers below. */
     const roster: string[] = [];
+    /* The three hybrid shells SHARE one hybrid-class share of traffic
+       (0.11 + 0.08 = 0.19, now 0.07/0.06/0.06) rather than the newcomer
+       taking a slice out of everything else — adding a third generation of
+       the same car should not make sedans or trucks rarer. */
     const mix: [string, number][] = [
-      ["sedan", 0.14], ["hybrid", 0.11], ["compact", 0.11], ["suv", 0.10],
-      ["osedan", 0.11], ["ohybrid", 0.08], ["ocompact", 0.08], ["osuv", 0.07],
+      ["sedan", 0.14], ["hybrid", 0.07], ["compact", 0.11], ["suv", 0.10],
+      ["osedan", 0.11], ["ohybrid", 0.06], ["ocompact", 0.08], ["osuv", 0.07],
+      ["mhybrid", 0.06],
       ["taxi", 0.07], ["van", 0.06], ["truck", 0.05], ["bus", 0.02],
     ];
     for (let i = 0; i < N; i++) {

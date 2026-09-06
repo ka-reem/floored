@@ -4,6 +4,29 @@
    _PAINTABLE/_LAMP plus scene extras {style, dims, lamps, wheels}).
 
      node tools/build-hifi-models.mjs --dl <donor-dir> [style ...] [--hd]
+     node tools/build-hifi-models.mjs --mint <staging-dir> [style ...] [--hd]
+
+   --mint bakes a Mint-generated bodyshell instead of a Sketchfab donor. It
+   is the same pipeline — same fit, same wheel strip, same extras, same GLB
+   writer — with three source-shaped differences, all driven off the MINT
+   table below rather than a parallel script:
+
+   - The source is ONE Draco-compressed .glb with ONE material and ONE
+     embedded atlas, so there is nothing to repack: the atlas is resized in
+     place and the UVs pass through untouched. Nothing to visibility-cull
+     either (a retopo has no interior) and nothing to simplify.
+   - Lamps cannot be found by material slot ("rear lights") or by red texels:
+     the shell is one material and its lamps are painted as WHITE glass. They
+     come from an explicit atlas MASK instead — see tools/seed-lamp-mask.mjs,
+     which authors the committed PNG this reads.
+   - Because the lamps are white, the tail lens is TINTED RED into the atlas
+     at bake time, keyed off that same mask. That is what makes the existing
+     runtime work unchanged: traffic.ts's emissive is `albedo * level`, so a
+     red lens gives red running/brake lamps with no shader change, and it is
+     also the correct unlit daylight look. Headlamps stay clear.
+
+   Branding is painted out of the atlas in the same pass (see `brand`): the
+   donor is a real-world car and shipping its badges is a trademark problem.
 
    <donor-dir> holds one subdirectory per donor (camry/, prius/, golf/,
    highlander/, civil/), each an unzipped Sketchfab glTF export
@@ -33,15 +56,19 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import sharp from "sharp";
 import { MeshoptSimplifier } from "meshoptimizer";
+import { NodeIO } from "@gltf-transform/core";
+import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
+import draco3d from "draco3dgltf";
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => (argv.includes(n) ? argv[argv.indexOf(n) + 1] : d);
 const DL = flag("--dl", null);
+const MINT = flag("--mint", null);
 const HD = argv.includes("--hd");
 const ONLY = [];
 const SRC_OVERRIDE = {};
 for (const a of argv) {
-  if (a.startsWith("--") || a === DL) continue;
+  if (a.startsWith("--") || a === DL || a === MINT) continue;
   const eq = a.indexOf("=");
   if (eq > 0) SRC_OVERRIDE[a.slice(0, eq)] = a.slice(eq + 1);
   else ONLY.push(a);
@@ -50,8 +77,9 @@ const OUT = path.resolve(
   import.meta.dirname,
   HD ? "../public/models/cars-hd" : "../public/models/cars"
 );
-if (!DL || !fs.existsSync(DL)) {
-  console.error("usage: node tools/build-hifi-models.mjs --dl <donor-dir> [style ...] [--hd]");
+const ROOT = MINT || DL;
+if (!ROOT || !fs.existsSync(ROOT)) {
+  console.error("usage: node tools/build-hifi-models.mjs (--dl <donor-dir> | --mint <staging-dir>) [style ...] [--hd]");
   process.exit(1);
 }
 
@@ -76,6 +104,53 @@ const STYLES = {
 /* Per-style orientation fixes discovered by rendering (see --probe):
    spin=Math.PI flips a donor whose nose came out at -Z. */
 const SPIN = { taxi: Math.PI, police: Math.PI, van: Math.PI, bus: 0 };
+
+/* --mint styles. Same L/W/H contract as above; the extra fields are the
+   three things a Mint shell needs that a Sketchfab donor does not.
+
+   `spin`: this shell arrives nose at -Z (verified — the amber-indicator
+   headlamp texels sit at z < -0.6), and the runtime wants +Z forward.
+
+   `mask`: the committed lamp mask, resolved next to this tool (the shells
+   themselves live in gitignored staging; the mask is a build INPUT and is
+   in the repo). Authored by tools/seed-lamp-mask.mjs — red = tail lens,
+   green = headlamp lens. Sampled per triangle at its UV centroid, so a
+   lamp's whole triangle is tagged or none of it is — partial tagging would
+   interpolate lampKind across a face and bleed emissive onto bodywork.
+
+   `tailLens`: linear-RGB the tail lens albedo is retinted to. Matched to
+   what the rest of the fleet's tagged lenses measure — traffic.ts quotes a
+   red lens texel at roughly (0.62, 0.055, 0.06) — so the running (3.1) and
+   brake (4.4) levels it was tuned with land in the same place here.
+
+   `brand`: atlas rectangles painted out before anything else reads the
+   texture. Toyota roundels and the tailgate wordmarks; a Laplace fill from
+   each rect's own border, which on flat panels and flat grille is
+   indistinguishable from the bodywork around it. */
+const MINT_STYLES = {
+  /* `mhybrid` -- the Mint generation of the hybrid, riding ALONGSIDE the
+     ItsDiyor `hybrid` and the Orchids `ohybrid` rather than replacing either.
+     Same naming idea as the o-prefix: the prefix is the generation the shell
+     came from, and the fleet mix in traffic.ts splits one hybrid-class share
+     of traffic between the three. */
+  mhybrid: {
+    kind: "mint", src: "mint/prius-retopo.glb", L: 4.54, W: 1.76, H: 1.51,
+    spin: Math.PI,
+    mask: "masks/prius-lamp-mask.png",
+    tailLens: [0.62, 0.055, 0.06],
+    brand: [
+      [1070, 204, 38, 36],  // roundel, front grille
+      [707, 542, 40, 38],   // roundel, front grille (second island)
+      [816, 1181, 40, 38],  // roundel, tailgate
+      [700, 1188, 66, 28],  // tailgate script
+      [764, 1200, 74, 20],  // embossed tailgate text
+      [272, 815, 20, 36],   // pillar mark
+      [161, 1228, 60, 20],  // tailgate script (second island)
+      [359, 1236, 64, 22],  // tailgate script (third island)
+    ],
+    source: "Mint-generated bodyshell, retopologized (see ATTRIBUTIONS.md)",
+  },
+};
 
 /* ---------------- glTF reading (scene.gltf + bin + image files) --------- */
 function loadDoc(dir) {
@@ -183,6 +258,119 @@ function collectTris(doc, nodeFilter) {
     }
   });
   return tris;
+}
+
+/* ---------------- Mint source: one Draco .glb, one atlas --------------- */
+/* Same `tris` shape collectTris produces, so everything downstream — wheel
+   strip, crease normals, fit, lamp extras, writer — is shared verbatim. */
+async function loadMintGlb(file) {
+  const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({
+    "draco3d.decoder": await draco3d.createDecoderModule(),
+  });
+  const doc = await io.read(file);
+  const meshes = doc.getRoot().listMeshes();
+  const tris = [];
+  for (const mesh of meshes) {
+    for (const prim of mesh.listPrimitives()) {
+      const P = prim.getAttribute("POSITION").getArray();
+      const N = prim.getAttribute("NORMAL")?.getArray() || null;
+      const UV = prim.getAttribute("TEXCOORD_0")?.getArray() || null;
+      const ix = prim.getIndices();
+      const IX = ix ? ix.getArray() : Uint32Array.from({ length: P.length / 3 }, (_, k) => k);
+      for (let k = 0; k < IX.length; k += 3) {
+        const t = { p: [], uv: [], n: [], mat: 0 };
+        for (let e = 0; e < 3; e++) {
+          const v = IX[k + e];
+          t.p.push([P[v * 3], P[v * 3 + 1], P[v * 3 + 2]]);
+          t.uv.push(UV ? [UV[v * 2], UV[v * 2 + 1]] : [0.5, 0.5]);
+          t.n.push(N ? [N[v * 3], N[v * 3 + 1], N[v * 3 + 2]] : null);
+        }
+        tris.push(t);
+      }
+    }
+  }
+  const tex = doc.getRoot().listTextures()[0];
+  return { tris, image: tex ? Buffer.from(tex.getImage()) : null };
+}
+
+/** Rotate a triangle soup about +Y (used to put the nose on +Z). */
+function spinTris(tris, a) {
+  if (!a) return;
+  const c = Math.cos(a), s = Math.sin(a);
+  for (const t of tris) {
+    t.p = t.p.map(([x, y, z]) => [x * c + z * s, y, -x * s + z * c]);
+    t.n = t.n.map((n) => (n ? [n[0] * c + n[2] * s, n[1], -n[0] * s + n[2] * c] : n));
+  }
+}
+
+/** Fill each rect from its own border by relaxation, so a painted-out badge
+    takes the colour and gradient of the panel it sat on rather than a flat
+    patch. 120 Jacobi sweeps is plenty at these sizes (<= 74 px wide). */
+function inpaintRects(buf, w, h, ch, rects) {
+  for (const [rx, ry, rw, rh] of rects) {
+    const x0 = Math.max(0, rx), y0 = Math.max(0, ry);
+    const x1 = Math.min(w, rx + rw), y1 = Math.min(h, ry + rh);
+    if (x1 <= x0 || y1 <= y0) continue;
+    const bw = x1 - x0, bh = y1 - y0;
+    for (let c = 0; c < 3; c++) {
+      // seed from the mean of the ring just outside the rect
+      let sum = 0, n = 0;
+      for (let x = Math.max(0, x0 - 2); x < Math.min(w, x1 + 2); x++)
+        for (const y of [y0 - 2, y0 - 1, y1, y1 + 1]) {
+          if (y < 0 || y >= h) continue;
+          sum += buf[(y * w + x) * ch + c]; n++;
+        }
+      for (let y = Math.max(0, y0 - 2); y < Math.min(h, y1 + 2); y++)
+        for (const x of [x0 - 2, x0 - 1, x1, x1 + 1]) {
+          if (x < 0 || x >= w) continue;
+          sum += buf[(y * w + x) * ch + c]; n++;
+        }
+      const seed = n ? sum / n : 128;
+      let cur = new Float32Array(bw * bh).fill(seed);
+      let nxt = new Float32Array(bw * bh);
+      const at = (x, y) =>
+        x >= x0 && x < x1 && y >= y0 && y < y1
+          ? cur[(y - y0) * bw + (x - x0)]
+          : (x >= 0 && x < w && y >= 0 && y < h ? buf[(y * w + x) * ch + c] : seed);
+      for (let it = 0; it < 120; it++) {
+        for (let y = y0; y < y1; y++)
+          for (let x = x0; x < x1; x++)
+            nxt[(y - y0) * bw + (x - x0)] =
+              (at(x - 1, y) + at(x + 1, y) + at(x, y - 1) + at(x, y + 1)) / 4;
+        const t = cur; cur = nxt; nxt = t;
+      }
+      for (let y = y0; y < y1; y++)
+        for (let x = x0; x < x1; x++)
+          buf[(y * w + x) * ch + c] = Math.max(0, Math.min(255, Math.round(cur[(y - y0) * bw + (x - x0)])));
+    }
+  }
+}
+
+const srgb = (u) => (u <= 0.0031308 ? u * 12.92 : 1.055 * Math.pow(u, 1 / 2.4) - 0.055);
+
+/** Retint the mask's tail-lens texels to red plastic, keeping the lens's own
+    internal structure (chrome bars, LED segments) by scaling about the
+    region's mean rather than flooding it with a flat colour. */
+function tintTailLens(buf, w, h, ch, mask, mw, target) {
+  let sum = 0, n = 0;
+  const idx = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const mi = (Math.min(mw - 1, Math.round((x / w) * mw)) +
+      Math.min(mw - 1, Math.round((y / h) * mw)) * mw) * 3;
+    if (mask[mi] < 128) continue; // red channel = tail
+    const o = (y * w + x) * ch;
+    idx.push(o);
+    sum += buf[o] * 0.299 + buf[o + 1] * 0.587 + buf[o + 2] * 0.114;
+    n++;
+  }
+  if (!n) return 0;
+  const mean = sum / n;
+  const tgt = target.map((v) => srgb(v) * 255);
+  for (const o of idx) {
+    const k = (buf[o] * 0.299 + buf[o + 1] * 0.587 + buf[o + 2] * 0.114) / Math.max(1, mean);
+    for (let c = 0; c < 3; c++) buf[o + c] = Math.max(0, Math.min(255, Math.round(tgt[c] * k)));
+  }
+  return n;
 }
 
 const cen = (t) => [
@@ -881,9 +1069,20 @@ function writeGlb(file, m) {
 async function build(style, cfg) {
   /* --dl dir + `style=subdir` overrides point a style at a round-2 hero
      donor; overridden styles are treated as heroes regardless of table. */
-  if (SRC_OVERRIDE[style]) cfg = { ...cfg, src: SRC_OVERRIDE[style], kind: "hero" };
-  const doc = loadDoc(path.join(DL, cfg.src));
-  let tris = collectTris(doc, cfg.kind === "pack" ? cfg.node : null);
+  if (SRC_OVERRIDE[style] && cfg.kind !== "mint") cfg = { ...cfg, src: SRC_OVERRIDE[style], kind: "hero" };
+  const mint = cfg.kind === "mint";
+  const doc = mint ? null : loadDoc(path.join(DL, cfg.src));
+  let tris, mintAtlas = null;
+  if (mint) {
+    const m = await loadMintGlb(path.join(MINT, cfg.src));
+    tris = m.tris;
+    mintAtlas = m.image;
+    /* Nose to +Z before anything measures the car, so the wheel finder, the
+       lamp boxes and the fit all agree with the rest of the fleet. */
+    spinTris(tris, cfg.spin || 0);
+  } else {
+    tris = collectTris(doc, cfg.kind === "pack" ? cfg.node : null);
+  }
   let b = bounds(tris);
 
   /* Packs: length to +Z (rotate about Y if the donor lies along X), then an
@@ -913,7 +1112,10 @@ async function build(style, cfg) {
   const { kept, wheels, removed } = stripWheels(tris, b, cfg.kind === "pack");
   tris = kept;
   const beforeCull = tris.length;
-  tris = visibilityCull(tris);
+  /* Mint shells are retopologized outer surfaces — there is no interior to
+     cull, and at ~1.4k triangles the cull could only cost geometry (thin
+     trim reads as occluded from most of the 46 views). Skip it. */
+  tris = mint ? tris : visibilityCull(tris);
   const afterCull = tris.length;
 
   if (cfg.kind === "pack") {
@@ -945,13 +1147,52 @@ async function build(style, cfg) {
     tris = await simplifyRearBiased(tris, bounds(tris), ratios);
   }
 
-  const { albedoJpg, mrJpg, albedoRaw } = await bakeAtlas(doc, tris, HD ? 1024 : 512);
+  /* Texture. A Mint shell already IS a single atlas for a single material,
+     so there is nothing to repack and the UVs pass through: paint the
+     branding out, retint the tail lens red off the mask, resize, done.
+     (No dilation pass either — the gutters are the source's own, not ones
+     this tool created by shuffling tiles about.) */
+  let albedoJpg, mrJpg, albedoRaw, lampMask = null, maskW = 0;
+  if (mint) {
+    const maskFile = path.resolve(import.meta.dirname, cfg.mask);
+    lampMask = await sharp(maskFile).removeAlpha().raw().toBuffer();
+    maskW = (await sharp(maskFile).metadata()).width;
+    const src = sharp(mintAtlas);
+    const sm = await src.metadata();
+    const full = await sharp(mintAtlas).removeAlpha().raw().toBuffer();
+    inpaintRects(full, sm.width, sm.height, 3, cfg.brand || []);
+    const lensN = tintTailLens(full, sm.width, sm.height, 3, lampMask, maskW, cfg.tailLens);
+    console.log(`  atlas ${sm.width}px: ${(cfg.brand || []).length} brand patches, ${lensN} tail-lens texels retinted`);
+    const size = HD ? 1024 : 512;
+    /* 4:4:4 rather than the default 4:2:0: this atlas puts near-black glass
+       hard against white bodywork, and subsampled chroma turns that edge
+       into coloured speckle right where the cabin is. */
+    albedoJpg = await sharp(full, { raw: { width: sm.width, height: sm.height, channels: 3 } })
+      .resize(size, size).jpeg({ quality: 92, chromaSubsampling: "4:4:4" }).toBuffer();
+    /* The source carries no MR map (metallic 0, roughness 0.8 as factors).
+       The runtime sets material.roughness/metalness = 1 whenever a bake
+       ships these maps, so the factors have to come across AS a map or the
+       car turns into a mirror: flat grey = metal 0, roughness 0.8. */
+    mrJpg = await sharp({
+      create: { width: 8, height: 8, channels: 3, background: { r: 0, g: 204, b: 0 } },
+    }).jpeg({ quality: 90 }).toBuffer();
+    albedoRaw = { data: full, info: { width: sm.width, height: sm.height, channels: 3 } };
+  } else {
+    ({ albedoJpg, mrJpg, albedoRaw } = await bakeAtlas(doc, tris, HD ? 1024 : 512));
+  }
   const texel = (u, v) => {
     const { data, info } = albedoRaw;
     const x = Math.min(info.width - 1, Math.max(0, Math.round(u * info.width)));
     const y = Math.min(info.height - 1, Math.max(0, Math.round(v * info.height)));
     const o = (y * info.width + x) * info.channels;
     return [data[o], data[o + 1], data[o + 2]];
+  };
+  /** Lamp kind from the committed atlas mask, sampled at a UV point. */
+  const maskAt = (u, v) => {
+    const x = Math.min(maskW - 1, Math.max(0, Math.round(u * maskW)));
+    const y = Math.min(maskW - 1, Math.max(0, Math.round(v * maskW)));
+    const o = (y * maskW + x) * 3;
+    return lampMask[o] > 128 ? 2 : lampMask[o + 1] > 128 ? 1 : 0;
   };
 
   /* Fit to the game's dims: whole box (mirrors included) lands exactly on
@@ -997,12 +1238,21 @@ async function build(style, cfg) {
     const inY = c[1] > cfg.H * 0.25 && c[1] < cfg.H * 0.78;
     const outX = Math.abs(c[0]) > cfg.W * 0.12;
     let kind = 0;
-    if (t.blend && inY && outX && (c[2] < tailZ || c[2] > headZ)) {
+    const uc = (t.uv[0][0] + t.uv[1][0] + t.uv[2][0]) / 3;
+    const vc = (t.uv[0][1] + t.uv[1][1] + t.uv[2][1]) / 3;
+    if (mint) {
+      /* One material and white lamp glass, so neither the slot test nor the
+         red-texel test below can see anything. The committed mask decides,
+         sampled once at the triangle's UV centroid — whole triangles, so
+         lampKind never interpolates across a face onto bodywork. The
+         position gate still applies: it is the backstop against a stray
+         mask pixel lighting up somewhere that is not a lamp. */
+      const m = maskAt(uc, vc);
+      if (m && outX && (m === 2 ? c[2] < 0 : c[2] > 0)) kind = m;
+    } else if (t.blend && inY && outX && (c[2] < tailZ || c[2] > headZ)) {
       /* Position puts the triangle at a lamp cluster; the TEXEL decides if
          it is actually lens. Without this the whole smoked housing glowed
          and the rears read as one red smear from 20 m out. */
-      const uc = (t.uv[0][0] + t.uv[1][0] + t.uv[2][0]) / 3;
-      const vc = (t.uv[0][1] + t.uv[1][1] + t.uv[2][1]) / 3;
       const [r, g, bl] = texel(uc, vc);
       if (c[2] < tailZ) {
         if (r > 60 && r > g * 1.35 && r > bl * 1.2) kind = 2;
@@ -1065,10 +1315,16 @@ async function build(style, cfg) {
     dims: { L: cfg.L, W: cfg.W, H: cfg.H },
     lamps,
     wheels: fittedWheels,
-    source: cfg.kind === "hero"
-      ? "ItsDiyor on Sketchfab (CC-BY 4.0) — see ATTRIBUTIONS.md"
-      : "Generic civil service vehicles pack by comrade1280 (CC-BY 4.0)",
+    source: cfg.source
+      ?? (cfg.kind === "hero"
+        ? "ItsDiyor on Sketchfab (CC-BY 4.0) — see ATTRIBUTIONS.md"
+        : "Generic civil service vehicles pack by comrade1280 (CC-BY 4.0)"),
   };
+  if (mint) {
+    const tagged = tris.filter((t) => t.lamp).length;
+    console.log(`  lamp mask: ${tris.filter((t) => t.lamp === 2).length} tail tris, ` +
+      `${tris.filter((t) => t.lamp === 1).length} head tris (${tagged} of ${tris.length})`);
+  }
   const result = writeGlb(path.join(OUT, `${style}.glb`), {
     position, normal, texcoord, color, paintable, lampKind,
     image: albedoJpg, mrImage: mrJpg, extras,
@@ -1080,5 +1336,13 @@ async function build(style, cfg) {
 }
 
 fs.mkdirSync(OUT, { recursive: true });
-const todo = Object.entries(STYLES).filter(([s]) => !ONLY.length || ONLY.includes(s));
+/* --mint and --dl no longer contend for a slot: the owner's call (2026-09-06)
+   was to keep the ItsDiyor `hybrid` AND add the Mint shell beside it, so the
+   Mint table writes `mhybrid` and the two tables no longer share a key. */
+const table = MINT ? MINT_STYLES : STYLES;
+const todo = Object.entries(table).filter(([s]) => !ONLY.length || ONLY.includes(s));
+if (!todo.length) {
+  console.error(`no styles to build (have: ${Object.keys(table).join(", ")})`);
+  process.exit(1);
+}
 for (const [style, cfg] of todo) await build(style, cfg);
