@@ -1253,9 +1253,23 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
   }
 
   private runPass(mat: THREE.Material, target: THREE.WebGLRenderTarget | null) {
+    /* autoClear off for the duration of the pass. Every pass here draws one
+       quad that covers the target exactly, with no blending and no discard,
+       so the clear three would issue first only ever paints pixels the quad
+       is about to overwrite — a full-resolution colour clear per pass, and
+       there are ~15-20 passes in a frame. This is the same thing
+       EffectComposer does around its own pass chain, for the same reason.
+
+       Restored rather than set once in the constructor: the scene render and
+       the mirror render both still want a clear, and they go through the
+       engine, not through here. */
+    const r = this.renderer;
+    const auto = r.autoClear;
+    r.autoClear = false;
     this.fsQuad.material = mat;
-    this.renderer.setRenderTarget(target);
-    this.renderer.render(this.fsScene, this.fsCam);
+    r.setRenderTarget(target);
+    r.render(this.fsScene, this.fsCam);
+    r.autoClear = auto;
   }
 
   /** sceneRT must already contain the rendered frame. */
