@@ -138,6 +138,15 @@ const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
   ocompact: { hue: -1,    refLum: 0.636 },
   ohybrid:  { hue: 0.311, refLum: 0.481 }, // authored green
   osuv:     { hue: 0.594, refLum: 0.106 }, // authored blue
+  /* The Mint bodyshell is a PHOTOGRAPH of a silver car with no separate
+     paint material, so it is back on the texel path rather than the mask
+     path the ItsDiyor bakes use: its `paintable` is zero throughout, so
+     nothing double-paints, and going through the mask instead would mean
+     replacing the albedo with a flat swatch — throwing away the shutlines,
+     highlights and panel shading that are the reason to use this shell at
+     all. Neutral (hue -1) because the authored paint is silver; refLum
+     measured off the baked atlas (0.481 at 512px, 0.486 at 1024px). */
+  hybrid:   { hue: -1,    refLum: 0.482 },
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
@@ -147,8 +156,16 @@ const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
    `onBeforeCompile.toString()`, so per-style GLSL would mean per-style
    programs (and a per-style compile hitch) for no gain. `uPaintRef.y` of zero
    is a style that keeps its livery. */
+/* `vLampKind < 0.5` keeps the recolour off lamp lenses. It has to: the
+   neutral branch selects "desaturated and brighter than tyre black", which
+   is a HEADLAMP lens exactly — clear glass over a chrome reflector — so a
+   red car would drive around with red headlights. Tail lenses are saturated
+   enough to fall out of the mask on their own, but the guard covers them
+   too rather than relying on that. No-op for every style that had a tint
+   before this: none of them tag lamp geometry (the runtime-authored lens
+   quads are kind 4, whose albedo is overwritten below regardless). */
 const PAINT_TINT_GLSL = `
-        if (uPaintRef.y > 0.0) {
+        if (uPaintRef.y > 0.0 && vLampKind < 0.5) {
           vec3 c = diffuseColor.rgb;
           float mx = max(max(c.r, c.g), c.b);
           float d = mx - min(min(c.r, c.g), c.b);
