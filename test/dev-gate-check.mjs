@@ -31,7 +31,7 @@ const ok = [];
 const check = (cond, what) => (cond ? ok : fails).push(what);
 
 /* what a developer left behind before the flag went off */
-const SEEDED = { tierOverride: "mobile-base", cabin: "donor", testMode: true, vol: 0.5 };
+const SEEDED = { tierOverride: "mobile-base", cabin: "donor", vol: 0.5 };
 
 const browser = await puppeteer.launch({
   headless: true,
@@ -70,7 +70,7 @@ const stored = (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k)
   const page = await open_(0, SEEDED);
   await clickText(page, "SETTINGS");
   const names = await rowNames(page);
-  for (const n of ["Device tier", "Imported cabin", "Test mode"])
+  for (const n of ["Device tier", "Imported cabin"])
     check(!names.includes(n), `public build hides "${n}"`);
   for (const n of ["Traction control", "Rival car", "Clean run", "Speed units", "Traffic density",
     "Time of day", "Day/night cycle", "Rain", "Volume", "Graphics quality", "Field of view", "Dashcam filter"])
@@ -80,10 +80,8 @@ const stored = (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k)
   /* the stored developer values are IGNORED, not honoured */
   const live = await page.evaluate(() => ({
     tier: window.__neonx?.game?.renderTier,
-    test: window.__neonx?.game?.testMode,
   }));
   check(live.tier !== "mobile-base", `stored tierOverride is ignored (tier resolved to ${live.tier})`);
-  check(live.test === false, "stored testMode resolves false with no row to turn it off");
 
   /* ADVANCED holds the other seven, in place */
   await clickText(page, "ADVANCED");
@@ -101,7 +99,6 @@ const stored = (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k)
   const p = await stored(page);
   check(p?.settings?.tierOverride === "mobile-base", "tierOverride survives a public-build save");
   check(p?.settings?.cabin === "donor", "cabin survives a public-build save");
-  check(p?.settings?.testMode === true, "testMode survives a public-build save");
   check(p?.settings?.mblur === true, "the ADVANCED row the test flipped was saved (proof the save ran)");
   await page.close();
 }
@@ -111,20 +108,16 @@ const stored = (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k)
   const page = await open_(1, SEEDED);
   await clickText(page, "SETTINGS");
   const names = await rowNames(page);
-  for (const n of ["Device tier", "Imported cabin", "Test mode"])
+  for (const n of ["Device tier", "Imported cabin"])
     check(names.includes(n), `?debug=1 shows "${n}"`);
   const vals = await page.evaluate(() => ({
     tier: document.querySelector('select[aria-label="Device tier"]')?.value,
     cabin: document.querySelector('select[aria-label="Imported cabin"]')?.value,
-    test: document.querySelector('input[aria-label="Test mode"]')?.checked,
     liveTier: window.__neonx?.game?.renderTier,
-    liveTest: window.__neonx?.game?.testMode,
   }));
   check(vals.tier === "mobile-base", `device tier reads back as the developer left it (${vals.tier})`);
   check(vals.cabin === "donor", `imported cabin reads back as the developer left it (${vals.cabin})`);
-  check(vals.test === true, "test mode reads back as the developer left it");
   check(vals.liveTier === "mobile-base", "…and applies: the override is honoured behind ?debug=1");
-  check(vals.liveTest === true, "…and applies: test mode is honoured behind ?debug=1");
   await page.close();
 }
 

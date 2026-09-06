@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* Headless straight-line bench for TEST MODE's acceleration multiplier.
 
-   The question it answers is "did lowering testDriveSpec's torque multiplier
+   The question it answers is "did lowering arcadeSpec's torque multiplier
    slow the launch WITHOUT moving top speed" — the two claims the change rests
    on. Test-mode vmax is not drag-bound — it sits on the 82 m/s sanity clamp
    in physics.ts, with the gearing/rev-limit above that — so the torque
@@ -9,7 +9,7 @@
    proves it did not.
 
    BEFORE/AFTER is measured, not remembered: "after" is whatever multiplier
-   testDriveSpec() currently applies (recovered from the spec itself, so the
+   arcadeSpec() currently applies (recovered from the spec itself, so the
    table cannot go stale), and "before" is the same spec with TQ_T rebuilt at
    the old x3.2 — the only field the change touched. Stock rows come from the
    untouched base spec and bound the table from below.
@@ -52,7 +52,7 @@ try {
   process.exit(1);
 }
 const { stepPhysics, freshCarState } = physics;
-const { CARS, testDriveSpec } = carspecs;
+const { CARS, arcadeSpec } = carspecs;
 
 const DT = 1 / 120;
 const TRACE = process.argv.includes("--trace");
@@ -61,7 +61,7 @@ const STOCK = { mu: 1.26, tcEnabled: true, heightAt: () => 0 };
 
 const kaze = CARS.find((c) => c.id === "kaze");
 const base = kaze.phys;
-const testNow = testDriveSpec(base);
+const testNow = arcadeSpec(base);
 /* The multiplier as the shipped code applies it, recovered rather than
    restated, so an edit to carspecs.ts is what this bench measures. */
 const MULT_NOW = testNow.TQ_T[0] / base.TQ_T[0];

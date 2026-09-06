@@ -1264,10 +1264,6 @@ function QuickDrawer({
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
     { k: "v", en: "DASHCAM FX", jp: "映像", state: game.grade ? "ON" : "OFF", on: game.grade },
   ];
-  /* the test-mode row only where the key behind it is bound (lib/build.ts) */
-  if (SHOW_DEV_SETTINGS) {
-    rows.push({ k: "k", en: "TEST MODE", jp: "テスト", state: game.testMode ? "ON" : "OFF", on: game.testMode });
-  }
   return (
     <div id="tcDrawer" className={open ? "open" : undefined}>
       <div className="qdHead">
@@ -1854,13 +1850,14 @@ function SettingsPanel({
                     }
                   />
                 </SignSrow>
-                {/* DEVELOPER — not in a public build (lib/build.ts). The three
-                    rows here are testing levers, and each one RESOLVES to its
-                    auto/off answer while this group is hidden (game/settings.ts
-                    resolveRenderTier / syncCabinMode / resolveTestMode), so a
-                    value set in dev can never strand a player in a state with
-                    no control for it. Nothing is written back: ?debug=1 shows
-                    all three exactly as they were left. */}
+                {/* DEVELOPER — not in a public build (lib/build.ts). Both rows
+                    here are testing levers, and each one RESOLVES to its auto
+                    answer while this group is hidden (game/settings.ts
+                    resolveRenderTier / syncCabinMode), so a value set in dev
+                    can never strand a player in a state with no control for
+                    it. Nothing is written back: ?debug=1 shows both exactly as
+                    they were left. (A third row, test mode, lived here until
+                    its spec became the only car — see carspecs.ts.) */}
                 {SHOW_DEV_SETTINGS && (
                   <>
                     <SignShead en="DEVELOPER" jp="開発" />
@@ -1876,7 +1873,7 @@ function SettingsPanel({
                         <option value="desktop">Desktop</option>
                       </SignSelect>
                     </SignSrow>
-                    <SignSrow name="Imported cabin" aside={`— auto is "${cabinAutoLabel(game.renderTier)}"`} lit={L("cabin")}>
+                    <SignSrow last name="Imported cabin" aside={`— auto is "${cabinAutoLabel(game.renderTier)}"`} lit={L("cabin")}>
                       <SignSelect
                         aria-label="Imported cabin"
                         value={s.cabin}
@@ -1892,9 +1889,6 @@ function SettingsPanel({
                         <option value="donor">Real cabin (heavy)</option>
                         <option value="procedural">Procedural</option>
                       </SignSelect>
-                    </SignSrow>
-                    <SignSrow last name="Test mode" aside="— extra grip, brakes & power (K)" lit={L("testMode")}>
-                      <SignToggle label="Test mode" checked={s.testMode} onChange={(v) => upd((x) => (x.testMode = v))} />
                     </SignSrow>
                   </>
                 )}
