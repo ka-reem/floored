@@ -60,141 +60,102 @@ export interface NpcModel {
 
 const BASE = "/models/cars/";
 
-/* ---- runtime tail lenses -------------------------------------------------
+/* ---- tail lenses ----------------------------------------------------------
    Not every bake tags real tail-lens pixels in `_LAMP` — the whole old
    (Orchids) fleet ships zeros, and even two hi-fi bakes (suv, bus) missed
-   their smoked lenses. The owner's call: every car shows REAL illuminated
-   taillights, not round glow blobs. So a model that arrives without tail
-   tags gets a pair of small lens quads authored here at load time: placed
-   on the bake's own `extras.lamps.tail` anchors, pushed out to the actual
-   rear surface (found by scanning the body's vertices around the anchor, so
-   a stale anchor can never bury the lens inside the bodywork), and tagged
-   `lampKind = LENS_KIND`. The NPC shader gives that kind an authored
-   dark-red lens albedo and the same per-instance tail/brake emissive levels
-   the baked lenses use, so running/brake behaviour is identical across the
-   fleet — and the glow sprites retire near-range for every style. */
+   their smoked lenses.
 
-/** lampKind for a runtime-authored lens quad. The NPC shader (traffic.ts,
-    npcShader) keys its albedo/roughness override on `> 3.5` — keep in sync. */
-export const LENS_KIND = 4;
+   Those styles used to get a pair of lens quads authored here at load time,
+   sized in metres off the bake's own anchors. That is gone. However it was
+   sized, it was a rectangle laid over a car that already has its taillights
+   drawn on it, and it never matched them — the owner, looking at the fifth
+   attempt to make one fit: "just remove those rectangles then we don't need
+   that ... but keep the light glow."
 
-type LensSpec = { w: number; h: number; wrap: number };
-/** Rear-quad width/height plus the width of the wrap-around wing that carries
-    the lamp into rear-quarter views (chase camera). Metres, per style; sizes
-    read off each style's rear render. `wrap: 0` for the flat-backed boxes. */
-const LENS_DEFAULT: LensSpec = { w: 0.32, h: 0.13, wrap: 0.09 };
-const TAIL_LENS: Record<string, Partial<LensSpec>> = {
-  suv:   { w: 0.36, h: 0.16 },
-  osuv:  { w: 0.34, h: 0.15 },
-  van:   { w: 0.16, h: 0.30, wrap: 0 }, // vertical door-edge clusters
-  bus:   { w: 0.17, h: 0.32, wrap: 0 },
-  truck: { w: 0.30, h: 0.11, wrap: 0 }, // bumper-bar lamps
-};
+   So there are exactly two ways a car's lamps light up now, and both of them
+   are the car's own: a baked `_LAMP` tag, or (TEX_LENS below) its painted
+   lens found per-pixel in the shader. A style with neither shows no lit lens
+   at all and carries its lights on the glow alone — see HALO in traffic.ts,
+   which is why `hasTailGeo` staying false for those styles matters. */
 
-/** Unlit look of a synthetic lens for renderers that honour vertex colour but
-    not the NPC shader override (the offline render tools): dark red plastic.
-    In game the shader's authored albedo wins — see npcShader. */
-const LENS_COL: Vec3 = [0.3, 0.02, 0.03];
+/** lampKind for "this is rear bodywork that PAINTS its own tail lens": the
+    shader lights only the texels there that test as lens red, so the lit
+    shape is the car's own artwork rather than a quad laid over it.
+    Keyed on `> 4.5` in npcShader. */
+export const SKIN_KIND = 5;
+
+/* ---- the car's own painted lens ------------------------------------------
+   The owner, on the authored quads: "u cant just overlay the taillight
+   rectangles over the actual red taillights ... shaped to the cars tailights
+   properly". Right — where the bake HAS a lamp, the lamp should be the thing
+   that lights up.
+
+   Whether it has one is a question about the texture, not the geometry, and
+   these bakes are low-poly: the lens is a few square centimetres of artwork
+   on a large flat panel, so no amount of per-triangle tagging can find its
+   shape. What can is a per-PIXEL test in the fragment shader — and then the
+   only thing decided here is which styles have a lens worth testing for.
+
+   That was measured offline over every bake (scratchpad probe: decode the
+   GLB's own base texture, sample the rear-facing triangles densely, and
+   report the share of the rear panel that reads as saturated red):
+
+     ohybrid 4.6%   osedan 3.3%   taxi 1.1%     <- two-sided, real clusters
+     van 1.1%       ocompact 0.4%  osuv 1.0%    <- ONE side only
+     truck 0.1%     police 0.0%    suv/bus 0.0% <- no red lamp in the bake
+
+   A one-sided hit means the other lamp simply is not red in that texture, and
+   lighting it would give the car a single taillight — worse than the quad. So
+   ohybrid, osedan and taxi went to a render, and only the taxi survived it:
+   the osedan carries a red trim strip across its tailgate and around the rear
+   glass, which passes the same test the lens does and lit up the whole back
+   of the car. The measurement says "there is red here", not "the red is the
+   lamp" — that part only a frame can tell you, so a style earns its place in
+   this set by being LOOKED at, not by its percentage.
+
+   Everything else keeps the authored quads: smoked, dark or unpainted lens
+   artwork gives the per-pixel test nothing to find.
+
+   (sedan/compact/hybrid are not in this list because they need nothing: the
+   hi-fi bakes already tag their real lens pixels in `_LAMP`. That hand tag is
+   what the rest of the fleet is really missing, and baking one per style is
+   the honest fix here — this is the part of it that can be had for free.) */
+const TEX_LENS = new Set(["taxi"]);
+/** how far forward of the rear-most vertex the lens artwork can reach, and how
+    far off rearward a normal may point (the wrap onto the rear quarter). Both
+    kept tight: past this the same red test starts finding body paint. */
+const SKIN_DEPTH = 0.40, SKIN_NZ = 0.30, SKIN_YBAND = 0.55;
+
+/** Flag the rear bodywork of a style whose own texture paints its tail lens.
+    Returns false (and changes nothing) if the gate found no vertices, so the
+    caller can fall back to the authored quads. */
+function tagTexturedTailSkin(
+  geo: THREE.BufferGeometry,
+  tail: [Vec3, Vec3]
+): boolean {
+  const pos = geo.attributes.position as AnyAttr;
+  const nor = geo.attributes.normal as AnyAttr;
+  const n = pos.count;
+  let zMin = Infinity;
+  for (let i = 0; i < n; i++) zMin = Math.min(zMin, pos.getZ(i));
+  const yMid = (tail[0][1] + tail[1][1]) / 2;
+  const out = new Float32Array(n);
+  let tagged = 0;
+  for (let i = 0; i < n; i++) {
+    if (pos.getZ(i) > zMin + SKIN_DEPTH) continue;
+    if (nor.getZ(i) > SKIN_NZ) continue;
+    if (Math.abs(pos.getY(i) - yMid) > SKIN_YBAND) continue;
+    out[i] = SKIN_KIND;
+    tagged++;
+  }
+  if (!tagged) return false;
+  geo.setAttribute("lampKind", new THREE.BufferAttribute(out, 1));
+  return true;
+}
 
 /** Read one channel of a (possibly interleaved) attribute safely. */
 type AnyAttr = THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
 
-/** Append two tail-lens quads (plus wrap wings) to `geo`, one per anchor.
-    Returns a fresh, de-interleaved geometry; `geo`'s arrays are not shared. */
-function withTailLenses(
-  geo: THREE.BufferGeometry,
-  style: string,
-  tail: [Vec3, Vec3]
-): THREE.BufferGeometry {
-  const spec = { ...LENS_DEFAULT, ...TAIL_LENS[style] };
-  const pos = geo.attributes.position as AnyAttr;
-  const n = pos.count;
-
-  /* The rear surface at each lamp: rear-most vertex (min z) inside a window
-     around the anchor, so the quad sits just proud of the fascia whatever
-     the anchor's own depth says (the bus anchor, for one, floats 28 cm
-     inside the body). */
-  const faceZ = tail.map((a) => {
-    const wx = Math.max(0.3, spec.w), wy = Math.max(0.22, spec.h);
-    let zMin = Infinity;
-    for (let i = 0; i < n; i++) {
-      if (Math.abs(pos.getX(i) - a[0]) > wx) continue;
-      if (Math.abs(pos.getY(i) - a[1]) > wy) continue;
-      const z = pos.getZ(i);
-      if (z < 0 && z < zMin) zMin = z;
-    }
-    return (isFinite(zMin) ? zMin : a[2]) - 0.02;
-  });
-
-  const V: number[] = [], NR: number[] = [], IX: number[] = [];
-  let vn = 0;
-  const quad = (
-    c: [number, number, number][], nx: number, ny: number, nz: number, flip: boolean
-  ) => {
-    for (const p of c) { V.push(p[0], p[1], p[2]); NR.push(nx, ny, nz); }
-    if (flip) IX.push(vn, 2 + vn, 1 + vn, vn, 3 + vn, 2 + vn);
-    else IX.push(vn, 1 + vn, 2 + vn, vn, 2 + vn, 3 + vn);
-    vn += 4;
-  };
-  for (let li = 0; li < 2; li++) {
-    const [ax, ay] = tail[li];
-    const z = faceZ[li], s = li === 0 ? -1 : 1;
-    const x0 = ax - spec.w / 2, x1 = ax + spec.w / 2;
-    const y0 = ay - spec.h / 2, y1 = ay + spec.h / 2;
-    // rear face, normal -z (order chosen for a -z front face; the NPC
-    // material is DoubleSide, so this only matters to offline tools)
-    quad([[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]], 0, 0, -1, true);
-    if (spec.wrap > 0) {
-      // wrap wing: carries the lens around the corner for rear-quarter views
-      const xe = s > 0 ? x1 : x0;
-      const xo = xe + s * spec.wrap * 0.62, zo = z + spec.wrap * 0.78;
-      quad(
-        [[xe, y0, z], [xe, y1, z], [xo, y1, zo], [xo, y0, zo]],
-        s * 0.78, 0, -0.62, s < 0
-      );
-    }
-  }
-
-  /* Rebuild every attribute as a tight planar array (the Orchids bakes ship
-     interleaved buffers) with the lens vertices appended. */
-  const total = n + vn;
-  const read = (a: AnyAttr | undefined, size: number, fill: number[]) => {
-    const out = new Float32Array(total * size);
-    if (a) for (let i = 0; i < n; i++) {
-      if (size > 0) out[i * size] = a.getX(i);
-      if (size > 1) out[i * size + 1] = a.getY(i);
-      if (size > 2) out[i * size + 2] = a.getZ(i);
-    }
-    for (let i = 0; i < vn; i++)
-      for (let c = 0; c < size; c++) out[(n + i) * size + c] = fill[c] ?? 0;
-    return out;
-  };
-  const posOut = read(pos, 3, []);
-  const norOut = read(geo.attributes.normal as AnyAttr, 3, []);
-  const colOut = read(geo.attributes.color as AnyAttr, 3, [...LENS_COL]);
-  const pntOut = read(geo.attributes.paintable as AnyAttr, 1, [0]);
-  const lmpOut = read(geo.attributes.lampKind as AnyAttr, 1, [LENS_KIND]);
-  const uvAttr = geo.attributes.uv as AnyAttr | undefined;
-  for (let i = 0; i < vn; i++) {
-    posOut.set(V.slice(i * 3, i * 3 + 3), (n + i) * 3);
-    norOut.set(NR.slice(i * 3, i * 3 + 3), (n + i) * 3);
-  }
-  const out = new THREE.BufferGeometry();
-  out.setAttribute("position", new THREE.BufferAttribute(posOut, 3));
-  out.setAttribute("normal", new THREE.BufferAttribute(norOut, 3));
-  out.setAttribute("color", new THREE.BufferAttribute(colOut, 3));
-  out.setAttribute("paintable", new THREE.BufferAttribute(pntOut, 1));
-  out.setAttribute("lampKind", new THREE.BufferAttribute(lmpOut, 1));
-  if (uvAttr) out.setAttribute("uv", new THREE.BufferAttribute(read(uvAttr, 2, [0.5, 0.5]), 2));
-  const idx: number[] = [];
-  if (geo.index) {
-    const src = geo.index;
-    for (let i = 0; i < src.count; i++) idx.push(src.getX(i));
-  } else for (let i = 0; i < n; i++) idx.push(i);
-  for (const i of IX) idx.push(n + i);
-  out.setIndex(idx);
-  return out;
-}
 
 /** Highest wheel count any single model may contribute, so traffic.ts can size
     its shared wheel buffer before it knows what the models hold. */
@@ -282,12 +243,12 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
 
   const extras: any = (gltf.scene.userData as any) ?? {};
   const lamps = readLamps(extras.lamps);
-  if (!hasTailGeo && lamps.tail) {
-    /* No baked tail lenses — author them now (see withTailLenses above), and
-       report tail geometry as present so the glow sprites retire near-range
-       for this style exactly like the tagged bakes. */
-    geo = withTailLenses(geo, style, lamps.tail);
-    hasTailGeo = true;
+  if (!hasTailGeo && lamps.tail && TEX_LENS.has(style)) {
+    /* No baked tail lenses, but this bake paints its own: flag the rear panel
+       and let the shader light the lens texels (see TEX_LENS). Nothing is
+       authored for a style that fails this — it keeps its glow and no lit
+       lens, which is the owner's call over a rectangle that doesn't fit. */
+    hasTailGeo = tagTexturedTailSkin(geo, lamps.tail);
   }
   geo.computeBoundingSphere();
   const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
