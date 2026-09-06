@@ -2241,9 +2241,10 @@ function CreditsScreen({ loaded, onBack }: { loaded: boolean; onBack: () => void
             </div>
             <SignShead en="PRIVACY" jp="プライバシー" />
             {/* mirrors lib/analytics.ts: anonymous PostHog product analytics,
-                session replay with inputs masked, respect_dnt, and the
-                ?owner= opt-out flag. KEEP THIS PLATE IN STEP with
-                session_recording.sampleRate — it is what a player is TOLD is
+                session replay with inputs masked, canvas replay on desktop
+                only, respect_dnt, and the ?owner= opt-out flag. KEEP THIS
+                PLATE IN STEP with session_recording.sampleRate and
+                captureCanvas — it is what a player is TOLD is
                 being recorded, so a stale figure here is a false privacy
                 notice rather than a stale comment. It said "about one session
                 in four" while the rate was 0.25; the rate is 1.0 now. */}
@@ -2251,7 +2252,7 @@ function CreditsScreen({ loaded, onBack }: { loaded: boolean; onBack: () => void
               <b>ANONYMOUS ANALYTICS</b>
               The game sends anonymous product analytics to PostHog — which screens get opened, which
               settings get changed, how long a drive lasts — and records a session replay (with every
-              input masked). There are no accounts, no sign-in, and no
+              input masked; on desktop the replay includes the game screen itself). There are no accounts, no sign-in, and no
               email or name is ever attached. A browser&apos;s Do Not Track setting is respected. To opt
               out on this device open the game once with <code>?owner=1</code> in the address; <code>?owner=0</code>{" "}
               turns it back on.
