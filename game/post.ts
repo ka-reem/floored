@@ -294,6 +294,20 @@ function readPovTune(def: typeof POV_TUNE_DEFAULT) {
   };
 }
 
+/* Every target below the scene render holds ONE full-screen quad's output
+   and is only ever read back as a texture, so none of them needs a depth
+   attachment. three's WebGLRenderTarget defaults `depthBuffer: true`, which
+   hangs a DEPTH_COMPONENT16 renderbuffer off every one of them — 12 MiB of
+   them at 1280x800, 62 MiB on a 1440x900 screen at DPR 2 — and makes every
+   pass clear and write a depth buffer nothing ever tests against. Turning it off
+   is invisible by construction — a single quad has nothing to sort against
+   — and is what three's own EffectComposer does for the same reason.
+
+   sceneRT and mirrorRT are NOT in here: those two take real scene renders
+   and need their depth. */
+const FLAT = { depthBuffer: false } as const;
+const FLAT_HDR = { type: THREE.HalfFloatType, depthBuffer: false } as const;
+
 export class PostFX {
   sceneRT!: THREE.WebGLRenderTarget;
   reflectRT!: THREE.WebGLRenderTarget;
@@ -888,6 +902,19 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb*uGain,1.0); }`,
       fragmentShader: `precision highp float; varying vec2 vUv; uniform sampler2D tIn;
 void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     });
+    /* Same argument as FLAT above, from the material side: a full-screen
+       quad drawn on its own has nothing to depth-test against, and with the
+       targets carrying no depth buffer the writes have nowhere to go either.
+       Off explicitly so the state is right whichever target a pass lands on
+       (the final one is the canvas, which does have a depth buffer). */
+    for (const m of [
+      this.brightMat, this.blurMat, this.compMat, this.fxaaMat, this.mbMat,
+      this.copyMat, this.refMat, this.dashMat, this.smearMat, this.povMat,
+      this.povSrcMat,
+    ]) {
+      m.depthTest = false;
+      m.depthWrite = false;
+    }
     this.makeTargets(false);
   }
 
@@ -910,40 +937,40 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       type: THREE.HalfFloatType, samples: 4,
     });
     const bw = Math.max(160, w >> 2), bh = Math.max(90, h >> 2);
-    this.brightRT = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
-    this.blurA = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
-    this.blurB = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
+    this.brightRT = new THREE.WebGLRenderTarget(bw, bh, FLAT_HDR);
+    this.blurA = new THREE.WebGLRenderTarget(bw, bh, FLAT_HDR);
+    this.blurB = new THREE.WebGLRenderTarget(bw, bh, FLAT_HDR);
     // the wide-halo pair for two-scale bloom lives at eighth res: at 1/64 of
     // the pixels its two extra blur iterations cost almost nothing, and the
     // resolution itself is most of the softness
     const hw = Math.max(80, w >> 3), hh = Math.max(45, h >> 3);
-    this.haloA = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType });
-    this.haloB = new THREE.WebGLRenderTarget(hw, hh, { type: THREE.HalfFloatType });
+    this.haloA = new THREE.WebGLRenderTarget(hw, hh, FLAT_HDR);
+    this.haloB = new THREE.WebGLRenderTarget(hw, hh, FLAT_HDR);
     // the reflection source is the bright pass smeared, so it lives at exactly
     // the bright pass's resolution: same UVs, one texel per texel, no resample.
     // Quarter res is also the right resolution for the effect — what the road
     // shows is a blurred streak, and the road samples it hugely magnified.
-    this.reflectRT = new THREE.WebGLRenderTarget(bw, bh, { type: THREE.HalfFloatType });
+    this.reflectRT = new THREE.WebGLRenderTarget(bw, bh, FLAT_HDR);
     this.refMat.uniforms.uTexel.value.set(1 / bw, 1 / bh);
     this.refPrimed = false;
-    this.ldrRT = new THREE.WebGLRenderTarget(w, h);
-    this.fxaaRT = new THREE.WebGLRenderTarget(w, h);
-    this.mbRT = new THREE.WebGLRenderTarget(w, h);
-    this.prevRT = new THREE.WebGLRenderTarget(w, h);
-    this.dashRT = new THREE.WebGLRenderTarget(w, h);
+    this.ldrRT = new THREE.WebGLRenderTarget(w, h, FLAT);
+    this.fxaaRT = new THREE.WebGLRenderTarget(w, h, FLAT);
+    this.mbRT = new THREE.WebGLRenderTarget(w, h, FLAT);
+    this.prevRT = new THREE.WebGLRenderTarget(w, h, FLAT);
+    this.dashRT = new THREE.WebGLRenderTarget(w, h, FLAT);
     // the dashcam soft layer lives at half res (quarter on perf) — cheaper and
     // the resample itself is part of the compressed-video look
     const sw = Math.max(64, w >> (perfMode ? 2 : 1));
     const sh = Math.max(36, h >> (perfMode ? 2 : 1));
-    this.softA = new THREE.WebGLRenderTarget(sw, sh);
-    this.softB = new THREE.WebGLRenderTarget(sw, sh);
+    this.softA = new THREE.WebGLRenderTarget(sw, sh, FLAT);
+    this.softB = new THREE.WebGLRenderTarget(sw, sh, FLAT);
     /* The POV pass owns its own half-res pair rather than borrowing softA/B:
        the V-key grade can be on at the same time, and it is still holding its
        soft layer when the POV stage runs. Always half res (never quarter) —
        the "upscaled 480p" read depends on the ratio being exactly 2. */
     const pw = Math.max(64, w >> 1), ph = Math.max(36, h >> 1);
-    this.povA = new THREE.WebGLRenderTarget(pw, ph);
-    this.povB = new THREE.WebGLRenderTarget(pw, ph);
+    this.povA = new THREE.WebGLRenderTarget(pw, ph, FLAT);
+    this.povB = new THREE.WebGLRenderTarget(pw, ph, FLAT);
     this.povMat.uniforms.uLow.value.set(pw, ph);
     this.smearMat.uniforms.uRes.value.set(pw, ph);
     this.compMat.uniforms.uRes.value.set(w, h);
