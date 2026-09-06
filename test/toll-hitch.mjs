@@ -100,27 +100,51 @@ const go = (z) => page.evaluate((z) => {
 const rows = [];
 /* Sampling starts IMMEDIATELY after the teleport, with no settle — the stall
    is in the first frames or it is nowhere, and a settle would sleep straight
-   through the thing being measured. */
+   through the thing being measured.
+
+   Each pass measures the plaza AND a control sample of the same length on the
+   open deck. The control exists because the first version of this test did
+   not have one and produced a result I could not read: programs kept being
+   created on the SECOND arrival too (+10, then +30), which looks like the
+   compile story failing — but the game also upgrades its photo-scan textures
+   on a timer after load, and every such upgrade relinks the materials it
+   touches. Without a control, "programs grew while I was at the plaza" and
+   "programs grew because time passed" are the same measurement. With one, the
+   plaza's share is the DIFFERENCE. */
 for (const pass of [1, 2]) {
   await go(AWAY);
   await sleep(4000);
+  const ctlBefore = await programs();
+  const away = await sample(FRAMES);
+  const ctlAfter = await programs();
+
   const before = await programs();
   await go(PLAZA);
   const arrive = await sample(FRAMES);
   const after = await programs();
+
   rows.push({ pass, ...arrive, programsBefore: before, programsAfter: after,
-              newPrograms: after - before });
+              newPrograms: after - before,
+              awayMed: away.med, awayP95: away.p95,
+              awayPrograms: ctlAfter - ctlBefore });
   console.log(
-    `arrival ${pass}: med ${String(arrive.med).padStart(8)}  p95 ${String(arrive.p95).padStart(8)}` +
-    `  max ${String(arrive.max).padStart(8)}  programs ${before} -> ${after} (+${after - before})`
+    `pass ${pass}  open deck: p95 ${String(away.p95).padStart(8)}  +${ctlAfter - ctlBefore} programs`
+  );
+  console.log(
+    `        plaza:     p95 ${String(arrive.p95).padStart(8)}  +${after - before} programs` +
+    `   (med ${arrive.med}, max ${arrive.max})`
   );
 }
 
 const [a, b] = rows;
-console.log(`\n${LABEL}: first arrival p95 is ${(a.p95 / b.p95).toFixed(2)}x the second's.`);
-console.log(a.newPrograms > 0 && b.newPrograms === 0
-  ? "  programs link on the FIRST arrival only — the signature of a compile stall."
-  : `  program deltas: first +${a.newPrograms}, second +${b.newPrograms}.`);
+console.log(`\n${LABEL}`);
+console.log(`  plaza p95, first vs second arrival: ${(a.p95 / b.p95).toFixed(2)}x`);
+console.log(`  programs at the plaza:    +${a.newPrograms} then +${b.newPrograms}`);
+console.log(`  programs on the open deck: +${a.awayPrograms} then +${b.awayPrograms}  <- the control`);
+const plazaOnly = (a.newPrograms + b.newPrograms) - (a.awayPrograms + b.awayPrograms);
+console.log(plazaOnly > 0
+  ? `  => ${plazaOnly} programs are attributable to the plaza rather than to elapsed time.`
+  : "  => the plaza links no more programs than sitting still does; the growth is time-based (the photo-scan upgrade), not the plaza.");
 
 mkdirSync(path.dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify({ label: LABEL, url: URL, rows }, null, 2));
