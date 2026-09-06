@@ -60,24 +60,23 @@ export interface NpcModel {
 
 const BASE = "/models/cars/";
 
-/* ---- runtime tail lenses -------------------------------------------------
+/* ---- tail lenses ----------------------------------------------------------
    Not every bake tags real tail-lens pixels in `_LAMP` — the whole old
    (Orchids) fleet ships zeros, and even two hi-fi bakes (suv, bus) missed
-   their smoked lenses. The owner's call: every car shows REAL illuminated
-   taillights, not round glow blobs. So a model that arrives without tail
-   tags gets a pair of small lens quads authored here at load time: placed
-   on the bake's own `extras.lamps.tail` anchors, pushed out to the actual
-   rear surface (found by scanning the body's vertices around the anchor, so
-   a stale anchor can never bury the lens inside the bodywork), and tagged
-   `lampKind = LENS_KIND`. The NPC shader gives that kind an authored
-   dark-red lens albedo and the same per-instance tail/brake emissive levels
-   the baked lenses use, so running/brake behaviour is identical across the
-   fleet — and the glow sprites retire near-range for every style. */
+   their smoked lenses.
 
-/** lampKind for a runtime-authored lens quad. The NPC shader (traffic.ts,
-    npcShader) keys its albedo/roughness override on the 3.5..4.5 band — keep
-    in sync. */
-export const LENS_KIND = 4;
+   Those styles used to get a pair of lens quads authored here at load time,
+   sized in metres off the bake's own anchors. That is gone. However it was
+   sized, it was a rectangle laid over a car that already has its taillights
+   drawn on it, and it never matched them — the owner, looking at the fifth
+   attempt to make one fit: "just remove those rectangles then we don't need
+   that ... but keep the light glow."
+
+   So there are exactly two ways a car's lamps light up now, and both of them
+   are the car's own: a baked `_LAMP` tag, or (TEX_LENS below) its painted
+   lens found per-pixel in the shader. A style with neither shows no lit lens
+   at all and carries its lights on the glow alone — see HALO in traffic.ts,
+   which is why `hasTailGeo` staying false for those styles matters. */
 
 /** lampKind for "this is rear bodywork that PAINTS its own tail lens": the
     shader lights only the texels there that test as lens red, so the lit
@@ -154,164 +153,9 @@ function tagTexturedTailSkin(
   return true;
 }
 
-type LensSpec = { w: number; h: number; wrap: number };
-/** Rear-quad width/height plus the width of the wrap-around wing that carries
-    the lamp into rear-quarter views (chase camera). Metres, per style; sizes
-    read off each style's rear render. `wrap: 0` for the flat-backed boxes.
-
-    Aspect is deliberate, not just size: the first pass sat near 2.4:1, which
-    with the halo skirt on top read as a rounded square block on the tailgate
-    ("looks weird/cheap with those squares"). Every horizontal lamp is now
-    ~4:1 — a real car's tail lamp is a wide, shallow bar, and the shape is
-    what the eye names the lamp by once the glow around it stops covering it
-    (see HALO in traffic.ts, sized down in the same change). The vertical
-    van/bus clusters go the other way for the same reason: narrower, so they
-    read as door-edge columns rather than squares. */
-const LENS_DEFAULT: LensSpec = { w: 0.40, h: 0.095, wrap: 0.09 };
-const TAIL_LENS: Record<string, Partial<LensSpec>> = {
-  suv:   { w: 0.44, h: 0.105 },
-  osuv:  { w: 0.42, h: 0.10 },
-  van:   { w: 0.11, h: 0.32, wrap: 0 }, // vertical door-edge clusters
-  bus:   { w: 0.12, h: 0.34, wrap: 0 },
-  truck: { w: 0.36, h: 0.085, wrap: 0 }, // bumper-bar lamps
-};
-
-/** Unlit look of a synthetic lens for renderers that honour vertex colour but
-    not the NPC shader override (the offline render tools): dark red plastic.
-    In game the shader's authored albedo wins — see npcShader. */
-const LENS_COL: Vec3 = [0.3, 0.02, 0.03];
-
 /** Read one channel of a (possibly interleaved) attribute safely. */
 type AnyAttr = THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
 
-/** Append two tail-lens quads (plus wrap wings) to `geo`, one per anchor.
-    Returns a fresh, de-interleaved geometry; `geo`'s arrays are not shared. */
-function withTailLenses(
-  geo: THREE.BufferGeometry,
-  style: string,
-  tail: [Vec3, Vec3]
-): THREE.BufferGeometry {
-  const spec = { ...LENS_DEFAULT, ...TAIL_LENS[style] };
-  const pos = geo.attributes.position as AnyAttr;
-  const n = pos.count;
-
-  /* The rear surface at each lamp: rear-most vertex (min z) inside a window
-     around the anchor, so the quad sits just proud of the fascia whatever
-     the anchor's own depth says (the bus anchor, for one, floats 28 cm
-     inside the body). */
-  const faceZ = tail.map((a) => {
-    const wx = Math.max(0.3, spec.w), wy = Math.max(0.22, spec.h);
-    let zMin = Infinity;
-    for (let i = 0; i < n; i++) {
-      if (Math.abs(pos.getX(i) - a[0]) > wx) continue;
-      if (Math.abs(pos.getY(i) - a[1]) > wy) continue;
-      const z = pos.getZ(i);
-      if (z < 0 && z < zMin) zMin = z;
-    }
-    return (isFinite(zMin) ? zMin : a[2]) - 0.02;
-  });
-
-  /* How far the body actually extends outboard of each lamp, measured on the
-     rear panel itself (vertices within 35 cm of the lens plane, in a band
-     around the lamp's own height). A fixed metre width is wrong here: the
-     owner's complaint that the lamp "doesn't match the body line" is a quad
-     that runs past the corner of a narrow car and floats in open air, and the
-     bakes span a kei van and a coach. So the authored width is a CEILING and
-     the silhouette is the limit — the quad shrinks to sit inside the panel,
-     with a 3 cm inset so it never touches the edge. */
-  const LENS_INSET = 0.03;
-  const bodyOuter = tail.map((a, li) => {
-    const s = li === 0 ? -1 : 1;
-    let far = 0;
-    for (let i = 0; i < n; i++) {
-      if (Math.abs(pos.getZ(i) - faceZ[li]) > 0.35) continue;
-      if (Math.abs(pos.getY(i) - a[1]) > 0.30) continue;
-      const x = pos.getX(i) * s; // outboard-positive, whichever side
-      if (x > far) far = x;
-    }
-    return far;
-  });
-
-  const V: number[] = [], NR: number[] = [], IX: number[] = [];
-  let vn = 0;
-  const quad = (
-    c: [number, number, number][], nx: number, ny: number, nz: number, flip: boolean
-  ) => {
-    for (const p of c) { V.push(p[0], p[1], p[2]); NR.push(nx, ny, nz); }
-    if (flip) IX.push(vn, 2 + vn, 1 + vn, vn, 3 + vn, 2 + vn);
-    else IX.push(vn, 1 + vn, 2 + vn, vn, 2 + vn, 3 + vn);
-    vn += 4;
-  };
-  for (let li = 0; li < 2; li++) {
-    const [ax, ay] = tail[li];
-    const z = faceZ[li], s = li === 0 ? -1 : 1;
-    /* Fit the authored width inside the panel (bodyOuter): the room from the
-       anchor out to the silhouette sets the half-width, and the quad keeps its
-       anchor centred rather than sliding inboard. Floored at 55% of the
-       authored width so a bake with a stray outlying vertex — or an anchor
-       sitting right on the corner — still gets a lamp rather than a sliver;
-       a measurement that found nothing leaves the width alone. */
-    const room = bodyOuter[li] - Math.abs(ax) - LENS_INSET;
-    const w = bodyOuter[li] > 0
-      ? Math.max(spec.w * 0.55, Math.min(spec.w, room * 2))
-      : spec.w;
-    const wrapW = spec.wrap * (w / spec.w); // the wing narrows with the lens
-    const x0 = ax - w / 2, x1 = ax + w / 2;
-    const y0 = ay - spec.h / 2, y1 = ay + spec.h / 2;
-    // rear face, normal -z (order chosen for a -z front face; the NPC
-    // material is DoubleSide, so this only matters to offline tools)
-    quad([[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]], 0, 0, -1, true);
-    if (wrapW > 0) {
-      // wrap wing: carries the lens around the corner for rear-quarter views
-      const xe = s > 0 ? x1 : x0;
-      const xo = xe + s * wrapW * 0.62, zo = z + wrapW * 0.78;
-      quad(
-        [[xe, y0, z], [xe, y1, z], [xo, y1, zo], [xo, y0, zo]],
-        s * 0.78, 0, -0.62, s < 0
-      );
-    }
-  }
-
-  /* Rebuild every attribute as a tight planar array (the Orchids bakes ship
-     interleaved buffers) with the lens vertices appended. */
-  const total = n + vn;
-  const read = (a: AnyAttr | undefined, size: number, fill: number[]) => {
-    const out = new Float32Array(total * size);
-    if (a) for (let i = 0; i < n; i++) {
-      if (size > 0) out[i * size] = a.getX(i);
-      if (size > 1) out[i * size + 1] = a.getY(i);
-      if (size > 2) out[i * size + 2] = a.getZ(i);
-    }
-    for (let i = 0; i < vn; i++)
-      for (let c = 0; c < size; c++) out[(n + i) * size + c] = fill[c] ?? 0;
-    return out;
-  };
-  const posOut = read(pos, 3, []);
-  const norOut = read(geo.attributes.normal as AnyAttr, 3, []);
-  const colOut = read(geo.attributes.color as AnyAttr, 3, [...LENS_COL]);
-  const pntOut = read(geo.attributes.paintable as AnyAttr, 1, [0]);
-  const lmpOut = read(geo.attributes.lampKind as AnyAttr, 1, [LENS_KIND]);
-  const uvAttr = geo.attributes.uv as AnyAttr | undefined;
-  for (let i = 0; i < vn; i++) {
-    posOut.set(V.slice(i * 3, i * 3 + 3), (n + i) * 3);
-    norOut.set(NR.slice(i * 3, i * 3 + 3), (n + i) * 3);
-  }
-  const out = new THREE.BufferGeometry();
-  out.setAttribute("position", new THREE.BufferAttribute(posOut, 3));
-  out.setAttribute("normal", new THREE.BufferAttribute(norOut, 3));
-  out.setAttribute("color", new THREE.BufferAttribute(colOut, 3));
-  out.setAttribute("paintable", new THREE.BufferAttribute(pntOut, 1));
-  out.setAttribute("lampKind", new THREE.BufferAttribute(lmpOut, 1));
-  if (uvAttr) out.setAttribute("uv", new THREE.BufferAttribute(read(uvAttr, 2, [0.5, 0.5]), 2));
-  const idx: number[] = [];
-  if (geo.index) {
-    const src = geo.index;
-    for (let i = 0; i < src.count; i++) idx.push(src.getX(i));
-  } else for (let i = 0; i < n; i++) idx.push(i);
-  for (const i of IX) idx.push(n + i);
-  out.setIndex(idx);
-  return out;
-}
 
 /** Highest wheel count any single model may contribute, so traffic.ts can size
     its shared wheel buffer before it knows what the models hold. */
@@ -399,17 +243,12 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
 
   const extras: any = (gltf.scene.userData as any) ?? {};
   const lamps = readLamps(extras.lamps);
-  if (!hasTailGeo && lamps.tail) {
-    /* No baked tail lenses. Two ways to get one, and the first is always
-       better because it is the car's own artwork rather than a shape laid
-       over it: flag the rear panel and let the shader light the lens texels
-       (TEX_LENS), or, where the bake paints no lens to find, author quads
-       (withTailLenses). Either way report tail geometry as present, so the
-       glow sprites retire near-range for this style exactly like the tagged
-       bakes. */
-    if (!(TEX_LENS.has(style) && tagTexturedTailSkin(geo, lamps.tail)))
-      geo = withTailLenses(geo, style, lamps.tail);
-    hasTailGeo = true;
+  if (!hasTailGeo && lamps.tail && TEX_LENS.has(style)) {
+    /* No baked tail lenses, but this bake paints its own: flag the rear panel
+       and let the shader light the lens texels (see TEX_LENS). Nothing is
+       authored for a style that fails this — it keeps its glow and no lit
+       lens, which is the owner's call over a rectangle that doesn't fit. */
+    hasTailGeo = tagTexturedTailSkin(geo, lamps.tail);
   }
   geo.computeBoundingSphere();
   const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];

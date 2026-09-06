@@ -380,12 +380,6 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
         "#include <color_fragment>",
         `#include <color_fragment>
         diffuseColor.rgb = mix(diffuseColor.rgb, vPaintCol, vPaintable);${PAINT_TINT_GLSL}
-        /* Runtime-authored lens quads (npcmodels.ts LENS_KIND = 4): their uv
-           points at nothing meaningful in the style's atlas, so the albedo is
-           authored here instead of sampled — dark red lens plastic, picked so
-           the emissive levels below land near the tagged bakes' red lens
-           texels (~0.62 red per the lampLvl notes). Also the daylight look. */
-        if (vLampKind > 3.5 && vLampKind < 4.5) diffuseColor.rgb = vec3(0.55, 0.035, 0.045);
         /* SKIN_KIND (npcmodels.ts = 5): rear bodywork whose own texture paints
            the tail lens. Nothing is overlaid here — the sampled texel decides.
            The test is the saturated-red one measured against every bake in the
@@ -399,20 +393,10 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
                      && t.r - t.g > 0.04) ? 1.0 : 0.0;
         }`
       )
-      /* The synthetic lens quads must not inherit whatever roughness/metal
-         texel their meaningless uv lands on — a metalness-1 texel would kill
-         the diffuse term and read as a black hole in daylight. Glossy
-         dielectric plastic instead. */
-      .replace(
-        "#include <roughnessmap_fragment>",
-        `#include <roughnessmap_fragment>
-        if (vLampKind > 3.5 && vLampKind < 4.5) roughnessFactor = 0.3;`
-      )
-      .replace(
-        "#include <metalnessmap_fragment>",
-        `#include <metalnessmap_fragment>
-        if (vLampKind > 3.5 && vLampKind < 4.5) metalnessFactor = 0.0;`
-      )
+      /* (The roughness/metalness overrides that used to live here belonged to
+         the authored lens quads, whose uv pointed at nothing meaningful in the
+         atlas. Those quads are gone — a lens that lights up now is real
+         geometry or real texels, and its own material data is correct.) */
       /* Lamps light themselves. The lamp quads are ordinary dark paint
          otherwise, so they only showed when something else lit them, and a
          car's lights lived or died entirely by its glow sprite — which is
@@ -1681,7 +1665,6 @@ export class Traffic {
       kind), so the matching glow sprites hold back until distance shrinks
       the lenses to sub-pixels (the owner: sprite blobs "make it look
       bad") — but a kind the bake missed keeps its sprite at every range */
-  private lampGeoOf: { head: boolean; tail: boolean }[] = [];
   /** per style: its Orchids bodyshell has landed and the style may spawn.
       Nothing renders, spawns or sprites a style before this flips — there is
       no placeholder body to fall back to, by design. */
@@ -1950,7 +1933,6 @@ export class Traffic {
       m.geometry.setAttribute("washCol", wash);
       scene.add(m);
       this.lampsOf.push(null);
-      this.lampGeoOf.push({ head: false, tail: false });
       this.ready.push(false);
       this.styles.push({ mesh: m, paint, diss, lamp, wash, n: 0 });
     }
@@ -2317,7 +2299,6 @@ export class Traffic {
     old.dispose();
 
     this.lampsOf[si] = m.lamps;
-    this.lampGeoOf[si] = { head: m.hasHeadGeo, tail: m.hasTailGeo };
     this.ready[si] = true;
 
     /* Put the shared wheels in this body's own arches. wr/wz are visual only
@@ -6123,18 +6104,24 @@ export class Traffic {
       const tx1 = tl ? tl[1][0] : hw2, ty1 = tl ? tl[1][1] : 0.74, tz1 = tl ? tl[1][2] : -hl;
       emit(SP.head, 0, hx0, hy0, hz0, running);
       emit(SP.head, 1, hx1, hy1, hz1, running);
-      /* A style with real lens geometry (baked tags, or the runtime lenses
-         npcmodels.ts authors for the untagged bakes — every style, now)
-         keeps its shaped emissive lamps up close; the round glow only
-         carries the light where distance shrinks the lens toward sub-pixel.
-         The handover is a fade, not a switch: the sprite's per-point vertex
-         colour ramps 0→1 across 70→95 m, so nothing pops in. A style with
-         no lens geometry at all (a malformed bake with no tail anchors)
-         keeps its sprite at full strength at every range, as before. */
+      /* Two glows carry a tail lamp and they hand over by distance: the far
+         sprite (screen-size capped, so it holds a few pixels of red out to
+         the horizon) and the near HALO (true metres, so it grows as you
+         close). The sprite's per-point vertex colour ramps 0→1 across
+         70→95 m and the halo takes the complement, so the handover is a
+         fade with nothing to pop.
+
+         This used to apply only to styles with lens geometry, because a
+         style without one had nothing for the halo to sit around and was
+         left on the capped sprite at every range — which is exactly the
+         "lights fade out as you approach" the halo was added to fix. Now
+         that the authored quads are gone (npcmodels.ts) most of the fleet
+         has no lit lens at all and the glow IS the lamp, so every style
+         gets the handover. A car with no tail anchors at all still has
+         none, and keeps the sprite alone. */
       const gdx = n.x - player.x, gdz = n.z - player.z;
       const gd2 = gdx * gdx + gdz * gdz;
-      const lg = this.lampGeoOf[n.style];
-      const tailW = !lg.tail ? 1 : clamp((Math.sqrt(gd2) - 70) / 25, 0, 1);
+      const tailW = !tl ? 1 : clamp((Math.sqrt(gd2) - 70) / 25, 0, 1);
       const tailSprite = tailW > 0;
       emit(SP.tail, 0, tx0, ty0, tz0, running && !n.brake && tailSprite, tailW);
       emit(SP.tail, 1, tx1, ty1, tz1, running && !n.brake && tailSprite, tailW);
