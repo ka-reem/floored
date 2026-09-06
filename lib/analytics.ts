@@ -81,6 +81,29 @@ export function initAnalytics() {
          profile ever carries an email or a name. */
       person_profiles: "always",
       session_recording: {
+        /* Canvas replay, DESKTOP ONLY.
+
+           The whole game is one <canvas>, and session replay records the DOM,
+           so with this off a replay shows the menus and HUD correctly and a
+           BLACK RECTANGLE where the driving is. The owner watched one and
+           asked why. This turns it on — but not on phones, which was his own
+           call and the right one.
+
+           What it actually costs, because "canvas capture is expensive" is
+           too vague to decide on: the recorder does not snapshot every frame.
+           It samples at canvasFps, capped at 12 and defaulting to 4, and
+           encodes each snapshot at canvasQuality (default 0.4). The encode is
+           minor. The part that matters for a WebGL game is that reading the
+           canvas back forces a pipeline sync — the GPU has to finish what it
+           is doing before the pixels can be handed over — and on a phone
+           already fighting for its frame budget, four of those a second is a
+           cost paid exactly where there is nothing spare. Desktops have the
+           headroom; phones do not.
+
+           deviceType() is the same predicate the engine uses for its own
+           mobile split (see the comment there), so this can never disagree
+           with what the game thinks it is running on. */
+        captureCanvas: { recordCanvas: deviceType() === "desktop" },
         /* Client-side sampling: record every session. This takes precedence
            over the project's remote sample-rate setting (posthog-js
            SessionRecordingOptions.sampleRate).
