@@ -1478,8 +1478,13 @@ function poolTexture(): THREE.Texture {
    these live (read every frame) for A/B from the console; 0 weights are
    the pre-halo look. */
 const HALO = {
-  /** halo diameters, true metres — ~4x the lens quad's 0.32 m width */
-  tailSize: 1.4, brakeSize: 1.9,
+  /** Halo diameters, true metres. The owner picked these off a four-row
+      render of the same frame; they were 1.4 / 1.9, sized back when a lens
+      quad sat underneath and the halo was only its skirt. With the quads
+      gone (npcmodels.ts) the glow IS the lamp on most of the fleet, and at
+      the old size it read as a red cloud the car sat inside rather than as
+      a pair of lamps. */
+  tailSize: 0.70, brakeSize: 0.95,
   /** vertex-colour weight inside the lens range (see the arithmetic above) */
   tailW: 0.45, brakeW: 0.55,
   /** pixel cap as a fraction of the viewport height */
@@ -1498,8 +1503,15 @@ const HALO = {
    owner: "the red square is too distinct ... so much more opaque." The fix is
    DOWN, not up: below the bleach ceiling the same lens reads as deeper, more
    saturated red, because it is spending its level on hue instead of on white.
+   Running now clears the bloom bright-pass floor rather than sitting well
+   over it, so a running lamp is a lit lens and only the brakes bloom — which
+   is also what makes the brake step read as a step.
+
+   Shipped values are the ones the owner chose off a render, paired with the
+   HALO sizes above: he judged one frame carrying both, so the two move
+   together or the game stops matching the picture he picked.
    `window.__npcLamp = { run, brake }` overrides these live for A/B. */
-const LAMP = { run: 3.1, brake: 4.4 };
+const LAMP = { run: 1.7, brake: 3.0 };
 const HALO_STOPS = 18;
 function haloTexture(): THREE.Texture {
   const c = document.createElement("canvas");
