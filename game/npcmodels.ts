@@ -309,7 +309,9 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
 
 /** The styles a desktop-only HD variant is baked for (1024px atlas, gentler
     decimation) — tools/build-hifi-models.mjs --hd writes exactly these. */
-export const HD_STYLES = ["sedan", "hybrid", "compact", "suv"]; // the ItsDiyor modern heroes (owner's final call)
+// the ItsDiyor modern heroes, plus the Mint-generated mhybrid that rides
+// beside them (owner's call, 2026-09-06: keep the old one AND add this)
+export const HD_STYLES = ["sedan", "hybrid", "compact", "suv", "mhybrid"];
 export const HD_BASE = "/models/cars-hd/";
 
 /** Load a bodyshell per style, calling `onModel` as each one lands. Never

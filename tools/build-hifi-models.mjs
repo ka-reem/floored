@@ -128,7 +128,12 @@ const SPIN = { taxi: Math.PI, police: Math.PI, van: Math.PI, bus: 0 };
    each rect's own border, which on flat panels and flat grille is
    indistinguishable from the bodywork around it. */
 const MINT_STYLES = {
-  hybrid: {
+  /* `mhybrid` -- the Mint generation of the hybrid, riding ALONGSIDE the
+     ItsDiyor `hybrid` and the Orchids `ohybrid` rather than replacing either.
+     Same naming idea as the o-prefix: the prefix is the generation the shell
+     came from, and the fleet mix in traffic.ts splits one hybrid-class share
+     of traffic between the three. */
+  mhybrid: {
     kind: "mint", src: "mint/prius-retopo.glb", L: 4.54, W: 1.76, H: 1.51,
     spin: Math.PI,
     mask: "masks/prius-lamp-mask.png",
@@ -1331,8 +1336,9 @@ async function build(style, cfg) {
 }
 
 fs.mkdirSync(OUT, { recursive: true });
-/* --mint and --dl write the SAME per-style file; which source a style's slot
-   is filled from is the question the owner answers from the renders. */
+/* --mint and --dl no longer contend for a slot: the owner's call (2026-09-06)
+   was to keep the ItsDiyor `hybrid` AND add the Mint shell beside it, so the
+   Mint table writes `mhybrid` and the two tables no longer share a key. */
 const table = MINT ? MINT_STYLES : STYLES;
 const todo = Object.entries(table).filter(([s]) => !ONLY.length || ONLY.includes(s));
 if (!todo.length) {

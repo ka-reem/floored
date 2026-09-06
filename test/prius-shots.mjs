@@ -18,7 +18,7 @@
      asserted.
 
    Usage: node test/prius-shots.mjs --url http://localhost:3111 --out DIR
-          [--style hybrid] [--gap 11] [--tag after] [--set full|paint]
+          [--style mhybrid] [--gap 11] [--tag after] [--set full|paint]
 */
 import { mkdirSync } from "node:fs";
 import path from "node:path";
@@ -31,7 +31,7 @@ const arg = (k, d) => {
 };
 const URL = arg("--url", "http://localhost:3111");
 const OUT = arg("--out", path.join(process.cwd(), "test", "artifacts", "prius"));
-const STYLE = arg("--style", "hybrid");
+const STYLE = arg("--style", "mhybrid");
 const GAP = Number(arg("--gap", 11));
 const TAG = arg("--tag", "after");
 const SET = arg("--set", "full");
@@ -186,6 +186,9 @@ const measured = await page.evaluate(() => {
     style: n.type, L: dims.L, W: dims.W, H: dims.H,
     paintInstance: [n.cr, n.cg, n.cb],
     activeOfStyle: g.traffic.npcs.filter((m) => m.active && m.type === n.type).length,
+    /* the whole point of the three-shell roster: all of them in traffic */
+    hybridClass: ["hybrid", "ohybrid", "mhybrid"].map((t) =>
+      `${t}=${g.traffic.npcs.filter((m) => m.active && m.type === t).length}`).join(" "),
     errorsSeen: g.debug.errors,
   };
 });
