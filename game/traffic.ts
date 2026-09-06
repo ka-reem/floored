@@ -6020,7 +6020,17 @@ export class Traffic {
     for (const st of this.styles) this.flushLod(st);
     this.wheelInst.count = wk;
     this.wheelCount = wk;
-    if (wk) this.wheelInst.instanceMatrix.needsUpdate = true;
+    if (wk) {
+      /* Upload only the wheels actually drawn. The buffer is sized for the
+         worst case — N * MAX_WHEELS = 720 instances, 46 KB — but `wk` is only
+         the wheels on cars inside WHEEL2, typically well under a fifth of
+         that, and a bare `needsUpdate` makes three re-send the WHOLE array
+         with one bufferSubData every frame. The range covers exactly the
+         instances `count` will draw, so nothing that reaches the screen
+         changes; three clears the range again after each upload. */
+      this.wheelInst.instanceMatrix.addUpdateRange(0, wk * 16);
+      this.wheelInst.instanceMatrix.needsUpdate = true;
+    }
   }
 
   private flushLod(lod: Lod) {
@@ -6209,7 +6219,12 @@ export class Traffic {
     this.poolInst.count = pk;
     this.poolInst.visible = pk > 0;
     if (pk) {
+      // same as the wheels above: the pool buffers are sized for the whole
+      // fleet (N = 120) and `pk` is only the lit cars near enough to lay a
+      // pool down, so send the drawn prefix rather than the whole array
+      this.poolInst.instanceMatrix.addUpdateRange(0, pk * 16);
       this.poolInst.instanceMatrix.needsUpdate = true;
+      this.poolColor.addUpdateRange(0, pk * 3);
       this.poolColor.needsUpdate = true;
     }
   }
