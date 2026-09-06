@@ -4,12 +4,12 @@ import {
   runStages, withBudget, type LoadReport, type LoadStage,
 } from "./loading";
 import {
-  fogMultiplier, speedInUnits, unitLabel, fmtRunDist, resolveRenderTier, resolveTestMode, TIER_CAPS,
+  fogMultiplier, speedInUnits, unitLabel, fmtRunDist, resolveRenderTier, TIER_CAPS,
   defaultLifetimeStats,
   type GameSettings, type LifetimeStats, type Profile, type RenderTier,
   type TierCaps,
 } from "./settings";
-import { getCar, PAINTS, testDriveSpec, type CarSpec, type PhysicsSpec } from "./carspecs";
+import { getCar, PAINTS, arcadeSpec, type CarSpec, type PhysicsSpec } from "./carspecs";
 import { pollGamepad, type PadEdge } from "./gamepad";
 import { Hints, type HintMsg } from "./hints";
 import { buildMats, type Mats } from "./world/mats";
@@ -1208,19 +1208,20 @@ export class Game {
      gets none either way). That test was ALREADY there next to the flag at
      every site, because a donor still in flight is not the cabin on show yet;
      dropping the flag just leaves the half that was doing the work. */
-  /** Drive the car on testDriveSpec() instead of its own spec — grip, brakes
-      and power up, for getting somewhere in the world quickly. Toggled by K
-      in game and by a row in the settings panel.
+  /** The car is the arcade spec now (carspecs.ts arcadeSpec) — grip, brakes
+      and power up. This was a dev toggle on K with a settings row behind the
+      debug gate, which meant the public build could never reach it; the owner
+      drove it and asked for it to be the only car ("it should always be on").
+      Both the key and the row are gone.
 
-      A VIEW onto settings.testMode rather than a field of its own, so the two
-      cannot drift: the settings panel writes the setting, K writes through
-      this setter, and every reader sees one value. (`grade` above solves the
-      same problem by mirroring the flag into settings by hand on each K-style
-      toggle, which works but has to be remembered at every write site.)
-      persist() copies this.settings out, so it survives a reload — it used to
-      be deliberately session-only, and that is no longer true. */
-  get testMode() { return resolveTestMode(this.settings); }
-  set testMode(v: boolean) { this.settings.testMode = v; }
+      Still a named constant rather than an inlined `true`, because it is what
+      stepPhysics's `arcade` option is fed and that option still selects
+      between two sets of constants inside physics.ts (steering authority, the
+      brake bias shift, the yaw/slip pads). Those were left alone deliberately:
+      collapsing them is a pure-cleanup refactor of the sim core with no
+      behavioural change, and the stock numbers on the other arm are what every
+      measurement in that file is quoted against. Nothing writes this. */
+  readonly arcade = true;
 
   /** Read-only: metres since the last real impact, and the best-ever clean
       run, for GameApp.tsx's persist() to copy into the profile alongside
@@ -2184,7 +2185,7 @@ export class Game {
             mu: this.rain ? 0.84 : 1.26,
             tcEnabled: this.settings.tc,
             heightAt: this.terrain.heightAt,
-            arcade: this.testMode,
+            arcade: this.arcade,
           });
           this.loopSplice();
           const cr = collidePlayer(
@@ -2693,25 +2694,23 @@ export class Game {
     return this.rig.spec;
   }
 
-  /** The PhysicsSpec the car is actually driven with — its own, or the test
-      mode derivation of it. stepPhysics reads this every substep and holds no
-      state derived from it, so the K toggle takes effect on the next step
-      with nothing to invalidate.
+  /** The PhysicsSpec the car is actually driven with: the arcade derivation of
+      whichever car is active. stepPhysics reads this every substep and holds
+      no state derived from it.
 
-      The derived spec is memoised against the spec object it came FROM, not
-      against the testMode flag: the garage is reachable from the pause menu,
-      so the active car can change while test mode is on, and a cache keyed on
-      the flag would keep driving the previous car's boosted numbers. */
-  private testPhys: PhysicsSpec | null = null;
-  private testPhysFor: PhysicsSpec | null = null;
+      Memoised against the spec object it came FROM: the garage is reachable
+      from the pause menu, so the active car can change mid-session, and a
+      cache that did not key on the source spec would keep driving the
+      previous car's numbers. */
+  private arcadePhys: PhysicsSpec | null = null;
+  private arcadePhysFor: PhysicsSpec | null = null;
   get phys(): PhysicsSpec {
     const own = this.spec.phys;
-    if (!this.testMode) return own;
-    if (this.testPhysFor !== own) {
-      this.testPhysFor = own;
-      this.testPhys = testDriveSpec(own);
+    if (this.arcadePhysFor !== own) {
+      this.arcadePhysFor = own;
+      this.arcadePhys = arcadeSpec(own);
     }
-    return this.testPhys!;
+    return this.arcadePhys!;
   }
 
   /* ---------------- input ---------------- */
@@ -2811,17 +2810,8 @@ export class Game {
       this.resetCar();
       this.ui.toast("RESET");
     }
-    /* Test mode — see Game.testMode. K because it is free, it is under the
-       right hand next to the other A/B toggles (J, L), and W is the throttle.
-       The toast is the only way to tell the two states apart from inside the
-       car, so it is not optional decoration. */
-    if (k === "k" && SHOW_DEV_SETTINGS) {
-      /* Gated with the settings row it mirrors (lib/build.ts): a public build
-         has no control for test mode anywhere, so this key is not a second,
-         unlabelled way in. Reachable in dev and behind ?debug, like the row. */
-      this.testMode = !this.testMode;
-      this.ui.toast("TEST MODE " + (this.testMode ? "ON" : "OFF"));
-    }
+    /* (K was the test-mode toggle. There is nothing to toggle now that the
+       arcade spec IS the car — see Game.arcade — so the key is free again.) */
     /* Interior light. I for its initial, and it was free: the handler above
        already spends C L Q E R T V M J N K H X P B G and the , . transport
        pair, and W A S D, the arrows, space and F are the driving controls.
@@ -3613,22 +3603,19 @@ export class Game {
        right qucikly its so slow to react", and the report is about this line
        rather than about the physics.
 
-       Test mode flattens the droop to 4.6 -> 4.0 instead. A reversal at speed
-       becomes 0.5 s, and because the curve is nearly flat the car answers the
-       same way at 200 km/h as it does at 60 — which is the arcade promise.
-       Measured through test/steer-response-sim.mjs --keyfix: time to 25% of
-       target falls 47% at 180 km/h and 46% at 250, versus 37%/35% from the
+       The droop is 4.6 -> 4.0 instead. A reversal at speed becomes 0.5 s, and
+       because the curve is nearly flat the car answers the same way at
+       200 km/h as it does at 60 — which is the arcade promise. Measured
+       through test/steer-response-sim.mjs --keyfix: time to 25% of target
+       falls 47% at 180 km/h and 46% at 250, versus 37%/35% from the
        physics-side work alone.
 
-       STOCK IS UNTOUCHED — the original lerp is still the other arm, so a car
-       driven with test mode off filters exactly as it always did. */
+       The stock lerp (3.4 -> 1.7) was the other arm of this until the arcade
+       spec became the only car. Those are the numbers every measurement above
+       is quoted AGAINST, which is why they are still written down here. */
     const sDroop = clamp(Math.abs(this.car.u) / 40, 0, 1);
-    let sRate = analog
-      ? 7
-      : this.testMode
-        ? lerp(4.6, 4.0, sDroop)
-        : lerp(3.4, 1.7, sDroop);
-    /* Test mode only: a PROGRESSIVE ramp instead of a flat one.
+    let sRate = analog ? 7 : lerp(4.6, 4.0, sDroop);
+    /* A PROGRESSIVE ramp rather than a flat one.
 
        The flat ramp is the single biggest source of the "it takes a bit to
        actually turn" feel, and it is worse the faster you go — measured, 0 to
@@ -3645,7 +3632,7 @@ export class Game {
 
        `1 - |st|` at centre is 1, so the first part of the travel runs at
        BOOST x the stock rate; at 80% stick it is back to ~1.4x. */
-    if (this.testMode && !analog) {
+    if (!analog) {
       const BOOST = 3.2;
       sRate *= 1 + (BOOST - 1) * (1 - Math.abs(this.input.st));
     }
@@ -6135,7 +6122,7 @@ export class Game {
           mu: this.rain ? 0.84 : 1.26,
           tcEnabled: this.settings.tc,
           heightAt: this.terrain.heightAt,
-          arcade: this.testMode,
+          arcade: this.arcade,
         });
         this.acc -= 1 / 120;
       }

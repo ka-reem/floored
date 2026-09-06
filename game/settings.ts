@@ -426,13 +426,6 @@ export function resolveRenderTier(
   return detectRenderTier(isTouch, gl);
 }
 
-/** Effective test mode: the buffed physics of testDriveSpec(). A developer
- *  row like the two above, so it resolves FALSE wherever its control is not
- *  reachable — otherwise a player who once flipped it in a dev build would be
- *  stuck driving a cheat with nothing on screen to turn it off. The stored
- *  flag is left alone; `?debug=1` shows it as it was. */
-export const resolveTestMode = (s: GameSettings): boolean => SHOW_DEV_SETTINGS && s.testMode;
-
 /** Density multiplier applied to the engine's base time-of-day fog curve. */
 const FOG_MULT: Record<FogLevel, number> = {
   off: 0,
@@ -500,11 +493,6 @@ export interface GameSettings {
   /** the imported (donor) interior for cars that have one — "auto" defers to
       the hardware floor in donorCabinAffordable(). See the cabin block above. */
   cabin: CabinMode;
-  /** Test mode: drive on testDriveSpec() — extra grip, brakes and power (the
-      K key in game, and a row in the settings panel). A testing aid rather
-      than a difficulty setting, but persisted like any other toggle so it
-      survives a reload; game/engine.ts reads it straight off here. */
-  testMode: boolean;
   /** the rival pace car is running (see the RIVAL block in game/traffic.ts) */
   rival: boolean;
   /** ...and whether it indicates its lane changes. Off by default: a car that
@@ -628,7 +616,6 @@ export const defaultSettings = (): GameSettings => ({
      no pool slot is reserved and no controller runs (game/traffic.ts). */
   rival: false,
   rivalSignals: false,
-  testMode: false,
   cleanRunScore: true,
   hints: true,
 });
@@ -696,7 +683,7 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
  *  turn them off instead of ignoring the bad value. */
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
-  "autoTime", "rain", "mmap", "mmapZoom", "rival", "rivalSignals", "testMode",
+  "autoTime", "rain", "mmap", "mmapZoom", "rival", "rivalSignals",
   "cleanRunScore", "hints",
 ] as const;
 

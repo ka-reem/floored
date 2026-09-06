@@ -59,23 +59,32 @@ export interface PhysicsSpec {
 
 /** Defaults for the optional PhysicsSpec fields. They live next to the
  *  interface rather than inline in physics.ts so that anything DERIVING a
- *  spec from another one (testDriveSpec below) scales the same number the sim
+ *  spec from another one (arcadeSpec below) scales the same number the sim
  *  would have used, instead of quietly scaling a hardcoded 1. */
 export const BRAKE_F = 16400;
 export const STEER_AY = 19.5;
-/** Test-mode launch torque multiplier (testDriveSpec's TQ_T scale) — the one
- *  knob to nudge if the launch ever needs to be faster/slower again. Keep at
- *  or above 2.4: test-mode vmax rides physics.ts's 82 m/s sanity clamp, not
- *  the gearing, so this cannot move top speed on its own, but the top-gear
- *  pull into that clamp gets soft below the floor. See testDriveSpec below. */
-export const TEST_ACCEL_MULT = 2.7;
+/** Launch torque multiplier (arcadeSpec's TQ_T scale) — the one knob to nudge
+ *  if the launch ever needs to be faster/slower again. Keep at or above 2.4:
+ *  vmax rides physics.ts's 82 m/s sanity clamp, not the gearing, so this
+ *  cannot move top speed on its own, but the top-gear pull into that clamp
+ *  gets soft below the floor. See arcadeSpec below. */
+export const ACCEL_MULT = 2.7;
 
-/* ---- Test mode ---------------------------------------------------------
-   A dev toggle (K in engine.ts), not a difficulty and not a car: a way to
-   cross the map, reach a corner, or stop at a landmark quickly while shaking
-   the game out. Derived from whichever car is active rather than written out
-   as a fifth spec, so it works for all four and cannot drift out of sync when
-   someone retunes one of them.
+/* ---- The arcade spec ---------------------------------------------------
+   THIS IS THE CAR. It was a dev toggle (K in engine.ts) for most of its life
+   — a way to cross the map or reach a corner quickly while shaking the game
+   out — and the owner, having driven it: "the test driving mode should be the
+   main mode when u start driving the game like it should always be on ... i
+   like that one." So the toggle is gone and every car is derived through here.
+
+   Note what did NOT come with it: the top-end taper and the driveline
+   efficiency fall live in physics.ts on the thrust side, outside the spec, so
+   power still falls off up high exactly as it did. This raises the ceiling; it
+   does not flatten the curve.
+
+   Derived from whichever car is active rather than written out as a fifth
+   spec, so it works for all four and cannot drift out of sync when someone
+   retunes one of them.
 
    Why each multiplier is what it is:
 
@@ -109,7 +118,7 @@ export const TEST_ACCEL_MULT = 2.7;
      still pulls ~30% more lateral at a given stick. The rest of the extra
      grip shows up as speed KEPT through a corner rather than angle: kaze at
      full lock at 45 m/s settles at 174 km/h against stock's 152. */
-export function testDriveSpec(spec: PhysicsSpec): PhysicsSpec {
+export function arcadeSpec(spec: PhysicsSpec): PhysicsSpec {
   return {
     ...spec,
     /* Second pass, deliberately arcade — "like No Hesi, where the cars drive
@@ -122,14 +131,14 @@ export function testDriveSpec(spec: PhysicsSpec): PhysicsSpec {
        angle the peak arrives at — the car takes far more and still lets go at
        the same stick position rather than turning to ice at the limit.
 
-       Torque x TEST_ACCEL_MULT (2.7) with a 0.72 final drive: torque alone
+       Torque x ACCEL_MULT (2.7) with a 0.72 final drive: torque alone
        would just spin the tyres, and the shorter final is what turns it into
        speed rather than noise. Drag x0.6 lifts the top end, which is where
        the final drive would otherwise cost it. 2.7 is down from a first-pass
        3.2 — full throttle read as too violent — and top speed cannot follow
        it down: test mode runs into physics.ts's 82 m/s sanity clamp
        (measured, 295.2 km/h at both multipliers — test/testdrive-accel-sim.mjs).
-       Keep TEST_ACCEL_MULT at or above 2.4 so the top-gear pull into that cap
+       Keep ACCEL_MULT at or above 2.4 so the top-gear pull into that cap
        stays firm.
 
        Brakes x4 are not optional at this grip. Braking force is capped by
@@ -142,7 +151,7 @@ export function testDriveSpec(spec: PhysicsSpec): PhysicsSpec {
        grip multiplier would make half lock at speed an instant spin. Keeping
        it well under means the extra grip mostly shows up as speed KEPT
        through a corner rather than as a sharper turn-in. */
-    TQ_T: spec.TQ_T.map((t) => t * TEST_ACCEL_MULT),
+    TQ_T: spec.TQ_T.map((t) => t * ACCEL_MULT),
     FINAL: spec.FINAL * 0.72,
     drag: spec.drag * 0.6,
     gripF: spec.gripF * 2.8,
@@ -236,11 +245,11 @@ export const paintByHex = (hex: number): Paint =>
    So this is not two specs that happen to hold matching numbers — it is one
    spec, referenced twice. Copying the table would leave a retune of either car
    silently desyncing the pair, and the desync would be invisible until someone
-   drove both back to back. Object identity also keeps engine.ts's testPhys
+   drove both back to back. Object identity also keeps engine.ts's arcadePhys
    memo (keyed on the spec object, not on the car id) from rebuilding a
    test-mode derivation that would come out identical anyway.
 
-   Nothing mutates a PhysicsSpec — testDriveSpec() spreads into a new one — so
+   Nothing mutates a PhysicsSpec — arcadeSpec() spreads into a new one — so
    the sharing is safe as well as cheap. Give one of the cars its own numbers
    the day they are meant to drive differently, and not before. */
 const SHARED_PHYS: PhysicsSpec = {

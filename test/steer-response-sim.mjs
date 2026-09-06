@@ -63,7 +63,7 @@ try {
   process.exit(1);
 }
 const { stepPhysics, freshCarState, ARCADE_STEER } = physics;
-const { CARS, testDriveSpec } = carspecs;
+const { CARS, arcadeSpec } = carspecs;
 
 const DT = 1 / 120;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -162,7 +162,7 @@ const fails = [];
 
 /* ---- 1. response and cornering, kaze, before vs after ---------------- */
 const kaze = CARS.find((c) => c.id === "kaze");
-const kazeSpec = () => testDriveSpec(kaze.phys);
+const kazeSpec = () => arcadeSpec(kaze.phys);
 
 console.log("\nTEST MODE — KAZE GT, step to full lock, speed held");
 console.log("t->0.25 = seconds from keypress to 0.25 rad/s of yaw (the headline)\n");
@@ -207,7 +207,7 @@ for (const kmh of [180, 250]) {
 console.log("\nTrail brake — hold full lock, then brake. Peak sideslip, deg (X = spun)\n");
 console.log("        cols: 120@.35/.5/.75/1  150@...  180@...  200@...");
 for (const car of CARS) {
-  const spec = () => testDriveSpec(car.phys);
+  const spec = () => arcadeSpec(car.phys);
   useCfg(BEFORE); const b = TRAIL.map(([k, p]) => trailBrake(spec(), ARCADE, k, p, KEYFIX));
   useCfg(AFTER);  const a = TRAIL.map(([k, p]) => trailBrake(spec(), ARCADE, k, p, KEYFIX));
   const cell = (x) => `${x.beta.toFixed(0).padStart(2)}${x.beta > SPIN_DEG ? "X" : " "}`;

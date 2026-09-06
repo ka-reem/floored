@@ -190,10 +190,12 @@ async function main() {
     await tapRow(page, "RAIN");
     check("RAIN row = R key", await page.evaluate(() => window.__neonx.game.rain === true));
     await tapRow(page, "RAIN"); // leave the shots dry
-    await tapRow(page, "TEST MODE");
-    check("TEST MODE row = K key (writes the persisted setting)", await page.evaluate(
-      () => window.__neonx.game.settings.testMode === true));
-    await tapRow(page, "TEST MODE");
+    /* (There was a TEST MODE row here, tapped twice to prove the drawer wrote
+       the persisted setting. Its spec is the only car now — carspecs.ts
+       arcadeSpec — so the row, the K key and the setting are all gone. RAIN
+       above still covers a drawer row writing through to the game.) */
+    await tapRow(page, "RAIN");
+    await tapRow(page, "RAIN");
     check("drawer still open after toggling rows", await page.evaluate(
       () => document.getElementById("tcDrawer").classList.contains("open")));
 
