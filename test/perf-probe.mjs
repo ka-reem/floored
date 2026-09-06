@@ -88,7 +88,18 @@ const rows = [];
 for (const [name, z, note] of PLACES) {
   if (only && !only.includes(name)) continue;
   await page.evaluate((z) => {
-    const nx = window.__neonx;
+    const nx = window.__neonx, g = nx.game, r = g.renderer;
+    if (!r.__probeWrapped) {
+      const orig = r.render.bind(r);
+      r.render = (...a) => {
+        orig(...a);
+        const i = r.info.render, p = g.__probePeak;
+        if (!p || i.calls > p.calls)
+          g.__probePeak = { calls: i.calls, triangles: i.triangles };
+      };
+      r.__probeWrapped = true;
+    }
+    g.__probePeak = null; // per-place, so a previous place cannot leak in
     nx.toCorridor(z, 90, 1);
     nx.setInput({ th: 0.35 });
   }, z);
@@ -121,18 +132,26 @@ for (const [name, z, note] of PLACES) {
 
   const r = await page.evaluate((dt) => {
     const g = window.__neonx.game;
-    const info = g.renderer?.info;
+    /* renderer.info is reset at the top of EVERY render() call, and this game
+       renders many times a frame (the scene, then ~20 full-screen post
+       passes). Reading it after the frame therefore reports the last post
+       pass — `calls 1, tris 2` — no matter what is on screen. Wrapping
+       render() and keeping the BIGGEST pass gives the scene pass, which is
+       the number anyone means by "draw calls". Found the hard way: the first
+       version of this probe printed 1 everywhere and would have had a lane
+       optimising against a constant. */
+    const info = g.__probePeak ?? null;
     dt = dt.slice().sort((a, b) => a - b);
     const at = (q) => dt[Math.min(dt.length - 1, Math.floor(dt.length * q))];
     return {
       med: +at(0.5).toFixed(2),
       p95: +at(0.95).toFixed(2),
       max: +dt[dt.length - 1].toFixed(2),
-      calls: info?.render?.calls ?? null,
-      tris: info?.render?.triangles ?? null,
-      programs: info?.programs?.length ?? null,
-      geometries: info?.memory?.geometries ?? null,
-      textures: info?.memory?.textures ?? null,
+      calls: info?.calls ?? null,
+      tris: info?.triangles ?? null,
+      programs: g.renderer?.info?.programs?.length ?? null,
+      geometries: g.renderer?.info?.memory?.geometries ?? null,
+      textures: g.renderer?.info?.memory?.textures ?? null,
       frames: dt.length,
     };
   }, dtAll);
