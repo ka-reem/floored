@@ -45,6 +45,9 @@ const FRAMES = Number(arg("--frames", 45));
 const SKIP_LOOK = process.argv.includes("--no-look");
 const SKIP_PERF = process.argv.includes("--no-perf");
 const SKIP_CENSUS = process.argv.includes("--no-census");
+/* Optional second capture of every look shot, into its own directory — see
+   the note at the capture site. */
+const CTL = arg("--ctl", "");
 
 /* POV first: default view, and the frame the owner judges in. */
 const CAMS = [["pov", 3], ["chase", 0], ["cockpit", 1], ["hood", 2], ["console", 4]];
@@ -62,6 +65,7 @@ const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/6
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 mkdirSync(SHOTS, { recursive: true });
+if (CTL) mkdirSync(CTL, { recursive: true });
 mkdirSync(path.dirname(OUT), { recursive: true });
 
 const browser = await puppeteer.launch({
@@ -355,6 +359,17 @@ if (!SKIP_LOOK) {
         await freeze();
         await sleep(2500); // the POV frame blend settles to a fixed point
         await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${pname}-${cname}.png`) });
+        /* The CONTROL, taken here rather than from a second run: the same
+           frozen frame, shot again a couple of seconds later with nothing
+           touched in between. Whatever it differs by is the renderer's own
+           noise — the floor a before/after delta has to clear before it
+           counts as a visible change. A separate boot would be a stronger
+           control still, but it is also ten minutes and a different set of
+           compiled programs; this one is free and it is the same conditions. */
+        if (CTL) {
+          await sleep(2000);
+          await page.screenshot({ path: path.join(CTL, `${LABEL}-${pname}-${cname}.png`) });
+        }
         await thaw();
         console.log("shot", pname, cname);
       } catch (e) {
