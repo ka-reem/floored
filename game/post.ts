@@ -354,6 +354,9 @@ export class PostFX {
   /** false for one frame after a hard view change: the temporal blend is
       skipped so a camera teleport cuts instead of dragging a ghost. */
   private histValid = false;
+  /** MSAA samples for sceneRT — see setMsaa(). 4 is the desktop shipping
+   *  value and the default, so a PostFX nobody configures behaves as before. */
+  private msaa = 4;
   private overCv: HTMLCanvasElement;
   private overTex: THREE.CanvasTexture;
   private overAt = -1;
@@ -918,6 +921,17 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.makeTargets(false);
   }
 
+  /** MSAA samples on the HDR scene target, from tierCaps.sceneMsaa. Stored
+   *  rather than passed to makeTargets() because the engine rebuilds targets
+   *  from several places (resize, DPR change, perf drop) and none of them
+   *  should have to know the tier. Returns true when the value actually
+   *  changed, so the caller knows a rebuild is owed. */
+  setMsaa(n: number): boolean {
+    if (n === this.msaa) return false;
+    this.msaa = n;
+    return true;
+  }
+
   makeTargets(perfMode: boolean) {
     const r = this.renderer;
     const w = Math.floor(innerWidth * r.getPixelRatio());
@@ -934,7 +948,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     ])
       rt?.dispose();
     this.sceneRT = new THREE.WebGLRenderTarget(w, h, {
-      type: THREE.HalfFloatType, samples: 4,
+      type: THREE.HalfFloatType, samples: this.msaa,
     });
     const bw = Math.max(160, w >> 2), bh = Math.max(90, h >> 2);
     this.brightRT = new THREE.WebGLRenderTarget(bw, bh, FLAT_HDR);

@@ -173,6 +173,24 @@ export interface TierCaps {
       tier bumped mid-session applies on the next rig build. */
   cabinPbrMaps?: boolean;
 
+  /** MSAA sample count on the HDR scene target (post.ts sceneRT).
+
+      The scene is rendered into a HALF-FLOAT target, so a sample is 8 bytes
+      of colour before its depth, and 4x makes that 32 bytes per pixel of
+      tile storage. Every phone GPU is tile-based with a fixed tile budget;
+      past it the driver splits the pass into more, smaller tiles and reads
+      and writes the frame more times. That is a bandwidth cost, and
+      bandwidth is what heats a phone.
+
+      Turning it off does not leave the frame unfiltered: FXAA runs after the
+      composite on every tier, and under the dashcam POV the whole frame is
+      box-downsampled to half res and snapped to that grid afterwards, which
+      is a far coarser filter than the one being given up.
+
+      Read by post.setMsaa(); it only takes effect on the next makeTargets(),
+      which the engine's tier-flip path already forces. */
+  sceneMsaa?: number;
+
   /** Stream the 1024px-atlas HD NPC bodyshells (public/models/cars-hd/)
       after the first drivable frame and hot-swap them into the fleet.
       Desktop-only: the BASE fleet everyone loads is already the same
@@ -195,6 +213,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
     wheelTracks: false, deckDressing: 0.35, districts: 0.55, mtnDetail: 0.5, hdFleet: false,
     vegetation: 0.55,
+    sceneMsaa: 0,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -207,6 +226,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
     wheelTracks: true, deckDressing: 0.7, districts: 0.8, mtnDetail: 0.75, hdFleet: false,
     vegetation: 0.8,
+    sceneMsaa: 0,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -219,6 +239,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
     wheelTracks: true, deckDressing: 1, districts: 1, mtnDetail: 1, hdFleet: true,
     vegetation: 1,
+    sceneMsaa: 4,
   },
 };
 

@@ -1991,6 +1991,10 @@ export class Game {
     // mobile tiers run the cockpit mirror at half resolution; the reflection
     // RT allocation follows in applySettings' makeTargets pass below
     this.post.setMobile(this.tierCaps.mirrorHalf);
+    // MSAA on the half-float scene target: 4x on desktop, off on the mobile
+    // tiers, where the tile-memory cost of a multisampled RGBA16F attachment
+    // buys an edge filter the dashcam pass immediately downsamples away
+    this.post.setMsaa(this.tierCaps.sceneMsaa ?? 4);
     // desktop-only cinematic extras: two-scale bloom + film-look finishers
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
     // POV grade profile: the mobile tiers run the dashcam degrade at gentler
@@ -3677,6 +3681,9 @@ export class Game {
     // a tier flip changes the mirror/reflection RT policy even when the pixel
     // ratio happens not to move — force the target rebuild path below
     if (this.post.setMobile(this.tierCaps.mirrorHalf)) this.lastPR = -1;
+    // same deal for the scene target's sample count: a tier flip has to reach
+    // the allocation, and the allocation only happens in makeTargets()
+    if (this.post.setMsaa(this.tierCaps.sceneMsaa ?? 4)) this.lastPR = -1;
     // tier flips retarget the cinematic extras on the same frame too
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
     // ...and the POV grade profile (console-edited knobs survive the flip)
