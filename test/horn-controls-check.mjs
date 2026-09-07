@@ -131,14 +131,16 @@ try {
 await page.evaluate(() => window.__neonx.setCam(3)); // CAM_POV — the shipped dashcam
 await advance(page, 3);
 
+/* `horn2-` rather than `horn-`: the old suite's captures are the record of a
+   control that existed, and docs/gallery/AGENTS.md forbids overwriting them. */
 const shot = async (name, caption) => {
   const raw = await page.screenshot({ type: "png" });
-  const out = path.join(OUT, `horn-${name}.jpg`);
+  const out = path.join(OUT, `horn${name}.jpg`);
   await sharp(raw).resize({ width: 1200 }).jpeg({ quality: 80 }).toFile(out);
   console.log("  📸", out, "—", caption);
 };
 
-await shot("01-wheel-idle",
+await shot("2-wheel-idle",
   "Dashcam, phone, wheel steer mode after the hub removal: the wheel carries no HORN boss. The horn is the HORN puck in the right-hand cluster, which is on screen in every steer mode.");
 
 check("wheel is mounted (steerMode=wheel)", await page.evaluate(
@@ -181,7 +183,7 @@ s = await state(page);
 check("drag from the centre steers", Math.abs(s.wheel) > 0.5, `wheelVal=${s.wheel}`);
 check("drag from the centre is silent", s.starts === before.starts && !s.sounding,
   `starts +${s.starts - before.starts} sounding=${s.sounding}`);
-await shot("03-drag-from-centre-steers",
+await shot("2-drag-from-centre",
   "A finger started dead centre — where the HORN boss used to be — and dragged. The wheel is deflected and steering, and nothing honked.");
 await wheelPt(page, "pointerup", 41);
 await advance(page, 3);
@@ -217,7 +219,7 @@ s = await state(page);
 check("HORN puck honks", s.starts === before.starts + 1 && s.sounding, JSON.stringify(s));
 check("HORN puck lights while held", await page.evaluate(
   () => !!document.getElementById("tcH")?.classList.contains("pressed")));
-await shot("02-horn-puck-honking",
+await shot("2-puck-honking",
   "The horn that is left: the HORN puck lit and sounding, with the wheel untouched beside it.");
 await puckPt(page, "tcH", "pointerup", 45);
 await advance(page, 3);
