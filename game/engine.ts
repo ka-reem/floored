@@ -2596,7 +2596,27 @@ export class Game {
       this box's software rasteriser against 47 s for one — the same programs
       for twice the wait. The starting camera keeps the full settle it always
       had, and goes LAST so the canvas still holds a finished frame in the
-      right view when the overlay lifts. */
+      right view when the overlay lifts.
+
+      WHAT IT COSTS, measured back-to-back in one session because this box
+      drifts by a third over an hour (test/load-time.mjs, ROLLING OUT's own
+      milliseconds): baseline 42.9 s, this 94.8 s, baseline again 57.7 s. So
+      five extra frames roughly double the stage HERE. That ratio is a
+      SwiftShader artefact — a frame costs ~10 s on a software rasteriser, so
+      five cheap frames read as five expensive ones. On real hardware the
+      added cost is each mode's own one-off first-use work, which is exactly
+      what the player was paying across their first five presses of C.
+
+      A CHEAPER VARIANT WAS TRIED AND DOES NOT WORK — do not re-attempt it
+      without re-measuring. The idea was to skip the extra frames entirely and
+      instead force the exterior body visible alongside the interior during
+      the frames the load already renders, so both sets of materials draw in
+      one pass. Measured, the first DASHCAM -> CHASE switch still linked +25
+      programs: with the lens inside the shell the exterior's meshes have
+      bounding spheres the frustum misses, so three culls them, and a culled
+      mesh is never drawn and never linked. Clearing frustumCulled across the
+      subtree to force them through made the load crash the tab on this box.
+      Actually putting the camera where the mode puts it is what works. */
   private async warmCameras(onStep?: (frac: number) => void): Promise<void> {
     const home = this.camMode;
     const others = CAM_CYCLE.filter((m) => m !== home);
