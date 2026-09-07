@@ -29,10 +29,10 @@ import {
 import { spawnZ } from "./world/ramps";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
-import { buildPlayerCar, type PlayerRig } from "./player";
+import { buildPlayerCar, donorAssetUrls, type PlayerRig } from "./player";
 import type { CockpitModelHandle, MirrorFraming } from "./cockpitmodel";
 import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, WIPER, type GaugeFlags } from "./cockpit";
-import { Traffic, setNpcDaylight } from "./traffic";
+import { Traffic, setNpcDaylight, FLEET_STYLES } from "./traffic";
 import { GameAudio } from "./audio";
 import { MusicPlayer } from "./music";
 import { hitScreen, type ScreenAction, type ScreenView } from "./carscreen";
@@ -44,6 +44,8 @@ import { track, trackThrottled, registerSuper } from "../lib/analytics";
 import { DEBUG_HOOKS } from "./debug";
 import { SHOW_DEV_SETTINGS } from "@/lib/build";
 import { showGfxFail } from "./gfxfail";
+import { npcModelUrl } from "./npcmodels";
+import { prefetchAssets } from "./prefetch";
 
 const WX_SVG = (body: string) =>
   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">${body}</svg>`;
@@ -2493,6 +2495,40 @@ export class Game {
       second build. A double-tap on DRIVE is one tap as far as the player is
       concerned; without this it would be two towns in one scene. */
   private loading: Promise<void> | null = null;
+
+  private prefetched = false;
+
+  /** Ask the browser to fetch the world build's big downloads NOW, at the
+      lowest priority it has, while the player is still on the menu.
+
+      This is the honest half of "the menu is idle time being thrown away".
+      The other half — starting the BUILD on the menu — cannot work: every
+      stage in buildStages() is one synchronous block (RAISING THE EXPRESSWAY
+      is the longest single thing the game ever does on the main thread) and
+      a cancel is a teardown, not a pause (see the contract on runStages), so
+      a build begun under the menu freezes the menu until it finishes and
+      cannot be called off. The DOWNLOADS have neither problem: they cost no
+      main-thread time, they can be abandoned for free, and they are what the
+      two budgeted stages actually spend their seconds on.
+
+      Reads the same tables the build reads (FLEET_STYLES, donorAssetUrls) so
+      it can never speculate on a file this device and this profile would not
+      have asked for. No-op once the world is built, once per page, and on a
+      connection that has asked not to be spent on guesses (see prefetch.ts).
+
+      Returns what it queued, for the test harness. */
+  prefetchAssets(): string[] {
+    if (this.loaded || this.prefetched || this.disposed) return [];
+    this.prefetched = true;
+    const urls = [
+      ...FLEET_STYLES.map((s) => npcModelUrl(s)),
+      ...donorAssetUrls(this.carId, this.renderTier),
+    ];
+    const sent = prefetchAssets(urls);
+    const dbg = (window as any).__neonx;
+    if (dbg) dbg.prefetched = sent;
+    return sent;
+  }
 
   /** Build the world, reporting progress, with the browser free to paint
       between stages. Rejects if a stage throws — the caller owns the error

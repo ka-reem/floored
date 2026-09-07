@@ -5,8 +5,8 @@ import {
 } from "./carshape";
 import { paintTexF, carbonTexF } from "./textures";
 import { buildCockpit, COCKPIT_REF, type Cockpit } from "./cockpit";
-import { attachCockpitModel, type CockpitModelHandle } from "./cockpitmodel";
-import { attachBodyModel, type BodyModelHandle } from "./bodymodel";
+import { attachCockpitModel, cockpitModelUrls, type CockpitModelHandle } from "./cockpitmodel";
+import { attachBodyModel, bodyModelUrl, type BodyModelHandle } from "./bodymodel";
 import { wireDonorLamps, type DonorLampHandle, type LampState } from "./donorlamps";
 import { donorCabinAllowed, TIER_CAPS, type RenderTier } from "./settings";
 
@@ -103,6 +103,24 @@ const cockpitDonor = (carId: string, tier: RenderTier): string => {
   const want = COCKPIT_MODEL[carId]?.[tier] || "";
   return want && donorCabinAllowed(tier) ? want : "";
 };
+
+/** Every file buildPlayerCar() will fetch for (carId, tier), in build order:
+    the donor exterior, then the donor cabin's manifest and mesh.
+
+    This asks THE SAME TWO FUNCTIONS the rig build asks (BODY_MODEL and
+    cockpitDonor, the second of which is where the per-device and per-player
+    cabin decision lives), so the menu-time prefetch cannot speculate on a
+    cabin this device is never going to load — the 5.7 MB one, on exactly the
+    phones that can least afford to waste it. A car with no donor of either
+    kind returns an empty list and nothing is prefetched. */
+export function donorAssetUrls(carId: string, tier: RenderTier): string[] {
+  const out: string[] = [];
+  const body = BODY_MODEL[carId];
+  if (body) out.push(bodyModelUrl(body));
+  const cabin = cockpitDonor(carId, tier);
+  if (cabin) out.push(...cockpitModelUrls(cabin));
+  return out;
+}
 /* The headlight carpet's alpha field: a WEDGE spreading forward from the
    bumper, not a radial pool.
 

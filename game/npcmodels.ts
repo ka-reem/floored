@@ -60,6 +60,11 @@ export interface NpcModel {
 
 const BASE = "/models/cars/";
 
+/** Where a style's bodyshell lives. Exported so the menu-time prefetch
+    (game/prefetch.ts) can name the exact URLs loadNpcModels will ask for
+    rather than keeping a second copy of the path. */
+export const npcModelUrl = (style: string, base: string = BASE): string => `${base}${style}.glb`;
+
 /* ---- tail lenses ----------------------------------------------------------
    Not every bake tags real tail-lens pixels in `_LAMP` — the whole old
    (Orchids) fleet ships zeros, and even two hi-fi bakes (suv, bus) missed

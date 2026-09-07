@@ -31,6 +31,9 @@ export interface BodyModelHandle {
 }
 
 const BASE = "/models/player/";
+/** Where a donor exterior lives. Exported so game/prefetch.ts names the same
+    URL this module will ask for rather than keeping a second copy of it. */
+export const bodyModelUrl = (name: string): string => `${BASE}${name}.glb`;
 
 export function attachBodyModel(
   exteriorG: THREE.Group,

@@ -100,6 +100,15 @@ const RIM_SHRINK = 0.97;
 const WHEEL_SCALE = 1.60;
 
 const BASE = "/models/cockpits/";
+/** The two files a donor cabin needs, in the order attachCockpitModel asks
+    for them: the part manifest, then the mesh. They are fetched SERIALLY
+    there (the manifest decides nothing about the GLB, but the GLB load is
+    started from the manifest's .then), so a cold cabin costs a whole extra
+    round trip before its 5.7 MB even begins — which is most of why
+    game/prefetch.ts exists. Exported so the prefetch names the same two URLs
+    this module will. */
+export const cockpitModelUrls = (name: string): string[] =>
+  [`${BASE}${name}.json`, `${BASE}${name}.glb`];
 
 /** Full-on level of the donor's fill light — see the light itself for why it is
     shaped the way it is. Shipped OFF (engine.ts's I key is what turns it on),

@@ -90,6 +90,18 @@ function loadEngine(): Promise<EngineModule | null> {
 }
 if (typeof window !== "undefined") void loadEngine();
 
+/** Run `fn` when the main thread is next idle, with a timeout backstop for a
+    page that never goes idle — and a plain timer on Safari, which has no
+    requestIdleCallback at all. */
+const IDLE_TIMEOUT_MS = 1200;
+function whenIdle(fn: () => void) {
+  const ric = (window as unknown as {
+    requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void;
+  }).requestIdleCallback;
+  if (ric) ric(fn, { timeout: IDLE_TIMEOUT_MS });
+  else setTimeout(fn, IDLE_TIMEOUT_MS);
+}
+
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
 
@@ -322,6 +334,21 @@ export default function GameApp() {
     gameRef.current = game;
     built = game;
     rerender();
+    /* THE MENU IS IDLE TIME. The world build's two budgeted stages spend
+       their seconds downloading ~10 MB of bodyshells and donor models that
+       they do not ask for until they run — several seconds into a loading
+       screen — while the connection sat idle for the whole time the player
+       was reading this board. Ask for them now, at prefetch priority, so
+       those stages find them in the cache.
+
+       On idle rather than immediately: the engine chunk has only just
+       landed and the menu's own first frames matter more than a speculative
+       download. Nothing is parsed and no main-thread time is spent — see
+       game/prefetch.ts, which also declines the whole idea on a Save-Data
+       or 2g connection. */
+    whenIdle(() => {
+      if (gameRef.current === game) game.prefetchAssets();
+    });
     }
 
     return () => {
