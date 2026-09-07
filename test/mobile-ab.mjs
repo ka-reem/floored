@@ -335,11 +335,23 @@ if (!SKIP_CENSUS) try {
    Counting rAF ticks in the page instead makes the wait scale with the
    machine: N ticks is N frames drawn, whether that takes 200 ms or a
    minute. */
-const waitFrames = (n) => page.evaluate((n) => new Promise((res) => {
-  let i = 0;
-  const tick = () => (++i >= n ? res(i) : requestAnimationFrame(tick));
-  requestAnimationFrame(tick);
-}), n);
+/* Wait for N frames in CHUNKS of two.
+
+   One evaluate that waits for all N blows puppeteer's protocolTimeout the
+   moment a frame gets slow — which is exactly when the wait matters. It
+   killed a run: waitFrames(10) against ~60 s frames is 600 s, ten seconds
+   over the limit, and the whole look sheet went with it. Two frames per
+   round trip keeps every call short; the same reason perf-probe.mjs samples
+   its frame times in chunks. */
+const waitFrames = async (n) => {
+  for (let got = 0; got < n; got += 2) {
+    await page.evaluate((k) => new Promise((res) => {
+      let i = 0;
+      const tick = () => (++i >= k ? res(i) : requestAnimationFrame(tick));
+      requestAnimationFrame(tick);
+    }), Math.min(2, n - got));
+  }
+};
 
 /* Capture the RENDERED PIXELS, from inside the page.
 
@@ -424,9 +436,9 @@ if (!SKIP_LOOK) {
         window.__neonx.toCorridor(a.z, 0, 1);
         window.__neonx.setInput({ th: 0 });
       }, { z, ci });
-      // 10 drawn frames, not 5 seconds — see waitFrames. The first of these
+      // 8 drawn frames, not 5 seconds — see waitFrames. The first of these
       // is where a camera switch pays for its shader compiles.
-      await waitFrames(10);
+      await waitFrames(8);
       await page.evaluate((a) => {
         window.__neonx.toCorridor(a.z, 0, 1);
         window.__neonx.setInput({ th: 0 });
