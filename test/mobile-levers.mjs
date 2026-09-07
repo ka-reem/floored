@@ -53,6 +53,12 @@ const PHONE = { width: 390, height: 844, deviceScaleFactor: 3, isMobile: true, h
 const UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 " +
   "(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
 
+const waitFramesIn = (pg, n) => pg.evaluate((n) => new Promise((res) => {
+  let i = 0;
+  const tick = () => (++i >= n ? res(i) : requestAnimationFrame(tick));
+  requestAnimationFrame(tick);
+}), n);
+
 const browser = await puppeteer.launch({
   headless: true,
   args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader",
@@ -90,6 +96,7 @@ await page.evaluate((a) => {
   window.__neonx.setInput({ th: 0 });
 }, { z: Z });
 await sleep(3000);
+await waitFramesIn(page, 4);
 
 /* Freeze once and stay frozen for the whole sheet — every shot below is the
    same pose, the same clock and the same grain seed. */
@@ -151,9 +158,22 @@ const setLever = (name, rich) => page.evaluate((a) => {
   }
 }, { name, rich });
 
+/* Wait for N frames to be DRAWN, not for N seconds — the same reason
+   test/mobile-ab.mjs does it. Flipping `shadow` changes the directional
+   shadow COUNT in three's program cache key, so the next render recompiles
+   every lit material in the scene; on a box with no GPU and no
+   KHR_parallel_shader_compile that single frame can take minutes, and a
+   fixed sleep would shoot straight through it and capture the frame before. */
+const waitFrames = (n) => page.evaluate((n) => new Promise((res) => {
+  let i = 0;
+  const tick = () => (++i >= n ? res(i) : requestAnimationFrame(tick));
+  requestAnimationFrame(tick);
+}), n);
+
 const shoot = async (file) => {
-  await sleep(2500);                    // the POV frame blend re-settles
-  await page.screenshot({ path: path.join(SHOTS, `${file}.png`) });
+  await waitFrames(5);                  // the POV frame blend re-settles
+  await page.screenshot({ path: path.join(SHOTS, `${file}.png`),
+    captureBeyondViewport: false, optimizeForSpeed: true });
   console.log("shot", file);
 };
 
@@ -167,7 +187,7 @@ for (const l of ["msaa", "povfxaa", "bloom", "shadow", "aniso"]) {
   await setLever(l, false);
   await shoot(`cheap-${l}`);
   await setLever(l, true);              // one lever at a time
-  await sleep(1500);
+  await waitFrames(3);
 }
 /* ...and all of them together, which is what a phone would actually run. */
 for (const l of ["msaa", "povfxaa", "bloom", "shadow", "aniso"]) await setLever(l, false);
