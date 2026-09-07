@@ -341,6 +341,48 @@ const waitFrames = (n) => page.evaluate((n) => new Promise((res) => {
   requestAnimationFrame(tick);
 }), n);
 
+/* Capture the RENDERED PIXELS, from inside the page.
+
+   page.screenshot() goes through the compositor, and the canvas is created
+   with preserveDrawingBuffer false — so between the browser consuming a
+   frame and the game drawing the next one, the drawing buffer is empty. A
+   capture that lands in that window returns a black frame, and it did:
+   three cameras in one sheet came back as the same all-black PNG, and the
+   same PNG turned up again in the next run. Not a dark frame, an empty one.
+
+   So grab it where it cannot be empty: wrap post.process(), which ends with
+   the pass that draws to the canvas, and call toDataURL() immediately
+   afterwards — same task, before the browser gets a chance to clear
+   anything. What comes back is also the honest thing to compare, the
+   429x928 buffer the renderer actually fills, rather than the browser's
+   upscale of it to the 1170x2532 device grid.
+
+   The wrapper installs once and does nothing until asked. */
+const grabCanvas = async () => {
+  await page.evaluate(() => {
+    const g = window.__neonx.game;
+    if (g.__grabWrapped) return;
+    const post = g.post, orig = post.process.bind(post);
+    post.process = (o) => {
+      orig(o);
+      if (g.__grabWant) {
+        g.__grabWant = false;
+        g.__grabbed = g.renderer.domElement.toDataURL("image/png");
+      }
+    };
+    g.__grabWrapped = true;
+  });
+  await page.evaluate(() => { window.__neonx.game.__grabbed = null;
+    window.__neonx.game.__grabWant = true; });
+  await page.waitForFunction(() => !!window.__neonx.game.__grabbed, { timeout: 300000 });
+  const url = await page.evaluate(() => {
+    const g = window.__neonx.game, d = g.__grabbed;
+    g.__grabbed = null;
+    return d;
+  });
+  return Buffer.from(url.slice(url.indexOf(",") + 1), "base64");
+};
+
 const freeze = () => page.evaluate(() => {
   const g = window.__neonx.game, t = g.traffic, p = g.post;
   for (const s of t.styles) s.mesh.visible = false;
@@ -393,8 +435,7 @@ if (!SKIP_LOOK) {
       try {
         await freeze();
         await waitFrames(6); // the POV frame blend settles to a fixed point
-        await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${pname}-${cname}.png`),
-          captureBeyondViewport: false, optimizeForSpeed: true });
+        writeFileSync(path.join(SHOTS, `${LABEL}-${pname}-${cname}.png`), await grabCanvas());
         /* The CONTROL, taken here rather than from a second run: the same
            frozen frame, shot again a couple of seconds later with nothing
            touched in between. Whatever it differs by is the renderer's own
@@ -404,8 +445,7 @@ if (!SKIP_LOOK) {
            compiled programs; this one is free and it is the same conditions. */
         if (CTL) {
           await waitFrames(2);
-          await page.screenshot({ path: path.join(CTL, `${LABEL}-${pname}-${cname}.png`),
-            captureBeyondViewport: false, optimizeForSpeed: true });
+          writeFileSync(path.join(CTL, `${LABEL}-${pname}-${cname}.png`), await grabCanvas());
         }
         await thaw();
         console.log("shot", pname, cname);
