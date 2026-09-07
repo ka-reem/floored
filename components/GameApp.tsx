@@ -257,98 +257,98 @@ export default function GameApp() {
     });
 
     function buildGame(mod: EngineModule) {
-    const game = new mod.Game(host, profile, {
-      toast: showToast,
-      exitHint: (t) => setExitHint(t),
-      /* game/hints.ts fires each tip once ever and never overlaps two, so this
-         only has to show, hold and let the CSS fade take it back down. */
-      hint: (h) => {
-        setHint(h);
-        setHintOn(true);
-        if (hintTimer.current) clearTimeout(hintTimer.current);
-        hintTimer.current = setTimeout(() => setHintOn(false), HINT_SHOW_MS);
-      },
-      pauseRequest: () => {
-        const s = screenRef.current;
-        if (s === "playing") {
-          gameRef.current?.setRunning(false);
-          emitRunEnd("pause");
-          setFromPause(true);
-          setScreen("paused");
-        } else if (s === "paused") {
-          gameRef.current?.setRunning(true);
-          setScreen("playing");
-        } else if (s === "photo") {
-          /* Esc in photo mode backs out of photo mode, it does not stack the
-             pause menu on top of it — same two calls as photoRequest's exit
-             branch, because leaving photo mode IS an unpause. */
-          gameRef.current?.photoExit();
-          gameRef.current?.setRunning(true);
-          setScreen("playing");
-        }
-      },
-      /* Photo mode is a pause that swaps which camera the frozen frame is
-         rendered through, so this mirrors pauseRequest exactly: setRunning is
-         the same sim freeze the pause menu uses, and the screen leaving
-         "playing" is what hides every piece of HUD chrome (all of it is
-         gated on `playing` below — nothing is hidden piecemeal). The engine's
-         photoEnter/photoExit only move the camera and its listeners. */
-      photoRequest: () => {
-        const s = screenRef.current;
-        if (s === "playing") {
-          gameRef.current?.setRunning(false);
-          gameRef.current?.photoEnter();
-          setScreen("photo");
-        } else if (s === "photo") {
-          gameRef.current?.photoExit();
-          gameRef.current?.setRunning(true);
-          setScreen("playing");
-        }
-      },
-      /* H TOGGLES. It used to only open: the guard was `=== "playing"`, so the
-         second press hit a closed door and the only way out was the mouse.
-         Opening and closing a screen with the same key is the whole point of
-         a single-key overlay, and the asymmetry was just a missing branch.
+      const game = new mod.Game(host, profile, {
+        toast: showToast,
+        exitHint: (t) => setExitHint(t),
+        /* game/hints.ts fires each tip once ever and never overlaps two, so this
+           only has to show, hold and let the CSS fade take it back down. */
+        hint: (h) => {
+          setHint(h);
+          setHintOn(true);
+          if (hintTimer.current) clearTimeout(hintTimer.current);
+          hintTimer.current = setTimeout(() => setHintOn(false), HINT_SHOW_MS);
+        },
+        pauseRequest: () => {
+          const s = screenRef.current;
+          if (s === "playing") {
+            gameRef.current?.setRunning(false);
+            emitRunEnd("pause");
+            setFromPause(true);
+            setScreen("paused");
+          } else if (s === "paused") {
+            gameRef.current?.setRunning(true);
+            setScreen("playing");
+          } else if (s === "photo") {
+            /* Esc in photo mode backs out of photo mode, it does not stack the
+               pause menu on top of it — same two calls as photoRequest's exit
+               branch, because leaving photo mode IS an unpause. */
+            gameRef.current?.photoExit();
+            gameRef.current?.setRunning(true);
+            setScreen("playing");
+          }
+        },
+        /* Photo mode is a pause that swaps which camera the frozen frame is
+           rendered through, so this mirrors pauseRequest exactly: setRunning is
+           the same sim freeze the pause menu uses, and the screen leaving
+           "playing" is what hides every piece of HUD chrome (all of it is
+           gated on `playing` below — nothing is hidden piecemeal). The engine's
+           photoEnter/photoExit only move the camera and its listeners. */
+        photoRequest: () => {
+          const s = screenRef.current;
+          if (s === "playing") {
+            gameRef.current?.setRunning(false);
+            gameRef.current?.photoEnter();
+            setScreen("photo");
+          } else if (s === "photo") {
+            gameRef.current?.photoExit();
+            gameRef.current?.setRunning(true);
+            setScreen("playing");
+          }
+        },
+        /* H TOGGLES. It used to only open: the guard was `=== "playing"`, so the
+           second press hit a closed door and the only way out was the mouse.
+           Opening and closing a screen with the same key is the whole point of
+           a single-key overlay, and the asymmetry was just a missing branch.
 
-         Closing goes through the same two calls `resume()` does — setRunning
-         then setScreen — rather than reusing resume() itself, because that one
-         also persists the profile, and a help screen has changed nothing worth
-         writing to disk.
+           Closing goes through the same two calls `resume()` does — setRunning
+           then setScreen — rather than reusing resume() itself, because that one
+           also persists the profile, and a help screen has changed nothing worth
+           writing to disk.
 
-         Only from "controls" reached BY H (fromPause). The same screen is
-         reachable from the main menu, where there is no game to resume and
-         setRunning(true) would start one under the menu. */
-      helpRequest: () => {
-        if (screenRef.current === "playing") {
-          gameRef.current?.setRunning(false);
-          emitRunEnd("help");
-          setFromPause(true);
-          setScreen("controls");
-        } else if (screenRef.current === "controls" && fromPauseRef.current) {
-          gameRef.current?.setRunning(true);
-          setFromPause(false);
-          setScreen("playing");
-        }
-      },
-    });
-    gameRef.current = game;
-    built = game;
-    rerender();
-    /* THE MENU IS IDLE TIME. The world build's two budgeted stages spend
-       their seconds downloading ~10 MB of bodyshells and donor models that
-       they do not ask for until they run — several seconds into a loading
-       screen — while the connection sat idle for the whole time the player
-       was reading this board. Ask for them now, at prefetch priority, so
-       those stages find them in the cache.
+           Only from "controls" reached BY H (fromPause). The same screen is
+           reachable from the main menu, where there is no game to resume and
+           setRunning(true) would start one under the menu. */
+        helpRequest: () => {
+          if (screenRef.current === "playing") {
+            gameRef.current?.setRunning(false);
+            emitRunEnd("help");
+            setFromPause(true);
+            setScreen("controls");
+          } else if (screenRef.current === "controls" && fromPauseRef.current) {
+            gameRef.current?.setRunning(true);
+            setFromPause(false);
+            setScreen("playing");
+          }
+        },
+      });
+      gameRef.current = game;
+      built = game;
+      rerender();
+      /* THE MENU IS IDLE TIME. The world build's two budgeted stages spend
+         their seconds downloading ~10 MB of bodyshells and donor models that
+         they do not ask for until they run — several seconds into a loading
+         screen — while the connection sat idle for the whole time the player
+         was reading this board. Ask for them now, at prefetch priority, so
+         those stages find them in the cache.
 
-       On idle rather than immediately: the engine chunk has only just
-       landed and the menu's own first frames matter more than a speculative
-       download. Nothing is parsed and no main-thread time is spent — see
-       game/prefetch.ts, which also declines the whole idea on a Save-Data
-       or 2g connection. */
-    whenIdle(() => {
-      if (gameRef.current === game) game.prefetchAssets();
-    });
+         On idle rather than immediately: the engine chunk has only just
+         landed and the menu's own first frames matter more than a speculative
+         download. Nothing is parsed and no main-thread time is spent — see
+         game/prefetch.ts, which also declines the whole idea on a Save-Data
+         or 2g connection. */
+      whenIdle(() => {
+        if (gameRef.current === game) game.prefetchAssets();
+      });
     }
 
     return () => {
