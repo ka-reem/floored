@@ -101,13 +101,11 @@ const RIM_SHRINK = 0.97;
 const WHEEL_SCALE = 1.60;
 
 const BASE = "/models/cockpits/";
-/** The two files a donor cabin needs, in the order attachCockpitModel asks
-    for them: the part manifest, then the mesh. They are fetched SERIALLY
-    there (the manifest decides nothing about the GLB, but the GLB load is
-    started from the manifest's .then), so a cold cabin costs a whole extra
-    round trip before its 5.7 MB even begins — which is most of why
-    game/prefetch.ts exists. Exported so the prefetch names the same two URLs
-    this module will. */
+/** The two files a donor cabin needs: the part manifest, then the mesh.
+    Exported so the menu-time prefetch (game/prefetch.ts, through player.ts's
+    donorAssetUrls) names the same two URLs attachCockpitModel will — build
+    stamp included, or the prefetched copy would be a different cache entry
+    from the one the real request looks for. */
 export const cockpitModelUrls = (name: string): string[] =>
   [buildStamped(`${BASE}${name}.json`), buildStamped(`${BASE}${name}.glb`)];
 
@@ -248,8 +246,6 @@ export function attachCockpitModel(
   name: string,
   onDone?: (h: CockpitModelHandle | null) => void,
 ): void {
-  let manifest: Manifest | null = null;
-
   const fail = (why: string, err?: unknown) => {
     console.warn(`[cockpitmodel] ${name}: ${why} — keeping the procedural dash`, err ?? "");
     onDone?.(null);
@@ -298,8 +294,7 @@ export function attachCockpitModel(
     meshP.catch(note("model failed to load")),
   ]).then(([m, scene]) => {
     if (failed || !m || !scene) return;
-    manifest = m as Manifest;
-    try { onDone?.(wire(cockpit, scene, manifest)); } catch (e) { fail("wiring failed", e); }
+    try { onDone?.(wire(cockpit, scene, m as Manifest)); } catch (e) { fail("wiring failed", e); }
   });
 }
 
