@@ -5,13 +5,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /* A token that changes with EVERY build, exposed to the client.
 
-   game/carpreview.ts keeps the garage's studio renders in localStorage so a
-   returning player does not pay to re-render five cars on every visit. That
-   is only safe while the stored PNGs still match what the code would draw
-   today, so the store is keyed on this: a new deployment gets a new key and
-   the old art is dropped rather than shown. Vercel's commit sha where there
-   is one, the config's own evaluation time otherwise — both change exactly
-   when a new bundle does. Read through lib/build.ts, never directly. */
+   Two things cache against it, and both are only safe while what they hold
+   still matches what this bundle would produce:
+
+     game/carpreview.ts keeps the garage's studio renders in localStorage, so
+     a returning player does not pay to re-render five cars on every visit.
+     A new deployment gets a new key and the old art is dropped, never shown.
+
+     lib/build.ts's buildStamped() puts it in the query of every /models/ URL
+     the game asks for, which is what lets the headers() rule below hand those
+     files a one-year immutable lifetime (see the note there).
+
+   Vercel's commit sha where there is one, the config's own evaluation time
+   otherwise — both change exactly when a new bundle does. Read through
+   lib/build.ts, never directly. */
 const BUILD_REV =
   process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) ||
   process.env.GITHUB_SHA?.slice(0, 12) ||
