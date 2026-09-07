@@ -1,4 +1,9 @@
 node_modules/
+# ...and the SYMLINK a git worktree needs. `node_modules/` matches the
+# directory only; a worktree has no node_modules of its own, so every lane
+# links the repo's, and that link is a file that walked straight past the
+# line above and into two commits before anyone noticed.
+node_modules
 .next/
 out/
 *.tsbuildinfo

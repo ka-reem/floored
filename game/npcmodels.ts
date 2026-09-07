@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { buildStamped } from "@/lib/build";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 /* Real bodyshells for the NPC fleet.
@@ -59,6 +60,12 @@ export interface NpcModel {
 }
 
 const BASE = "/models/cars/";
+
+/** Where a style's bodyshell lives. Exported so the menu-time prefetch
+    (game/prefetch.ts) can name the exact URLs loadNpcModels will ask for
+    rather than keeping a second copy of the path. */
+export const npcModelUrl = (style: string, base: string = BASE): string =>
+  buildStamped(`${base}${style}.glb`);
 
 /* ---- tail lenses ----------------------------------------------------------
    Not every bake tags real tail-lens pixels in `_LAMP` — the whole old
@@ -293,7 +300,7 @@ export function loadNpcModels(
         new Promise<void>((resolve) => {
           try {
             loader.load(
-              `${base}${style}.glb`,
+              npcModelUrl(style, base),
               (gltf) => {
                 try {
                   const m = extract(style, gltf as unknown as { scene: THREE.Object3D });
