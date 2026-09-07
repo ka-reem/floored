@@ -819,7 +819,13 @@ export default function GameApp() {
       )}
 
       {screen === "loading" && (
-        <LoadingScreen label={load.label} frac={load.frac} error={loadErr} />
+        <LoadingScreen
+          label={load.label}
+          frac={load.frac}
+          error={loadErr}
+          game={g}
+          onSettingChange={persist}
+        />
       )}
 
       {/* Pause: a post-mounted 620-wide board (Pause.dc.html) over the frozen
@@ -917,6 +923,126 @@ export default function GameApp() {
   );
 }
 
+/* ================= settings, while it loads =================
+
+   The owner's idea, verbatim: "for loading on mobile u can like tell it to
+   pick settings while it loads if its loading for a while that way they're
+   doing stuff and not waiting."
+
+   WHAT IT MAY OFFER is decided by the world build, not by taste. Every row
+   here writes ONLY `game.settings` (plus the profile) and is read live by
+   something that has not been built yet or is re-read every frame:
+
+     touch steering  readInput reads settings.steerMode every frame. Picking
+                     "tilt" also hooks the orientation listener, which iOS
+                     only grants inside a user gesture — the tap on the
+                     control IS that gesture, so it is the one place besides
+                     the DRIVE press where switching to tilt can work at all.
+     speed units     the HUD formats from settings.units; nothing is built
+                     from it.
+     volume          applied by setRunning(true) at the end of the load
+                     (audio.setLevels(s.vol, 1)), which happens after every
+                     one of these rows.
+     rival car       traffic.ts reads a module value, refreshed here through
+                     syncRivalMode, and claims its pool slot on the toggle
+                     rather than at construction — so it works whether or not
+                     the traffic stage has run yet.
+
+   WHAT IT MAY NOT OFFER, and why this panel is short: GRAPHICS. The preset
+   is consumed by the FIRST stage of the build (MIXING PAINT decides there
+   and then whether the photo scans are fetched at all) and half a dozen
+   later ones inherit that decision, so a preset control here would either
+   lie about what it did or force the build to start over. Same for the
+   render tier and the imported cabin. A control that cannot honour the tap
+   is worse than no control, so those rows stay in SETTINGS, where the world
+   is either not built yet or can be rebuilt around them.
+
+   IT APPEARS ONLY IF THE LOAD IS SLOW. SHOW_AFTER_MS is the owner's "if its
+   loading for a while": on a warm DRIVE, or a fast desktop, the load is over
+   before this exists and the board is exactly what it was. And it is not a
+   dialog — no overlay, no close button, nothing to dismiss. It is more of
+   the same board, under the bar, and it leaves with the screen.
+
+   ONE HONEST CAVEAT, stated here because it is a property of the loader and
+   not of this panel: each build stage is a single synchronous block, so a
+   tap that lands inside one is queued and answered at that stage's end
+   rather than immediately (loading.ts yields to a paint between stages, and
+   only between them). SHOW_AFTER_MS is set past the two longest blocking
+   stages for that reason as much as for the owner's. */
+const SHOW_AFTER_MS = 2500;
+
+function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) {
+  const [show, setShow] = useState(false);
+  const [, force] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setShow(true), SHOW_AFTER_MS);
+    return () => clearTimeout(t);
+  }, []);
+  if (!show) return null;
+  const s = game.settings;
+  /* No applySettings() call. Every row above is live-read or applied at
+     start(); calling it here would rebuild render targets and re-key shadow
+     programs in the middle of a stage that is mid-build, for no gain. */
+  const upd = (fn: (x: GameSettings) => void) => {
+    fn(s);
+    syncRivalMode(s);
+    onChange();
+    force((n) => n + 1);
+    track("load_settings_change", { device: deviceType() });
+  };
+  return (
+    <div className="loadSet">
+      <div className="loadSetHead">
+        <b>WHILE YOU WAIT</b>
+        <span className="ui-jp" lang="ja">設定</span>
+        <i>these apply to this drive</i>
+      </div>
+      <div className="loadSetRows">
+        <SignSrow name="Steering">
+          <SignSeg
+            label="Steering"
+            value={s.steerMode}
+            options={[
+              { v: "buttons", t: "BUTTONS" },
+              { v: "wheel", t: "WHEEL" },
+              { v: "slider", t: "SLIDER" },
+              { v: "tilt", t: "TILT" },
+            ]}
+            onChange={(v) =>
+              upd((x) => {
+                x.steerMode = v as GameSettings["steerMode"];
+                // same gesture rule as the DRIVE press — see drive()
+                if (x.steerMode === "tilt") game.hookTilt();
+              })
+            }
+          />
+        </SignSrow>
+        <SignSrow name="Speed units">
+          <SignSeg
+            label="Speed units"
+            value={s.units}
+            options={[{ v: "mph", t: "MPH" }, { v: "kmh", t: "KM/H" }]}
+            onChange={(v) => upd((x) => (x.units = v as SpeedUnits))}
+          />
+        </SignSrow>
+        <SignSrow name="Rival car" aside="— chase the orange one">
+          <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd((x) => (x.rival = v))} />
+        </SignSrow>
+        <SignSrow last stack name="Volume">
+          <SignSlider
+            label="Volume"
+            min={0}
+            max={100}
+            value={Math.round(s.vol * 100)}
+            text={`${Math.round(s.vol * 100)}%`}
+            onChange={(v) => upd((x) => (x.vol = v / 100))}
+          />
+        </SignSrow>
+      </div>
+    </div>
+  );
+}
+
 /* ================= loading screen ================= */
 
 /* Rendered from the DRIVE tap until the world is built and warmed — the toll
@@ -932,11 +1058,13 @@ export default function GameApp() {
    whole load — and the CSS carries the motion in between. The .loadRoot /
    .loadErr / .pct / .loadStatus hooks are what the harnesses read. */
 function LoadingScreen({
-  label, frac, error,
+  label, frac, error, game, onSettingChange,
 }: {
   label: string;
   frac: number;
   error: string | null;
+  game: Game | null;
+  onSettingChange: () => void;
 }) {
   return (
     <div className="loadRoot signLoad">
@@ -1000,6 +1128,7 @@ function LoadingScreen({
               <div className="sign-cap faint loadCap">
                 first press builds the whole town · the next DRIVE is instant
               </div>
+              {game && <LoadSettings game={game} onChange={onSettingChange} />}
             </>
           )}
         </div>
