@@ -40,6 +40,28 @@ const nextConfig = {
      chrome leaves empty: HUD bottom-left, minimap bottom-right, gear/⋯
      top-right. DEV ONLY: production builds never render the indicator. */
   devIndicators: { position: "top-left" },
+  /* MODELS ARE IMMUTABLE ONCE STAMPED. public/models/*.glb keep the same
+     filenames across builds while their contents change, so Next serves them
+     `public, max-age=0` and every request pays a revalidation round trip —
+     measured on Slow 4G, ~2 s for the 14 traffic bodyshells even when all
+     fourteen were already in the disk cache from the menu-time prefetch.
+
+     lib/build.ts's buildStamped() puts BUILD_REV in the query of every model
+     URL the game asks for, so a URL only survives a deploy if its file did.
+     The `has` clause is the safety catch: the year-long entry is handed out
+     ONLY to a request carrying a `v`, so a bare /models/... path — a test
+     harness, a hand-typed URL, anything that predates the stamping — keeps
+     the revalidate-always behaviour and can never be answered with a stale
+     year-old model. */
+  async headers() {
+    return [
+      {
+        source: "/models/:path*",
+        has: [{ type: "query", key: "v" }],
+        headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

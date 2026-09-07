@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { buildStamped } from "@/lib/build";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import type { Cockpit, SideGlassFit } from "./cockpit";
@@ -108,7 +109,7 @@ const BASE = "/models/cockpits/";
     game/prefetch.ts exists. Exported so the prefetch names the same two URLs
     this module will. */
 export const cockpitModelUrls = (name: string): string[] =>
-  [`${BASE}${name}.json`, `${BASE}${name}.glb`];
+  [buildStamped(`${BASE}${name}.json`), buildStamped(`${BASE}${name}.glb`)];
 
 /** Full-on level of the donor's fill light — see the light itself for why it is
     shaped the way it is. Shipped OFF (engine.ts's I key is what turns it on),
@@ -273,11 +274,12 @@ export function attachCockpitModel(
      gets the procedural dash. Meshopt rather than Draco because the decoder is
      a plain ES module that bundles with the app, where Draco needs wasm files
      served out of public/. */
-  const manifestP = fetch(`${BASE}${name}.json`)
+  const [manifestUrl, meshUrl] = cockpitModelUrls(name);
+  const manifestP = fetch(manifestUrl)
     .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`manifest HTTP ${r.status}`))));
   const meshP = new Promise<THREE.Group>((res, rej) => {
     new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(
-      `${BASE}${name}.glb`,
+      meshUrl,
       (gltf) => res(gltf.scene),
       undefined,
       rej,

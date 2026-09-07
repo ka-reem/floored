@@ -58,6 +58,27 @@ export const SHOW_DEV_SETTINGS: boolean = (() => {
     treat as "do not persist" rather than as a key. */
 export const BUILD_REV: string = process.env.NEXT_PUBLIC_BUILD_REV || "";
 
+/** Stamp a /public asset URL with the build it belongs to.
+ *
+ *  public/models/*.glb are NOT content-hashed the way the JS bundles are —
+ *  they keep the same filenames build after build while their contents change,
+ *  so the only safe cache header for them has been "revalidate every time".
+ *  That is a round trip per file before a single byte comes out of the disk
+ *  cache: measured on Slow 4G, the 14 traffic bodyshells cost ~2 s of pure
+ *  revalidation even when every one of them was already downloaded.
+ *
+ *  Adding the build's own token to the query makes the URL change whenever the
+ *  file might have, which is exactly what an immutable cache entry needs.
+ *  next.config.mjs serves /models/* with a one-year immutable lifetime ONLY
+ *  for requests that carry this `v` — an unstamped request keeps the old
+ *  revalidate-always behaviour, so nothing that asks for a bare path (a test
+ *  harness, a hand-typed URL) can ever be handed a stale year-old model.
+ *
+ *  Returns the url unchanged when there is no token, which is the same
+ *  fail-safe: no token, no immutable caching. */
+export const buildStamped = (url: string): string =>
+  BUILD_REV ? `${url}?v=${BUILD_REV}` : url;
+
 /** The game's own name, unqualified. */
 export const GAME_NAME = "NEON EXPRESSWAY";
 
