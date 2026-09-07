@@ -50,7 +50,20 @@ const SKIP_CENSUS = process.argv.includes("--no-census");
 const CTL = arg("--ctl", "");
 
 /* POV first: default view, and the frame the owner judges in. */
-const CAMS = [["pov", 3], ["chase", 0], ["cockpit", 1], ["hood", 2], ["console", 4]];
+const ALL_CAMS = [["pov", 3], ["chase", 0], ["cockpit", 1], ["hood", 2], ["console", 4]];
+/* --cams pov,cockpit,console narrows the sheet, and it is worth knowing why
+   you would: the FIRST switch to CHASE or HOOD makes the car's exterior
+   visible, which compiles every program that shell's materials need. On a
+   box with no GPU and no KHR_parallel_shader_compile that single frame takes
+   MINUTES — it cost this lane two runs before waitFrames() made it visible
+   rather than merely slow. The three in-car views share an already-compiled
+   set and cost seconds to move between. */
+const CAMS = (() => {
+  const want = arg("--cams", "");
+  if (!want) return ALL_CAMS;
+  const set = new Set(want.split(","));
+  return ALL_CAMS.filter(([n]) => set.has(n));
+})();
 const PLACES = [["open", 400], ["town", 2400]];
 /* The cost side is the slow half — a frame here costs seconds, so 45 of them
    per row is minutes. Every camera is priced on the open deck (that is where
