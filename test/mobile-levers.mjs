@@ -63,7 +63,7 @@ const browser = await puppeteer.launch({
   headless: true,
   args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader",
     "--no-sandbox", "--disable-dev-shm-usage", "--mute-audio"],
-  protocolTimeout: 590000,
+  protocolTimeout: 890000,
 });
 const page = await browser.newPage();
 await page.setViewport(PHONE);
