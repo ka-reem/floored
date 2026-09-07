@@ -2520,6 +2520,13 @@ export class Game {
   prefetchAssets(): string[] {
     if (this.loaded || this.prefetched || this.disposed) return [];
     this.prefetched = true;
+    /* Order is the order they are wanted in, with one exception: the fleet
+       (14 files, 2.7 MB) is what the FIRST budgeted stage waits on, and it is
+       the part that reliably finishes inside a menu dwell — the donor cabin is
+       5.7 MB on its own and on a slow link will not, whatever it is queued
+       behind. Putting the fleet first is what buys the measured
+       PUTTING CARS ON THE ROAD 5021 -> 2251 ms; leading with the cabin would
+       trade that certainty for a download that still does not land. */
     const urls = [
       ...FLEET_STYLES.map((s) => npcModelUrl(s)),
       ...donorAssetUrls(this.carId, this.renderTier),
