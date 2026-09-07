@@ -383,6 +383,16 @@ export default function GameApp() {
      every caller here already handles. */
   const ensureGame = useCallback(async (): Promise<Game | null> => {
     if (gameRef.current) return gameRef.current;
+    /* gameReady is set by a PASSIVE effect, which React schedules after the
+       commit rather than inside it — so a press dispatched from a microtask
+       (a harness, an autofill, an accessibility tool driving the page the
+       instant the row appears) can land before the effect has run and find
+       no promise to wait on at all. That press used to be swallowed in
+       silence, before this file split the engine out and equally after.
+       One turn of the event loop is all React needs to have flushed it. */
+    for (let i = 0; i < 3 && !gameReady.current; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
     if (gameReady.current) await gameReady.current;
     return gameRef.current;
   }, []);
