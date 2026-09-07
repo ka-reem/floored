@@ -983,19 +983,24 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
   /* No applySettings() call. Every row above is live-read or applied at
      start(); calling it here would rebuild render targets and re-key shadow
      programs in the middle of a stage that is mid-build, for no gain. */
-  const upd = (fn: (x: GameSettings) => void) => {
+  /* One door, like the settings panel's own upd(): every row names the key it
+     changed so the event says WHICH control people reach for while they wait,
+     and syncRivalMode runs whether or not the rival row was the one touched
+     (the same "wire it once" rule the panel follows). onChange writes the
+     profile — these are saved, not just applied to this drive. */
+  const upd = (key: string, fn: (x: GameSettings) => void) => {
     fn(s);
     syncRivalMode(s);
     onChange();
     force((n) => n + 1);
-    track("load_settings_change", { device: deviceType() });
+    track("load_settings_change", { setting: key, device: deviceType() });
   };
   return (
     <div className="loadSet">
       <div className="loadSetHead">
         <b>WHILE YOU WAIT</b>
         <span className="ui-jp" lang="ja">設定</span>
-        <i>these apply to this drive</i>
+        <i>saved as you pick</i>
       </div>
       <div className="loadSetRows">
         <SignSrow name="Steering">
@@ -1009,7 +1014,7 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
               { v: "tilt", t: "TILT" },
             ]}
             onChange={(v) =>
-              upd((x) => {
+              upd("steerMode", (x) => {
                 x.steerMode = v as GameSettings["steerMode"];
                 // same gesture rule as the DRIVE press — see drive()
                 if (x.steerMode === "tilt") game.hookTilt();
@@ -1022,11 +1027,11 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             label="Speed units"
             value={s.units}
             options={[{ v: "mph", t: "MPH" }, { v: "kmh", t: "KM/H" }]}
-            onChange={(v) => upd((x) => (x.units = v as SpeedUnits))}
+            onChange={(v) => upd("units", (x) => (x.units = v as SpeedUnits))}
           />
         </SignSrow>
         <SignSrow name="Rival car" aside="— chase the orange one">
-          <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd((x) => (x.rival = v))} />
+          <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd("rival", (x) => (x.rival = v))} />
         </SignSrow>
         <SignSrow last stack name="Volume">
           <SignSlider
@@ -1035,7 +1040,7 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             max={100}
             value={Math.round(s.vol * 100)}
             text={`${Math.round(s.vol * 100)}%`}
-            onChange={(v) => upd((x) => (x.vol = v / 100))}
+            onChange={(v) => upd("vol", (x) => (x.vol = v / 100))}
           />
         </SignSrow>
       </div>
