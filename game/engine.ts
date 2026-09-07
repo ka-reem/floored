@@ -2472,8 +2472,10 @@ export class Game {
              moves — for a few frames behind the loading screen. Whatever is
              still one-off cost gets paid here instead of in the player's first
              corner, and the canvas already holds a finished frame when the
-             overlay comes off, so the handoff has nothing to flash. */
-          await this.warmFrames(6, onStep);
+             overlay comes off, so the handoff has nothing to flash.
+
+             And not in the starting camera alone — see warmCameras. */
+          await this.warmCameras(onStep);
         },
       },
     ];
@@ -2574,6 +2576,47 @@ export class Game {
       };
       requestAnimationFrame(tick);
     });
+  }
+
+  /** Draw a real frame in EVERY camera mode before the loading screen comes
+      off, then leave the player in the one their profile says.
+
+      warmFrames alone only ever warmed the STARTING camera, and each mode
+      draws different things: CHASE and HOOD front the exterior body, which
+      updateCarVisual hides outright in every in-car view; the cabin views
+      draw an interior shell the outside views hide; the dashcam runs post.ts's
+      degrade chain. three links a shader program the first time a material is
+      actually DRAWN, and linking is a synchronous main-thread stall — so the
+      first press of C paid for a mode's programs right then, and only ever the
+      first time. That is exactly what the owner reported.
+
+      Measured (test/cam-hitch.mjs, cycling every mode twice): the first
+      DASHCAM -> CHASE switch linked 26 new programs and its worst frame ran
+      1.7x the same-length control sample taken without switching; the second
+      time round the identical switch linked 0 and the spike was gone.
+
+      One frame per mode is all a link needs (it happens during the draw), and
+      the cost of this stage is real load time on a slow device, so it does not
+      take more than that. The starting camera keeps the full settle it always
+      had, and goes LAST so the canvas still holds a finished frame in the
+      right view when the overlay lifts. */
+  private async warmCameras(onStep?: (frac: number) => void): Promise<void> {
+    const home = this.camMode;
+    const others = CAM_CYCLE.filter((m) => m !== home);
+    // one step per warmed mode, plus the settle back home
+    const total = others.length + 1;
+    try {
+      for (let i = 0; i < others.length; i++) {
+        this.camMode = others[i];
+        await this.warmFrames(2, (f) => onStep?.((i + f) / total));
+      }
+    } finally {
+      /* Whatever happens above — a throw, a dispose mid-warm — the player must
+         land in the camera their profile holds, not in whichever one the
+         warm-up stopped on. */
+      this.camMode = home;
+    }
+    await this.warmFrames(6, (f) => onStep?.((others.length + f) / total));
   }
 
   private onWindowError = (e: ErrorEvent) => {
