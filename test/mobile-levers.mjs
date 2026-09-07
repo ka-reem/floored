@@ -82,7 +82,14 @@ await page.evaluate(() => {
   if (g.perfMode) { g.perfMode = false; g.lastPR = -1; g.applySettings(g.settings); }
 });
 await sleep(10000);
-await page.evaluate(() => window.__neonx.setTime(22.0));
+await page.evaluate(() => {
+  const g = window.__neonx.game;
+  window.__neonx.setTime(22.0);
+  // and STOP the clock: at timeSpeed 150 a second of real time is two and a
+  // half minutes of game night, and on this box a frame is seconds. See the
+  // same note in test/mobile-ab.mjs.
+  g.timeSpeed = 0;
+});
 await sleep(2000);
 
 await page.evaluate((a) => {
@@ -107,6 +114,7 @@ await page.evaluate(() => {
   for (const c of t.cloudList) c.pts.visible = false;
   g.car.u = 0; g.car.v = 0; g.car.r = 0;
   g.running = false;
+  g.timeSpeed = 0; g.time = 22.0;
   const keep = new Set();
   for (let e = document.querySelector("canvas.game"); e; e = e.parentElement) keep.add(e);
   for (const e of document.body.querySelectorAll("*")) if (!keep.has(e)) e.style.visibility = "hidden";

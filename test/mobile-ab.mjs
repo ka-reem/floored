@@ -132,7 +132,25 @@ const latchedDuringLoad = await page.evaluate(() => {
 });
 if (latchedDuringLoad) console.log("note: perf mode had latched during load; reset");
 await sleep(10000);
-await page.evaluate(() => window.__neonx.setTime(22.0));
+/* Night, and STOPPED.
+
+   setTime(22.0) alone is not enough: the clock keeps running at
+   timeSpeed 150, so every second of real time is two and a half minutes of
+   game time. On a box where a frame takes seconds, the twenty-odd frames
+   between the teleport and the shutter are hours of in-game night — the sky
+   dome swaps texture, the exposure ramp moves, the ambient shape moves. Two
+   runs that spend different amounts of real time getting to the same pose
+   therefore photograph different nights, and the difference swamps whatever
+   the change under test did. (Measured, before it was fixed: 3.2% of the
+   frame's channel samples differed between two runs, peaking at 161/255,
+   for a change that touches only which render target a pass writes to.)
+
+   Zero the clock rate as well, so the hour is a constant of the harness. */
+await page.evaluate(() => {
+  const g = window.__neonx.game;
+  window.__neonx.setTime(22.0);
+  g.timeSpeed = 0;
+});
 await sleep(2000);
 
 const env = await page.evaluate(() => {
@@ -402,6 +420,8 @@ const freeze = () => page.evaluate(() => {
   for (const c of t.cloudList) c.pts.visible = false;
   g.car.u = 0; g.car.v = 0; g.car.r = 0;
   g.running = false;
+  // belt and braces on the hour — see the setTime note above
+  g.timeSpeed = 0; g.time = 22.0;
   const keep = new Set();
   for (let e = document.querySelector("canvas.game"); e; e = e.parentElement) keep.add(e);
   for (const e of document.body.querySelectorAll("*")) if (!keep.has(e)) e.style.visibility = "hidden";
