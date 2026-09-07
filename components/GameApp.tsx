@@ -51,6 +51,66 @@ function BetaMark({ sm }: { sm?: boolean }) {
   );
 }
 
+/* Press glow for the touch controls that are NOT .tc pucks — the ⋯ chip, the
+   pause gear, and every row of the quick drawer.
+
+   The pucks were deliberately moved off `:active` and onto a class written
+   from the same pointer events the input reads (bindPointerHold in
+   engine.ts), because :active is not the element's own idea of being pressed
+   under a touch pointer. These three were left behind on :active, and
+   measured on an emulated phone driven with real CDP multi-touch
+   (test/multitouch-glow-check.mjs) NONE of them lights at all — not as the
+   second finger and not as the first. All three carry
+   `touch-action: manipulation`, which leaves the browser a gesture it might
+   still claim, so it withholds the active state while it waits to see; the
+   tap is long over by the time it decides. #gearBtn never had an :active rule
+   at all.
+
+   Same fix as the pucks: light from the pointer event itself. GLOW_MIN_MS is
+   a floor so a fast tap is still visible, GLOW_MAX_MS a cap so nothing can
+   stay lit, and the release is bound at the WINDOW rather than on the element
+   because half of these presses close the sheet they sit on — an unmounted
+   element never receives its own pointerup. */
+const GLOW_MIN_MS = 130, GLOW_MAX_MS = 900;
+function useTapGlow() {
+  const held = useRef<{ el: HTMLElement; t0: number; timer: number } | null>(null);
+  const clear = useCallback(() => {
+    const s = held.current;
+    if (!s) return;
+    held.current = null;
+    clearTimeout(s.timer);
+    const left = Math.max(0, GLOW_MIN_MS - (performance.now() - s.t0));
+    window.setTimeout(() => {
+      // ...unless the same element has been pressed again since, whose glow
+      // this now-stale timer must not take away
+      if (held.current?.el !== s.el) s.el.classList.remove("pressed");
+    }, left);
+  }, []);
+  useEffect(() => {
+    const up = () => clear();
+    /* Capture phase: a handler that stopPropagation()s its own pointerdown
+       (#gearBtn and #tcMore both do) must not be able to strand a glow. */
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", up);
+    return () => {
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", up);
+      clear();
+    };
+  }, [clear]);
+  return useCallback(
+    (e: { currentTarget: EventTarget & HTMLElement }) => {
+      clear();
+      const el = e.currentTarget;
+      el.classList.add("pressed");
+      held.current = { el, t0: performance.now(), timer: window.setTimeout(clear, GLOW_MAX_MS) };
+    },
+    [clear],
+  );
+}
+
 /* ---- the engine is a SEPARATE DOWNLOAD from the menu ----
 
    game/engine.ts is the whole game: three.js, the world build, the traffic
@@ -605,6 +665,8 @@ export default function GameApp() {
     };
   }, [playing]);
   const tcHide = playing ? undefined : { display: "none" as const };
+  // press glow for the gear and the ⋯ chip — see useTapGlow
+  const tapGlow = useTapGlow();
 
   return (
     <>
@@ -664,6 +726,7 @@ export default function GameApp() {
           id="gearBtn"
           onPointerDown={(e) => {
             e.stopPropagation();
+            tapGlow(e);
             gameRef.current?.setRunning(false);
             emitRunEnd("pause");
             setFromPause(true);
@@ -690,6 +753,7 @@ export default function GameApp() {
           aria-label="More controls"
           onPointerDown={(e) => {
             e.stopPropagation();
+            tapGlow(e);
             setDrawer((d) => !d);
           }}
         >
@@ -1163,87 +1227,34 @@ function analogSteerLive() {
   return "ontouchstart" in window && matchMedia("(pointer:coarse)").matches;
 }
 
-/* Hub horn geometry and timing. HUB_R is the painted #swheelHub disc's radius
-   (keep in step with globals.css); DRAG_PX is how far a finger may wander and
-   still count as a press rather than a steering input; HOLD_MS is how long it
-   must rest before the horn sounds, which is what makes STEERING ALWAYS WIN —
-   a drag that starts on the hub has crossed DRAG_PX long before HOLD_MS is up,
-   so it steers in silence. A tap that lifts before HOLD_MS never sustained
-   anything, so it is answered on release with a STAB_MS blip: real horns
-   answer a stab, and without this the most natural gesture on a horn button
-   would be the one gesture that made no sound. */
-const HUB_R = 27, DRAG_PX = 10, HOLD_MS = 70, STAB_MS = 130;
+/* The analog steering wheel. Nothing but steering: the HORN boss that used
+   to sit in the middle of it — a second horn control, a hand's width from
+   the HORN puck that is on screen in every steer mode — was removed at the
+   owner's request ("the horn button over the steering wheel remove it!").
+   The horn itself is untouched: the #tcH puck and the F key both still
+   write the same keydown["f"] they always did.
 
+   With it went the whole hub-press discrimination — HUB_R/DRAG_PX/HOLD_MS/
+   STAB_MS, the pending-press timer, the stab blip and Game.setWheelHorn —
+   so a press anywhere on this wheel is a steering input and nothing else. */
 function SteerWheel({ game }: { game: Game }) {
   const [rot, setRot] = useState(0);
   const active = useRef(false);
   const pid = useRef<number | null>(null);
   const cx = useRef(0);
-  /* Hub-horn intent, tracked entirely alongside the steering state above and
-     never gating it: every steering line in the handlers below runs exactly as
-     it did before the hub existed. The worst a bug in here can do is honk or
-     fail to honk — it cannot cost the player a corner. */
-  const hornPend = useRef<{ id: number; x: number; y: number; timer: number } | null>(null);
-  const hornOn = useRef(false);
-  const stabTimer = useRef(0);
-  // Mirrors hornOn for the hub's lit state — a ref alone would not re-render.
-  const [hornLit, setHornLit] = useState(false);
-  const hornRelease = useCallback(() => {
-    const hp = hornPend.current;
-    if (!hp) return;
-    clearTimeout(hp.timer);
-    hornPend.current = null;
-    if (hornOn.current) {
-      hornOn.current = false;
-      setHornLit(false);
-      game.setWheelHorn(false, null);
-      return;
-    }
-    // Lifted inside HOLD_MS: a deliberate stab. Unwatchdogged (the finger is
-    // already gone) and released by this timer, which the unmount effect
-    // below also clears so a pause mid-stab cannot leave it sounding.
-    game.setWheelHorn(true, null);
-    setHornLit(true);
-    clearTimeout(stabTimer.current);
-    stabTimer.current = window.setTimeout(() => {
-      game.setWheelHorn(false, null);
-      setHornLit(false);
-    }, STAB_MS);
-  }, [game]);
-  /* Movement past DRAG_PX means the player is steering, not honking: drop the
-     intent and silence a horn that had already started. */
-  const hornCancel = useCallback(() => {
-    const hp = hornPend.current;
-    if (hp) clearTimeout(hp.timer);
-    hornPend.current = null;
-    if (hornOn.current) {
-      hornOn.current = false;
-      setHornLit(false);
-      game.setWheelHorn(false, null);
-    }
-  }, [game]);
   const end = useCallback(() => {
     active.current = false;
     pid.current = null;
     game.setWheelVal(0);
     game.setWheelPointer(null);
     setRot(0);
-    hornRelease();
-  }, [game, hornRelease]);
+  }, [game]);
   /* Pausing unmounts this widget mid-drag; without zeroing here the last
      deflection keeps feeding readInput and the car resumes at hard lock. */
   useEffect(
     () => () => {
       game.setWheelVal(0);
       game.setWheelPointer(null);
-      // Same reason, for the horn: a pause mid-honk (or mid-stab) unmounts
-      // this widget, and neither timer would otherwise ever fire its release.
-      const hp = hornPend.current;
-      if (hp) clearTimeout(hp.timer);
-      clearTimeout(stabTimer.current);
-      hornPend.current = null;
-      hornOn.current = false;
-      game.setWheelHorn(false, null);
     },
     [game],
   );
@@ -1284,40 +1295,12 @@ function SteerWheel({ game }: { game: Game }) {
         try {
           (e.target as HTMLElement).setPointerCapture(e.pointerId);
         } catch {}
-        /* Hub horn, armed only. Deliberately does NOT sound yet: the honk is
-           on a HOLD_MS timer so that a steering drag beginning on the hub —
-           which crosses DRAG_PX in a few ms — is silent. Hit-tested against
-           the wheel's own rect rather than a child element, so the hub owns
-           no pointers and cannot steal the capture set up two lines above. */
-        const r = e.currentTarget.getBoundingClientRect();
-        const dx = e.clientX - (r.left + r.width / 2);
-        const dy = e.clientY - (r.top + r.height / 2);
-        if (Math.hypot(dx, dy) > HUB_R) return;
-        const id = e.pointerId;
-        hornPend.current = {
-          id,
-          x: e.clientX,
-          y: e.clientY,
-          timer: window.setTimeout(() => {
-            // The press outlived HOLD_MS without becoming a drag: honk, and
-            // register the live pointer so the frame watchdog owns the release.
-            if (hornPend.current?.id !== id) return;
-            hornOn.current = true;
-            setHornLit(true);
-            game.setWheelHorn(true, id);
-          }, HOLD_MS),
-        };
       }}
       onPointerMove={(e) => {
         if (!active.current || e.pointerId !== pid.current) return;
         const v = Math.max(-1, Math.min(1, (e.clientX - cx.current) / 58));
         game.setWheelVal(v);
         setRot(v * 110);
-        // Steering wins, always: past DRAG_PX this is a drag, so the horn
-        // intent dies and a honk already sounding is cut.
-        const hp = hornPend.current;
-        if (hp && e.pointerId === hp.id && Math.hypot(e.clientX - hp.x, e.clientY - hp.y) > DRAG_PX)
-          hornCancel();
       }}
       onPointerUp={(e) => {
         if (e.pointerId === pid.current) end();
@@ -1332,14 +1315,6 @@ function SteerWheel({ game }: { game: Game }) {
       <div id="swheelInner" style={{ transform: `rotate(${rot}deg)` }}>
         ◠<br />│
       </div>
-      {/* The horn boss. Purely painted — pointer-events:none, no listeners —
-          because the wheel above already hit-tests HUB_R against its own rect;
-          a real element here would take the capture and break the drag that
-          starts on it. Sibling of swheelInner, not a child, so it stays put
-          while the spoke rotates. */}
-      <div id="swheelHub" className={hornLit ? "on" : undefined} aria-hidden="true">
-        HORN
-      </div>
     </div>
   );
 }
@@ -1347,7 +1322,8 @@ function SteerWheel({ game }: { game: Game }) {
 /* ================= touch steering slider ================= */
 
 /* Half the painted nub's width (globals.css #sslider .ssNub is 44px — the two
-   must move together, same contract as HUB_R above). The usable half-range is
+   must move together — the same paint-and-code contract the wheel's hub used
+   to carry). The usable half-range is
    the strip's half-width minus this, so a thumb at either end parks the nub
    flush inside the track at exactly full lock instead of poking past it. */
 const SLIDER_NUB_HALF = 22;
@@ -1528,6 +1504,8 @@ function QuickDrawer({
   onClose: () => void;
 }) {
   const [, force] = useState(0);
+  // every row is :active-only in CSS and so never lights on touch — see useTapGlow
+  const tapGlow = useTapGlow();
   const tap = (k: string) => {
     game.uiKeyTap(k);
     force((n) => n + 1);
@@ -1556,7 +1534,7 @@ function QuickDrawer({
         QUICK CONTROLS <span>クイック操作</span>
       </div>
       {rows.map((r) => (
-        <div key={r.k} className="qdRow" onPointerDown={() => tap(r.k)}>
+        <div key={r.k} className="qdRow" onPointerDown={(e) => { tapGlow(e); tap(r.k); }}>
           <span className="qdLabel">
             {r.en} <i>{r.jp}</i>
           </span>
@@ -1567,7 +1545,8 @@ function QuickDrawer({
           is to look at the road it put you back on. */}
       <div
         className="qdRow"
-        onPointerDown={() => {
+        onPointerDown={(e) => {
+          tapGlow(e);
           tap("n");
           onClose();
         }}
@@ -1584,7 +1563,8 @@ function QuickDrawer({
           sheet is gone once the mode is up. */}
       <div
         className="qdRow"
-        onPointerDown={() => {
+        onPointerDown={(e) => {
+          tapGlow(e);
           tap("o");
           onClose();
         }}

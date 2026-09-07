@@ -341,11 +341,6 @@ const HI_HOLD = 2;
     camera button, long enough to be seen at arm's length. */
 const TAP_FLASH_MS = 140;
 
-/* touchHolds key for the steering-wheel hub horn. Not an element id — the hub
-   is a painted disc with pointer-events:none and no listeners of its own; the
-   wheel's existing handlers do the hit test — so it needs a name that cannot
-   collide with a real puck's getElementById id. */
-const WHEEL_HORN_HOLD = "swheelHub";
 
 /* Minimum time a horn press stays audible, seconds. input.horn is a per-frame
    sample of keydown["f"], so without a floor a press and release that both
@@ -2477,8 +2472,11 @@ export class Game {
              moves — for a few frames behind the loading screen. Whatever is
              still one-off cost gets paid here instead of in the player's first
              corner, and the canvas already holds a finished frame when the
-             overlay comes off, so the handoff has nothing to flash. */
-          await this.warmFrames(6, onStep);
+             overlay comes off, so the handoff has nothing to flash.
+
+             And not only the half of the car the starting camera shows —
+             see warmCameras. */
+          await this.warmCameras(onStep);
         },
       },
     ];
@@ -2620,6 +2618,61 @@ export class Game {
       };
       requestAnimationFrame(tick);
     });
+  }
+
+  /** Draw ONE frame in the camera that shows the half of the car the player's
+      starting camera hides, then settle in their own camera.
+
+      three links a shader program the first time a material is actually
+      DRAWN, and linking is a synchronous main-thread stall. updateCarVisual
+      shows exactly one half of the car at a time — the interior shell in the
+      cabin views, the exterior body in CHASE and HOOD — and the load only
+      ever warmed the STARTING camera. The game ships in the dashcam, so the
+      entire car exterior was drawn, and linked, on the player's first press
+      of C. That is the reported hitch, and it can only ever happen once.
+
+      Measured with test/cam-hitch.mjs, which cycles every mode TWICE because
+      a link can only stall the first time:
+
+        first  DASHCAM -> CHASE:  +26 programs, worst frame 8166 ms vs 4733 control
+        second DASHCAM -> CHASE:   +0 programs, spike gone
+
+      ONE frame, and only for the opposite half. An earlier version warmed all
+      six modes and cost five extra frames; the measurement says four of them
+      bought nothing — COCKPIT, HOOD and BACKSEAT each linked +0, and CONSOLE
+      linked a handful against CHASE's 26. Load time is somebody else's whole
+      night and it is not worth a handful of programs.
+
+      The pairing is symmetric rather than a hardcoded CHASE: a profile that
+      starts in CHASE has never drawn the INTERIOR, so it warms the dashcam
+      instead. Same one frame either way.
+
+      A CHEAPER VARIANT WAS TRIED AND DOES NOT WORK — do not re-attempt it
+      without re-measuring. The idea was to spend no extra frame at all and
+      instead force both halves visible during the frames the load already
+      renders. Measured, the first DASHCAM -> CHASE switch still linked +25
+      programs: with the lens inside the shell the exterior's meshes have
+      bounding spheres the frustum misses, so three culls them, and a culled
+      mesh never reaches a draw call and links nothing. Clearing frustumCulled
+      across the subtree to force them through made the load crash the tab on
+      this box. Actually putting the camera where the mode puts it is what
+      works. */
+  private async warmCameras(onStep?: (frac: number) => void): Promise<void> {
+    const home = this.camMode;
+    // the camera that draws the half `home` does not
+    const other = this.inCar() ? CAM_CHASE : CAM_POV;
+    try {
+      /* 1, not 2: warmFrames(1) still renders exactly one full frame — the
+         render loop's own rAF is already queued ahead of the tick that
+         resolves it — and one drawn frame is what links a mode's programs. */
+      this.camMode = other;
+      await this.warmFrames(1, (f) => onStep?.(f * 0.2));
+    } finally {
+      /* Whatever happens above — a throw, a dispose mid-warm — the player must
+         land in the camera their profile holds, not in the warmed one. */
+      this.camMode = home;
+    }
+    await this.warmFrames(6, (f) => onStep?.(0.2 + f * 0.8));
   }
 
   private onWindowError = (e: ErrorEvent) => {
@@ -3367,7 +3420,7 @@ export class Game {
          recover — without this guard it instead ZEROES its key on every
          frame the key is down, whoever put it down. That bites as soon as
          two things can press one key: the idle HORN puck's empty hold was
-         cutting the wheel hub's honk within a frame of it starting. It also
+         cutting short a honk started elsewhere within a frame of it. It also
          means a physical keyboard on a touch device could never hold W, A,
          S, D or F at all, since each has a puck sitting on it. */
       if (hold.ids.size === 0) continue;
@@ -3386,11 +3439,13 @@ export class Game {
     }
   }
 
-  /** Is `key` still held by some OTHER live touch hold? Two controls now
-      share "f" — the HORN puck and the steering-wheel hub (setWheelHorn) —
-      and either may be released while the other is still pressed. Without
-      this, letting go of one zeroes the key under the other and the horn
-      cuts out with a finger still on it. Holds whose ids are empty are
+  /** Is `key` still held by some OTHER live touch hold? Written when two
+      controls shared "f" — the HORN puck and the steering-wheel hub — and
+      either could be released while the other was still pressed, zeroing the
+      key under a finger that was still on it. The hub is gone (the owner had
+      it removed), but the guard is not about the hub: it is what makes it
+      safe for any two controls to write one key, and the pucks still sit on
+      keys a physical keyboard can also hold. Holds whose ids are empty are
       already released (bindPointerHold clears the set before calling onUp,
       and the blur reset clears every set), so size is the live test. */
   private keyStillHeld(key: string) {
@@ -3400,37 +3455,15 @@ export class Game {
 
   /** Counts down HORN_MIN_S from the last horn press edge (see readInput). */
   private hornMinT = 0;
-  /** Arm the minimum-honk floor. Called from all three press edges — the F
-      key, the HORN puck and the wheel hub — rather than from the per-frame
-      read, because the whole point is to catch a press the per-frame read
-      never sees. Idempotent: re-arming mid-honk just refreshes the floor. */
+  /** Arm the minimum-honk floor. Called from both press edges — the F key and
+      the HORN puck — rather than from the per-frame read, because the whole
+      point is to catch a press the per-frame read never sees. Idempotent:
+      re-arming mid-honk just refreshes the floor. */
   private armHorn() {
-    /* Throttled: every press edge (key, puck, wheel hub) lands here, and a
-       "beep beep beep" burst is one use of the horn, not three events. */
+    /* Throttled: both press edges (the F key and the HORN puck) land here,
+       and a "beep beep beep" burst is one use of the horn, not three. */
     trackThrottled("horn_used", undefined, 8000);
     this.hornMinT = HORN_MIN_S;
-  }
-
-  /** Horn from the steering-wheel hub — see SteerWheel in GameApp, which owns
-      the tap/drag discrimination. Writes the same keydown["f"] the HORN puck
-      and the keyboard write, so there is exactly one horn path downstream.
-
-      `pointerId` non-null registers the press in touchHolds under a synthetic
-      id, which buys the hub the identical third release path every puck has:
-      watchdogTouchInput drops it the frame that pointer leaves livePointers,
-      so a gesture hijack that eats the touch stream cannot leave the horn
-      blaring. Null is the tap-stab — its finger is already off the glass, so
-      it must NOT be watchdogged (that would kill the stab on the next frame);
-      the caller's own timer releases it. */
-  setWheelHorn(on: boolean, pointerId: number | null) {
-    if (on) {
-      this.keydown["f"] = 1;
-      this.armHorn();
-      if (pointerId !== null) this.touchHolds.set(WHEEL_HORN_HOLD, { key: "f", ids: new Set([pointerId]) });
-      return;
-    }
-    this.touchHolds.delete(WHEEL_HORN_HOLD);
-    if (!this.keyStillHeld("f")) this.keydown["f"] = 0;
   }
 
   private bindInput() {
@@ -3462,8 +3495,9 @@ export class Game {
           if (key === "f") this.armHorn();
         },
         () => {
-          // "f" is shared with the wheel hub; never zero it out from under
-          // a control that is still pressed (see keyStillHeld).
+          // never zero a key out from under a control that is still
+          // pressed — "f" and the WASD keys can each have more than one
+          // holder (a puck and a physical keyboard). See keyStillHeld.
           if (!this.keyStillHeld(key)) this.keydown[key] = 0;
         },
       );
@@ -3686,10 +3720,9 @@ export class Game {
     this.input.st += clamp(sTarget - this.input.st, -sRate * dt, sRate * dt);
     if (!sL && !sR && !analog) this.input.st *= Math.max(0, 1 - 6.5 * dt);
     this.input.hb = kd[" "] ? 1 : 0;
-    /* One horn path for all three inputs: the F key, the HORN puck (bindHold)
-       and the steering-wheel hub (setWheelHorn) all write keydown["f"], so the
-       mix, the NPC reaction and the release edge behave identically whichever
-       one honked. The HORN_MIN_S floor is OR'd in so a press too short to be
+    /* One horn path for both inputs: the F key and the HORN puck (bindHold)
+       both write keydown["f"], so the mix, the NPC reaction and the release
+       edge behave identically whichever one honked. The HORN_MIN_S floor is OR'd in so a press too short to be
        caught by this per-frame sample still sounds (see armHorn). */
     this.input.horn = kd["f"] || this.hornMinT > 0 ? 1 : 0;
   }
