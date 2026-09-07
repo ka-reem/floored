@@ -137,62 +137,12 @@ const env = await page.evaluate(() => {
 });
 console.log("env", JSON.stringify(env));
 
-/* ---- 1. the look sheet ---- */
-const freeze = () => page.evaluate(() => {
-  const g = window.__neonx.game, t = g.traffic, p = g.post;
-  for (const s of t.styles) s.mesh.visible = false;
-  t.wheelInst.visible = false; t.poolInst.visible = false;
-  for (const c of t.cloudList) c.pts.visible = false;
-  g.car.u = 0; g.car.v = 0; g.car.r = 0;
-  g.running = false;
-  const keep = new Set();
-  for (let e = document.querySelector("canvas.game"); e; e = e.parentElement) keep.add(e);
-  for (const e of document.body.querySelectorAll("*")) if (!keep.has(e)) e.style.visibility = "hidden";
-  if (!window.__realNow) window.__realNow = performance.now.bind(performance);
-  const T = 3000000;
-  performance.now = () => T;
-  const RD = window.__RealDate || (window.__RealDate = Date);
-  const FIXED = 1767225600000;
-  window.Date = function (...a) { return a.length ? new RD(...a) : new RD(FIXED); };
-  window.Date.now = () => FIXED;
-  p.overAt = -999;
-  p.updateOverlay(T / 1000);
-});
-const thaw = () => page.evaluate(() => {
-  const g = window.__neonx.game, t = g.traffic;
-  for (const s of t.styles) s.mesh.visible = true;
-  t.wheelInst.visible = true; t.poolInst.visible = true;
-  for (const c of t.cloudList) c.pts.visible = true;
-  for (const e of document.body.querySelectorAll("*")) e.style.visibility = "";
-  performance.now = window.__realNow;
-  window.Date = window.__RealDate;
-  g.running = true;
-});
+/* ---- 1. the cost ----
 
-if (!SKIP_LOOK) {
-  for (const [pname, z] of PLACES) {
-    for (const [cname, ci] of CAMS) {
-      await page.evaluate((a) => {
-        window.__neonx.setCam(a.ci);
-        window.__neonx.toCorridor(a.z, 0, 1);
-        window.__neonx.setInput({ th: 0 });
-      }, { z, ci });
-      await sleep(5000);
-      await page.evaluate((a) => {
-        window.__neonx.toCorridor(a.z, 0, 1);
-        window.__neonx.setInput({ th: 0 });
-      }, { z });
-      await sleep(2500);
-      await freeze();
-      await sleep(2500);   // the POV frame blend settles to a fixed point
-      await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${pname}-${cname}.png`) });
-      await thaw();
-      console.log("shot", pname, cname);
-    }
-  }
-}
-
-/* ---- 2. the cost ---- */
+   Measured BEFORE the look sheet, deliberately. The renderer process on this
+   box does occasionally die part way through a long run, and when it does,
+   whatever came first is what survives — so the numbers go first and the
+   pictures, which are cheap to re-take, go last. */
 const rows = [];
 if (!SKIP_PERF) {
   await page.evaluate(() => {
@@ -220,8 +170,10 @@ if (!SKIP_PERF) {
      only runs from inside the car, and the POV degrade only in POV, so the
      views have genuinely different budgets and a change can help one and
      hurt another. */
+  outer:
   for (const [pname, z, cams] of PERF_ROWS) {
     for (const [cname, ci] of cams) {
+     try {
       await page.evaluate((a) => {
         const nx = window.__neonx, g = nx.game;
         nx.setCam(a.ci);
@@ -275,17 +227,21 @@ if (!SKIP_PERF) {
         `passes ${String(r.passesPerFrame).padStart(6)}`,
         `Mpx/f ${String(r.mpxPerFrame).padStart(8)}`);
       writeFileSync(OUT, JSON.stringify({ label: LABEL, tier: TIER, env, frames: FRAMES, rows }, null, 2));
+     } catch (e) {
+       console.log("LOST THE TAB during", pname, cname, String(e.message || e).slice(0, 120));
+       break outer;
+     }
     }
   }
 }
-/* ---- 3. scene census: what the draw calls and triangles are actually FOR ----
+/* ---- 2. scene census: what the draw calls and triangles are actually FOR ----
 
    Not estimated — measured with three's own culling. The scene is rendered
    once with everything on to get the totals, then once per top-level child
    with that child hidden; the drop in renderer.info.render is exactly what
    that subtree was submitting. Costs one extra frame per node, which on this
    box is seconds, and answers "931k triangles of WHAT" without a guess in it. */
-if (!SKIP_CENSUS) {
+if (!SKIP_CENSUS) try {
   await page.evaluate(() => {
     window.__neonx.setCam(3);
     window.__neonx.toCorridor(400, 90, 1);
@@ -320,6 +276,74 @@ if (!SKIP_CENSUS) {
   for (const n of census.nodes)
     console.log(`  ${String(n.node).padEnd(26)} ${String(n.calls).padStart(4)} calls  ${String(n.tris).padStart(8)} tris`);
   writeFileSync(OUT.replace(/\.json$/, "-census.json"), JSON.stringify(census, null, 2));
+} catch (e) {
+  console.log("census skipped:", String(e.message || e).slice(0, 120));
+}
+
+/* ---- 3. the look sheet ---- */
+const freeze = () => page.evaluate(() => {
+  const g = window.__neonx.game, t = g.traffic, p = g.post;
+  for (const s of t.styles) s.mesh.visible = false;
+  t.wheelInst.visible = false; t.poolInst.visible = false;
+  for (const c of t.cloudList) c.pts.visible = false;
+  g.car.u = 0; g.car.v = 0; g.car.r = 0;
+  g.running = false;
+  const keep = new Set();
+  for (let e = document.querySelector("canvas.game"); e; e = e.parentElement) keep.add(e);
+  for (const e of document.body.querySelectorAll("*")) if (!keep.has(e)) e.style.visibility = "hidden";
+  if (!window.__realNow) window.__realNow = performance.now.bind(performance);
+  const T = 3000000;
+  performance.now = () => T;
+  const RD = window.__RealDate || (window.__RealDate = Date);
+  const FIXED = 1767225600000;
+  window.Date = function (...a) { return a.length ? new RD(...a) : new RD(FIXED); };
+  window.Date.now = () => FIXED;
+  p.overAt = -999;
+  p.updateOverlay(T / 1000);
+});
+const thaw = () => page.evaluate(() => {
+  const g = window.__neonx.game, t = g.traffic;
+  for (const s of t.styles) s.mesh.visible = true;
+  t.wheelInst.visible = true; t.poolInst.visible = true;
+  for (const c of t.cloudList) c.pts.visible = true;
+  for (const e of document.body.querySelectorAll("*")) e.style.visibility = "";
+  performance.now = window.__realNow;
+  window.Date = window.__RealDate;
+  g.running = true;
+});
+
+if (!SKIP_LOOK) {
+  let tabAlive = true;
+  for (const [pname, z] of PLACES) {
+    if (!tabAlive) break;
+    for (const [cname, ci] of CAMS) {
+      await page.evaluate((a) => {
+        window.__neonx.setCam(a.ci);
+        window.__neonx.toCorridor(a.z, 0, 1);
+        window.__neonx.setInput({ th: 0 });
+      }, { z, ci });
+      await sleep(5000);
+      await page.evaluate((a) => {
+        window.__neonx.toCorridor(a.z, 0, 1);
+        window.__neonx.setInput({ th: 0 });
+      }, { z });
+      await sleep(2500);
+      try {
+        await freeze();
+        await sleep(2500); // the POV frame blend settles to a fixed point
+        await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${pname}-${cname}.png`) });
+        await thaw();
+        console.log("shot", pname, cname);
+      } catch (e) {
+        /* A SwiftShader tab that has lost its renderer process throws here and
+           will throw for everything after it. Say which shot died and stop —
+           the cost numbers and the census are already on disk. */
+        console.log("LOST THE TAB at", pname, cname, String(e.message || e).slice(0, 120));
+        tabAlive = false;
+        break;
+      }
+    }
+  }
 }
 
 writeFileSync(OUT, JSON.stringify({ label: LABEL, tier: TIER, env, frames: FRAMES, rows }, null, 2));
