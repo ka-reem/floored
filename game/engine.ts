@@ -2469,7 +2469,8 @@ export class Game {
              corner, and the canvas already holds a finished frame when the
              overlay comes off, so the handoff has nothing to flash.
 
-             And not in the starting camera alone — see warmCameras. */
+             And not only the half of the car the starting camera shows —
+             see warmCameras. */
           await this.warmCameras(onStep);
         },
       },
@@ -2573,70 +2574,59 @@ export class Game {
     });
   }
 
-  /** Draw a real frame in EVERY camera mode before the loading screen comes
-      off, then leave the player in the one their profile says.
+  /** Draw ONE frame in the camera that shows the half of the car the player's
+      starting camera hides, then settle in their own camera.
 
-      warmFrames alone only ever warmed the STARTING camera, and each mode
-      draws different things: CHASE and HOOD front the exterior body, which
-      updateCarVisual hides outright in every in-car view; the cabin views
-      draw an interior shell the outside views hide; the dashcam runs post.ts's
-      degrade chain. three links a shader program the first time a material is
-      actually DRAWN, and linking is a synchronous main-thread stall — so the
-      first press of C paid for a mode's programs right then, and only ever the
-      first time. That is exactly what the owner reported.
+      three links a shader program the first time a material is actually
+      DRAWN, and linking is a synchronous main-thread stall. updateCarVisual
+      shows exactly one half of the car at a time — the interior shell in the
+      cabin views, the exterior body in CHASE and HOOD — and the load only
+      ever warmed the STARTING camera. The game ships in the dashcam, so the
+      entire car exterior was drawn, and linked, on the player's first press
+      of C. That is the reported hitch, and it can only ever happen once.
 
-      Measured (test/cam-hitch.mjs, cycling every mode twice): the first
-      DASHCAM -> CHASE switch linked 26 new programs and its worst frame ran
-      1.7x the same-length control sample taken without switching; the second
-      time round the identical switch linked 0 and the spike was gone.
+      Measured with test/cam-hitch.mjs, which cycles every mode TWICE because
+      a link can only stall the first time:
 
-      One frame per mode is all a link needs (it happens during the draw), and
-      the cost of this stage is real load time, so it takes no more than that.
-      Two frames each was tried first and cost 93 s of the loading screen on
-      this box's software rasteriser against 47 s for one — the same programs
-      for twice the wait. The starting camera keeps the full settle it always
-      had, and goes LAST so the canvas still holds a finished frame in the
-      right view when the overlay lifts.
+        first  DASHCAM -> CHASE:  +26 programs, worst frame 8166 ms vs 4733 control
+        second DASHCAM -> CHASE:   +0 programs, spike gone
 
-      WHAT IT COSTS, measured back-to-back in one session because this box
-      drifts by a third over an hour (test/load-time.mjs, ROLLING OUT's own
-      milliseconds): baseline 42.9 s, this 94.8 s, baseline again 57.7 s. So
-      five extra frames roughly double the stage HERE. That ratio is a
-      SwiftShader artefact — a frame costs ~10 s on a software rasteriser, so
-      five cheap frames read as five expensive ones. On real hardware the
-      added cost is each mode's own one-off first-use work, which is exactly
-      what the player was paying across their first five presses of C.
+      ONE frame, and only for the opposite half. An earlier version warmed all
+      six modes and cost five extra frames; the measurement says four of them
+      bought nothing — COCKPIT, HOOD and BACKSEAT each linked +0, and CONSOLE
+      linked a handful against CHASE's 26. Load time is somebody else's whole
+      night and it is not worth a handful of programs.
+
+      The pairing is symmetric rather than a hardcoded CHASE: a profile that
+      starts in CHASE has never drawn the INTERIOR, so it warms the dashcam
+      instead. Same one frame either way.
 
       A CHEAPER VARIANT WAS TRIED AND DOES NOT WORK — do not re-attempt it
-      without re-measuring. The idea was to skip the extra frames entirely and
-      instead force the exterior body visible alongside the interior during
-      the frames the load already renders, so both sets of materials draw in
-      one pass. Measured, the first DASHCAM -> CHASE switch still linked +25
+      without re-measuring. The idea was to spend no extra frame at all and
+      instead force both halves visible during the frames the load already
+      renders. Measured, the first DASHCAM -> CHASE switch still linked +25
       programs: with the lens inside the shell the exterior's meshes have
       bounding spheres the frustum misses, so three culls them, and a culled
-      mesh is never drawn and never linked. Clearing frustumCulled across the
-      subtree to force them through made the load crash the tab on this box.
-      Actually putting the camera where the mode puts it is what works. */
+      mesh never reaches a draw call and links nothing. Clearing frustumCulled
+      across the subtree to force them through made the load crash the tab on
+      this box. Actually putting the camera where the mode puts it is what
+      works. */
   private async warmCameras(onStep?: (frac: number) => void): Promise<void> {
     const home = this.camMode;
-    const others = CAM_CYCLE.filter((m) => m !== home);
-    // one step per warmed mode, plus the settle back home
-    const total = others.length + 1;
+    // the camera that draws the half `home` does not
+    const other = this.inCar() ? CAM_CHASE : CAM_POV;
     try {
-      for (let i = 0; i < others.length; i++) {
-        this.camMode = others[i];
-        /* 1, not 2: warmFrames(1) still renders exactly one full frame — the
-           loop's own rAF is already queued ahead of the tick that resolves
-           it — and one drawn frame is what links a mode's programs. */
-        await this.warmFrames(1, (f) => onStep?.((i + f) / total));
-      }
+      /* 1, not 2: warmFrames(1) still renders exactly one full frame — the
+         render loop's own rAF is already queued ahead of the tick that
+         resolves it — and one drawn frame is what links a mode's programs. */
+      this.camMode = other;
+      await this.warmFrames(1, (f) => onStep?.(f * 0.2));
     } finally {
       /* Whatever happens above — a throw, a dispose mid-warm — the player must
-         land in the camera their profile holds, not in whichever one the
-         warm-up stopped on. */
+         land in the camera their profile holds, not in the warmed one. */
       this.camMode = home;
     }
-    await this.warmFrames(6, (f) => onStep?.((others.length + f) / total));
+    await this.warmFrames(6, (f) => onStep?.(0.2 + f * 0.8));
   }
 
   private onWindowError = (e: ErrorEvent) => {
