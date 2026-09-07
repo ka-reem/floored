@@ -203,6 +203,11 @@ for (const [name, z, note] of PLACES) {
 
   r.place = name; r.z = z; r.note = note;
   rows.push(r);
+  /* Written after EVERY place, not once at the end. A SwiftShader tab with
+     three lanes on four cores does sometimes lose its renderer process
+     mid-run, and a run that measured three places and then threw away all
+     three because it died on the fourth costs half an hour for nothing. */
+  writeFileSync(OUT, JSON.stringify({ label: LABEL, url: URL, tier: TIER, cam: CAM, env, frames: FRAMES, rows }, null, 2));
   console.log(
     name.padEnd(9),
     `med ${String(r.med).padStart(7)}`,
@@ -215,7 +220,6 @@ for (const [name, z, note] of PLACES) {
   if (SHOTS) await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${name}.png`) });
 }
 
-writeFileSync(OUT, JSON.stringify({ label: LABEL, url: URL, tier: TIER, cam: CAM, env, frames: FRAMES, rows }, null, 2));
 console.log("\nwrote", OUT);
 await browser.close();
 if (errors.length) {
