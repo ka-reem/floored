@@ -244,6 +244,24 @@ export interface TierCaps {
       degrade. Desktop stays at 2. */
   mirrorEvery?: number;
 
+  /** Ceiling on anisotropic filtering for world textures (textures.makeTex
+      and the PBR set loader, which both ask for 16).
+
+      Anisotropy is a per-fragment tap multiplier, and it spends itself on
+      exactly the surfaces that fill a driving frame: the road, seen at a
+      grazing angle from a dashcam, is the geometry that makes the sampler
+      take every tap it is allowed. 16 of them is the right answer for a
+      desktop frame at DPR 1.75 off a 1024-px deck atlas. It is not the right
+      answer on a phone, where the same road is sampled into a 429-px-wide
+      buffer from a 256-px atlas (deckTexPx above) and then halved again by
+      the dashcam pass — the taps are resolving detail two other caps have
+      already thrown away.
+
+      A ceiling, not a value: three clamps to the driver maximum anyway, and
+      anything that wants to be crisper than this (the instrument cluster,
+      the car's own paint) sets its own anisotropy and is untouched. */
+  texAniso?: number;
+
   /** Stream the 1024px-atlas HD NPC bodyshells (public/models/cars-hd/)
       after the first drivable frame and hot-swap them into the fleet.
       Desktop-only: the BASE fleet everyone loads is already the same
@@ -270,6 +288,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     povFxaa: false,
     sunShadow: false,
     mirrorEvery: 3,
+    texAniso: 4,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -286,6 +305,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     povFxaa: false,
     sunShadow: false,
     mirrorEvery: 3,
+    texAniso: 8,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -302,6 +322,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     povFxaa: true,
     sunShadow: true,
     mirrorEvery: 2,
+    texAniso: 16,
   },
 };
 
