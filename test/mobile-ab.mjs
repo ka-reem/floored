@@ -308,6 +308,26 @@ if (!SKIP_CENSUS) try {
 }
 
 /* ---- 3. the look sheet ---- */
+/* Wait for N frames to actually be RENDERED, rather than for N seconds.
+
+   This is what a camera switch needs. Flipping to CHASE makes the car's
+   exterior visible for the first time, which makes three compile every
+   program that shell's materials need — on a box with no GPU and no
+   KHR_parallel_shader_compile that is not a hitch, it is tens of seconds,
+   and it is exactly the interval a fixed `sleep(5000)` was spending. The
+   first look sheet caught it: the CHASE, COCKPIT and HOOD frames came back
+   byte-for-byte IDENTICAL to each other, i.e. three captures of a canvas
+   that had not been redrawn since the switch.
+
+   Counting rAF ticks in the page instead makes the wait scale with the
+   machine: N ticks is N frames drawn, whether that takes 200 ms or a
+   minute. */
+const waitFrames = (n) => page.evaluate((n) => new Promise((res) => {
+  let i = 0;
+  const tick = () => (++i >= n ? res(i) : requestAnimationFrame(tick));
+  requestAnimationFrame(tick);
+}), n);
+
 const freeze = () => page.evaluate(() => {
   const g = window.__neonx.game, t = g.traffic, p = g.post;
   for (const s of t.styles) s.mesh.visible = false;
@@ -349,15 +369,17 @@ if (!SKIP_LOOK) {
         window.__neonx.toCorridor(a.z, 0, 1);
         window.__neonx.setInput({ th: 0 });
       }, { z, ci });
-      await sleep(5000);
+      // 10 drawn frames, not 5 seconds — see waitFrames. The first of these
+      // is where a camera switch pays for its shader compiles.
+      await waitFrames(10);
       await page.evaluate((a) => {
         window.__neonx.toCorridor(a.z, 0, 1);
         window.__neonx.setInput({ th: 0 });
       }, { z });
-      await sleep(2500);
+      await waitFrames(6);   // camera smoothing settles on the parked pose
       try {
         await freeze();
-        await sleep(2500); // the POV frame blend settles to a fixed point
+        await waitFrames(6); // the POV frame blend settles to a fixed point
         await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${pname}-${cname}.png`),
           captureBeyondViewport: false, optimizeForSpeed: true });
         /* The CONTROL, taken here rather than from a second run: the same
@@ -368,7 +390,7 @@ if (!SKIP_LOOK) {
            control still, but it is also ten minutes and a different set of
            compiled programs; this one is free and it is the same conditions. */
         if (CTL) {
-          await sleep(2000);
+          await waitFrames(2);
           await page.screenshot({ path: path.join(CTL, `${LABEL}-${pname}-${cname}.png`),
             captureBeyondViewport: false, optimizeForSpeed: true });
         }
