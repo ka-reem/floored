@@ -231,6 +231,19 @@ export interface TierCaps {
       see engine.sunShadow() for why the per-frame writer had to go. */
   sunShadow?: boolean;
 
+  /** Render the cockpit mirror every Nth frame.
+
+      The mirror is a SECOND FULL SCENE TRAVERSAL. Its 160x64 target
+      (mirrorHalf above) makes it nearly free in pixels and not free at all
+      in the half of a frame that runs on the CPU: the same frustum walk, the
+      same few hundred draw calls, the same uniform uploads as the main pass,
+      every time it runs. At every 2nd frame that is half a scene's worth of
+      CPU added to every frame.
+
+      3 is 20 Hz at 60 fps, in a 160x64 rectangle, seen through the dashcam
+      degrade. Desktop stays at 2. */
+  mirrorEvery?: number;
+
   /** Stream the 1024px-atlas HD NPC bodyshells (public/models/cars-hd/)
       after the first drivable frame and hot-swap them into the fleet.
       Desktop-only: the BASE fleet everyone loads is already the same
@@ -256,6 +269,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     sceneMsaa: 0,
     povFxaa: false,
     sunShadow: false,
+    mirrorEvery: 3,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -271,6 +285,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     sceneMsaa: 0,
     povFxaa: false,
     sunShadow: false,
+    mirrorEvery: 3,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -286,6 +301,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     sceneMsaa: 4,
     povFxaa: true,
     sunShadow: true,
+    mirrorEvery: 2,
   },
 };
 

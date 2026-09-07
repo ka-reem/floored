@@ -6311,7 +6311,11 @@ export class Game {
     // ~15% of its frame, so it needs the rear view rendered as well — and the
     // console camera stares straight up the centreline at it, which is the one
     // place in the car where the mirror is dead ahead rather than off to a side
-    if (this.mirror && this.frameN % 2 === 0 && this.inCar()) this.renderMirror();
+    /* Cadence from the tier (tierCaps.mirrorEvery): every 2nd frame on
+       desktop, every 3rd on the mobile tiers, where the cost of this pass is
+       not its 160x64 of pixels but the second scene traversal behind them. */
+    if (this.mirror && this.frameN % (this.tierCaps.mirrorEvery ?? 2) === 0 && this.inCar())
+      this.renderMirror();
     /* The wet-road reflection source is no longer a second scene render: it
        is built inside post.process() from the bloom bright pass, which is
        already there (see the WET-ROAD REFLECTION block in world/mats.ts for
