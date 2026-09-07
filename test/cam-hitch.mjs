@@ -35,7 +35,7 @@ const arg = (k, d) => {
 const URL = arg("--url", "http://localhost:3703");
 const LABEL = arg("--label", "run");
 const OUT = arg("--out", `/tmp/cam-hitch-${LABEL}.json`);
-const FRAMES = Number(arg("--frames", 8));
+const FRAMES = Number(arg("--frames", 3));
 
 // cycle order from engine.ts CAM_CYCLE, and the names indexed by camMode
 const CAM_CYCLE = [0, 1, 2, 4, 5, 3];
@@ -48,7 +48,12 @@ const browser = await puppeteer.launch({
     "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader",
     "--no-sandbox", "--disable-dev-shm-usage", "--mute-audio",
   ],
-  defaultViewport: { width: 960, height: 600 },
+  /* Small on purpose. SwiftShader on this shared box renders one frame of
+     this scene in SECONDS at 960x600, which made the run take half an hour
+     and die on a protocol timeout. Program COUNT — the load-bearing number
+     here — does not depend on viewport, and frame time on a software
+     rasteriser is only ever read as before/after on the same box. */
+  defaultViewport: { width: 640, height: 400 },
   protocolTimeout: 590000,
 });
 const page = await browser.newPage();
@@ -70,7 +75,7 @@ const programs = () =>
    evaluate() spanning every frame blows puppeteer's protocolTimeout. */
 async function sample(frames) {
   const dt = [];
-  for (let got = 0; got < frames; got += 4) {
+  for (let got = 0; got < frames; got += 3) {
     const part = await page.evaluate(async (n) => {
       const out = [];
       await new Promise((resolve) => {
@@ -84,7 +89,7 @@ async function sample(frames) {
         requestAnimationFrame(tick);
       });
       return out;
-    }, Math.min(4, frames - got));
+    }, Math.min(3, frames - got));
     dt.push(...part);
   }
   const s = dt.slice().sort((a, b) => a - b);
@@ -100,6 +105,13 @@ await page.evaluate(() => {
 await sleep(4000);
 
 const rows = [];
+/* Written after EVERY row, not at the end: a run this slow can lose the tab
+   to the shared box before it finishes, and a partial first cycle is still
+   the answer. */
+const flush = () => {
+  mkdirSync(path.dirname(OUT), { recursive: true });
+  writeFileSync(OUT, JSON.stringify({ label: LABEL, url: URL, frames: FRAMES, rows }, null, 2));
+};
 for (const pass of [1, 2]) {
   for (const mode of CAM_CYCLE) {
     // control: the same number of frames, in the mode we are already in
@@ -123,6 +135,7 @@ for (const pass of [1, 2]) {
       `(+${after - before} programs)   control max ${String(ctl.max).padStart(8)} ` +
       `(+${cAfter - cBefore})`
     );
+    flush();
   }
 }
 
@@ -144,7 +157,6 @@ console.log(camOnly > 0
   ? `  => ${camOnly} programs are attributable to switching camera rather than to elapsed time.`
   : "  => switching camera links no more programs than sitting still does.");
 
-mkdirSync(path.dirname(OUT), { recursive: true });
-writeFileSync(OUT, JSON.stringify({ label: LABEL, url: URL, frames: FRAMES, rows }, null, 2));
+flush();
 console.log("wrote", OUT);
 await browser.close();
