@@ -150,8 +150,27 @@ for (const [aId, aKey, bId, bKey] of PAIRS) {
   await sleep(300);
 }
 
+/* ---- phase 2: press one, then the NEXT one, one finger at a time -------
+   The owner's words also read as sequential ("two buttons ... like the next
+   one"), and a latch left behind by the first press would only ever show on
+   the second. Cheap to rule out, so rule it out. */
+for (const [aId, aKey, bId, bKey] of PAIRS) {
+  await touchDown(1, await centre(aId));
+  await touchUp(1);
+  await touchDown(1, await centre(bId));
+  const bLit = await lit(bId), bKeyV = await keydown(bKey);
+  check(`${bId} lights when pressed AFTER ${aId} was released`, bLit && bKeyV === 1,
+        `pressed=${bLit} key=${bKeyV}`);
+  await touchUp(1);
+  const aRes = await keydown(aKey), bRes = await keydown(bKey);
+  check(`${aId}/${bId} both released after the sequence`, aRes === 0 && bRes === 0,
+        `${aKey}=${aRes} ${bKey}=${bRes}`);
+  await sleep(200);
+}
+
 /* Regression guard: a lost pointer must still release every hold. Press two,
-   then blur the window without ever lifting a finger. */
+   then blur the window without ever lifting a finger. Runs BEFORE phase 3,
+   which opens the drawer and changes the layout under everything. */
 {
   const a = await centre("tcG"), b = await centre("tcB");
   await touchDown(1, a);
@@ -163,8 +182,96 @@ for (const [aId, aKey, bId, bKey] of PAIRS) {
   const keys = await page.evaluate(() => ({ w: window.__neonx.game.keydown.w, s: window.__neonx.game.keydown.s }));
   check("blur releases BOTH holds", stuck.length === 0 && !keys.w && !keys.s,
         `stuck=[${stuck}] keys=${JSON.stringify(keys)}`);
-  live.clear();
-  await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] }).catch(() => {});
+  await touchUp(2);
+  await touchUp(1);
+  await sleep(300);
+}
+
+/* ---- phase 3: the controls that are NOT hold pucks --------------------
+   bindPointerHold's `pressed` class is only on the seven .tc pucks. The other
+   things a thumb lands on during a drive — the ⋯ chip, the drawer rows, the
+   CAM tap — light by other means, and each is checked the same way: does its
+   PAINT change when it is the second finger, and does it change when it is
+   the only finger? A control that lights alone and not in company is the bug
+   the owner is describing. */
+const paint = (id) => page.evaluate((i) => {
+  const e = document.getElementById(i) || document.querySelector(i);
+  if (!e) return null;
+  const s = getComputedStyle(e);
+  return [s.borderColor, s.backgroundColor, s.boxShadow].join(" | ");
+}, id);
+
+// settle short enough to still be inside a 140 ms tap flash
+const FLASH_PEEK = 40;
+async function tapDown(id, p, wait = FLASH_PEEK) {
+  live.set(id, p);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: pts() });
+  await sleep(wait);
+}
+
+const SECONDARY = [
+  ["tcG", "w", "tcC", "the CAM tap"],
+  ["tcG", "w", "tcF", "the LTS puck"],
+  ["tcG", "w", "tcMore", "the ⋯ drawer chip"],
+];
+for (const [holdId, holdKey, tgt, what] of SECONDARY) {
+  const h = await centre(holdId), t = await centre(tgt);
+  if (!h || !t) { check(`${tgt} on screen`, false, "not laid out"); continue; }
+
+  // alone: does this control light at all on a single finger?
+  const idle = await paint(tgt);
+  await tapDown(3, t);
+  const alone = await paint(tgt);
+  await touchUp(3);
+  await sleep(250);
+
+  // in company: same press, but with a finger already down on a puck
+  await touchDown(1, h);
+  await tapDown(2, t);
+  const together = await paint(tgt);
+  const holdStill = await lit(holdId);
+  await touchUp(2);
+  await touchUp(1);
+  await sleep(250);
+
+  check(`${what} (#${tgt}) lights on its own`, alone !== idle, `idle=${idle} pressed=${alone}`);
+  check(`${what} (#${tgt}) lights as the SECOND finger`, together !== idle,
+        `idle=${idle} second=${together}`);
+  check(`${holdId} keeps its glow under ${what}`, holdStill, `pressed=${holdStill}`);
+  if (alone !== idle && together === idle)
+    console.log(`       ^ lights alone but NOT in company — this is the reported bug`);
+  // the ⋯ chip TOGGLES the drawer; two presses above left it closed again,
+  // but make sure, so phase 4 starts from a known layout
+  await page.evaluate(() => {
+    if (document.getElementById("tcDrawer")?.classList.contains("open"))
+      document.getElementById("tcMore")?.dispatchEvent(
+        new PointerEvent("pointerdown", { pointerId: 77, bubbles: true }));
+  });
+  await sleep(400);
+}
+
+/* ---- phase 4: the drawer rows, which are also :active-only ------------- */
+{
+  await page.evaluate(() => document.getElementById("tcMore")?.dispatchEvent(
+    new PointerEvent("pointerdown", { pointerId: 78, bubbles: true })));
+  await sleep(600);
+  const rowBox = await page.evaluate(() => {
+    const r = document.querySelector("#tcDrawer .qdRow");
+    if (!r) return null;
+    const b = r.getBoundingClientRect();
+    r.id = r.id || "qdRow0";
+    return b.width ? { id: r.id, x: b.left + b.width / 2, y: b.top + b.height / 2 } : null;
+  });
+  if (!rowBox) check("a drawer row is on screen", false, "drawer did not open");
+  else {
+    const idle = await paint(rowBox.id);
+    await tapDown(4, { x: rowBox.x, y: rowBox.y });
+    const alone = await paint(rowBox.id);
+    await touchUp(4);
+    check(`a drawer row (.qdRow) lights when pressed`, alone !== idle,
+          `idle=${idle} pressed=${alone}`);
+  }
+  await sleep(400);
 }
 
 mkdirSync(path.dirname(OUT), { recursive: true });

@@ -1387,6 +1387,12 @@ body.touch #gearBtn {
 #gearBtn:hover {
   border-color: var(--border-strong);
 }
+/* The gear had no pressed state at all, which on touch — where there is no
+   hover either — meant a tap with no acknowledgement. See useTapGlow. */
+#gearBtn.pressed {
+  border-color: var(--accent-line);
+  background: rgba(30, 40, 75, 0.35);
+}
 #gearBtn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -1433,7 +1439,13 @@ body.touch #tcMore {
 #tcMore.dim {
   opacity: 0.4;
 }
-#tcMore:active {
+/* `.pressed` is written by useTapGlow (GameApp.tsx) from the pointer event
+   itself. :active alone never fires for this chip on a phone: touch-action is
+   `manipulation`, so the browser holds the active state back while it decides
+   whether the touch is a gesture, and the tap ends first. Same reasoning that
+   put `.pressed` on the .tc pucks. */
+#tcMore:active,
+#tcMore.pressed {
   border-color: var(--accent-line);
   background: rgba(30, 40, 75, 0.35);
 }
@@ -1513,7 +1525,8 @@ body.touch #tcDrawer {
   touch-action: manipulation;
   transition: background 0.12s var(--ease);
 }
-.qdRow:active {
+.qdRow:active,
+.qdRow.pressed {
   background: var(--accent-soft);
 }
 .qdLabel {

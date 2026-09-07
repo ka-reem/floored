@@ -51,6 +51,66 @@ function BetaMark({ sm }: { sm?: boolean }) {
   );
 }
 
+/* Press glow for the touch controls that are NOT .tc pucks — the ⋯ chip, the
+   pause gear, and every row of the quick drawer.
+
+   The pucks were deliberately moved off `:active` and onto a class written
+   from the same pointer events the input reads (bindPointerHold in
+   engine.ts), because :active is not the element's own idea of being pressed
+   under a touch pointer. These three were left behind on :active, and
+   measured on an emulated phone driven with real CDP multi-touch
+   (test/multitouch-glow-check.mjs) NONE of them lights at all — not as the
+   second finger and not as the first. All three carry
+   `touch-action: manipulation`, which leaves the browser a gesture it might
+   still claim, so it withholds the active state while it waits to see; the
+   tap is long over by the time it decides. #gearBtn never had an :active rule
+   at all.
+
+   Same fix as the pucks: light from the pointer event itself. GLOW_MIN_MS is
+   a floor so a fast tap is still visible, GLOW_MAX_MS a cap so nothing can
+   stay lit, and the release is bound at the WINDOW rather than on the element
+   because half of these presses close the sheet they sit on — an unmounted
+   element never receives its own pointerup. */
+const GLOW_MIN_MS = 130, GLOW_MAX_MS = 900;
+function useTapGlow() {
+  const held = useRef<{ el: HTMLElement; t0: number; timer: number } | null>(null);
+  const clear = useCallback(() => {
+    const s = held.current;
+    if (!s) return;
+    held.current = null;
+    clearTimeout(s.timer);
+    const left = Math.max(0, GLOW_MIN_MS - (performance.now() - s.t0));
+    window.setTimeout(() => {
+      // ...unless the same element has been pressed again since, whose glow
+      // this now-stale timer must not take away
+      if (held.current?.el !== s.el) s.el.classList.remove("pressed");
+    }, left);
+  }, []);
+  useEffect(() => {
+    const up = () => clear();
+    /* Capture phase: a handler that stopPropagation()s its own pointerdown
+       (#gearBtn and #tcMore both do) must not be able to strand a glow. */
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", up);
+    return () => {
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", up);
+      clear();
+    };
+  }, [clear]);
+  return useCallback(
+    (e: { currentTarget: EventTarget & HTMLElement }) => {
+      clear();
+      const el = e.currentTarget;
+      el.classList.add("pressed");
+      held.current = { el, t0: performance.now(), timer: window.setTimeout(clear, GLOW_MAX_MS) };
+    },
+    [clear],
+  );
+}
+
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
 
@@ -453,6 +513,8 @@ export default function GameApp() {
     };
   }, [playing]);
   const tcHide = playing ? undefined : { display: "none" as const };
+  // press glow for the gear and the ⋯ chip — see useTapGlow
+  const tapGlow = useTapGlow();
 
   return (
     <>
@@ -512,6 +574,7 @@ export default function GameApp() {
           id="gearBtn"
           onPointerDown={(e) => {
             e.stopPropagation();
+            tapGlow(e);
             gameRef.current?.setRunning(false);
             emitRunEnd("pause");
             setFromPause(true);
@@ -538,6 +601,7 @@ export default function GameApp() {
           aria-label="More controls"
           onPointerDown={(e) => {
             e.stopPropagation();
+            tapGlow(e);
             setDrawer((d) => !d);
           }}
         >
@@ -1242,6 +1306,8 @@ function QuickDrawer({
   onClose: () => void;
 }) {
   const [, force] = useState(0);
+  // every row is :active-only in CSS and so never lights on touch — see useTapGlow
+  const tapGlow = useTapGlow();
   const tap = (k: string) => {
     game.uiKeyTap(k);
     force((n) => n + 1);
@@ -1270,7 +1336,7 @@ function QuickDrawer({
         QUICK CONTROLS <span>クイック操作</span>
       </div>
       {rows.map((r) => (
-        <div key={r.k} className="qdRow" onPointerDown={() => tap(r.k)}>
+        <div key={r.k} className="qdRow" onPointerDown={(e) => { tapGlow(e); tap(r.k); }}>
           <span className="qdLabel">
             {r.en} <i>{r.jp}</i>
           </span>
@@ -1281,7 +1347,8 @@ function QuickDrawer({
           is to look at the road it put you back on. */}
       <div
         className="qdRow"
-        onPointerDown={() => {
+        onPointerDown={(e) => {
+          tapGlow(e);
           tap("n");
           onClose();
         }}
@@ -1298,7 +1365,8 @@ function QuickDrawer({
           sheet is gone once the mode is up. */}
       <div
         className="qdRow"
-        onPointerDown={() => {
+        onPointerDown={(e) => {
+          tapGlow(e);
           tap("o");
           onClose();
         }}
