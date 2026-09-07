@@ -28,8 +28,13 @@ for (let i = 0; i < process.argv.length; i++) {
 }
 mkdirSync(path.dirname(OUT), { recursive: true });
 
+/* Classify a target by its width against the canvas, with a couple of pixels
+   of slack: the half-res pair is `w >> 1`, so at an odd canvas width it is one
+   pixel short of exactly half and an exact test files it under quarter. */
 const CLASS = (w, h, canvasW) =>
-  w >= canvasW * 0.9 ? "screen-sized" : w * 2 >= canvasW ? "half res" : h <= 80 ? "mirror" : "quarter res";
+  h <= 80 ? "mirror"
+    : w * 2 >= canvasW - 2 ? (w >= canvasW - 2 ? "screen-sized" : "half res")
+      : "quarter res";
 const COLOR = { "screen-sized": "#e8624a", "half res": "#e8a33d", "quarter res": "#4d9de0", mirror: "#7bc86c" };
 const ORDER = ["screen-sized", "half res", "quarter res", "mirror"];
 
@@ -54,8 +59,8 @@ for (const r of runs) {
 }
 
 const MAX = Math.max(...series.map((s) => s.total));
-const W = 1180, BARH = 62, GAP = 46, LEFT = 240, RIGHT = 40, TOP = 108;
-const H = TOP + series.length * (BARH + GAP) + 96;
+const W = 1440, BARH = 62, GAP = 46, LEFT = 250, RIGHT = 40, TOP = 108;
+const H = TOP + series.length * (BARH + GAP) + 104;
 const barW = W - LEFT - RIGHT;
 const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
