@@ -1514,15 +1514,45 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.mbMat.uniforms.uMB.value = this.histValid ? mb : 0;
       this.mbMat.uniforms.uPeriph.value = doPeriph ? speedT : 0;
       this.runPass(this.mbMat, this.mbRT);
-      this.copyMat.uniforms.tIn.value = this.mbRT.texture;
-      this.runPass(this.copyMat, this.prevRT);
-      this.histValid = true;
       cur = this.mbRT;
+      /* History by SWAP, not by copy.
+
+         The blend needs last frame's output to still exist when this frame
+         runs. It used to get that by rendering a full-screen copy of mbRT
+         into prevRT — a whole extra screen-sized read+write, every frame, on
+         top of a chain that already runs four of them. Swapping the two
+         handles instead gives exactly the same thing for no pixels at all:
+         the target we just wrote becomes next frame's `prevRT`, and the one
+         the blend just READ becomes the target we write next frame. The two
+         are the same size and format, nothing outside this method holds
+         either handle across a frame boundary, and the write covers the
+         whole target, so whatever stale content it inherits is gone before
+         anything samples it.
+
+         `cur` is captured BEFORE the swap and stays pointing at the target
+         that actually holds this frame's blended image — the POV degrade
+         below consumes it as `tFull`, and the non-POV branch copies it to
+         the screen. Reading `this.mbRT` after this line would get the wrong
+         one, which is why nothing does.
+
+         Output is bit-identical: same shader, same inputs, same order. */
+      const swap = this.mbRT;
+      this.mbRT = this.prevRT;
+      this.prevRT = swap;
+      this.histValid = true;
       // in POV the blended frame is the *input* to the degrade, not the output:
       // the smear is optical and happens at the lens, the noise and the codec
       // artefacts come after it. Keeping grain out of the history also stops
       // the blend from dragging comet trails of it across the frame.
-      if (!pov) this.runPass(this.copyMat, null);
+      //
+      // tIn is bound HERE. It used to arrive already bound, as a side effect
+      // of the history copy that ran a few lines up; with that copy gone the
+      // binding has to be made on purpose, or this pass blits whatever the
+      // last user of copyMat left in it (the dashcam soft downsample).
+      if (!pov) {
+        this.copyMat.uniforms.tIn.value = cur.texture;
+        this.runPass(this.copyMat, null);
+      }
     }
     if (pov) {
       // impact-glitch envelope: quadratic ease-out reaches exactly 0 at
@@ -1563,7 +1593,8 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.povMat.uniforms.tLow.value = this.povA.texture;
       this.povMat.uniforms.tSmear.value = this.povB.texture;
       // the mirror shield's clean layer: the full-res pre-degrade frame (cur
-      // is always mbRT here — POV forces doFinal on). Live even on holdFrame
+      // is whichever of the blend pair this frame wrote — POV forces doFinal
+      // on, so it is always set). Live even on holdFrame
       // frames, which is right: the DVR "drops a frame" but the shielded
       // glass is presented as unmangled optics, not part of the encode.
       this.povMat.uniforms.tFull.value = cur.texture;
