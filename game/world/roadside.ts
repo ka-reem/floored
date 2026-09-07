@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { mulberry32, rrand, rrandi, type Rng } from "../util";
 import { makeTex } from "../textures";
 import {
-  getCorridor, roadSeed, signPlan, PITCH, PHASE, TOLL,
+  getCorridor, roadSeed, signPlan, PITCH, PHASE, TOLL, OVERPASSES,
 } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
@@ -139,7 +139,11 @@ function foliageAtlasTex(rng: Rng): THREE.Texture {
       for (let k = 0; k < 14; k++)
         blob(cx + rrand(rng, -30, 30), crownY + rrand(rng, -16, 22),
           rrand(rng, 11, 18), GREENS[rrandi(rng, 0, 1)], 0.95);
-      speckle(x0 + 24, y0 + 24, 208, 156, 80);
+      // hugs the lobe cluster: a speckle that lands in open canvas becomes a
+      // detached blob floating beside the crown once the tree is big enough
+      // on screen to see it (rrand's DRAW COUNT is unchanged, so the shared
+      // stream — and therefore every plant position below — is untouched)
+      speckle(x0 + 54, y0 + 44, 148, 112, 80);
     };
     /** conifer: narrowing ragged layers — reads at every distance */
     const conifer = (x0: number, y0: number) => {
@@ -156,7 +160,7 @@ function foliageAtlasTex(rng: Rng): THREE.Texture {
             GREENS[rng() < 0.25 ? 2 : rng() < 0.6 ? 0 : 3], 0.92);
         }
       }
-      speckle(x0 + 48, y0 + 28, 160, 196, 44);
+      speckle(x0 + 66, y0 + 40, 124, 186, 44);
     };
     /** poplar/columnar: tall narrow crown almost to the ground */
     const poplar = (x0: number, y0: number) => {
@@ -170,7 +174,7 @@ function foliageAtlasTex(rng: Rng): THREE.Texture {
           blob(cx + rrand(rng, -half, half), ly + rrand(rng, -8, 8),
             rrand(rng, 6, 11), GREENS[rrandi(rng, 0, 2)], 0.9);
       }
-      speckle(x0 + 62, y0 + 20, 132, 210, 44);
+      speckle(x0 + 80, y0 + 38, 96, 192, 44);
     };
     /** low bush dome — the gutter-weed and scrub-accent tile */
     const bush = (x0: number, y0: number) => {
@@ -412,6 +416,116 @@ export function buildRoadside(
       : r < 0.65 ? TILE.leafA : TILE.leafB;
   };
 
+  /* ---- how high a crown has to reach to be SEEN from the deck -------------
+     Measured on the shipping build: the deck surface sits at y 10, the
+     terrain the trunks stand on is flattened to y 0 all the way along the
+     corridor (terrain.h returns 0 for x > ~468, and the centreline never
+     leaves x 500 ± 62), the parapet coping is at deck + 1.05 and the dashcam
+     eye at deck + 1.30. The first-rank trees were sized so their crowns
+     stopped at deck + 1.5 (median) — i.e. half a metre over the coping and
+     0.2 m UNDER the driver's eye. Two things follow and both kill them:
+
+       · the grazing sightline over the coping, from the eye at deck + 1.30
+         across the parapet at halfWidth, has already fallen to deck + 0.7 by
+         the time it reaches a trunk 26 m out — so about ONE metre of a
+         twelve-metre tree cleared the wall;
+       · what did clear it sat within half a metre of eye level, which is the
+         horizon line, so at any real distance the whole planting collapsed
+         into the horizon and vanished.
+
+     A quarter of them had crowns that stopped BELOW the deck surface
+     entirely. So this is a height problem, not a lateral one — and note that
+     moving trees INWARD makes it worse, because the parapet is a near
+     occluder: the closer the trunk, the steeper the wall's shadow over it.
+
+     The fix is to plant what a 10 m viaduct through wooded country actually
+     runs past: mature 15-21 m specimens whose crowns top out well above the
+     driver's head, not saplings whose tips graze the barrier. Trunks stay on
+     their own sampled terrain — nothing is lifted off the ground, nothing
+     floats over a viaduct; the trees are simply the size the road's height
+     demands.
+
+     THREE HEIGHTS, MIXED. Rendered as options, the owner asked for all of
+     them at once — "it can randomly spawn at 0 A or B, preferably A or B
+     tho, that way it has some randomness and feels diff". So each tree
+     draws a tier: 0 is the original planting, kept as the occasional young
+     tree whose top sits around the coping (a few give the line depth; a lot
+     of them would just be the bug he reported again), A is the height that
+     puts the crown over the driver's eye, B the taller canopy the road runs
+     inside. Weighted toward A and B. Stated as metres of CROWN TOP above the
+     deck at the same z. */
+  const TIERS: readonly (readonly [number, number])[] = [
+    [-1.5, 4],   // 0 — young growth, tops around the parapet
+    [5.5, 10.5], // A — crown over the eye line
+    [9, 15],     // B — canopy
+  ];
+
+  /* Which tier a plant gets — and this is deliberately NOT a draw off `rng`.
+     That stream is the shared, seed-forked one this whole file spends in a
+     fixed order: one extra draw here would shift every subsequent one and
+     re-roll every tree POSITION in the world for a given seed, and the seed
+     is part of the game's identity (the menu prints it). So the tier comes
+     from a standalone integer hash of the plant's own canonical station
+     instead. Two consequences that matter: the positions this seed produces
+     are byte-for-byte the ones it produced before the mix landed, and a
+     tree's height is stable across reloads rather than shimmering between
+     sessions. Keyed on the CANONICAL (wz, lat), not the emitted z, so the
+     splice twins of one tree agree on how tall it is. */
+  const TIER_SALT = (roadSeed() ^ 0x9e3779b9) >>> 0;
+  const tierRand = (a: number, b: number) => {
+    let h = Math.imul(Math.round(a * 4) | 0, 0x27d4eb2d)
+      ^ Math.imul(Math.round(b * 4) | 0, 0x85ebca6b) ^ TIER_SALT;
+    h = Math.imul(h ^ (h >>> 15), 0x2545f491);
+    h = Math.imul(h ^ (h >>> 13), 0x27d4eb2d);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  };
+  /** 0 / A / B at 14 / 45 / 41 % — enough short ones to break the skyline
+      without the line reading as the half-buried planting it replaced */
+  const tierIx = (a: number, b: number) => {
+    const r = tierRand(a, b);
+    return r < 0.14 ? 0 : r < 0.59 ? 1 : 2;
+  };
+  /** The same three tiers for the depth rank, which is sized absolutely
+      rather than against the deck (PASS D) */
+  const D_TIERS: readonly (readonly [number, number])[] =
+    [[10, 19], [15, 25], [18, 29]];
+  /** Widest a crown of this tier can grow, so the standoff can be made to
+      clear it BEFORE the trunk is placed. The broadleaf aspect (0.95) is the
+      worst case and gy is 0 everywhere PASS A plants (terrain is flattened
+      along the corridor), which makes this an upper bound, not a guess. */
+  const tierReach = (t: readonly [number, number], deckY: number) =>
+    0.95 * Math.min(26, deckY + t[1] + 2.2) / 2;
+
+  /* ---- overhead clearance: never grow a tree through a crossing ----------
+     The four city overpasses cross the corridor on their own piers with the
+     soffit `clear` metres over the deck. At the old heights nothing could
+     reach one; a B-tier crown tops out 8 m ABOVE the soffit, and would stand
+     straight through the crossing's road — exactly the broken silhouette
+     that is worse than a tree you cannot see. So a plant whose crown would
+     overlap a girder is capped under its soffit: it becomes the shorter tree
+     that grows under a bridge, which is what is there in reality too.
+
+     Tested against the girder's ACTUAL footprint (buildOverpasses): a stub
+     `girderW` deep in z and reaching `halfWidth + outSet + 6` either side
+     laterally — not a road running off to the horizon. That lateral test is
+     what keeps the whole 35-90 m depth rank out of this: it is well past the
+     girder ends, so it is never shortened for a crossing it cannot touch.
+     `reach` is the crown's own horizontal radius (the crossed planes turn in
+     Y, so it is the same in x and z), taken from the UNCAPPED height, which
+     makes the test conservative rather than circular. */
+  const crownCap = (wz: number, deckY: number, latAbs: number, reach: number) => {
+    const w = cor.wrapZ(wz);
+    let cap = Infinity;
+    for (const o of OVERPASSES) {
+      let d = Math.abs(w - o.z);
+      d = Math.min(d, cor.LOOP - d);
+      if (d - reach < o.girderW / 2
+        && latAbs - reach < cor.halfWidth(wz) + o.outSet + 6)
+        cap = Math.min(cap, deckY + o.clear - 1.4);
+    }
+    return cap;
+  };
+
   /* ================= PASS A: the main tree line, both shoulders ============ */
   for (let wz = -2000; wz < 2000; wz += 9) {
     if (cor.inTunnel(wz, 22) || cor.inToll(wz) || wz > TOLL.z0 - 26 && wz < TOLL.z1 + 26)
@@ -423,27 +537,49 @@ export function buildRoadside(
       if (rng() >= 0.44 * wave(wz) * level) continue;
       // one cluster: 1-4 trees around an anchor, correlated sizes
       const hw = cor.halfWidth(wz);
-      const lat0 = side * (hw + rrand(rng, 9, 24));
+      /* Standoff from the deck edge. Pushed out from the old 9-24 m because
+         a crown is now up to ~20 m ACROSS as well as tall, and the crossed
+         planes reach w/2 either side of the trunk: at 9 m the inner leaf edge
+         was already grazing the parapet. 13 m keeps every crown at least a
+         couple of metres clear of the coping, of the arch ribs on the bridge
+         span and of the cantilever sign posts — and outboard is the free
+         direction here, since the parapet occludes a near trunk harder than
+         a far one. */
+      const lat0 = side * (hw + rrand(rng, 13, 28));
       const n = rrandi(rng, 1, 4);
       const tile = pickTile(wz);
       const deckY = cor.pose(wz).y;
-      /* crown tops ride a couple of metres over the parapet sightline — high
-         enough to serrate the glow band, low enough that a near cluster
-         stays a roadside line instead of a wall over the windshield */
-      const hBase = rrand(rng, -1.5, 4);
+      /* One draw, as a FRACTION of whichever tier each tree lands in — the
+         cluster keeps its correlated sizes (a tall-for-its-tier cluster is
+         tall in every tier) while the tier itself varies tree to tree. Same
+         single rrand the fixed height used, so the stream is unmoved. */
+      const hFrac = rrand(rng, 0, 1);
       let planted = 0;
       for (let k = 0; k < n; k++) {
         const dz = k === 0 ? 0 : rrand(rng, -8, 8);
-        const lat = lat0 + (k === 0 ? 0 : side * rrand(rng, -4, 9));
-        const p = cor.worldOf(wz + dz, lat);
+        // hashed off the cluster anchor + index, i.e. off quantities settled
+        // before the trunk is sited, so the standoff below can read the tier
+        const tier = TIERS[tierIx(wz + dz + k * 0.37, lat0)];
+        // jitter within the cluster stays outboard-biased for the same reason
+        const lat = lat0 + (k === 0 ? 0 : side * rrand(rng, -1, 12));
+        /* …and a B-tier crown is ~25 m across, so the trunk is pushed out
+           until the leaf edge clears the coping (and the bridge span's arch
+           ribs, which stand at halfWidth + 0.55) by 2.5 m. Without this a
+           tall tree on the inner edge of the jitter overhangs the deck. */
+        const reach = tierReach(tier, deckY);
+        const latC = side * Math.max(Math.abs(lat), hw + reach + 2.5);
+        const p = cor.worldOf(wz + dz, latC);
         if (!plantOK(p.x, p.z, 1.6)) continue;
         const t2 = k > 0 && rng() < 0.25 ? pickTile(wz) : tile;
-        const hj = rrand(rng, -1.5, 2);
+        const hj = rrand(rng, -2.2, 2.2);
         // ground is sampled at each EMITTED copy — the heightfield is not
         // loop-periodic, so a splice twin re-seats on its own terrain
         for (const z of copies(wz + dz)) {
           const gy = terrain.h(p.x, p.z + (z - (wz + dz)));
-          const h = Math.max(5.5, Math.min(18, deckY + hBase + hj - gy));
+          const top = Math.min(
+            deckY + tier[0] + hFrac * (tier[1] - tier[0]) + hj,
+            crownCap(wz + dz, deckY, Math.abs(latC), reach));
+          const h = Math.max(5.5, Math.min(26, top - gy));
           const w = h * (t2 === TILE.conifer ? rrand(rng, 0.42, 0.55)
             : t2 === TILE.poplar ? rrand(rng, 0.3, 0.4) : rrand(rng, 0.72, 0.95));
           addPlant(z, p.x, gy, t2, h, w, nearLamp(wz));
@@ -479,7 +615,12 @@ export function buildRoadside(
     if (!plantOK(x, z0, 1.4)) continue;
     const gy = terrain.h(x, z0);
     const deckY = cor.pose(z0).y;
-    const h = Math.max(7, Math.min(14, deckY + rrand(rng, 0.5, 3) - gy));
+    /* Same correction as PASS A, one notch shorter: a formal street row is
+       an even planting, and these stand 47 m out where the parapet's shadow
+       is shallower, so deck + 4…8 already puts the whole crown in shot. */
+    const top = Math.min(deckY + rrand(rng, 4, 8),
+      crownCap(z0, deckY, Math.abs(x - cor.pose(z0).x), 9));
+    const h = Math.max(7, Math.min(20, top - gy));
     addPlant(z0, x, gy, TILE.leafA, h, h * rrand(rng, 0.75, 0.9), nearLamp(wz));
   }
 
@@ -493,10 +634,12 @@ export function buildRoadside(
     const x = 577 + rrand(rng, -2.5, 2.5);
     if (!plantOK(x, z0, 1.2)) continue;
     const deckY = cor.pose(z0).y;
-    const hj = rrand(rng, 1.5, 5);
+    // a yard poplar is a 25 m tree; from a 10 m deck that is the whole point
+    const hj = rrand(rng, 5, 10);
+    const cap = crownCap(z0, deckY, Math.abs(x - cor.pose(z0).x), 5);
     for (const z of copies(z0)) {
       const gy = terrain.h(x, z);
-      const h = Math.max(8, Math.min(17, deckY + hj - gy));
+      const h = Math.max(8, Math.min(24, Math.min(deckY + hj, cap) - gy));
       addPlant(z, x, gy, TILE.poplar, h, h * rrand(rng, 0.3, 0.38));
     }
   }
@@ -519,11 +662,22 @@ export function buildRoadside(
         if (side > 0 && p.x > 640) continue;
         if (!plantOK(p.x, p.z, 1)) continue;
         const conif = rng() < (wz > -1300 && wz < -560 ? 0.5 : 0.2);
-        const h = rrand(rng, 10, 19);
-        const w = h * (conif ? rrand(rng, 0.42, 0.55) : rrand(rng, 0.72, 0.95));
+        /* The depth rank is stated as an absolute height, not against the
+           deck — it is far enough out that the parapet barely shadows it —
+           but it still has to out-top the first rank standing in front of it
+           or the line reads flat. Same three-tier mix, same hashed tier, so
+           the far line breaks up the way the near one does. */
+        const dT = D_TIERS[tierIx(wz + dz, lat)];
+        const h = dT[0] + rrand(rng, 0, 1) * (dT[1] - dT[0]);
+        const aspect = conif ? rrand(rng, 0.42, 0.55) : rrand(rng, 0.72, 0.95);
         const tile = conif ? TILE.conifer : rng() < 0.5 ? TILE.leafA : TILE.leafB;
-        for (const z of copies(wz + dz))
-          addPlant(z, p.x, terrain.h(p.x, p.z + (z - (wz + dz))), tile, h, w);
+        const cap = crownCap(wz, cor.pose(wz).y, Math.abs(lat), h * aspect / 2);
+        for (const z of copies(wz + dz)) {
+          const gy = terrain.h(p.x, p.z + (z - (wz + dz)));
+          // capped under a crossing: the whole plant shrinks, it does not squat
+          const hh = Math.max(6, Math.min(h, cap - gy));
+          addPlant(z, p.x, gy, tile, hh, hh * aspect);
+        }
       }
     }
   }
