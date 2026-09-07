@@ -3738,7 +3738,13 @@ export class Game {
        the frame at dawn when sunShadow() first unfreezes the map. Best effort:
        whatever has not streamed in by then still compiles when it arrives, the
        same as it does today. */
-    this.sun.castShadow = s.shadows;
+    /* The tier joins the user setting here, and ONLY here — the whole point
+       of castShadow having a single writer in a menu-only path is that its
+       program-cache flip never lands on a driving frame. tierCaps is
+       re-resolved at the top of this same call, so a manual tier override
+       from the settings panel reaches this line on the frame it is applied,
+       which is exactly where a recompile is affordable. */
+    this.sun.castShadow = s.shadows && this.tierCaps.sunShadow !== false;
     this.sun.shadow.needsUpdate = true;
   }
 

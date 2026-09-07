@@ -207,6 +207,30 @@ export interface TierCaps {
       device class, which is why it is not simply the fxaa setting. */
   povFxaa?: boolean;
 
+  /** Does the sun cast at all on this tier?
+
+      Two costs hang off `DirectionalLight.castShadow`, and the expensive one
+      is not the depth pass. It is that castShadow feeds the directional
+      shadow COUNT in three's program cache key, so every lit material in the
+      scene compiles the PCF-soft shadow lookup into its fragment shader and
+      takes those taps on every lit pixel, all night, for a term that
+      engine.sunShadow() is holding at zero strength.
+
+      That zero is what makes this cap free after dark rather than merely
+      cheap: `shadow.intensity` 0 makes the shader's `mix(1.0, shadow, 0)`
+      exactly 1.0, so a night frame with the sun casting and a night frame
+      with it not casting are the same frame — the second one just does not
+      pay for the taps, the 2048x2048 depth attachment, or the depth-program
+      variant of every mesh.
+
+      What it costs is DAYLIGHT: on a tier with this off, the sun casts no
+      shadows at any hour. `settings.shadows` still works and still wins on
+      the way down, so nobody who wants them off is affected either way.
+
+      Read once, in applySettings(), which is the only writer of castShadow —
+      see engine.sunShadow() for why the per-frame writer had to go. */
+  sunShadow?: boolean;
+
   /** Stream the 1024px-atlas HD NPC bodyshells (public/models/cars-hd/)
       after the first drivable frame and hot-swap them into the fleet.
       Desktop-only: the BASE fleet everyone loads is already the same
@@ -231,6 +255,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     vegetation: 0.55,
     sceneMsaa: 0,
     povFxaa: false,
+    sunShadow: false,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -245,6 +270,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     vegetation: 0.8,
     sceneMsaa: 0,
     povFxaa: false,
+    sunShadow: false,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -259,6 +285,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     vegetation: 1,
     sceneMsaa: 4,
     povFxaa: true,
+    sunShadow: true,
   },
 };
 
