@@ -338,11 +338,6 @@ const HI_HOLD = 2;
     camera button, long enough to be seen at arm's length. */
 const TAP_FLASH_MS = 140;
 
-/* touchHolds key for the steering-wheel hub horn. Not an element id — the hub
-   is a painted disc with pointer-events:none and no listeners of its own; the
-   wheel's existing handlers do the hit test — so it needs a name that cannot
-   collide with a real puck's getElementById id. */
-const WHEEL_HORN_HOLD = "swheelHub";
 
 /* Minimum time a horn press stays audible, seconds. input.horn is a per-frame
    sample of keydown["f"], so without a floor a press and release that both
@@ -3364,7 +3359,7 @@ export class Game {
          recover — without this guard it instead ZEROES its key on every
          frame the key is down, whoever put it down. That bites as soon as
          two things can press one key: the idle HORN puck's empty hold was
-         cutting the wheel hub's honk within a frame of it starting. It also
+         cutting short a honk started elsewhere within a frame of it. It also
          means a physical keyboard on a touch device could never hold W, A,
          S, D or F at all, since each has a puck sitting on it. */
       if (hold.ids.size === 0) continue;
@@ -3383,11 +3378,13 @@ export class Game {
     }
   }
 
-  /** Is `key` still held by some OTHER live touch hold? Two controls now
-      share "f" — the HORN puck and the steering-wheel hub (setWheelHorn) —
-      and either may be released while the other is still pressed. Without
-      this, letting go of one zeroes the key under the other and the horn
-      cuts out with a finger still on it. Holds whose ids are empty are
+  /** Is `key` still held by some OTHER live touch hold? Written when two
+      controls shared "f" — the HORN puck and the steering-wheel hub — and
+      either could be released while the other was still pressed, zeroing the
+      key under a finger that was still on it. The hub is gone (the owner had
+      it removed), but the guard is not about the hub: it is what makes it
+      safe for any two controls to write one key, and the pucks still sit on
+      keys a physical keyboard can also hold. Holds whose ids are empty are
       already released (bindPointerHold clears the set before calling onUp,
       and the blur reset clears every set), so size is the live test. */
   private keyStillHeld(key: string) {
@@ -3397,37 +3394,15 @@ export class Game {
 
   /** Counts down HORN_MIN_S from the last horn press edge (see readInput). */
   private hornMinT = 0;
-  /** Arm the minimum-honk floor. Called from all three press edges — the F
-      key, the HORN puck and the wheel hub — rather than from the per-frame
-      read, because the whole point is to catch a press the per-frame read
-      never sees. Idempotent: re-arming mid-honk just refreshes the floor. */
+  /** Arm the minimum-honk floor. Called from both press edges — the F key and
+      the HORN puck — rather than from the per-frame read, because the whole
+      point is to catch a press the per-frame read never sees. Idempotent:
+      re-arming mid-honk just refreshes the floor. */
   private armHorn() {
-    /* Throttled: every press edge (key, puck, wheel hub) lands here, and a
-       "beep beep beep" burst is one use of the horn, not three events. */
+    /* Throttled: both press edges (the F key and the HORN puck) land here,
+       and a "beep beep beep" burst is one use of the horn, not three. */
     trackThrottled("horn_used", undefined, 8000);
     this.hornMinT = HORN_MIN_S;
-  }
-
-  /** Horn from the steering-wheel hub — see SteerWheel in GameApp, which owns
-      the tap/drag discrimination. Writes the same keydown["f"] the HORN puck
-      and the keyboard write, so there is exactly one horn path downstream.
-
-      `pointerId` non-null registers the press in touchHolds under a synthetic
-      id, which buys the hub the identical third release path every puck has:
-      watchdogTouchInput drops it the frame that pointer leaves livePointers,
-      so a gesture hijack that eats the touch stream cannot leave the horn
-      blaring. Null is the tap-stab — its finger is already off the glass, so
-      it must NOT be watchdogged (that would kill the stab on the next frame);
-      the caller's own timer releases it. */
-  setWheelHorn(on: boolean, pointerId: number | null) {
-    if (on) {
-      this.keydown["f"] = 1;
-      this.armHorn();
-      if (pointerId !== null) this.touchHolds.set(WHEEL_HORN_HOLD, { key: "f", ids: new Set([pointerId]) });
-      return;
-    }
-    this.touchHolds.delete(WHEEL_HORN_HOLD);
-    if (!this.keyStillHeld("f")) this.keydown["f"] = 0;
   }
 
   private bindInput() {
@@ -3459,8 +3434,9 @@ export class Game {
           if (key === "f") this.armHorn();
         },
         () => {
-          // "f" is shared with the wheel hub; never zero it out from under
-          // a control that is still pressed (see keyStillHeld).
+          // never zero a key out from under a control that is still
+          // pressed — "f" and the WASD keys can each have more than one
+          // holder (a puck and a physical keyboard). See keyStillHeld.
           if (!this.keyStillHeld(key)) this.keydown[key] = 0;
         },
       );
@@ -3683,10 +3659,9 @@ export class Game {
     this.input.st += clamp(sTarget - this.input.st, -sRate * dt, sRate * dt);
     if (!sL && !sR && !analog) this.input.st *= Math.max(0, 1 - 6.5 * dt);
     this.input.hb = kd[" "] ? 1 : 0;
-    /* One horn path for all three inputs: the F key, the HORN puck (bindHold)
-       and the steering-wheel hub (setWheelHorn) all write keydown["f"], so the
-       mix, the NPC reaction and the release edge behave identically whichever
-       one honked. The HORN_MIN_S floor is OR'd in so a press too short to be
+    /* One horn path for both inputs: the F key and the HORN puck (bindHold)
+       both write keydown["f"], so the mix, the NPC reaction and the release
+       edge behave identically whichever one honked. The HORN_MIN_S floor is OR'd in so a press too short to be
        caught by this per-frame sample still sounds (see armHorn). */
     this.input.horn = kd["f"] || this.hornMinT > 0 ? 1 : 0;
   }
