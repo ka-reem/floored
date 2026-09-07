@@ -358,7 +358,8 @@ if (!SKIP_LOOK) {
       try {
         await freeze();
         await sleep(2500); // the POV frame blend settles to a fixed point
-        await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${pname}-${cname}.png`) });
+        await page.screenshot({ path: path.join(SHOTS, `${LABEL}-${pname}-${cname}.png`),
+          captureBeyondViewport: false, optimizeForSpeed: true });
         /* The CONTROL, taken here rather than from a second run: the same
            frozen frame, shot again a couple of seconds later with nothing
            touched in between. Whatever it differs by is the renderer's own
@@ -368,7 +369,8 @@ if (!SKIP_LOOK) {
            compiled programs; this one is free and it is the same conditions. */
         if (CTL) {
           await sleep(2000);
-          await page.screenshot({ path: path.join(CTL, `${LABEL}-${pname}-${cname}.png`) });
+          await page.screenshot({ path: path.join(CTL, `${LABEL}-${pname}-${cname}.png`),
+            captureBeyondViewport: false, optimizeForSpeed: true });
         }
         await thaw();
         console.log("shot", pname, cname);
