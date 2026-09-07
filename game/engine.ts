@@ -2591,8 +2591,10 @@ export class Game {
       time round the identical switch linked 0 and the spike was gone.
 
       One frame per mode is all a link needs (it happens during the draw), and
-      the cost of this stage is real load time on a slow device, so it does not
-      take more than that. The starting camera keeps the full settle it always
+      the cost of this stage is real load time, so it takes no more than that.
+      Two frames each was tried first and cost 93 s of the loading screen on
+      this box's software rasteriser against 47 s for one — the same programs
+      for twice the wait. The starting camera keeps the full settle it always
       had, and goes LAST so the canvas still holds a finished frame in the
       right view when the overlay lifts. */
   private async warmCameras(onStep?: (frac: number) => void): Promise<void> {
@@ -2603,7 +2605,10 @@ export class Game {
     try {
       for (let i = 0; i < others.length; i++) {
         this.camMode = others[i];
-        await this.warmFrames(2, (f) => onStep?.((i + f) / total));
+        /* 1, not 2: warmFrames(1) still renders exactly one full frame — the
+           loop's own rAF is already queued ahead of the tick that resolves
+           it — and one drawn frame is what links a mode's programs. */
+        await this.warmFrames(1, (f) => onStep?.((i + f) / total));
       }
     } finally {
       /* Whatever happens above — a throw, a dispose mid-warm — the player must
