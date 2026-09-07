@@ -117,8 +117,11 @@ export function initAnalytics() {
   started = true;
   whenIdle(() => {
     void import("posthog-js").then((m) => bootPostHog(m.default)).catch(() => {
-      /* blocked by an extension, offline, chunk 404 after a redeploy: the
-         queue is dropped and every export stays the no-op it already was */
+      /* Blocked by an extension, offline, chunk 404 after a redeploy. Drop
+         the queue AND clear `started`, so later() stops buffering: with it
+         still set, every track() for the rest of the session would push a
+         closure onto a queue nothing will ever drain. */
+      started = false;
       pending.length = 0;
     });
   });
@@ -189,7 +192,9 @@ function bootPostHog(ph: PostHog) {
       try { fn(); } catch {}
     }
   } catch {
-    /* an init that throws leaves ready=false and every track() a no-op */
+    /* an init that throws leaves ready=false and every track() a no-op —
+       and, like the import failure above, stops the queue from filling */
+    started = false;
     pending.length = 0;
   }
 }
