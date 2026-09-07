@@ -1,13 +1,13 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState, useCallback } from "react";
-import { Game, WIPER_MODE_NAMES, CAM_NAMES } from "@/game/engine";
+import type { Game } from "@/game/engine";
+import { WIPER_MODE_NAMES, CAM_NAMES } from "@/game/camnames";
 import { track, trackDebounced, deviceType } from "@/lib/analytics";
 import { showGfxFail, webglAvailable } from "@/game/gfxfail";
 import { HINT_SHOW_MS, type HintMsg } from "@/game/hints";
 import type { LoadReport } from "@/game/loading";
 import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
-import { requestCarPreview } from "@/game/carpreview";
 import {
   Gantry, NightRoad, SignKP, SignPlate, SignRow, SignRule, SignSep, SignShield, SignTitle,
   SignHead, SignBody, SignFootbar, SignBtn, SignToggle, SignSeg, SignSelect, SignSlider,
@@ -111,6 +111,57 @@ function useTapGlow() {
   );
 }
 
+/* ---- the engine is a SEPARATE DOWNLOAD from the menu ----
+
+   game/engine.ts is the whole game: three.js, the world build, the traffic
+   fleet, the audio graph, the post chain. 1.2 MB of JavaScript. It used to
+   be a plain static import here, which put it in the same chunk as this
+   file — so a cold visitor could not see the main menu until every byte of
+   the game had arrived AND been parsed, and the menu is the screen they
+   look at while deciding to press DRIVE.
+
+   Nothing on the main menu needs it: every read of the engine below is
+   already written `g?.…` because the engine is built in a mount effect and
+   the first render has never had one. So the menu now renders from a small
+   chunk and the engine is fetched beside it.
+
+   The fetch is kicked off HERE, at module scope, rather than inside the
+   mount effect: this module is evaluated immediately before React renders,
+   so the request goes out at the same moment the menu paints instead of one
+   commit later. It is deliberately not awaited by anything but the handlers
+   that genuinely need a Game.
+
+   `void`-ing the promise is not enough on its own — an import() that
+   rejects (offline, a stale chunk hash after a redeploy) is an unhandled
+   rejection — so the catch is attached here and the failure is re-read by
+   whoever awaits it. */
+type EngineModule = typeof import("@/game/engine");
+let engineMod: EngineModule | null = null;
+let enginePromise: Promise<EngineModule | null> | null = null;
+function loadEngine(): Promise<EngineModule | null> {
+  if (engineMod) return Promise.resolve(engineMod);
+  if (!enginePromise) {
+    enginePromise = import("@/game/engine").then(
+      (m) => (engineMod = m),
+      () => null,
+    );
+  }
+  return enginePromise;
+}
+if (typeof window !== "undefined") void loadEngine();
+
+/** Run `fn` when the main thread is next idle, with a timeout backstop for a
+    page that never goes idle — and a plain timer on Safari, which has no
+    requestIdleCallback at all. */
+const IDLE_TIMEOUT_MS = 1200;
+function whenIdle(fn: () => void) {
+  const ric = (window as unknown as {
+    requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void;
+  }).requestIdleCallback;
+  if (ric) ric(fn, { timeout: IDLE_TIMEOUT_MS });
+  else setTimeout(fn, IDLE_TIMEOUT_MS);
+}
+
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
 
@@ -133,6 +184,11 @@ export default function GameApp() {
      have. */
   const hostRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Game | null>(null);
+  /* Settles when the engine chunk has landed and the Game has been built —
+     or when it has failed to, in which case gameRef stays null and the
+     callers below fall back to exactly the behaviour a WebGL-less browser
+     already gets. Never rejects. */
+  const gameReady = useRef<Promise<void> | null>(null);
   const profileRef = useRef<Profile | null>(null);
   const [screen, setScreen] = useState<Screen>("main");
   const [fromPause, setFromPause] = useState(false);
@@ -214,7 +270,19 @@ export default function GameApp() {
     });
   }, []);
 
-  /* create engine once */
+  /* create engine once, as soon as its chunk lands.
+
+     Two phases, and the split is the whole point. The PROFILE half is
+     synchronous — it is what the board reads for the current car, paint and
+     seed, and it is a localStorage read, so making the menu wait a network
+     round trip for it would be absurd. The ENGINE half waits on the import
+     started at module scope above.
+
+     Everything that reads `gameRef.current` was already written to survive
+     it being null (the first render has never had a Game), so the gap this
+     opens is one the code has always handled. The two places that genuinely
+     cannot work without one — DRIVE, and the sub-screens that take a Game as
+     a prop — go through ensureGame() below. */
   useEffect(() => {
     if (gameRef.current || !hostRef.current) return;
     /* No WebGL (locked-down browser, blocklisted GPU, hardware acceleration
@@ -235,84 +303,117 @@ export default function GameApp() {
        device may load a donor cabin, and the first rig is built before any
        settings panel has been opened. */
     syncCabinMode(profile.settings);
-    const game = new Game(hostRef.current, profile, {
-      toast: showToast,
-      exitHint: (t) => setExitHint(t),
-      /* game/hints.ts fires each tip once ever and never overlaps two, so this
-         only has to show, hold and let the CSS fade take it back down. */
-      hint: (h) => {
-        setHint(h);
-        setHintOn(true);
-        if (hintTimer.current) clearTimeout(hintTimer.current);
-        hintTimer.current = setTimeout(() => setHintOn(false), HINT_SHOW_MS);
-      },
-      pauseRequest: () => {
-        const s = screenRef.current;
-        if (s === "playing") {
-          gameRef.current?.setRunning(false);
-          emitRunEnd("pause");
-          setFromPause(true);
-          setScreen("paused");
-        } else if (s === "paused") {
-          gameRef.current?.setRunning(true);
-          setScreen("playing");
-        } else if (s === "photo") {
-          /* Esc in photo mode backs out of photo mode, it does not stack the
-             pause menu on top of it — same two calls as photoRequest's exit
-             branch, because leaving photo mode IS an unpause. */
-          gameRef.current?.photoExit();
-          gameRef.current?.setRunning(true);
-          setScreen("playing");
-        }
-      },
-      /* Photo mode is a pause that swaps which camera the frozen frame is
-         rendered through, so this mirrors pauseRequest exactly: setRunning is
-         the same sim freeze the pause menu uses, and the screen leaving
-         "playing" is what hides every piece of HUD chrome (all of it is
-         gated on `playing` below — nothing is hidden piecemeal). The engine's
-         photoEnter/photoExit only move the camera and its listeners. */
-      photoRequest: () => {
-        const s = screenRef.current;
-        if (s === "playing") {
-          gameRef.current?.setRunning(false);
-          gameRef.current?.photoEnter();
-          setScreen("photo");
-        } else if (s === "photo") {
-          gameRef.current?.photoExit();
-          gameRef.current?.setRunning(true);
-          setScreen("playing");
-        }
-      },
-      /* H TOGGLES. It used to only open: the guard was `=== "playing"`, so the
-         second press hit a closed door and the only way out was the mouse.
-         Opening and closing a screen with the same key is the whole point of
-         a single-key overlay, and the asymmetry was just a missing branch.
-
-         Closing goes through the same two calls `resume()` does — setRunning
-         then setScreen — rather than reusing resume() itself, because that one
-         also persists the profile, and a help screen has changed nothing worth
-         writing to disk.
-
-         Only from "controls" reached BY H (fromPause). The same screen is
-         reachable from the main menu, where there is no game to resume and
-         setRunning(true) would start one under the menu. */
-      helpRequest: () => {
-        if (screenRef.current === "playing") {
-          gameRef.current?.setRunning(false);
-          emitRunEnd("help");
-          setFromPause(true);
-          setScreen("controls");
-        } else if (screenRef.current === "controls" && fromPauseRef.current) {
-          gameRef.current?.setRunning(true);
-          setFromPause(false);
-          setScreen("playing");
-        }
-      },
-    });
-    gameRef.current = game;
+    /* Paint the restored profile now rather than at the end of the engine
+       download: the board's "current car / paint / seed" line already falls
+       back to profileRef when there is no Game (see the sign-plate below). */
     rerender();
+
+    const host = hostRef.current;
+    let disposed = false;
+    let built: Game | null = null;
+    gameReady.current = loadEngine().then((mod) => {
+      if (disposed || !mod) return;
+      buildGame(mod);
+    });
+
+    function buildGame(mod: EngineModule) {
+      const game = new mod.Game(host, profile, {
+        toast: showToast,
+        exitHint: (t) => setExitHint(t),
+        /* game/hints.ts fires each tip once ever and never overlaps two, so this
+           only has to show, hold and let the CSS fade take it back down. */
+        hint: (h) => {
+          setHint(h);
+          setHintOn(true);
+          if (hintTimer.current) clearTimeout(hintTimer.current);
+          hintTimer.current = setTimeout(() => setHintOn(false), HINT_SHOW_MS);
+        },
+        pauseRequest: () => {
+          const s = screenRef.current;
+          if (s === "playing") {
+            gameRef.current?.setRunning(false);
+            emitRunEnd("pause");
+            setFromPause(true);
+            setScreen("paused");
+          } else if (s === "paused") {
+            gameRef.current?.setRunning(true);
+            setScreen("playing");
+          } else if (s === "photo") {
+            /* Esc in photo mode backs out of photo mode, it does not stack the
+               pause menu on top of it — same two calls as photoRequest's exit
+               branch, because leaving photo mode IS an unpause. */
+            gameRef.current?.photoExit();
+            gameRef.current?.setRunning(true);
+            setScreen("playing");
+          }
+        },
+        /* Photo mode is a pause that swaps which camera the frozen frame is
+           rendered through, so this mirrors pauseRequest exactly: setRunning is
+           the same sim freeze the pause menu uses, and the screen leaving
+           "playing" is what hides every piece of HUD chrome (all of it is
+           gated on `playing` below — nothing is hidden piecemeal). The engine's
+           photoEnter/photoExit only move the camera and its listeners. */
+        photoRequest: () => {
+          const s = screenRef.current;
+          if (s === "playing") {
+            gameRef.current?.setRunning(false);
+            gameRef.current?.photoEnter();
+            setScreen("photo");
+          } else if (s === "photo") {
+            gameRef.current?.photoExit();
+            gameRef.current?.setRunning(true);
+            setScreen("playing");
+          }
+        },
+        /* H TOGGLES. It used to only open: the guard was `=== "playing"`, so the
+           second press hit a closed door and the only way out was the mouse.
+           Opening and closing a screen with the same key is the whole point of
+           a single-key overlay, and the asymmetry was just a missing branch.
+
+           Closing goes through the same two calls `resume()` does — setRunning
+           then setScreen — rather than reusing resume() itself, because that one
+           also persists the profile, and a help screen has changed nothing worth
+           writing to disk.
+
+           Only from "controls" reached BY H (fromPause). The same screen is
+           reachable from the main menu, where there is no game to resume and
+           setRunning(true) would start one under the menu. */
+        helpRequest: () => {
+          if (screenRef.current === "playing") {
+            gameRef.current?.setRunning(false);
+            emitRunEnd("help");
+            setFromPause(true);
+            setScreen("controls");
+          } else if (screenRef.current === "controls" && fromPauseRef.current) {
+            gameRef.current?.setRunning(true);
+            setFromPause(false);
+            setScreen("playing");
+          }
+        },
+      });
+      gameRef.current = game;
+      built = game;
+      rerender();
+      /* THE MENU IS IDLE TIME. The world build's two budgeted stages spend
+         their seconds downloading ~10 MB of bodyshells and donor models that
+         they do not ask for until they run — several seconds into a loading
+         screen — while the connection sat idle for the whole time the player
+         was reading this board. Ask for them now, at prefetch priority, so
+         those stages find them in the cache.
+
+         On idle rather than immediately: the engine chunk has only just
+         landed and the menu's own first frames matter more than a speculative
+         download. Nothing is parsed and no main-thread time is spent — see
+         game/prefetch.ts, which also declines the whole idea on a Save-Data
+         or 2g connection. */
+      whenIdle(() => {
+        if (gameRef.current === game) game.prefetchAssets();
+      });
+    }
+
     return () => {
-      game.destroy();
+      disposed = true;
+      built?.destroy();
       gameRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -334,18 +435,69 @@ export default function GameApp() {
     saveProfile(p);
   }, []);
 
+  /* Wait for the engine chunk if it is still in the air, then hand back the
+     Game. Instant (a resolved ref read) on every warm load and on every press
+     after the first second or so of a cold one; the only calls that actually
+     await are a tap that beats the download. Returns null when there is no
+     Game to be had (no WebGL, or the chunk failed), which is the same null
+     every caller here already handles. */
+  const ensureGame = useCallback(async (): Promise<Game | null> => {
+    if (gameRef.current) return gameRef.current;
+    /* gameReady is set by a PASSIVE effect, which React schedules after the
+       commit rather than inside it — so a press dispatched from a microtask
+       (a harness, an autofill, an accessibility tool driving the page the
+       instant the row appears) can land before the effect has run and find
+       no promise to wait on at all. That press used to be swallowed in
+       silence, before this file split the engine out and equally after.
+       One turn of the event loop is all React needs to have flushed it. */
+    for (let i = 0; i < 3 && !gameReady.current; i++) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    if (gameReady.current) await gameReady.current;
+    return gameRef.current;
+  }, []);
+
+  /* The three main-menu rows whose screens take a Game as a prop. Awaiting
+     here rather than rendering the screen with no Game keeps the press
+     feeling like a slow press instead of showing an empty board. */
+  const openScreen = useCallback(
+    async (s: Screen) => {
+      await ensureGame();
+      setScreen(s);
+    },
+    [ensureGame],
+  );
+
   /* DRIVE. The world does not exist until this runs — the engine constructor
      only sets up a canvas and the settings the menus read (see Game.load) —
      so the first press pays for the whole build behind the loading screen.
      A second press (after MAIN MENU from the pause screen) is instant. */
   const drive = useCallback(async () => {
-    const g = gameRef.current;
+    /* Almost always already there — the engine chunk is fetched from module
+       scope, so it has had the whole time the player spent reading the board.
+       `waited` is true only for a press that beat the download on a cold,
+       uncached first visit. */
+    const waited = !gameRef.current;
+    const g = await ensureGame();
     if (!g) return;
     const coldStart = !g.loaded; // whether this press pays for the world build
     /* Before anything asynchronous: iOS only unlocks an AudioContext created
        inside the gesture itself, and every line below this one is a task or
        more removed from the tap. */
     g.primeAudio();
+    /* ...and if the await above already cost us that gesture, prime again on
+       the next one. Cheap (audio.init and music.prime are both idempotent
+       latches), one-shot, and it covers the only case the engine split can
+       cost audio: a DRIVE press that lands before the engine chunk does. */
+    if (waited) {
+      const reprime = () => {
+        removeEventListener("pointerdown", reprime, true);
+        removeEventListener("keydown", reprime, true);
+        gameRef.current?.primeAudio();
+      };
+      addEventListener("pointerdown", reprime, { capture: true, once: true });
+      addEventListener("keydown", reprime, { capture: true, once: true });
+    }
     /* Same gesture rule as primeAudio, and the reason this can't live in the
        mount effect: iOS only grants DeviceOrientation permission from inside a
        user gesture, and hookTilt() is one-shot (its tiltHooked guard means a
@@ -387,7 +539,7 @@ export default function GameApp() {
     });
     markRun();
     persist();
-  }, [persist, markRun]);
+  }, [persist, markRun, ensureGame]);
   const resume = () => {
     gameRef.current?.setRunning(true);
     setScreen("playing");
@@ -693,8 +845,8 @@ export default function GameApp() {
                     rerender();
                   }}
                 />
-                <SignRow glyph="p" jp="車庫" en="GARAGE" dist="0.4" onClick={() => setScreen("garage")} />
-                <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => setScreen("settings")} />
+                <SignRow glyph="p" jp="車庫" en="GARAGE" dist="0.4" onClick={() => void openScreen("garage")} />
+                <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => void openScreen("settings")} />
                 <SignRow glyph="nw" jp="操作" en="CONTROLS" dist="3.1" onClick={() => setScreen("controls")} />
               </nav>
               {/* landscape-phone stand-in for the plate below: one caption
@@ -741,7 +893,13 @@ export default function GameApp() {
       )}
 
       {screen === "loading" && (
-        <LoadingScreen label={load.label} frac={load.frac} error={loadErr} />
+        <LoadingScreen
+          label={load.label}
+          frac={load.frac}
+          error={loadErr}
+          game={g}
+          onSettingChange={persist}
+        />
       )}
 
       {/* Pause: a post-mounted 620-wide board (Pause.dc.html) over the frozen
@@ -839,6 +997,131 @@ export default function GameApp() {
   );
 }
 
+/* ================= settings, while it loads =================
+
+   The owner's idea, verbatim: "for loading on mobile u can like tell it to
+   pick settings while it loads if its loading for a while that way they're
+   doing stuff and not waiting."
+
+   WHAT IT MAY OFFER is decided by the world build, not by taste. Every row
+   here writes ONLY `game.settings` (plus the profile) and is read live by
+   something that has not been built yet or is re-read every frame:
+
+     touch steering  readInput reads settings.steerMode every frame. Picking
+                     "tilt" also hooks the orientation listener, which iOS
+                     only grants inside a user gesture — the tap on the
+                     control IS that gesture, so it is the one place besides
+                     the DRIVE press where switching to tilt can work at all.
+     speed units     the HUD formats from settings.units; nothing is built
+                     from it.
+     volume          applied by setRunning(true) at the end of the load
+                     (audio.setLevels(s.vol, 1)), which happens after every
+                     one of these rows.
+     rival car       traffic.ts reads a module value, refreshed here through
+                     syncRivalMode, and claims its pool slot on the toggle
+                     rather than at construction — so it works whether or not
+                     the traffic stage has run yet.
+
+   WHAT IT MAY NOT OFFER, and why this panel is short: GRAPHICS. The preset
+   is consumed by the FIRST stage of the build (MIXING PAINT decides there
+   and then whether the photo scans are fetched at all) and half a dozen
+   later ones inherit that decision, so a preset control here would either
+   lie about what it did or force the build to start over. Same for the
+   render tier and the imported cabin. A control that cannot honour the tap
+   is worse than no control, so those rows stay in SETTINGS, where the world
+   is either not built yet or can be rebuilt around them.
+
+   IT APPEARS ONLY IF THE LOAD IS SLOW. SHOW_AFTER_MS is the owner's "if its
+   loading for a while": on a warm DRIVE, or a fast desktop, the load is over
+   before this exists and the board is exactly what it was. And it is not a
+   dialog — no overlay, no close button, nothing to dismiss. It is more of
+   the same board, under the bar, and it leaves with the screen.
+
+   ONE HONEST CAVEAT, stated here because it is a property of the loader and
+   not of this panel: each build stage is a single synchronous block, so a
+   tap that lands inside one is queued and answered at that stage's end
+   rather than immediately (loading.ts yields to a paint between stages, and
+   only between them). SHOW_AFTER_MS is set past the two longest blocking
+   stages for that reason as much as for the owner's. */
+const SHOW_AFTER_MS = 2500;
+
+function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) {
+  const [show, setShow] = useState(false);
+  const [, force] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setShow(true), SHOW_AFTER_MS);
+    return () => clearTimeout(t);
+  }, []);
+  if (!show) return null;
+  const s = game.settings;
+  /* No applySettings() call. Every row above is live-read or applied at
+     start(); calling it here would rebuild render targets and re-key shadow
+     programs in the middle of a stage that is mid-build, for no gain. */
+  /* One door, like the settings panel's own upd(): every row names the key it
+     changed so the event says WHICH control people reach for while they wait,
+     and syncRivalMode runs whether or not the rival row was the one touched
+     (the same "wire it once" rule the panel follows). onChange writes the
+     profile — these are saved, not just applied to this drive. */
+  const upd = (key: string, fn: (x: GameSettings) => void) => {
+    fn(s);
+    syncRivalMode(s);
+    onChange();
+    force((n) => n + 1);
+    track("load_settings_change", { setting: key, device: deviceType() });
+  };
+  return (
+    <div className="loadSet">
+      <div className="loadSetHead">
+        <b>WHILE YOU WAIT</b>
+        <span className="ui-jp" lang="ja">設定</span>
+        <i>saved as you pick</i>
+      </div>
+      <div className="loadSetRows">
+        <SignSrow name="Steering">
+          <SignSeg
+            label="Steering"
+            value={s.steerMode}
+            options={[
+              { v: "buttons", t: "BUTTONS" },
+              { v: "wheel", t: "WHEEL" },
+              { v: "slider", t: "SLIDER" },
+              { v: "tilt", t: "TILT" },
+            ]}
+            onChange={(v) =>
+              upd("steerMode", (x) => {
+                x.steerMode = v as GameSettings["steerMode"];
+                // same gesture rule as the DRIVE press — see drive()
+                if (x.steerMode === "tilt") game.hookTilt();
+              })
+            }
+          />
+        </SignSrow>
+        <SignSrow name="Speed units">
+          <SignSeg
+            label="Speed units"
+            value={s.units}
+            options={[{ v: "mph", t: "MPH" }, { v: "kmh", t: "KM/H" }]}
+            onChange={(v) => upd("units", (x) => (x.units = v as SpeedUnits))}
+          />
+        </SignSrow>
+        <SignSrow name="Rival car" aside="— chase the orange one">
+          <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd("rival", (x) => (x.rival = v))} />
+        </SignSrow>
+        <SignSrow last stack name="Volume">
+          <SignSlider
+            label="Volume"
+            min={0}
+            max={100}
+            value={Math.round(s.vol * 100)}
+            text={`${Math.round(s.vol * 100)}%`}
+            onChange={(v) => upd("vol", (x) => (x.vol = v / 100))}
+          />
+        </SignSrow>
+      </div>
+    </div>
+  );
+}
+
 /* ================= loading screen ================= */
 
 /* Rendered from the DRIVE tap until the world is built and warmed — the toll
@@ -854,11 +1137,13 @@ export default function GameApp() {
    whole load — and the CSS carries the motion in between. The .loadRoot /
    .loadErr / .pct / .loadStatus hooks are what the harnesses read. */
 function LoadingScreen({
-  label, frac, error,
+  label, frac, error, game, onSettingChange,
 }: {
   label: string;
   frac: number;
   error: string | null;
+  game: Game | null;
+  onSettingChange: () => void;
 }) {
   return (
     <div className="loadRoot signLoad">
@@ -922,6 +1207,7 @@ function LoadingScreen({
               <div className="sign-cap faint loadCap">
                 first press builds the whole town · the next DRIVE is instant
               </div>
+              {game && <LoadSettings game={game} onChange={onSettingChange} />}
             </>
           )}
         </div>
@@ -1460,13 +1746,25 @@ function CarPreview({
   children?: React.ReactNode;
 }) {
   const [url, setUrl] = useState<string | null>(null);
-  useEffect(
-    () => requestCarPreview(carId, paintHex, (u) => setUrl(u), first),
+  /* game/carpreview.ts is three.js plus the whole player-car builder. Imported
+     here rather than at the top of this file so it cannot weld either into the
+     chunk the main menu is parsed from — by the time a card mounts, the engine
+     chunk has landed and every module this needs is already in memory. */
+  useEffect(() => {
+    let live = true;
+    let cancel: (() => void) | null = null;
+    void import("@/game/carpreview").then(({ requestCarPreview }) => {
+      if (!live) return;
+      cancel = requestCarPreview(carId, paintHex, (u) => setUrl(u), first);
+    });
+    return () => {
+      live = false;
+      cancel?.();
+    };
     // `first` is only a queue-order hint for the render this effect starts;
     // a change in which card is selected must not re-render every card
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [carId, paintHex],
-  );
+  }, [carId, paintHex]);
   return (
     <div className="carImg">
       {url && <img src={url} alt="" draggable={false} />}

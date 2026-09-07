@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { buildStamped } from "@/lib/build";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import type { Cockpit, SideGlassFit } from "./cockpit";
@@ -100,6 +101,13 @@ const RIM_SHRINK = 0.97;
 const WHEEL_SCALE = 1.60;
 
 const BASE = "/models/cockpits/";
+/** The two files a donor cabin needs: the part manifest, then the mesh.
+    Exported so the menu-time prefetch (game/prefetch.ts, through player.ts's
+    donorAssetUrls) names the same two URLs attachCockpitModel will — build
+    stamp included, or the prefetched copy would be a different cache entry
+    from the one the real request looks for. */
+export const cockpitModelUrls = (name: string): string[] =>
+  [buildStamped(`${BASE}${name}.json`), buildStamped(`${BASE}${name}.glb`)];
 
 /** Full-on level of the donor's fill light — see the light itself for why it is
     shaped the way it is. Shipped OFF (engine.ts's I key is what turns it on),
@@ -238,30 +246,56 @@ export function attachCockpitModel(
   name: string,
   onDone?: (h: CockpitModelHandle | null) => void,
 ): void {
-  let manifest: Manifest | null = null;
-
   const fail = (why: string, err?: unknown) => {
     console.warn(`[cockpitmodel] ${name}: ${why} — keeping the procedural dash`, err ?? "");
     onDone?.(null);
   };
 
-  fetch(`${BASE}${name}.json`)
-    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`manifest HTTP ${r.status}`))))
-    .then((m: Manifest) => {
-      manifest = m;
-      /* EXT_meshopt_compression is REQUIRED by the shipped interior, so a
-         loader without this decoder does not degrade — it rejects the file and
-         the player gets the procedural dash. Meshopt rather than Draco because
-         the decoder is a plain ES module that bundles with the app, where
-         Draco needs wasm files served out of public/. */
-      new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(
-        `${BASE}${name}.glb`,
-        (gltf) => { try { onDone?.(wire(cockpit, gltf.scene, manifest!)); } catch (e) { fail("wiring failed", e); } },
-        undefined,
-        (e) => fail("model failed to load", e),
-      );
-    })
-    .catch((e) => fail("manifest failed to load", e));
+  /* BOTH AT ONCE. The GLB load used to be started from the manifest fetch's
+     .then, which put a whole round trip in front of the biggest download the
+     game makes — 5.7 MB that could not begin until a 12 KB sibling had landed.
+     Measured on Slow 4G, the manifest was requested 10.4 s after the DRIVE
+     press and the mesh 8.6 s after THAT; the loading stage that waits on this
+     spends its entire 8 s budget and gives up either way.
+
+     Nothing in the GLB request depends on the manifest's CONTENT — it only
+     ever decided whether to bother — so they are two independent fetches of
+     two static siblings and the only thing serialising them buys is the 5.7 MB
+     not being spent when the 12 KB 404s. That is a trade worth reversing: the
+     manifest is deployed with the mesh and fails essentially only when the
+     mesh does.
+
+     EXT_meshopt_compression is REQUIRED by the shipped interior, so a loader
+     without this decoder does not degrade — it rejects the file and the player
+     gets the procedural dash. Meshopt rather than Draco because the decoder is
+     a plain ES module that bundles with the app, where Draco needs wasm files
+     served out of public/. */
+  const [manifestUrl, meshUrl] = cockpitModelUrls(name);
+  const manifestP = fetch(manifestUrl)
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`manifest HTTP ${r.status}`))));
+  const meshP = new Promise<THREE.Group>((res, rej) => {
+    new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(
+      meshUrl,
+      (gltf) => res(gltf.scene),
+      undefined,
+      rej,
+    );
+  });
+  /* Both rejections are attached before either is awaited, so whichever loses
+     the race cannot surface as an unhandled rejection while the other is still
+     in flight. */
+  let failed = false;
+  const note = (why: string) => (e: unknown) => {
+    if (!failed) { failed = true; fail(why, e); }
+    return null;
+  };
+  void Promise.all([
+    manifestP.catch(note("manifest failed to load")),
+    meshP.catch(note("model failed to load")),
+  ]).then(([m, scene]) => {
+    if (failed || !m || !scene) return;
+    try { onDone?.(wire(cockpit, scene, m as Manifest)); } catch (e) { fail("wiring failed", e); }
+  });
 }
 
 /* ---------------------------------------------------------- door mirrors -- */

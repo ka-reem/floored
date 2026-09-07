@@ -13,6 +13,23 @@ import type { REdge, EdgePose } from "./world/roadnet";
 import type { CarState } from "./physics";
 import type { NpcHit } from "./collide";
 
+/* The fleet mix, hoisted out of the constructor so the ASSET PREFETCH can
+   read it without building a Traffic (see Game.prefetchAssets). Weights are
+   the share of the roster each bodyshell takes; the roster is drawn from the
+   seeded rng, so which styles actually appear varies a little between seeds —
+   every one of them is a possible fetch, which is what a prefetch has to
+   assume. Editing this table changes the traffic mix; it is read in exactly
+   two places and both want the whole list. */
+const FLEET_MIX: [string, number][] = [
+  ["sedan", 0.14], ["hybrid", 0.07], ["compact", 0.11], ["suv", 0.10],
+  ["osedan", 0.11], ["ohybrid", 0.06], ["ocompact", 0.08], ["osuv", 0.07],
+  ["mhybrid", 0.06],
+  ["taxi", 0.07], ["van", 0.06], ["truck", 0.05], ["bus", 0.02],
+];
+/** Every bodyshell the fleet can ask for, including the two forced police
+    cruisers the roster loop adds outside the weighted mix. */
+export const FLEET_STYLES: string[] = [...FLEET_MIX.map(([s]) => s), "police"];
+
 /* Traffic v4.
    Expressway NPCs drive the one-way corridor (see world/corridor.ts): IDM
    car-following plus MOBIL-ish lane changes, positioned by corridor z + a
@@ -1931,12 +1948,7 @@ export class Traffic {
        (0.11 + 0.08 = 0.19, now 0.07/0.06/0.06) rather than the newcomer
        taking a slice out of everything else — adding a third generation of
        the same car should not make sedans or trucks rarer. */
-    const mix: [string, number][] = [
-      ["sedan", 0.14], ["hybrid", 0.07], ["compact", 0.11], ["suv", 0.10],
-      ["osedan", 0.11], ["ohybrid", 0.06], ["ocompact", 0.08], ["osuv", 0.07],
-      ["mhybrid", 0.06],
-      ["taxi", 0.07], ["van", 0.06], ["truck", 0.05], ["bus", 0.02],
-    ];
+    const mix = FLEET_MIX;
     for (let i = 0; i < N; i++) {
       let r = this.rng(), type = mix[mix.length - 1][0];
       for (const [t, w] of mix) {

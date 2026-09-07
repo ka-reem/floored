@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { buildStamped } from "@/lib/build";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import type { ShellParams } from "./carspecs";
@@ -31,6 +32,9 @@ export interface BodyModelHandle {
 }
 
 const BASE = "/models/player/";
+/** Where a donor exterior lives. Exported so game/prefetch.ts names the same
+    URL this module will ask for rather than keeping a second copy of it. */
+export const bodyModelUrl = (name: string): string => buildStamped(`${BASE}${name}.glb`);
 
 export function attachBodyModel(
   exteriorG: THREE.Group,
@@ -54,7 +58,7 @@ export function attachBodyModel(
      re-encoded rather than shipped as-is. */
   loader.setMeshoptDecoder(MeshoptDecoder);
   loader.load(
-    `${BASE}${name}.glb`,
+    bodyModelUrl(name),
     (gltf) => {
       try {
         onDone?.(fit(exteriorG, gltf.scene, shell, procedural));
