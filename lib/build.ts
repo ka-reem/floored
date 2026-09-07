@@ -52,10 +52,11 @@ export const SHOW_DEV_SETTINGS: boolean = (() => {
 /** A token that changes with every build (next.config.mjs BUILD_REV): the
     deployment's commit sha where there is one, the build's own timestamp
     otherwise. Not shown anywhere — it is a CACHE KEY, for anything the client
-    stores that would go stale the moment the bundle changes. Today that is
-    the garage's persisted card art (game/carpreview.ts). Empty string if the
-    env var somehow did not make it into the bundle, which every reader must
-    treat as "do not persist" rather than as a key. */
+    stores or caches that would go stale the moment the bundle changes: today
+    the garage's persisted card art (game/carpreview.ts) and the immutable
+    model URLs below. Empty string if the env var somehow did not make it into
+    the bundle, which every reader must treat as "do not cache" rather than as
+    a key. */
 export const BUILD_REV: string = process.env.NEXT_PUBLIC_BUILD_REV || "";
 
 /** Stamp a /public asset URL with the build it belongs to.

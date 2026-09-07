@@ -1,6 +1,17 @@
 import * as THREE from "three";
 import { clamp, lerp, rand, pick, TAU, angDiff, mulberry32 } from "./util";
 import { loadNpcModels, HD_STYLES, HD_BASE, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
+import { HX, LANE_LAT } from "./world/const";
+import { getCorridor, PITCH, PHASE, TOLL } from "./world/corridor";
+import { worldTierCaps, rivalMode } from "./settings";
+import {
+  getRouteGraph, BYPASS, BYPASS_EDGE, DIVERGE_Z, MOUNTAIN_EDGE, MTN,
+  type RoutePose, type SurfaceHit,
+} from "./world/routegraph";
+import { signalPhase, type WorldData } from "./world/data";
+import type { REdge, EdgePose } from "./world/roadnet";
+import type { CarState } from "./physics";
+import type { NpcHit } from "./collide";
 
 /* The fleet mix, hoisted out of the constructor so the ASSET PREFETCH can
    read it without building a Traffic (see Game.prefetchAssets). Weights are
@@ -18,17 +29,6 @@ const FLEET_MIX: [string, number][] = [
 /** Every bodyshell the fleet can ask for, including the two forced police
     cruisers the roster loop adds outside the weighted mix. */
 export const FLEET_STYLES: string[] = [...FLEET_MIX.map(([s]) => s), "police"];
-import { HX, LANE_LAT } from "./world/const";
-import { getCorridor, PITCH, PHASE, TOLL } from "./world/corridor";
-import { worldTierCaps, rivalMode } from "./settings";
-import {
-  getRouteGraph, BYPASS, BYPASS_EDGE, DIVERGE_Z, MOUNTAIN_EDGE, MTN,
-  type RoutePose, type SurfaceHit,
-} from "./world/routegraph";
-import { signalPhase, type WorldData } from "./world/data";
-import type { REdge, EdgePose } from "./world/roadnet";
-import type { CarState } from "./physics";
-import type { NpcHit } from "./collide";
 
 /* Traffic v4.
    Expressway NPCs drive the one-way corridor (see world/corridor.ts): IDM
