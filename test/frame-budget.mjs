@@ -59,7 +59,7 @@ for (const r of runs) {
 }
 
 const MAX = Math.max(...series.map((s) => s.total));
-const W = 1440, BARH = 62, GAP = 46, LEFT = 250, RIGHT = 40, TOP = 108;
+const W = 1500, BARH = 62, GAP = 46, LEFT = 330, RIGHT = 40, TOP = 108;
 const H = TOP + series.length * (BARH + GAP) + 104;
 const barW = W - LEFT - RIGHT;
 const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");

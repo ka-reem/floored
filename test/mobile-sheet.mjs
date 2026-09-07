@@ -37,7 +37,10 @@ const cols = argAll("--col").map((s) => {
 if (!cols.length) { console.error("need at least one --col label=path"); process.exit(1); }
 mkdirSync(path.dirname(OUT), { recursive: true });
 
-const PAD = 16, LAB = 26, TOP = TITLE ? 40 : 0, BOT = NOTE ? 34 : 0;
+/* Type sizes scale with the sheet. A 15 px label on a 1900 px-wide contact
+   sheet is unreadable at the size anyone actually looks at it. */
+const F_TITLE = 30, F_LAB = 22, F_NOTE = 19;
+const PAD = 18, LAB = F_LAB + 14, TOP = TITLE ? F_TITLE + 22 : 0, BOT = NOTE ? F_NOTE + 22 : 0;
 const tiles = [];
 for (const c of cols) {
   let img = sharp(c.file);
@@ -62,14 +65,14 @@ const text = (t, w, h, size, fill) => Buffer.from(
   `<svg width="${w}" height="${h}"><text x="2" y="${size}" font-family="monospace" font-size="${size}" fill="${fill}">${esc(t)}</text></svg>`);
 
 const comps = [];
-if (TITLE) comps.push({ input: text(TITLE, W - 8, TOP, 20, "#f2f2f2"), left: PAD, top: 8 });
+if (TITLE) comps.push({ input: text(TITLE, W - 8, TOP, F_TITLE, "#f2f2f2"), left: PAD, top: 10 });
 let x = PAD;
 for (const t of tiles) {
-  comps.push({ input: text(t.label, t.w, LAB, 15, "#cfe3ff"), left: x, top: TOP + 4 });
+  comps.push({ input: text(t.label, t.w, LAB, F_LAB, "#cfe3ff"), left: x, top: TOP + 4 });
   comps.push({ input: t.buf, left: x, top: TOP + LAB });
   x += t.w + PAD;
 }
-if (NOTE) comps.push({ input: text(NOTE, W - 8, BOT, 14, "#b9b9b9"), left: PAD, top: TOP + LAB + H + 8 });
+if (NOTE) comps.push({ input: text(NOTE, W - 8, BOT, F_NOTE, "#b9b9b9"), left: PAD, top: TOP + LAB + H + 10 });
 await sharp({ create: { width: W, height: TOP + LAB + H + PAD + BOT, channels: 3, background: { r: 14, g: 14, b: 18 } } })
   .composite(comps).png().toFile(OUT);
 console.log("wrote", OUT, `${W}x${TOP + LAB + H + PAD + BOT}`);
