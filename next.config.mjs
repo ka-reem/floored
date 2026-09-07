@@ -3,8 +3,23 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/* A token that changes with EVERY build, exposed to the client.
+
+   game/carpreview.ts keeps the garage's studio renders in localStorage so a
+   returning player does not pay to re-render five cars on every visit. That
+   is only safe while the stored PNGs still match what the code would draw
+   today, so the store is keyed on this: a new deployment gets a new key and
+   the old art is dropped rather than shown. Vercel's commit sha where there
+   is one, the config's own evaluation time otherwise — both change exactly
+   when a new bundle does. Read through lib/build.ts, never directly. */
+const BUILD_REV =
+  process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) ||
+  process.env.GITHUB_SHA?.slice(0, 12) ||
+  Date.now().toString(36);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: { NEXT_PUBLIC_BUILD_REV: BUILD_REV },
   reactStrictMode: false, // the game engine manages its own WebGL lifecycle
   outputFileTracingRoot: __dirname,
   /* Phone testing over the LAN. Next 16 refuses to serve /_next/* dev

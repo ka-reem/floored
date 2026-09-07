@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { buildPlayerCar, hasDonorBody, type PlayerRig } from "./player";
 import { carById, getCar, type CarSpec } from "./carspecs";
 import { envFaceCanvas, glowTexF } from "./textures";
+import { BUILD_REV } from "@/lib/build";
 
 /* Offscreen studio renders of the player car rigs for the garage UI.
    One shared renderer/scene; results are cached per (car, paint).
@@ -25,6 +26,139 @@ import { envFaceCanvas, glowTexF } from "./textures";
    the fetch settles in a few hundred ms and the img src just changes. */
 
 const cache = new Map<string, string>();
+
+/* ---------- the card art SURVIVES THE TAB ----------
+
+   WHY. Every shot below is a full buildPlayerCar() plus a shadowed render
+   plus a PNG readback. Measured on a desktop production build (the render
+   itself excluded — this QA box has no GPU and inflates it beyond use), one
+   card costs 100-205 ms to build and ~56 ms to encode, and the garage shoots
+   FIVE of them. That is roughly a second of main-thread work on a desktop
+   and several on a phone, paid on the first garage open of every visit and
+   again on every paint the player has not already seen — which is exactly
+   the shape of "the garage takes a while to load sometimes".
+
+   The in-memory caches above already make the SECOND open of a session
+   instant. This makes the first one instant too, on every visit after the
+   first, by keeping the finished PNGs in localStorage.
+
+   WHY IT CANNOT GO STALE. The store is keyed on BUILD_REV, which changes
+   with every deployment, and hydrate() deletes every key that is not the
+   current one — so art from a build where the cars looked different is
+   dropped, never shown. And it is off entirely outside a production build:
+   `next dev` evaluates next.config.mjs once at server start, so an HMR edit
+   to a car would not move the key, and a lane working on car art must never
+   be shown a cached render of the old one.
+
+   BUDGET. A shot is ~60 KB of base64; five cards in one paint is ~300 KB,
+   against a localStorage quota that is 5 MB on a good day and smaller in a
+   private window. STORE_MAX_BYTES caps it well under that and the oldest
+   entries go first. Every read and write is wrapped: Safari's private mode
+   throws on setItem, and a garage that works is worth more than a garage
+   that is fast. */
+const STORE_PREFIX = "neonx.cards.";
+const STORE_KEY = STORE_PREFIX + BUILD_REV;
+/* ~99 KB a shot, measured: one paint across the five cards, plus the Volvo's
+   donor-bodywork pass, is about 600 KB. Two paints fit here — the one the
+   player drives in and the one they last looked at — inside a fifth of a 5 MB
+   origin quota. Past it the oldest entries go, and touch() keeps the ones
+   being read at the young end, so what survives is what is in use. */
+const STORE_MAX_BYTES = 1_100_000;
+/** Off without a build token, and off outside a production bundle. */
+const STORE_ON = !!BUILD_REV && process.env.NODE_ENV === "production";
+
+/** Insertion order IS the eviction order — a Map keeps it, and a shot that is
+    re-read is not re-inserted, so this is oldest-first rather than true LRU.
+    Good enough: the cost of evicting a shot is one re-render of one card. */
+const store = new Map<string, string>();
+let hydrated = false;
+
+function hydrate() {
+  if (hydrated) return;
+  hydrated = true;
+  if (!STORE_ON || typeof localStorage === "undefined") return;
+  try {
+    /* Drop every other build's art first. Without this the quota fills with
+       renders of cars nobody can see any more and the current build's writes
+       start failing. */
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(STORE_PREFIX) && k !== STORE_KEY) localStorage.removeItem(k);
+    }
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw) as Record<string, string>;
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v !== "string" || !v.startsWith("data:image/png")) continue;
+      store.set(k, v);
+      /* Straight into the two in-memory caches the rest of this file reads,
+         so a hydrated shot is indistinguishable from one this session drew —
+         requestCarPreview hands it back synchronously and renders nothing. */
+      if (k.endsWith(":real")) realCache.set(k.slice(0, -5), v);
+      else cache.set(k, v);
+    }
+  } catch {
+    /* unparseable, or storage denied: this session simply renders its own */
+  }
+}
+
+let saveQueued = false;
+function saveSoon() {
+  if (!STORE_ON || saveQueued || typeof localStorage === "undefined") return;
+  saveQueued = true;
+  /* On idle, and never inside a shot: the write is a synchronous serialise of
+     up to STORE_MAX_BYTES of base64, which is not something to do in the same
+     frame as a render the player is waiting on. */
+  const run = () => {
+    saveQueued = false;
+    /* Never mid-burst. A cold garage open finishes six shots over six frames
+       and each one would otherwise serialise the whole store again; waiting
+       for the render queue to drain turns that into one write. */
+    if (queue.length) { saveSoon(); return; }
+    try {
+      let total = 0;
+      for (const v of store.values()) total += v.length;
+      while (total > STORE_MAX_BYTES && store.size) {
+        const oldest = store.keys().next().value as string;
+        total -= store.get(oldest)!.length;
+        store.delete(oldest);
+      }
+      localStorage.setItem(STORE_KEY, JSON.stringify(Object.fromEntries(store)));
+    } catch {
+      /* quota, or a private window that refuses writes. Give up for good
+         rather than retrying into the same wall on every shot. */
+      try { localStorage.removeItem(STORE_KEY); } catch {}
+      store.clear();
+    }
+  };
+  const ric = (window as unknown as {
+    requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void;
+  }).requestIdleCallback;
+  if (ric) ric(run, { timeout: 2000 });
+  else setTimeout(run, 500);
+}
+
+/** Move an already-stored shot to the end of the eviction queue, so reading a
+    card keeps it alive. Deliberately does NOT schedule a save: the order is
+    worth persisting, but not worth a 900 KB serialise on its own — the next
+    real write carries it. */
+function touch(key: string, real: boolean) {
+  if (!STORE_ON) return;
+  const k = real ? key + ":real" : key;
+  const v = store.get(k);
+  if (v === undefined) return;
+  store.delete(k);
+  store.set(k, v);
+}
+
+/** Remember one finished shot. `key` is the same car:paint key the in-memory
+    caches use; `real` marks the donor-bodywork pass so the two cannot collide
+    in one flat store. */
+function remember(key: string, url: string, real: boolean) {
+  if (!STORE_ON) return;
+  store.set(real ? key + ":real" : key, url);
+  saveSoon();
+}
 
 /** Pass-two shots, keyed by CAR AND PAINT — same key shape as the procedural
     cache. This used to be keyed by car alone, back when the donor body kept
@@ -140,6 +274,7 @@ function shootReal(spec: CarSpec, paintHex: number, cb: (url: string) => void) {
     realWaiting.delete(key);
     if (!url) return;
     realCache.set(key, url);
+    remember(key, url, true);
     for (const f of set) f(url);
   }));
 }
@@ -210,6 +345,7 @@ function shootProcedural(spec: CarSpec, paintHex: number): string {
   url = shoot(st, rig, spec);
   rig.dispose(st.scene);
   cache.set(k, url);
+  remember(k, url, false);
   return url;
 }
 
@@ -224,6 +360,7 @@ export function requestCarPreview(
   cb: (url: string, real: boolean) => void,
   first = false,
 ): () => void {
+  hydrate();
   const spec = carById(carId) || getCar(carId);
   let live = true;
   const emit = (url: string, real: boolean) => {
@@ -232,12 +369,16 @@ export function requestCarPreview(
   const key = carId + ":" + paintHex;
   const real = realCache.get(key);
   if (real) {
+    touch(key, true);
     emit(real, true);
     return () => { live = false; };
   }
   const jobs: Job[] = [];
   const proc = cache.get(key);
-  if (proc) emit(proc, false);
+  if (proc) {
+    touch(key, false);
+    emit(proc, false);
+  }
   else jobs.push(enqueue(() => emit(shootProcedural(spec, paintHex), false), first));
   if (hasDonorBody(carId)) {
     /* the donor re-shoot is queued as well (its render is enqueued from the
@@ -269,6 +410,7 @@ export function carPreviewURL(
   /* carById, not getCar: this renders the GARAGE CARD, and a COMING SOON car
      has to be drawn as itself. getCar() would resolve every locked id to the
      fallback car and put four identical shots on the shelf. */
+  hydrate();
   const spec = carById(carId) || getCar(carId);
   const real = realCache.get(carId + ":" + paintHex);
   if (real) return real;
