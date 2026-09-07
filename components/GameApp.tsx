@@ -1,13 +1,13 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState, useCallback } from "react";
-import { Game, WIPER_MODE_NAMES, CAM_NAMES } from "@/game/engine";
+import type { Game } from "@/game/engine";
+import { WIPER_MODE_NAMES, CAM_NAMES } from "@/game/camnames";
 import { track, trackDebounced, deviceType } from "@/lib/analytics";
 import { showGfxFail, webglAvailable } from "@/game/gfxfail";
 import { HINT_SHOW_MS, type HintMsg } from "@/game/hints";
 import type { LoadReport } from "@/game/loading";
 import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
-import { requestCarPreview } from "@/game/carpreview";
 import {
   Gantry, NightRoad, SignKP, SignPlate, SignRow, SignRule, SignSep, SignShield, SignTitle,
   SignHead, SignBody, SignFootbar, SignBtn, SignToggle, SignSeg, SignSelect, SignSlider,
@@ -51,6 +51,45 @@ function BetaMark({ sm }: { sm?: boolean }) {
   );
 }
 
+/* ---- the engine is a SEPARATE DOWNLOAD from the menu ----
+
+   game/engine.ts is the whole game: three.js, the world build, the traffic
+   fleet, the audio graph, the post chain. 1.2 MB of JavaScript. It used to
+   be a plain static import here, which put it in the same chunk as this
+   file — so a cold visitor could not see the main menu until every byte of
+   the game had arrived AND been parsed, and the menu is the screen they
+   look at while deciding to press DRIVE.
+
+   Nothing on the main menu needs it: every read of the engine below is
+   already written `g?.…` because the engine is built in a mount effect and
+   the first render has never had one. So the menu now renders from a small
+   chunk and the engine is fetched beside it.
+
+   The fetch is kicked off HERE, at module scope, rather than inside the
+   mount effect: this module is evaluated immediately before React renders,
+   so the request goes out at the same moment the menu paints instead of one
+   commit later. It is deliberately not awaited by anything but the handlers
+   that genuinely need a Game.
+
+   `void`-ing the promise is not enough on its own — an import() that
+   rejects (offline, a stale chunk hash after a redeploy) is an unhandled
+   rejection — so the catch is attached here and the failure is re-read by
+   whoever awaits it. */
+type EngineModule = typeof import("@/game/engine");
+let engineMod: EngineModule | null = null;
+let enginePromise: Promise<EngineModule | null> | null = null;
+function loadEngine(): Promise<EngineModule | null> {
+  if (engineMod) return Promise.resolve(engineMod);
+  if (!enginePromise) {
+    enginePromise = import("@/game/engine").then(
+      (m) => (engineMod = m),
+      () => null,
+    );
+  }
+  return enginePromise;
+}
+if (typeof window !== "undefined") void loadEngine();
+
 export default function GameApp() {
   /* Idle-hidden mouse pointer, desktop only.
 
@@ -73,6 +112,11 @@ export default function GameApp() {
      have. */
   const hostRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Game | null>(null);
+  /* Settles when the engine chunk has landed and the Game has been built —
+     or when it has failed to, in which case gameRef stays null and the
+     callers below fall back to exactly the behaviour a WebGL-less browser
+     already gets. Never rejects. */
+  const gameReady = useRef<Promise<void> | null>(null);
   const profileRef = useRef<Profile | null>(null);
   const [screen, setScreen] = useState<Screen>("main");
   const [fromPause, setFromPause] = useState(false);
@@ -154,7 +198,19 @@ export default function GameApp() {
     });
   }, []);
 
-  /* create engine once */
+  /* create engine once, as soon as its chunk lands.
+
+     Two phases, and the split is the whole point. The PROFILE half is
+     synchronous — it is what the board reads for the current car, paint and
+     seed, and it is a localStorage read, so making the menu wait a network
+     round trip for it would be absurd. The ENGINE half waits on the import
+     started at module scope above.
+
+     Everything that reads `gameRef.current` was already written to survive
+     it being null (the first render has never had a Game), so the gap this
+     opens is one the code has always handled. The two places that genuinely
+     cannot work without one — DRIVE, and the sub-screens that take a Game as
+     a prop — go through ensureGame() below. */
   useEffect(() => {
     if (gameRef.current || !hostRef.current) return;
     /* No WebGL (locked-down browser, blocklisted GPU, hardware acceleration
@@ -175,7 +231,21 @@ export default function GameApp() {
        device may load a donor cabin, and the first rig is built before any
        settings panel has been opened. */
     syncCabinMode(profile.settings);
-    const game = new Game(hostRef.current, profile, {
+    /* Paint the restored profile now rather than at the end of the engine
+       download: the board's "current car / paint / seed" line already falls
+       back to profileRef when there is no Game (see the sign-plate below). */
+    rerender();
+
+    const host = hostRef.current;
+    let disposed = false;
+    let built: Game | null = null;
+    gameReady.current = loadEngine().then((mod) => {
+      if (disposed || !mod) return;
+      buildGame(mod);
+    });
+
+    function buildGame(mod: EngineModule) {
+    const game = new mod.Game(host, profile, {
       toast: showToast,
       exitHint: (t) => setExitHint(t),
       /* game/hints.ts fires each tip once ever and never overlaps two, so this
@@ -250,9 +320,13 @@ export default function GameApp() {
       },
     });
     gameRef.current = game;
+    built = game;
     rerender();
+    }
+
     return () => {
-      game.destroy();
+      disposed = true;
+      built?.destroy();
       gameRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -274,18 +348,59 @@ export default function GameApp() {
     saveProfile(p);
   }, []);
 
+  /* Wait for the engine chunk if it is still in the air, then hand back the
+     Game. Instant (a resolved ref read) on every warm load and on every press
+     after the first second or so of a cold one; the only calls that actually
+     await are a tap that beats the download. Returns null when there is no
+     Game to be had (no WebGL, or the chunk failed), which is the same null
+     every caller here already handles. */
+  const ensureGame = useCallback(async (): Promise<Game | null> => {
+    if (gameRef.current) return gameRef.current;
+    if (gameReady.current) await gameReady.current;
+    return gameRef.current;
+  }, []);
+
+  /* The three main-menu rows whose screens take a Game as a prop. Awaiting
+     here rather than rendering the screen with no Game keeps the press
+     feeling like a slow press instead of showing an empty board. */
+  const openScreen = useCallback(
+    async (s: Screen) => {
+      await ensureGame();
+      setScreen(s);
+    },
+    [ensureGame],
+  );
+
   /* DRIVE. The world does not exist until this runs — the engine constructor
      only sets up a canvas and the settings the menus read (see Game.load) —
      so the first press pays for the whole build behind the loading screen.
      A second press (after MAIN MENU from the pause screen) is instant. */
   const drive = useCallback(async () => {
-    const g = gameRef.current;
+    /* Almost always already there — the engine chunk is fetched from module
+       scope, so it has had the whole time the player spent reading the board.
+       `waited` is true only for a press that beat the download on a cold,
+       uncached first visit. */
+    const waited = !gameRef.current;
+    const g = await ensureGame();
     if (!g) return;
     const coldStart = !g.loaded; // whether this press pays for the world build
     /* Before anything asynchronous: iOS only unlocks an AudioContext created
        inside the gesture itself, and every line below this one is a task or
        more removed from the tap. */
     g.primeAudio();
+    /* ...and if the await above already cost us that gesture, prime again on
+       the next one. Cheap (audio.init and music.prime are both idempotent
+       latches), one-shot, and it covers the only case the engine split can
+       cost audio: a DRIVE press that lands before the engine chunk does. */
+    if (waited) {
+      const reprime = () => {
+        removeEventListener("pointerdown", reprime, true);
+        removeEventListener("keydown", reprime, true);
+        gameRef.current?.primeAudio();
+      };
+      addEventListener("pointerdown", reprime, { capture: true, once: true });
+      addEventListener("keydown", reprime, { capture: true, once: true });
+    }
     /* Same gesture rule as primeAudio, and the reason this can't live in the
        mount effect: iOS only grants DeviceOrientation permission from inside a
        user gesture, and hookTilt() is one-shot (its tiltHooked guard means a
@@ -327,7 +442,7 @@ export default function GameApp() {
     });
     markRun();
     persist();
-  }, [persist, markRun]);
+  }, [persist, markRun, ensureGame]);
   const resume = () => {
     gameRef.current?.setRunning(true);
     setScreen("playing");
@@ -629,8 +744,8 @@ export default function GameApp() {
                     rerender();
                   }}
                 />
-                <SignRow glyph="p" jp="車庫" en="GARAGE" dist="0.4" onClick={() => setScreen("garage")} />
-                <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => setScreen("settings")} />
+                <SignRow glyph="p" jp="車庫" en="GARAGE" dist="0.4" onClick={() => void openScreen("garage")} />
+                <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => void openScreen("settings")} />
                 <SignRow glyph="nw" jp="操作" en="CONTROLS" dist="3.1" onClick={() => setScreen("controls")} />
               </nav>
               {/* landscape-phone stand-in for the plate below: one caption
@@ -1480,13 +1595,25 @@ function CarPreview({
   children?: React.ReactNode;
 }) {
   const [url, setUrl] = useState<string | null>(null);
-  useEffect(
-    () => requestCarPreview(carId, paintHex, (u) => setUrl(u), first),
+  /* game/carpreview.ts is three.js plus the whole player-car builder. Imported
+     here rather than at the top of this file so it cannot weld either into the
+     chunk the main menu is parsed from — by the time a card mounts, the engine
+     chunk has landed and every module this needs is already in memory. */
+  useEffect(() => {
+    let live = true;
+    let cancel: (() => void) | null = null;
+    void import("@/game/carpreview").then(({ requestCarPreview }) => {
+      if (!live) return;
+      cancel = requestCarPreview(carId, paintHex, (u) => setUrl(u), first);
+    });
+    return () => {
+      live = false;
+      cancel?.();
+    };
     // `first` is only a queue-order hint for the render this effect starts;
     // a change in which card is selected must not re-render every card
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [carId, paintHex],
-  );
+  }, [carId, paintHex]);
   return (
     <div className="carImg">
       {url && <img src={url} alt="" draggable={false} />}

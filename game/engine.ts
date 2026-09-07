@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { clamp, lerp, mulberry32, type Rng } from "./util";
+import { CAM_NAMES, WIPER_MODE_NAMES } from "./camnames";
 import {
   runStages, withBudget, type LoadReport, type LoadStage,
 } from "./loading";
@@ -363,7 +364,10 @@ const HORN_MIN_S = 0.11;
 const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3, CAM_CONSOLE = 4;
 const CAM_BACKSEAT = 5;
 const CAM_COUNT = 6;
-export const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE", "BACKSEAT"];
+/* Lives in ./camnames now and is re-exported here so that the main menu can
+   read it without importing the engine (and with it three.js). Every
+   `from "./engine"` call site is unchanged. */
+export { CAM_NAMES, WIPER_MODE_NAMES } from "./camnames";
 /* CYCLE ORDER IS NOT NUMERIC ORDER, and the split is deliberate.
 
    AGENTS.md requires the dashcam to be LAST in the cycle — it is the view the
@@ -890,7 +894,6 @@ const WIPER_PARK_EASE = 6;
    rhythm, one confident stroke and a wait just long enough to make the next
    one read as an event. Indexed by mode; index 0 is unused (OFF animates in
    the park branch, not here). */
-export const WIPER_MODE_NAMES = ["OFF", "INT", "LO", "HI"] as const;
 const WIPER_RATE = [0, 1.15, 1.15, 2.2];
 const WIPER_INT_PAUSE = 2.6;
 /* How fast the rear-view's electrochromic dim arrives, same exponential form
