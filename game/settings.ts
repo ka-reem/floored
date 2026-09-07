@@ -262,6 +262,21 @@ export interface TierCaps {
       the car's own paint) sets its own anisotropy and is untouched. */
   texAniso?: number;
 
+  /** Separable-blur ping-pong iterations in the bloom chain (post.ts).
+
+      This is a cap on PASS COUNT rather than on pixels. The bloom targets are
+      quarter res and cost almost nothing to fill, but each iteration is two
+      more render-target binds, and on a tile-based mobile GPU a bind is a
+      tile flush — the cost is in the switching, not the shading. At three
+      iterations the bloom chain is SEVEN of the fifteen passes a mobile POV
+      frame runs.
+
+      2 is the value the reactive perf fallback already drops to, so it is a
+      look the game ships today; what changes is that the tier reaches it
+      without waiting for four slow seconds first. The glow is slightly
+      tighter and its quarter-res edges slightly harder. */
+  bloomIters?: number;
+
   /** Stream the 1024px-atlas HD NPC bodyshells (public/models/cars-hd/)
       after the first drivable frame and hot-swap them into the fleet.
       Desktop-only: the BASE fleet everyone loads is already the same
@@ -289,6 +304,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     sunShadow: false,
     mirrorEvery: 3,
     texAniso: 4,
+    bloomIters: 2,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -306,6 +322,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     sunShadow: false,
     mirrorEvery: 3,
     texAniso: 8,
+    bloomIters: 2,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -323,6 +340,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     sunShadow: true,
     mirrorEvery: 2,
     texAniso: 16,
+    bloomIters: 3,
   },
 };
 

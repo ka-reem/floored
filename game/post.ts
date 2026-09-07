@@ -354,6 +354,9 @@ export class PostFX {
   /** false for one frame after a hard view change: the temporal blend is
       skipped so a camera teleport cuts instead of dragging a ghost. */
   private histValid = false;
+  /** Bloom blur ping-pong iterations, from tierCaps.bloomIters (setBloomIters).
+   *  3 is the desktop shipping value and the default. */
+  private bloomIters = 3;
   /** Whether FXAA runs under the dashcam POV — tierCaps.povFxaa, via
    *  setPovFxaa(). True everywhere except the mobile tiers. */
   private povFxaaOn = true;
@@ -1024,6 +1027,12 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.povFxaaOn = on;
   }
 
+  /** Bloom blur iterations for this tier — see TierCaps.bloomIters. The perf
+   *  fallback still overrides it downward; this only sets the ceiling. */
+  setBloomIters(n: number) {
+    this.bloomIters = Math.max(1, Math.min(4, n | 0));
+  }
+
   /** Whether to build the wet-road reflection source this frame. The engine
    * calls this every frame with its own `reflectionsOn` (user setting AND
    * tier), so it needs no state of its own to keep in step. False costs
@@ -1317,7 +1326,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // single-scale: a third ping-pong widens the glow and kills the boxy
       // quarter-res edges. Two-scale: stop at 2 — the core is *meant* to stay
       // tight (crisp taillight centres); the width moves to the halo chain.
-      const iters = this.perf ? 2 : dual ? 2 : 3;
+      const iters = this.perf ? 2 : dual ? 2 : this.bloomIters;
       for (let b = 0; b < iters; b++) {
         this.blurMat.uniforms.tIn.value = (b === 0 ? this.brightRT : this.blurB).texture;
         this.blurMat.uniforms.uDir.value.set(1, 0);

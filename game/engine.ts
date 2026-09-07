@@ -1997,6 +1997,7 @@ export class Game {
     this.post.setMsaa(this.tierCaps.sceneMsaa ?? 4);
     // desktop-only cinematic extras: two-scale bloom + film-look finishers
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
+    this.post.setBloomIters(this.tierCaps.bloomIters ?? 3);
     // POV grade profile: the mobile tiers run the dashcam degrade at gentler
     // strengths (post.ts POV_TUNE_TIER) so the road stays readable on a phone
     this.post.setPovProfile(this.renderTier);
@@ -3688,6 +3689,7 @@ export class Game {
     if (this.post.setMsaa(this.tierCaps.sceneMsaa ?? 4)) this.lastPR = -1;
     // tier flips retarget the cinematic extras on the same frame too
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
+    this.post.setBloomIters(this.tierCaps.bloomIters ?? 3);
     // ...and the POV grade profile (console-edited knobs survive the flip)
     this.post.setPovProfile(this.renderTier);
     this.post.setPovFxaa(this.tierCaps.povFxaa !== false);
