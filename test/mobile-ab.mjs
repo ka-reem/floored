@@ -264,8 +264,28 @@ if (!SKIP_CENSUS) try {
       top.visible = false;
       const off = draw();
       top.visible = true;
+      /* Almost nothing in this scene is named, so a bare `top.name ||
+         top.type` census prints thirty rows of "Mesh" and identifies
+         nothing. Fall back through the things the world builders DO set —
+         the material's name, the geometry's — and record whether the node
+         opted out of frustum culling, because a full-loop merge with
+         culling off submits its whole 4 km of triangles from anywhere on
+         the lap and that is the interesting case. */
+      const first = top.isMesh || top.isPoints ? top : (() => {
+        let f = null;
+        top.traverse((o) => { if (!f && (o.isMesh || o.isPoints)) f = o; });
+        return f;
+      })();
+      const m = first && (Array.isArray(first.material) ? first.material[0] : first.material);
+      let kids = 0;
+      top.traverse(() => kids++);
       out.push({
         node: top.name || top.type,
+        mat: m?.name || m?.type || null,
+        geo: first?.geometry?.name || null,
+        kids,
+        culled: first ? first.frustumCulled !== false : null,
+        points: !!first?.isPoints,
         calls: full.calls - off.calls,
         tris: full.tris - off.tris,
       });
@@ -274,7 +294,10 @@ if (!SKIP_CENSUS) try {
   });
   console.log(`\nscene census (POV, open deck): total ${census.full.calls} calls, ${census.full.tris} tris`);
   for (const n of census.nodes)
-    console.log(`  ${String(n.node).padEnd(26)} ${String(n.calls).padStart(4)} calls  ${String(n.tris).padStart(8)} tris`);
+    console.log(
+      `  ${String(n.node).padEnd(10)} ${String(n.mat ?? "-").padEnd(22)}` +
+      ` ${String(n.calls).padStart(4)} calls ${String(n.tris).padStart(8)} tris` +
+      ` ${n.culled ? "culled" : "NOCULL"}${n.points ? " points" : ""} kids ${n.kids}`);
   writeFileSync(OUT.replace(/\.json$/, "-census.json"), JSON.stringify(census, null, 2));
 } catch (e) {
   console.log("census skipped:", String(e.message || e).slice(0, 120));
