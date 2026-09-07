@@ -191,6 +191,22 @@ export interface TierCaps {
       which the engine's tier-flip path already forces. */
   sceneMsaa?: number;
 
+  /** Run the FXAA pass while the dashcam POV degrade is on.
+
+      The POV chain is composite -> FXAA -> frame blend -> degrade, and the
+      degrade's first act is to box-downsample the whole frame to half res
+      and snap it to that grid. Whatever FXAA resolved along an edge is
+      averaged away one pass later everywhere except inside the shield rects
+      (the rear-view glass and the head unit), which are drawn from the
+      full-res pre-degrade frame.
+
+      So on the tier that can least afford it, this drops one FULL-SCREEN
+      pass out of the default camera's chain — about a fifth of the
+      screen-sized pixels the frame touches. Every other camera and every
+      other tier keeps FXAA exactly as before; this gates one camera on one
+      device class, which is why it is not simply the fxaa setting. */
+  povFxaa?: boolean;
+
   /** Stream the 1024px-atlas HD NPC bodyshells (public/models/cars-hd/)
       after the first drivable frame and hot-swap them into the fleet.
       Desktop-only: the BASE fleet everyone loads is already the same
@@ -214,6 +230,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     wheelTracks: false, deckDressing: 0.35, districts: 0.55, mtnDetail: 0.5, hdFleet: false,
     vegetation: 0.55,
     sceneMsaa: 0,
+    povFxaa: false,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -227,6 +244,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     wheelTracks: true, deckDressing: 0.7, districts: 0.8, mtnDetail: 0.75, hdFleet: false,
     vegetation: 0.8,
     sceneMsaa: 0,
+    povFxaa: false,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -240,6 +258,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     wheelTracks: true, deckDressing: 1, districts: 1, mtnDetail: 1, hdFleet: true,
     vegetation: 1,
     sceneMsaa: 4,
+    povFxaa: true,
   },
 };
 

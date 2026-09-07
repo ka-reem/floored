@@ -354,6 +354,9 @@ export class PostFX {
   /** false for one frame after a hard view change: the temporal blend is
       skipped so a camera teleport cuts instead of dragging a ghost. */
   private histValid = false;
+  /** Whether FXAA runs under the dashcam POV — tierCaps.povFxaa, via
+   *  setPovFxaa(). True everywhere except the mobile tiers. */
+  private povFxaaOn = true;
   /** MSAA samples for sceneRT — see setMsaa(). 4 is the desktop shipping
    *  value and the default, so a PostFX nobody configures behaves as before. */
   private msaa = 4;
@@ -1014,6 +1017,13 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     return true;
   }
 
+  /** Does the FXAA pass run while the POV degrade is on (tierCaps.povFxaa)?
+   *  Nothing else about FXAA changes: `opts.fxaa` is still the user setting
+   *  and still governs every other camera on every tier. */
+  setPovFxaa(on: boolean) {
+    this.povFxaaOn = on;
+  }
+
   /** Whether to build the wet-road reflection source this frame. The engine
    * calls this every frame with its own `reflectionsOn` (user setting AND
    * tier), so it needs no state of its own to keep in step. False costs
@@ -1466,12 +1476,21 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
        documents as a no-op read. */
     const doPeriph = PERIPH_BLUR && !this.perf && !dash && !pov && !opts.inCar && speedT > 0.02;
     const doFinal = doMbSetting || doPeriph;
+    /* The user's FXAA setting, minus the one case where the pass has almost
+       nothing left to contribute: under the dashcam POV on a tier that has
+       opted out (tierCaps.povFxaa). The degrade downsamples the frame to
+       half res and snaps it to that grid immediately afterwards, so outside
+       the shield rects FXAA's work is averaged away one pass later. Used in
+       place of opts.fxaa everywhere below, INCLUDING in `after()` — get that
+       wrong and the composite renders to a target nothing then reads, and
+       the screen stays on whatever it had. */
+    const fxaa = opts.fxaa && (!pov || this.povFxaaOn);
     /* Each stage renders to screen only when nothing follows it. */
     const after = (stage: 0 | 1 | 2) =>
-      (stage < 1 && opts.fxaa) || (stage < 2 && dash) || doFinal;
+      (stage < 1 && fxaa) || (stage < 2 && dash) || doFinal;
     this.runPass(this.compMat, after(0) ? this.ldrRT : null);
     let cur = this.ldrRT;
-    if (opts.fxaa) {
+    if (fxaa) {
       this.fxaaMat.uniforms.tIn.value = cur.texture;
       this.fxaaMat.uniforms.uRes.value.set(this.fxaaRT.width, this.fxaaRT.height);
       this.runPass(this.fxaaMat, after(1) ? this.fxaaRT : null);
