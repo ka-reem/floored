@@ -1940,7 +1940,10 @@ export const MERGE_COUNTDOWN = [400, 150] as const;
     not. */
 function countdownZ(gore: number, d: number, tubes: readonly TunnelSpec[]) {
   let z = gore - d;
-  const t = tubes.find((q) => z > q.z0 - 12 && z < q.z1 + 12);
+  /* PORTAL_PAD of clearance, not a token 12 m: a mast standing a car's length
+     off a portal has its arm inside the headwall, and the board is unreadable
+     anyway against the black of the mouth. */
+  const t = tubes.find((q) => z > q.z0 - PORTAL_PAD - 6 && z < q.z1 + PORTAL_PAD + 6);
   if (t) {
     const back = t.z0 - 45, fwd = t.z1 + 45;
     z = Math.abs(gore - back - d) <= Math.abs(gore - fwd - d) ? back : fwd;

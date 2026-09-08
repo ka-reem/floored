@@ -360,6 +360,10 @@ for (const s of signs) {
   // vertical: above any vehicle, below the tunnel ceiling if it were in one
   if (SIGN.CLEAR < 5.0) bad(`${s.kind} @${s.z}: panel hangs into vehicle clearance`);
   if (c.inTunnel(s.z)) bad(`${s.kind} @${s.z}: inside the tunnel (mast ${f(mast)} m vs ${TUNNEL.clearH} m clear)`);
+  // …and not jammed against a portal either: the arm would be in the headwall
+  for (const t of tunnels())
+    if (s.z > t.z0 - PORTAL_PAD && s.z < t.z1 + PORTAL_PAD)
+      bad(`${s.kind} @${s.z}: mast is inside ${PORTAL_PAD} m of a tunnel portal`);
   // the toll canopy is a rigid 7.4 m slab centred in the full-width window
   const plazaC = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
   if (Math.abs(s.z - plazaC) < 17 + 2) bad(`${s.kind} @${s.z}: mast is under the toll canopy`);
