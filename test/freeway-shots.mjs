@@ -31,6 +31,17 @@ const VW = Number(process.env.SHOT_W || 1440), VH = Number(process.env.SHOT_H ||
    distance-to-gore so the file list itself reads as the sequence. */
 const EXIT_Z = -500, ENTRY_Z = 20, DIVERGE = 500, MERGE = 1580;
 const STATIONS = [
+  /* The "sign-*" stations are parked ~80 m SHORT of each countdown board, so
+     the board is in the frame ahead rather than directly overhead and out of
+     it. They are the ones that answer "can you see the exit coming"; the
+     "exit-*" ones are round distances from the gore and answer "what is under
+     the wheels here". */
+  ["sign-1km", EXIT_Z - 1080, 0],
+  ["sign-500", EXIT_Z - 550, 0],
+  ["sign-200", EXIT_Z - 280, 0],
+  ["sign-only", EXIT_Z - 170, 0],
+  ["sign-merge", ENTRY_Z - 230, 0],
+  ["sign-bypass", DIVERGE - 280, 0],
   ["exit-1000", EXIT_Z - 1000, 0],
   ["exit-500", EXIT_Z - 500, 0],
   ["exit-200", EXIT_Z - 200, 0],
