@@ -39,8 +39,8 @@ const SITE_URL =
 const DESCRIPTION =
   "Night driving through a procedurally generated Japanese town and its elevated expressway. Sim-grade tire physics, dense AI traffic, rain, neon.";
 
-/* The tab title and the share card. NAME_LABEL is "NEON EXPRESSWAY (BETA)"
-   while lib/build.ts's IS_BETA is true and plain "NEON EXPRESSWAY" after it
+/* The tab title and the share card. NAME_LABEL is "FLOORED (BETA)"
+   while lib/build.ts's IS_BETA is true and plain "FLOORED" after it
    goes false — the browser tab, the OG card and the Twitter card all read the
    same one constant. public/og.png is untouched: it is a committed render and
    the beta mark lives in the text metadata only. */
@@ -63,7 +63,7 @@ export const metadata: Metadata = {
     title: TITLE,
     description: DESCRIPTION,
     locale: "en_US",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "NEON EXPRESSWAY — 首都高ナイトドライブ" }],
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "FLOORED — 首都高ナイトドライブ" }],
   },
   twitter: {
     card: "summary_large_image",
