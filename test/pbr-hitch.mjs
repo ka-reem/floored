@@ -44,6 +44,9 @@ const LABEL = arg("--label", "run");
 const OUT = arg("--out", path.join(process.cwd(), "test", "artifacts", `pbr-hitch-${LABEL}.json`));
 const FRAMES = Number(arg("--frames", 90));
 const AWAY = 400; // open elevated deck: no plaza, no tunnel, no gore
+/* Hold the photo-scan downloads back by this many ms so they land AFTER the
+   world is drawn — see the LATE note below. 0 = leave the network alone. */
+const LATE = Number(arg("--late", 0));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const browser = await puppeteer.launch({
@@ -56,6 +59,33 @@ const browser = await puppeteer.launch({
   protocolTimeout: 590000,
 });
 const page = await browser.newPage();
+
+/* THE REPRODUCTION.
+
+   Measured on this box, the nine scan sets resolve 147 SECONDS BEFORE the
+   game is playable, while the renderer still holds zero programs — the world
+   build is minutes long under a software rasteriser and the assets come off
+   local disk. So they cost nothing here: the load's own compile stage sees
+   the finished materials and links them once, and there is no burst to find.
+   The first version of this probe therefore measured 2 program links in 50
+   frames and proved nothing at all.
+
+   The case that matters is the opposite one, and it is the COMMON one for a
+   real first-time player: a fast machine that builds the world in a couple of
+   seconds, downloading ~5 MB of scans over a phone connection. There the
+   scans land well after the compile stage and after the player is driving.
+
+   Rather than throttle the whole session — which would slow the 25 MB of
+   other assets and make the world build itself take an hour here — this
+   delays ONLY the scan requests. Everything else runs at full speed, so the
+   ordering under test is reproduced without any other variable moving. */
+if (LATE) {
+  await page.setRequestInterception(true);
+  page.on("request", (r) => {
+    if (r.url().includes("/assets/pbr/")) setTimeout(() => r.continue().catch(() => {}), LATE);
+    else r.continue().catch(() => {});
+  });
+}
 await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 300000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 300000 });
 await page.evaluate(() => {
@@ -112,7 +142,8 @@ for (let i = 1; i < rows.length; i++) {
 const total = jumps.reduce((s, j) => s + j.n, 0);
 const biggest = jumps.reduce((a, b) => (b.n > (a?.n ?? 0) ? b : a), null);
 
-console.log(`\n${LABEL} — ${rows.length} frames on open deck from the moment the game is playable`);
+console.log(`\n${LABEL} — ${rows.length} frames on open deck from the moment the game is playable` +
+  (LATE ? `, photo scans held back ${(LATE / 1000).toFixed(0)} s` : ""));
 console.log(`  median frame ${med.toFixed(0)} ms, worst ${worst.toFixed(0)} ms at frame ${worstAt}`);
 console.log(`  programs linked during the run: ${total}, over ${jumps.length} distinct frame(s)`);
 if (biggest)
