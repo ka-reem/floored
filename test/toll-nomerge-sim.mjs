@@ -408,7 +408,7 @@ function run(c, mode, seed, cap, wantTrace) {
           st.crawlAt.set(bin, (st.crawlAt.get(bin) || 0) + 1);
         }
       }
-      if (wantTrace && frame % 6 === 0 && n.s > 1050 && n.s < 1700)
+      if (wantTrace && frame % 4 === 0 && n.s > 1050 && n.s < 1700)
         st.trace.push([+n.s.toFixed(1), +n.offCur.toFixed(2), n.laneK, n.id]);
     }
     /* Body overlap, split at the fan-out. Overlaps in the CORE are this
@@ -466,7 +466,7 @@ for (const [dname, vkl] of DENSITY) {
     const c = getCorridor();
     const cap = Math.round(vkl * WINDOW_KM * c.lanes(TOLL.plazaZ0));
     const trafficSeed = 0xbeef + i * 977;
-    const wantTrace = i === 0 && dname === "packed";
+    const wantTrace = i === 0 && dname === "cruise";
     const o = run(c, "old", trafficSeed, cap, wantTrace);
     const n = run(c, "new", trafficSeed, cap, wantTrace);
     if (wantTrace) { traceOld = o.trace; traceNew = n.trace; }
@@ -533,7 +533,16 @@ for (const [dname, vkl] of DENSITY) {
 }
 
 if (TRACE) {
-  writeFileSync(TRACE, JSON.stringify({ old: traceOld, new: traceNew, TOLL, HOLD_Z0, HOLD_Z1 }));
+  setRoadSeed(1);
+  const c0 = getCorridor();
+  const lanes = [];
+  for (let z = 1050; z <= 1700; z += 5) {
+    const nl = c0.lanes(z);
+    lanes.push([z, Array.from({ length: nl }, (_, k) => +c0.laneOffset(k, z).toFixed(2))]);
+  }
+  writeFileSync(TRACE, JSON.stringify({
+    old: traceOld, new: traceNew, lanes, TOLL, HOLD_Z0, HOLD_Z0_MIN, HOLD_Z1,
+  }));
   console.log(`\nwrote trace ${TRACE}`);
 }
 console.log(fail ? `\n${fail} CHECK(S) FAILED` : "\nall toll no-merge checks passed");
