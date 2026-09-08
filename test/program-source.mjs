@@ -49,8 +49,26 @@ await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 600000
    closed the case on a stutter that was never about shaders. */
 const snap = () => page.evaluate(() => {
   const r = window.__neonx.game.renderer;
+  /* A cacheKey says what KIND of program it is, not what asked for it, and
+     "basic,highp,srgb-linear,…" describes half the scene. three does keep the
+     link though: renderer.properties.get(material).currentProgram is the
+     program that material is using, so walking the scene once builds
+     cacheKey -> the objects and material types actually holding it. That
+     turns "+18 basic programs somewhere" into a list of names. */
+  const owners = {};
+  window.__neonx.game.scene.traverse((o) => {
+    const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of mats) {
+      const key = r.properties.get(m)?.currentProgram?.cacheKey;
+      if (!key) continue;
+      const who = `${o.name || o.type}${m.name ? " / " + m.name : ""}` +
+        `${o.isInstancedMesh ? " x" + o.count : ""}`;
+      (owners[key] ||= new Set()).add(who);
+    }
+  });
   return {
     keys: (r.info.programs ?? []).map((p) => p.cacheKey || p.name || "?"),
+    owners: Object.fromEntries(Object.entries(owners).map(([k, v]) => [k, [...v].slice(0, 4)])),
     textures: r.info.memory?.textures ?? 0,
     geometries: r.info.memory?.geometries ?? 0,
   };
@@ -114,7 +132,8 @@ for (const [name, z] of STOPS) {
   const dTex = now.textures - prev.textures, dGeo = now.geometries - prev.geometries;
   rows.push({ place: name, total: now.keys.length, added: added.length,
               textures: now.textures, dTex, geometries: now.geometries, dGeo,
-              med: ft.med, max: ft.max, keys: added.slice(0, 6) });
+              med: ft.med, max: ft.max, keys: added.slice(0, 8),
+              owners: added.slice(0, 8).map((k) => now.owners[k] || null) });
   console.log(
     `${name.padEnd(18)} progs ${String(now.keys.length).padStart(4)} (+${added.length})` +
     `  tex ${String(now.textures).padStart(4)} (${dTex >= 0 ? "+" : ""}${dTex})` +
@@ -122,7 +141,9 @@ for (const [name, z] of STOPS) {
     `  frame med ${String(ft.med).padStart(6)} max ${String(ft.max).padStart(6)} ms`);
   /* A cacheKey is the shader name followed by every define; the leading token
      is the part a human can read, so print that and keep the rest in the json */
-  for (const k of added.slice(0, 6)) console.log("      ", String(k).slice(0, 110));
+  for (const k of added.slice(0, 8))
+    console.log("      ", (now.owners[k] || ["(not on any object now)"]).join(", ").slice(0, 120),
+      "   [", String(k).slice(0, 42), "]");
   prev = now;
 }
 mkdirSync(path.dirname(OUT), { recursive: true });
