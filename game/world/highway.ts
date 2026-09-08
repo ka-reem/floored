@@ -3498,13 +3498,17 @@ function buildRampMeshes(
           cos: wdz / wl, sin: wdx / wl, y0: a.y - 1.2, y1: a.y + WALL_H + 1.2,
         });
       }
-      // edge lighting down both sides
-      if (i % 8 === 0 && a.s < wallEnd) {
+      /* Edge lighting down both sides — but only once the ramp is its own
+         road. While it is still attached (the auxiliary-lane handover and the
+         gore) its "inner edge" is a painted line in the middle of running
+         pavement, and a lamp there is a bollard in the lane. */
+      if (i % 8 === 0 && a.s < wallEnd && a.s > r.sSep) {
         const lo = edge(i, -a.hOut - 0.5, 0.95), li = edge(i, a.hIn + 0.5, 0.95);
         postPts.push(lo[0], lo[1], lo[2], li[0], li[1], li[2]);
       }
-      // support columns
-      if (i % 7 === 0 && upA > 2.2 && nCol < 96) {
+      // support columns — likewise: while attached the deck's own piers carry
+      // this pavement, and a column here would stand under the deck
+      if (i % 7 === 0 && upA > 2.2 && a.s > r.sSep && nCol < 96) {
         CE.set(0, Math.atan2(a.tx, a.tz), 0);
         CQ.setFromEuler(CE);
         CV.set(a.x, a.gy + (upA - 0.5) / 2, a.z);
@@ -3528,10 +3532,14 @@ function buildRampMeshes(
       const g = parapetGap(r);
       const zP = r.dir > 0 ? g.z0 : g.z1;
       // deck parapet centreline at its clipped end (0.34/0.06 match buildHighway)
-      const latP = -(cor.halfWidth(zP) + 0.34 / 2 + 0.06);
+      const latP = cor.edgeLat(zP, -1) - (0.34 / 2 + 0.06);
       const wP = cor.worldOf(zP, latP);
       const p0 = pts[0];
-      const nOff = WALL_T / 2 + 0.12; // the outer wall's centre offset at hOut = 0
+      /* Where the ramp's OWN outer wall starts. A ramp fed by an auxiliary
+         lane begins at full width, so this is `hOut` out from the centreline,
+         not the zero it used to assume — assuming zero ran the connector wall
+         diagonally across the deceleration lane. */
+      const nOff = p0.hOut + WALL_T / 2 + 0.12;
       const nx0 = p0.x - p0.nx * nOff, nz0 = p0.z - p0.nz * nOff;
       const dx = nx0 - wP.x, dz = nz0 - wP.z;
       const dl = Math.hypot(dx, dz) || 1;

@@ -22,7 +22,7 @@ const URL = arg("url", "http://localhost:3311");
 const TAG = arg("tag", "shot");
 const CAM = Number(arg("cam", 3)); // 3 = CAM_POV dashcam
 const OUT = arg("out", path.join(process.cwd(), "test", "artifacts", "freeway"));
-const TIME = arg("time", "");
+const TIME = arg("time", "13.0");
 const ONLY = arg("only", "");
 mkdirSync(OUT, { recursive: true });
 const VW = Number(process.env.SHOT_W || 1440), VH = Number(process.env.SHOT_H || 900);
