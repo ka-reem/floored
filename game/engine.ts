@@ -2367,6 +2367,36 @@ export class Game {
           const ground = buildGround(this.terrain, this.mats.ground);
           ground.layers.set(LAYER_NOREF);
           this.scene.add(ground);
+
+          /* The photo scans land on their own clock (mats.ts ensurePbr: nine
+             texture fetches, then ~25 material upgrades). Each upgrade adds a
+             map where there was none, which changes three's program cache key,
+             so each is a relink — and they all become due at once, seconds
+             after the load's own COMPILING SHADERS stage has already run.
+             Whatever the player is looking at then eats the whole burst in
+             one frame.
+
+             How often that ordering actually happens is the whole question,
+             and the honest answer is "when the download outlasts the world
+             build". On the sandbox it never does — the scans are applied 147
+             s BEFORE the game is playable and cost nothing — so this is
+             insurance for the real first-time player on a phone connection,
+             not a fix for a stall anyone has reproduced on a driving frame.
+             test/pbr-hitch.mjs --late forces the ordering to check it.
+
+             compileDirty is the mechanism the async toll props (highway.ts)
+             and the HD bodyshells (traffic.ts) already use for exactly this;
+             the scans were the one async arrival that never set it. The slow
+             tick picks it up and walks the scene with compileAsync, which
+             links off the main thread wherever KHR_parallel_shader_compile
+             exists. Where it does not, the links still happen — on a frame of
+             our choosing rather than on the player's next corner.
+
+             Wired here rather than in mats.ts because mats is built a stage
+             EARLIER than the world it would have to flag. */
+          void this.mats.pbrApplied.then(() => {
+            if (this.world) this.world.compileDirty = true;
+          });
         },
       },
       {

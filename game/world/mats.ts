@@ -431,6 +431,46 @@ export interface Mats {
       deferred it, so the low preset can skip the download entirely and still
       be raised to high later. */
   setPbrDetail(on: boolean): void;
+  /** Resolves once the photo scans have been applied to the world's
+      materials — i.e. once ~25 materials have had `needsUpdate` flagged.
+
+      This exists so the engine can PRE-LINK those programs in the background
+      instead of paying for them on whatever frame each surface is next drawn
+      on. Every upgrade path adds a map where there was none (normalMap,
+      roughnessMap, metalnessMap, alphaMap), and three's program cache key is
+      keyed on `!!material.normalMap` and friends (WebGLPrograms.js), so each
+      one is a genuine relink and not a texture swap.
+
+      WHEN THAT COSTS ANYTHING, precisely — because it was first committed
+      here with a claim that turned out to be wrong. If the scans resolve
+      BEFORE the load's own compile stage, they cost nothing: no programs
+      exist yet, the upgrades are just material state, and the load links the
+      finished materials once. Measured on the sandbox this is what happens,
+      by a margin of 147 seconds, because the world build is minutes long
+      there and the assets come off local disk.
+
+      The case this guards is the opposite ordering, which is the ordinary one
+      for a real first-time player: a machine that builds the world in a
+      couple of seconds while pulling ~5 MB of scans over a phone connection.
+      Then the upgrades land on a driving frame, and they all land on the SAME
+      driving frame.
+
+      MEASURED SIZE: 20 programs. Serving the scans a 404 builds the same
+      world without them (loadPbrSet resolves either way and a null albedo
+      makes every upgrade return early), and the renderer holds 245 programs
+      when the game becomes playable against 265 with the scans in. So 20
+      links is what would land together, not the ~30 first claimed — that
+      number came from a probe that was driving, and belonged to something
+      else. test/pbr-hitch.mjs --noscans is that measurement.
+
+      It is NOT established that this is the stutter the owner reported. The
+      burst those probes measured followed the CAMERA rather than the clock,
+      and that is a separate question (test/program-source.mjs).
+
+      Resolves at most once, and never if the scans are never fetched (the
+      low preset skips them; setPbrDetail(true) starts the load later and
+      this resolves then). */
+  pbrApplied: Promise<void>;
 }
 
 /** Per-material PBR bookkeeping, hung off material.userData. */
@@ -469,6 +509,13 @@ interface RoadUD {
  */
 export function buildMats(opts?: { pbr?: boolean }): Mats {
   const usePbr = opts?.pbr !== false;
+
+  /* See Mats.pbrApplied. A promise rather than a callback because the engine
+     cannot subscribe until the world exists, which is a load stage LATER than
+     this one — a callback would race, and on a fast connection the scans can
+     land first. A promise cannot be missed. */
+  let markPbrApplied = () => {};
+  const pbrApplied = new Promise<void>((r) => { markPbrApplied = r; });
 
   const envMap = new THREE.CubeTexture([
     envFaceCanvas(), envFaceCanvas(), envFaceCanvas(true),
@@ -1971,6 +2018,7 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
   });
 
   const mats: Mats = {
+    pbrApplied,
     envMap, glowTex, streakTex, smokeTex, chevTex, goreTex, xingTex, studTex,
     road, front, hwy, ramp,
     ground: new THREE.MeshStandardMaterial({ color: 0x0b0c12, roughness: 0.92, metalness: 0.05 }),
@@ -2246,6 +2294,32 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
 
   if (usePbr) void ensurePbr();
 
+  /* Yield to the next rendered frame.
+
+     The upgrades below are applied ONE GROUP PER FRAME rather than in one
+     block. The work is identical either way — the same ~25 materials, the
+     same ~30 program links — but linking is synchronous, so thirty of them in
+     one frame is a visible stall and one or two per frame is not. It costs
+     about a quarter of a second of wall clock for the last surface to receive
+     its scan, which no one can see, against a hitch that three separate
+     reports have called a bug.
+
+     This is the half of the fix that works EVERYWHERE. The other half —
+     engine.ts flagging world.compileDirty when this resolves — hands the not-
+     currently-visible materials to compileAsync, and that only gets off the
+     main thread where KHR_parallel_shader_compile exists (notably, not in the
+     software rasteriser these are measured on).
+
+     The timer is a fallback for a hidden tab, where rAF is throttled to a
+     stop: nothing is being drawn there, so linking is free, and finishing is
+     better than sitting half-upgraded until the player comes back. */
+  const nextFrame = () => new Promise<void>((resolve) => {
+    let done = false;
+    const fire = () => { if (!done) { done = true; resolve(); } };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(fire);
+    setTimeout(fire, 50);
+  });
+
   /** Fetch and apply the photo scans. Idempotent — safe to call repeatedly. */
   async function ensurePbr() {
     if (pbrStarted) return;
@@ -2284,15 +2358,19 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
     upgradeRoad(hwy, deck, {
       repeat: [2, 2], normalScale: 0.3, detail: 0.9, roughness: 0.38, roughMod: 0.9,
     });
+    await nextFrame();
     upgradeRoad(road, asphaltSet, {
       repeat: [4, 4], normalScale: 0.32, detail: 0.85, roughness: 0.4, roughMod: 0.85,
     });
+    await nextFrame();
     upgradeRoad(front, asphaltSet, {
       repeat: [4, 4], normalScale: 0.32, detail: 0.85, roughness: 0.4, roughMod: 0.85,
     });
+    await nextFrame();
     upgradeRoad(ramp, deck, {
       repeat: [2, 3], normalScale: 0.3, detail: 0.8, roughness: 0.4, roughMod: 0.8,
     });
+    await nextFrame();
 
     /* Concrete and metal are world-projected, so their density is set by the
        projection scale rather than a uv repeat: 0.45 puts one scan tile every
@@ -2339,6 +2417,7 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
         upgradeSurface(m, concreteSet, {
           repeat: [1, 1], normalScale: 1.4, roughness: m.roughness,
         });
+        await nextFrame();
       }
     }
     /* Tunnel walls get real ceramic tile (the classic urban-tunnel band) in
@@ -2361,20 +2440,28 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
           // only the floor that keeps the tube from going black
           tunnelWall.emissive.setHex(0x111520);
         }
+        await nextFrame();
       }
     }
     /* Lane A dressing materials — straight art replacement, tuned tints kept
        as multipliers exactly like the concrete family above. */
-    if (fenceSet.albedo)
+    if (fenceSet.albedo) {
       upgradeSurface(fence, fenceSet, { repeat: [1, 1], normalScale: 0.8, roughness: 0.5 });
+      await nextFrame();
+    }
     if (corrSet.albedo) {
       projectedUv(canopyRoof, 0.55);
       upgradeSurface(canopyRoof, corrSet, { repeat: [1, 1], normalScale: 0.85, roughness: 0.55 });
+      await nextFrame();
     }
-    if (plateSet.albedo)
+    if (plateSet.albedo) {
       upgradeSurface(canopyFascia, plateSet, { repeat: [3, 1], normalScale: 0.5, roughness: 0.35 });
-    if (walkSet.albedo)
+      await nextFrame();
+    }
+    if (walkSet.albedo) {
       upgradeSurface(catwalk, walkSet, { repeat: [1, 1], normalScale: 0.7, roughness: 0.6 });
+      await nextFrame();
+    }
     /* Poles are cylinders and boxes with real UVs, so no projection here — and
        none is possible anyway, since an InstancedMesh's modelMatrix is the
        batch's transform, not the per-instance one, and every pole would end up
@@ -2383,6 +2470,11 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
     upgradeSurface(pole, metalSet, {
       repeat: [1, 4], normalScale: 0.45, roughness: 0.7,
     });
+
+    /* Every upgrade above flagged a recompile. Tell whoever is listening, so
+       the links can be walked in the background rather than landing one at a
+       time on the frames each surface is next drawn on. */
+    markPbrApplied();
   }
 
   /* Live console knobs for the wet-road reflection. World materials are built
