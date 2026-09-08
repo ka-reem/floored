@@ -79,10 +79,27 @@ console.log(`at load: ${prev.keys.length} programs, ${prev.textures} textures, $
 const rows = [];
 /* Named stops around the lap, plus a camera cycle at the end: each is a place
    the earlier probes reported a spike. */
+/* The toll sequence is walked TWICE, with a lap away from it in between.
+
+   The first pass turned up the only thing on the map that looks like a cost
+   at the plaza: 11 textures disposed on the approach and 9 uploaded under the
+   canopy. A texture upload is a synchronous copy that no program count sees,
+   and on a real GPU nine of them in a frame is a stall — this box hides it
+   because every frame here is eleven seconds regardless.
+
+   But one visit cannot tell a ONE-OFF first-use upload from a per-lap CHURN,
+   and those want completely different fixes: the first is a warm-up problem,
+   the second is the streamer throwing away textures it is about to need
+   again, every single lap, at the same place. Arriving twice is what
+   separates them — the same trick toll-hitch.mjs uses for compiles. If the
+   second arrival uploads nothing, it was first use. If it uploads nine
+   again, the plaza is paying for the same nine textures on every lap. */
 const STOPS = [
   ["settle (no move)", null], ["open deck", 400], ["tunnel", 1090],
   ["toll approach", 1330], ["toll plaza", 1420], ["past toll", 1520],
   ["town", 2400], ["mountain gore", -1990],
+  ["open deck (2nd)", 400],
+  ["toll approach (2nd)", 1330], ["toll plaza (2nd)", 1420],
 ];
 for (const [name, z] of STOPS) {
   if (z !== null) await page.evaluate((z) => {
