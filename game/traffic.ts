@@ -3282,13 +3282,6 @@ export class Traffic {
     return bestOff;
   }
 
-  /** Traffic getting out of the rival's way — see the yield block in RIVAL.
-
-      Returns true if `n` committed to a lane change for it. Only ever called
-      for ordinary corridor cars, and it does nothing at all unless the rival
-      is active, close, in this car's lane and genuinely quicker — so with the
-      mode off, or the rival elsewhere on the corridor, not one line of this
-      changes how the fleet drives. */
   /** True where a driver must hold the lane it already has — the toll
       plaza's no-merge zone plus the manoeuvre length in front of it. See the
       TOLL_HOLD block. Corridor cars only: the bypass and the mountain road
@@ -3305,6 +3298,13 @@ export class Traffic {
     return dz <= Math.max(n.v, TOLL_HOLD_VMIN) * TOLL_HOLD_MAN;
   }
 
+  /** Traffic getting out of the rival's way — see the yield block in RIVAL.
+
+      Returns true if `n` committed to a lane change for it. Only ever called
+      for ordinary corridor cars, and it does nothing at all unless the rival
+      is active, close, in this car's lane and genuinely quicker — so with the
+      mode off, or the rival elsewhere on the corridor, not one line of this
+      changes how the fleet drives. */
   private yieldToRival(n: Npc): boolean {
     const r = this.rival;
     if (!r || !r.active || r.wreck) return false;
