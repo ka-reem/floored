@@ -156,7 +156,6 @@ export function buildRamps(gh: (x: number, z: number) => number): Ramp[] {
       if (i > 0) acc += Math.hypot(x - lx, z - lz);
       lx = x;
       lz = z;
-      // the deck edge moves with the lane taper, so re-read it at this z
       /* The deck edge moves with the lane taper AND with the aux lane, so
          re-read the real edge at this z. While `hIn` is below HALF the ramp's
          inner edge lands exactly on that edge — the two pavements tile with

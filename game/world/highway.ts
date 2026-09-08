@@ -10,7 +10,7 @@ import { parapetGap } from "./ramps";
 import { BYPASS, DIVERGE_Z, MERGE_Z, MOUNTAIN_EDGE, type RouteGraph } from "./routegraph";
 import {
   getCorridor, assertPitches, signPlan, roadSeed, PITCH, PHASE, SIGN, TUNNEL, TOLL,
-  TOLL_PLAZA, BRIDGE, BRIDGES, OVERPASS, OVERPASSES, MTN, AUX_LANES, AUX_W,
+  TOLL_PLAZA, BRIDGE, BRIDGES, OVERPASS, OVERPASSES, MTN, AUX_LANES,
   type SectionKind, type Station,
 } from "./corridor";
 import type { Mats } from "./mats";
@@ -560,13 +560,13 @@ export function buildHighway(
        a wide SOLID divider on the through-lane edge, the line a real freeway
        uses to say "past here you are committed to the exit". It is 0.30 m
        against the shoulder line's 0.20: on a 400 m approach the extra width
-       is most of what tells the two lines apart at range. */
-    /* Where the west shoulder line runs. Off the deck's own edge everywhere
-       except across a RAMP_LEAD handover, where that edge is a seam in the
-       middle of continuous pavement (the deck's share is closing and the
-       ramp's is opening into the same band) — a line painted on it would be
-       a diagonal drawn across the exit lane. There the shoulder line is the
-       ramp's outer edge, which is straight and does not move. */
+       is most of what tells the two lines apart at range.
+
+       The one exception is a RAMP_LEAD handover, where the deck's own edge is
+       a seam in the middle of continuous pavement (the deck's share closing,
+       the ramp's opening into the same band) — a line painted on it would be
+       a white diagonal drawn across the exit lane. There the shoulder line is
+       the ramp's outer edge, which is straight and does not move. */
     const westLine = (z: number) => {
       const h = AUX_LANES.find((a) => a.kind === "exit"
         ? z > a.z2 && z < a.z3 : z > a.z0 && z < a.z1);
