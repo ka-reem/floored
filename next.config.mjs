@@ -17,21 +17,29 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
      files a one-year immutable lifetime (see the note there).
 
    The deploy platform's commit sha where there is one (VERCEL_GIT_COMMIT_SHA
-   on Vercel, CF_PAGES_COMMIT_SHA on Cloudflare Pages, GITHUB_SHA in Actions),
+   on Vercel, WORKERS_CI_COMMIT_SHA on Cloudflare Workers Builds,
+   CF_PAGES_COMMIT_SHA on the older Cloudflare Pages, GITHUB_SHA in Actions),
    the config's own evaluation time otherwise — all of them change exactly when
    a new bundle does. Read through lib/build.ts, never directly. */
 const BUILD_REV =
   process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) ||
+  process.env.WORKERS_CI_COMMIT_SHA?.slice(0, 12) ||
   process.env.CF_PAGES_COMMIT_SHA?.slice(0, 12) ||
   process.env.GITHUB_SHA?.slice(0, 12) ||
   Date.now().toString(36);
 
-/* STATIC EXPORT — the Cloudflare Pages build, and nothing else.
+/* STATIC EXPORT — the Cloudflare build, and nothing else.
  *
  * `NEXT_OUTPUT=export next build --webpack` writes a plain HTML/CSS/JS tree to
  * out/ that any static host can serve; a bare `next build` is untouched and
  * still produces the Vercel deployment. One branch, two hosts, no fork — see
  * docs/deploy-cloudflare.md.
+ *
+ * out/ is what wrangler.jsonc's `assets.directory` uploads, and every file in
+ * it is served by Cloudflare WITHOUT invoking a Worker script, which is the
+ * whole economics of the move. Anything that reintroduces a server — an
+ * adapter, a route handler that cannot prerender — breaks that, so keep this
+ * build fully static.
  *
  * The one thing a static export cannot carry is `headers()` below: there is no
  * server left to run it, and Next refuses the combination. Every header rule

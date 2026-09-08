@@ -1,9 +1,24 @@
-# Cloudflare Pages response headers. THIS FILE IS THE CLOUDFLARE HALF OF
-# vercel.json's "headers" block — the two hosts read different files, so a
-# rule added to one and not the other ships on one host only.
+# Cloudflare Workers static-asset response headers. THIS FILE IS THE
+# CLOUDFLARE HALF OF vercel.json's "headers" block — the two hosts read
+# different files, so a rule added to one and not the other ships on one host
+# only.
 #
 # public/ is copied into the export verbatim, so this lands at out/_headers,
-# which is where Pages looks for it. Pages does not serve /_headers itself.
+# which is wrangler.jsonc's assets.directory and where Workers looks for it.
+# Workers PARSES this file and never serves it: /_headers is a 404, so the
+# rules below cannot be read off the live site.
+#
+# It applies to STATIC ASSET responses only. There is no Worker script in
+# wrangler.jsonc (deliberately — see the note there), so every response the
+# game gets is a static asset and every rule here applies. If a Worker script
+# is ever added, its own responses do NOT inherit these headers.
+#
+# NOTHING HERE MAY EVER MATCH HTML. Cloudflare caches hard at the edge and a
+# browser honours `immutable` for a year with no revalidation, so an immutable
+# rule on / or on index.html would pin an old build on every player who has
+# already visited, with no way to bust it. The rules below are scoped to four
+# prefixes that hold no HTML at all — `npm run cf:check` asserts exactly that
+# against this file before it lets a build pass.
 #
 # Syntax (Cloudflare's, not Vercel's JSON):
 #   a line starting with "/" is a path rule; the INDENTED lines under it are
