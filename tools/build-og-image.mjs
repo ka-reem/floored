@@ -72,7 +72,7 @@ const HTML = String.raw`<!doctype html>
   <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
   <div class="text">
     <div class="kicker">SHUTOKO · NIGHT DRIVE</div>
-    <div class="title">NEON EXPRESSWAY</div>
+    <div class="title">FLOORED</div>
     <div class="rule"></div>
     <div class="jp">首都高ナイトドライブ</div>
   </div>

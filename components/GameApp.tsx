@@ -800,7 +800,7 @@ export default function GameApp() {
             <SignPlate hangers>
               <header className="sign-head">
                 <SignShield />
-                <SignTitle jp="首都高ナイトドライブ" en="NEON EXPRESSWAY" />
+                <SignTitle jp="首都高ナイトドライブ" en="FLOORED" />
                 {/* corner group: the build mark sits WITH the caption, not
                     beside the title. The caption lines drop out on a phone
                     (ui-system.css); the chip stays. */}
@@ -1163,7 +1163,7 @@ function LoadingScreen({
             <SignShield />
             <div className="sign-titles">
               <div className="sign-title-jp loadJp" lang="ja">首都高ナイトドライブ</div>
-              <h1 className="sign-title loadTitle">NEON EXPRESSWAY</h1>
+              <h1 className="sign-title loadTitle">FLOORED</h1>
             </div>
             {/* the build chip rides in the corner here too, not on the title */}
             <div className="sign-corner sign-cap" aria-hidden="true">

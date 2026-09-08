@@ -25,7 +25,7 @@ const COPY: Record<GfxFailKind, { head: string; body: string; btn: string }> = {
   nowebgl: {
     head: "This browser can't run WebGL",
     body:
-      "NEON EXPRESSWAY draws everything on the GPU through WebGL, and this " +
+      "FLOORED draws everything on the GPU through WebGL, and this " +
       "browser isn't offering one. A current Chrome, Edge, Firefox or Safari " +
       "with hardware acceleration switched on will run it.",
     btn: "TRY AGAIN",
