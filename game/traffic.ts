@@ -598,6 +598,57 @@ type Arch = {
    staying put while the lane itself narrows or slides under a taper. */
 const LANE_FOLLOW_RATE = 3.4;
 
+/* ---- NO-MERGE ZONE THROUGH THE TOLL PLAZA -------------------------------
+
+   A real plaza is picked on the APPROACH: you read the gantry, choose a
+   booth, and hold that lane under the canopy. NPCs did not. The ordinary
+   comfort change, the rival yield and the hail courtesy move all stayed live
+   through the gates, so cars cut across booth lanes at the last moment and
+   the plaza read as chaos rather than as a queue — and a player who had
+   already committed to a booth got crossed in front of at the worst moment
+   on the lap.
+
+   Two designs were on the table: suppress merges through the plaza and hand
+   the leftovers a booth ASSIGNMENT to unwind at the exit, or simply pick on
+   the approach and hold. Which one is right is a question about the geometry,
+   so it was measured (test/toll-nomerge-sim.mjs, over 200 road seeds):
+
+   - The plaza does NOT add lanes. corridor.ts buys the gate clearance by
+     widening the lane PITCH (LANE_W → TOLL_PITCH over z 1290..1390, and back
+     over 1450..1550) and pins the lane COUNT to BASE_LANES from TOLL_PIN_Z
+     onward. Across 200 road seeds the LAST lane-count change before the
+     plaza is at z = 1225, and the deck holds 3 lanes from there to past
+     z = 1700.
+   - So booth index IS lane index, and every booth lane still exists at the
+     plaza exit. A car that holds its lane cannot be stranded, and there is
+     nothing for an assignment to unwind.
+
+   Hold, then, and do not reassign. `tollHold()` refuses DISCRETIONARY lane
+   changes from TOLL_HOLD_PRE metres ahead of the fan-out to TOLL_HOLD_POST
+   past the fan-in — and refuses them TOLL_HOLD_COMMIT seconds of travel
+   earlier again, which is the "pick your booth on the approach" half: a
+   change may not be STARTED that would still be crossing when the lane
+   centres begin to spread.
+
+   FORCED taper merges are deliberately NOT gated, and that is the whole
+   design problem rather than an oversight. A lane that ends is a survival
+   case; the last drop can finish as late as z = 1225, which is inside the
+   zone, and gating it there would hand cars to the snap net under the
+   gantry — the exact stranding this zone exists to prevent. It needs no
+   gate: past 1225 no lane dies, so the forced path cannot fire in the fan-out,
+   the plaza or the fan-in anyway. The sim asserts both halves. */
+/** Zone starts this far ahead of TOLL.z0, i.e. of the pitch fan-out. */
+const TOLL_HOLD_PRE = 90;
+/** …and ends this far past TOLL.z1, so the bunch leaving the booths settles
+    before anybody dives for a lane. */
+const TOLL_HOLD_POST = 40;
+/** Seconds of travel BEFORE the zone in which a change may not be started:
+    a signalled comfort change is ~1-2 s of blinker plus 2-4 s of crossing, so
+    three seconds of approach is what makes "settled by the gantry" true
+    rather than merely likely. */
+const TOLL_HOLD_COMMIT = 3;
+const TOLL_HOLD_LEN = TOLL_HOLD_PRE + (TOLL.z1 - TOLL.z0) + TOLL_HOLD_POST;
+
 /* dawdler · cautious · average · brisk · speeder */
 const ARCH: Arch[] = [
   { spd: [0.72, 0.83], gap: [1.35, 1.62], acc: [0.72, 0.85], lane: [0, 0.12], react: [0.42, 0.6], corner: [0.72, 0.83], timid: 1, weave: 0 },
@@ -3218,12 +3269,27 @@ export class Traffic {
       is active, close, in this car's lane and genuinely quicker — so with the
       mode off, or the rival elsewhere on the corridor, not one line of this
       changes how the fleet drives. */
+  /** True where a driver must hold the lane it already has — the toll
+      plaza's no-merge zone plus the manoeuvre length in front of it. See the
+      TOLL_HOLD block. Corridor cars only: the bypass and the mountain road
+      never reach the plaza, and their `s` is in a different space entirely,
+      so an ungated read of it would gate a random stretch of those roads. */
+  private tollHold(n: Npc): boolean {
+    if (n.route !== -1) return false;
+    const d = this.cor.deltaZ(TOLL.z0 - TOLL_HOLD_PRE, n.s);
+    return d >= -Math.max(n.v, 0) * TOLL_HOLD_COMMIT && d <= TOLL_HOLD_LEN;
+  }
+
   private yieldToRival(n: Npc): boolean {
     const r = this.rival;
     if (!r || !r.active || r.wreck) return false;
     if (n.route !== -1 || !n.hw || n.wreck) return false;
     // already committed to something, or mid-manoeuvre — leave it alone
     if (n.pendK >= 0 || n.blink !== 0 || n.mergeLean !== 0) return false;
+    // …and not through the toll plaza: a courtesy dive across booth lanes is
+    // the single worst place on the lap to be moved over for. The rival
+    // queues behind like anybody else for the 410 m the zone lasts.
+    if (this.tollHold(n)) return false;
     const cor = this.cor;
     // is it coming up behind this car, in this car's path, and faster?
     const behind = cor.deltaZ(r.s, n.s);
@@ -5026,6 +5092,9 @@ export class Traffic {
       which is also what happens on a real road. */
   private yieldLane(n: Npc, pOff: number): number {
     if (n.pendK >= 0 || n.blink !== 0 || n.laneK <= 0) return -1;
+    // no courtesy move-over inside the plaza's no-merge zone — hailRoll falls
+    // through to the speed-up answer, which needs no lane
+    if (this.tollHold(n)) return -1;
     const k2 = n.laneK - 1;
     const off2 = this.laneOffOf(n, k2);
     /* The URGENT gap envelope, exactly as yieldToRival takes it and for
@@ -5590,7 +5659,8 @@ export class Traffic {
        per user call — a tuning nudge, not a behaviour change. */
     const held = !!lead && lead.ds < 18 + 30 * drv.lane && lead.v < n.v0 * (0.8 + 0.12 * drv.lane);
     const restless = drv.weave > 0 && (!lead || lead.ds > 30) && this.rng() < 0.28 * dt;
-    if (n.pendK < 0 && n.blink === 0 && n.turnCd <= 0 && (held || restless)) {
+    if (n.pendK < 0 && n.blink === 0 && n.turnCd <= 0 && (held || restless) &&
+      !this.tollHold(n)) {
       // pushy drivers reach for the outside lane first, patient ones move over
       const first = drv.lane > 0.55 ? 1 : -1;
       for (let pass = 0; pass < 2; pass++) {
