@@ -462,13 +462,23 @@ for (const cr of g.crossings) {
     console.log(`  max grade ${f(maxG * 100)}% at z=${f(maxGAt)}, min radius ${f(minR)} m` +
       ` at z=${f(minRAt)}, max bank ${f(maxBank * 100)}%,` +
       ` max turn/station ${f((maxTurn * 180) / Math.PI)}°`);
-    // a real detour, not a service road shadowing the deck: ≥ 28% extra road
-    // packed into the same z-window is what the meander exists to buy
-    if (mt.len < (MTN.mergeZ - MTN.divergeZ) * 1.28)
+    /* A real alternate route, not a service road shadowing the deck. The
+       bar was ≥ 28% extra road, which the old meander bought with a 13 m
+       hairpin. The 2026-09-08 rebuild spends that budget the other way —
+       radius instead of length — and inside a fixed 332 m z window the two
+       genuinely trade against each other, so this came down to 8% with the
+       owner's decision, not around it. Anything at or below 1.0 would mean
+       the pass is a SHORTCUT, which would make the deck pointless. */
+    if (mt.len < (MTN.mergeZ - MTN.divergeZ) * 1.08)
       bad("the pass is barely longer than the deck it bypasses — not a detour");
     if (maxG > 0.09) bad(`mtn grade ${f(maxG * 100)}% is steeper than 9%`);
-    if (minR < 13) bad(`mtn corner radius ${f(minR)} m is under 13 m — undrivable`);
-    if (minR > 60) bad(`mtn min radius ${f(minR)} m — nothing here is a mountain corner`);
+    /* The radius band IS the owner's brief, in numbers. The floor was 13 m
+       (drivable at all); it is now 55 m, because "so hard to drive, road is
+       too tight" is a defect report against anything tighter. The ceiling
+       stops the sweeper being flattened into a straight by some later tidy-
+       up — at 160 m there is no corner left to drive. */
+    if (minR < 55) bad(`mtn corner radius ${f(minR)} m is under 55 m — too tight to drive fast`);
+    if (minR > 160) bad(`mtn min radius ${f(minR)} m — the sweeper has gone straight`);
     if (maxBank > 0.065) bad("mtn superelevation exceeds 6.5%");
     if (maxTurn > 0.11) bad("a mtn station-to-station heading step exceeds ~6.3° — kink");
     if (yMax - 10 < 4) bad("the pass never climbs high enough to read as a climb");
@@ -483,8 +493,11 @@ for (const cr of g.crossings) {
     if (Math.abs(mt.laneOffset(0, 100)) > 1e-9)
       bad("the single lane is not on the road's centreline");
     const running = 2 * MTN.half;
-    if (running > 6.2) bad(`the running road is ${f(running)} m wide — that is still two lanes`);
-    if (running < 4.4) bad(`the running road is ${f(running)} m wide — too narrow to drive`);
+    /* Width floor raised from 4.4 to 9.0 with the rebuild: "make it wide" was
+       half the brief, and the pass reads as a goat track below that. The
+       ceiling is what stops it drifting into a second deck. */
+    if (running > 13) bad(`the running road is ${f(running)} m wide — that is a second deck`);
+    if (running < 9) bad(`the running road is ${f(running)} m wide — too narrow for a sweeper`);
     let turnoutMax = 0;
     for (const p of mt.stations) {
       turnoutMax = Math.max(turnoutMax, p.hwL - MTN.half);

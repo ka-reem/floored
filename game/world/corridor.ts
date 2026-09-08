@@ -1196,9 +1196,21 @@ export const OVERPASSES = [
   { ...OVERPASS, z: -720, clear: 9.6 },
   OVERPASS,
 ];
-/** The mountain road (EXIT 4, 峠 Tōge): a single-lane, ONE-WAY riverside pass
-    that leaves the deck through an east-side gore, climbs a rock shelf above
-    the river bank, winds, and merges back through a second east gore. The
+/** The mountain road (EXIT 4, 峠 Tōge): a single-carriageway, ONE-WAY
+    riverside pass that leaves the deck through an east-side gore, lifts onto
+    a rock shelf above the river bank, sweeps out over the water and back, and
+    merges through a second east gore.
+
+    REBUILT 2026-09-08 (owner's pick, "option G"). It used to be a genuine
+    tōge: 5.4 m of pavement and a 13 m radius corner, entered off a deck the
+    player crosses at 200 km/h. The owner's verdict was "so hard to drive,
+    road is too tight", and the brief for the rebuild was "make it wide and
+    easier to drive". So the character changed deliberately — this is no
+    longer a technical climb, it is a FAST SWEEPER: double the width, five
+    times the radius, a third of the steering rate. The numbers that carry
+    that intent are asserted in test/routegraph-check.mjs, whose old bounds
+    (a 60 m radius CEILING, a 6.2 m width ceiling) encoded the old design and
+    were moved with it rather than worked around. The
     geometry itself is a routegraph PolyRouteEdge (routegraph.ts buildMountain
     reads this spec); the numbers live HERE, like BRIDGE and OVERPASS, so the
     browser-free checks can assert real placement and sections() can keep its
@@ -1229,35 +1241,42 @@ export const MTN = {
   /** gore noses, east side (+lat) both — the lap's first left exit */
   divergeZ: -1968,
   mergeZ: -1644,
-  /** ONE lane, ONE direction of travel: diverge → merge, the way the deck
-      runs. 4.20 m is a wide single lane, NOT half of the old pair — the 17 m
-      hairpin has to stay drivable by a car that is now allowed to use the
-      whole road, and an old lane exactly (3.30 m) puts the rock wall 2.2 m
-      off the mirror through it. Nothing on the pass is two-way any more:
-      no centre line, no oncoming stream, no wrong-way lay-by. */
+  /** ONE carriageway, ONE direction of travel: diverge → merge, the way the
+      deck runs. 8.60 m of running lane against the old 4.20: wide enough to
+      pick a line through a corner instead of tracking a kerb, wide enough
+      that the rock wall is never in the mirror, and wide enough for the
+      arcade car's 295 km/h top end to be survivable if the player carries it
+      in. It is still ONE lane in the route graph (no centre line, no
+      oncoming stream, no wrong-way lay-by) — the width is line-choice room,
+      not a second lane. 1.20 m of shoulder each side puts the parapet off
+      the pavement edge rather than at it. */
   lanes: 1,
-  laneW: 4.2,
-  shoulder: 0.6,
+  laneW: 8.6,
+  shoulder: 1.2,
   /** pavement half width when fully open (lanes · laneW / 2 + shoulder) */
-  half: (1 * 4.2) / 2 + 0.6,
-  /** gore taper length */
-  nose: 14,
+  half: (1 * 8.6) / 2 + 1.2,
+  /** Gore taper length. Longer than the old 14 m because the pavement it has
+      to open is twice as wide: at 14 m the mouth flared at nearly 45° and
+      read as a hole in the parapet rather than as an exit. */
+  nose: 20,
   /** structural skirt depth below the pavement */
   deckT: 0.9,
-  /** The TURNOUT — the old oncoming lay-by, repurposed, in edge arclength
-      from the diverge nose. A one-way single lane has nothing to dodge and
-      nowhere to overtake, so this pocket does the two jobs a real 待避所
-      does: a slower pass car you are closing on pulls in and lets you by
-      (traffic.ts updateMountain), and it is deep enough — ~10 m of pavement
-      across, against 5.4 m of running lane — to be the signed place to turn
-      round. That is this road's answer to "what if the player U-turns on a
-      one-way road": nothing walls them (the gore throats take a car both
-      ways, and the previous lane's three phantom-wall fixes are what make
-      that true), and there is somewhere built to come about. Extra width on
+  /** The TURNOUT — a 待避所, in edge arclength from the diverge nose. On the
+      old narrow pass this pocket was load-bearing: it was the only place a
+      slower car could let you by and the only place wide enough to turn
+      round. An 8.6 m carriageway can be overtaken on anywhere, so its job is
+      now mostly the second one — plus it is the scenic pull-off, which is
+      why it moved to the APEX of the outbound sweeper (s ≈ 168–212), the
+      point furthest out over the water with the city behind you. traffic.ts
+      updateMountain still pulls a slower pass car into it.
+
+      It is narrower than the old 4.6 m because the road it widens is twice
+      the width: +3.2 m on 11.0 m of pavement is 14.2 m across the pocket,
+      comfortably over the 9 m the turn-round check wants. Extra width on
       +lat, the fill side, where a shelf road's turnout is really built. */
-  turnoutS0: 52,
-  turnoutS1: 96,
-  turnoutW: 4.6,
+  turnoutS0: 168,
+  turnoutS1: 212,
+  turnoutW: 3.2,
   /** the river's near-bank riprap starts at x≈622 (scenery.ts) — the road,
       its skirt included, must stay west of it */
   xMax: 614,
