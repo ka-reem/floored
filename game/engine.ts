@@ -1991,18 +1991,11 @@ export class Game {
     // mobile tiers run the cockpit mirror at half resolution; the reflection
     // RT allocation follows in applySettings' makeTargets pass below
     this.post.setMobile(this.tierCaps.mirrorHalf);
-    // MSAA on the half-float scene target: 4x on desktop, off on the mobile
-    // tiers, where the tile-memory cost of a multisampled RGBA16F attachment
-    // buys an edge filter the dashcam pass immediately downsamples away
-    this.post.setMsaa(this.tierCaps.sceneMsaa ?? 4);
     // desktop-only cinematic extras: two-scale bloom + film-look finishers
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
-    this.post.setBloomIters(this.tierCaps.bloomIters ?? 3);
     // POV grade profile: the mobile tiers run the dashcam degrade at gentler
     // strengths (post.ts POV_TUNE_TIER) so the road stays readable on a phone
     this.post.setPovProfile(this.renderTier);
-    // ...and whether FXAA is worth a full-screen pass under that degrade
-    this.post.setPovFxaa(this.tierCaps.povFxaa !== false);
     /* Everything above is what the MENUS need: a canvas, a resolved tier, and
        the settings the panels read. The world itself — materials, terrain,
        expressway, town, traffic, the player rig — is NOT built here; it is
@@ -3763,15 +3756,10 @@ export class Game {
     // a tier flip changes the mirror/reflection RT policy even when the pixel
     // ratio happens not to move — force the target rebuild path below
     if (this.post.setMobile(this.tierCaps.mirrorHalf)) this.lastPR = -1;
-    // same deal for the scene target's sample count: a tier flip has to reach
-    // the allocation, and the allocation only happens in makeTargets()
-    if (this.post.setMsaa(this.tierCaps.sceneMsaa ?? 4)) this.lastPR = -1;
     // tier flips retarget the cinematic extras on the same frame too
     this.post.setCinema(!!this.tierCaps.dualBloom, !!this.tierCaps.filmLook);
-    this.post.setBloomIters(this.tierCaps.bloomIters ?? 3);
     // ...and the POV grade profile (console-edited knobs survive the flip)
     this.post.setPovProfile(this.renderTier);
-    this.post.setPovFxaa(this.tierCaps.povFxaa !== false);
     /* DPR: perf mode floors everything at 1; otherwise the preset's own cap
        (low 1, medium 1.5) combines with the tier ceiling — 1.1 mobile-base,
        1.35 mobile-high, 1.75 desktop — and the lower one wins. */
@@ -3819,13 +3807,7 @@ export class Game {
        the frame at dawn when sunShadow() first unfreezes the map. Best effort:
        whatever has not streamed in by then still compiles when it arrives, the
        same as it does today. */
-    /* The tier joins the user setting here, and ONLY here — the whole point
-       of castShadow having a single writer in a menu-only path is that its
-       program-cache flip never lands on a driving frame. tierCaps is
-       re-resolved at the top of this same call, so a manual tier override
-       from the settings panel reaches this line on the frame it is applied,
-       which is exactly where a recompile is affordable. */
-    this.sun.castShadow = s.shadows && this.tierCaps.sunShadow !== false;
+    this.sun.castShadow = s.shadows;
     this.sun.shadow.needsUpdate = true;
   }
 
@@ -6392,11 +6374,7 @@ export class Game {
     // ~15% of its frame, so it needs the rear view rendered as well — and the
     // console camera stares straight up the centreline at it, which is the one
     // place in the car where the mirror is dead ahead rather than off to a side
-    /* Cadence from the tier (tierCaps.mirrorEvery): every 2nd frame on
-       desktop, every 3rd on the mobile tiers, where the cost of this pass is
-       not its 160x64 of pixels but the second scene traversal behind them. */
-    if (this.mirror && this.frameN % (this.tierCaps.mirrorEvery ?? 2) === 0 && this.inCar())
-      this.renderMirror();
+    if (this.mirror && this.frameN % 2 === 0 && this.inCar()) this.renderMirror();
     /* The wet-road reflection source is no longer a second scene render: it
        is built inside post.process() from the bloom bright pass, which is
        already there (see the WET-ROAD REFLECTION block in world/mats.ts for

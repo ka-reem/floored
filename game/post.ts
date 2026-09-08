@@ -354,15 +354,6 @@ export class PostFX {
   /** false for one frame after a hard view change: the temporal blend is
       skipped so a camera teleport cuts instead of dragging a ghost. */
   private histValid = false;
-  /** Bloom blur ping-pong iterations, from tierCaps.bloomIters (setBloomIters).
-   *  3 is the desktop shipping value and the default. */
-  private bloomIters = 3;
-  /** Whether FXAA runs under the dashcam POV — tierCaps.povFxaa, via
-   *  setPovFxaa(). True everywhere except the mobile tiers. */
-  private povFxaaOn = true;
-  /** MSAA samples for sceneRT — see setMsaa(). 4 is the desktop shipping
-   *  value and the default, so a PostFX nobody configures behaves as before. */
-  private msaa = 4;
   private overCv: HTMLCanvasElement;
   private overTex: THREE.CanvasTexture;
   private overAt = -1;
@@ -927,17 +918,6 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.makeTargets(false);
   }
 
-  /** MSAA samples on the HDR scene target, from tierCaps.sceneMsaa. Stored
-   *  rather than passed to makeTargets() because the engine rebuilds targets
-   *  from several places (resize, DPR change, perf drop) and none of them
-   *  should have to know the tier. Returns true when the value actually
-   *  changed, so the caller knows a rebuild is owed. */
-  setMsaa(n: number): boolean {
-    if (n === this.msaa) return false;
-    this.msaa = n;
-    return true;
-  }
-
   makeTargets(perfMode: boolean) {
     const r = this.renderer;
     const w = Math.floor(innerWidth * r.getPixelRatio());
@@ -954,7 +934,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     ])
       rt?.dispose();
     this.sceneRT = new THREE.WebGLRenderTarget(w, h, {
-      type: THREE.HalfFloatType, samples: this.msaa,
+      type: THREE.HalfFloatType, samples: 4,
     });
     const bw = Math.max(160, w >> 2), bh = Math.max(90, h >> 2);
     this.brightRT = new THREE.WebGLRenderTarget(bw, bh, FLAT_HDR);
@@ -1018,19 +998,6 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.mobile = on;
     this.mirrorRT.setSize(on ? 160 : 320, on ? 64 : 128);
     return true;
-  }
-
-  /** Does the FXAA pass run while the POV degrade is on (tierCaps.povFxaa)?
-   *  Nothing else about FXAA changes: `opts.fxaa` is still the user setting
-   *  and still governs every other camera on every tier. */
-  setPovFxaa(on: boolean) {
-    this.povFxaaOn = on;
-  }
-
-  /** Bloom blur iterations for this tier — see TierCaps.bloomIters. The perf
-   *  fallback still overrides it downward; this only sets the ceiling. */
-  setBloomIters(n: number) {
-    this.bloomIters = Math.max(1, Math.min(4, n | 0));
   }
 
   /** Whether to build the wet-road reflection source this frame. The engine
@@ -1326,7 +1293,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // single-scale: a third ping-pong widens the glow and kills the boxy
       // quarter-res edges. Two-scale: stop at 2 — the core is *meant* to stay
       // tight (crisp taillight centres); the width moves to the halo chain.
-      const iters = this.perf ? 2 : dual ? 2 : this.bloomIters;
+      const iters = this.perf ? 2 : dual ? 2 : 3;
       for (let b = 0; b < iters; b++) {
         this.blurMat.uniforms.tIn.value = (b === 0 ? this.brightRT : this.blurB).texture;
         this.blurMat.uniforms.uDir.value.set(1, 0);
@@ -1485,21 +1452,12 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
        documents as a no-op read. */
     const doPeriph = PERIPH_BLUR && !this.perf && !dash && !pov && !opts.inCar && speedT > 0.02;
     const doFinal = doMbSetting || doPeriph;
-    /* The user's FXAA setting, minus the one case where the pass has almost
-       nothing left to contribute: under the dashcam POV on a tier that has
-       opted out (tierCaps.povFxaa). The degrade downsamples the frame to
-       half res and snaps it to that grid immediately afterwards, so outside
-       the shield rects FXAA's work is averaged away one pass later. Used in
-       place of opts.fxaa everywhere below, INCLUDING in `after()` — get that
-       wrong and the composite renders to a target nothing then reads, and
-       the screen stays on whatever it had. */
-    const fxaa = opts.fxaa && (!pov || this.povFxaaOn);
     /* Each stage renders to screen only when nothing follows it. */
     const after = (stage: 0 | 1 | 2) =>
-      (stage < 1 && fxaa) || (stage < 2 && dash) || doFinal;
+      (stage < 1 && opts.fxaa) || (stage < 2 && dash) || doFinal;
     this.runPass(this.compMat, after(0) ? this.ldrRT : null);
     let cur = this.ldrRT;
-    if (fxaa) {
+    if (opts.fxaa) {
       this.fxaaMat.uniforms.tIn.value = cur.texture;
       this.fxaaMat.uniforms.uRes.value.set(this.fxaaRT.width, this.fxaaRT.height);
       this.runPass(this.fxaaMat, after(1) ? this.fxaaRT : null);

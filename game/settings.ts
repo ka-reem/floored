@@ -173,110 +173,6 @@ export interface TierCaps {
       tier bumped mid-session applies on the next rig build. */
   cabinPbrMaps?: boolean;
 
-  /** MSAA sample count on the HDR scene target (post.ts sceneRT).
-
-      The scene is rendered into a HALF-FLOAT target, so a sample is 8 bytes
-      of colour before its depth, and 4x makes that 32 bytes per pixel of
-      tile storage. Every phone GPU is tile-based with a fixed tile budget;
-      past it the driver splits the pass into more, smaller tiles and reads
-      and writes the frame more times. That is a bandwidth cost, and
-      bandwidth is what heats a phone.
-
-      Turning it off does not leave the frame unfiltered: FXAA runs after the
-      composite on every tier, and under the dashcam POV the whole frame is
-      box-downsampled to half res and snapped to that grid afterwards, which
-      is a far coarser filter than the one being given up.
-
-      Read by post.setMsaa(); it only takes effect on the next makeTargets(),
-      which the engine's tier-flip path already forces. */
-  sceneMsaa?: number;
-
-  /** Run the FXAA pass while the dashcam POV degrade is on.
-
-      The POV chain is composite -> FXAA -> frame blend -> degrade, and the
-      degrade's first act is to box-downsample the whole frame to half res
-      and snap it to that grid. Whatever FXAA resolved along an edge is
-      averaged away one pass later everywhere except inside the shield rects
-      (the rear-view glass and the head unit), which are drawn from the
-      full-res pre-degrade frame.
-
-      So on the tier that can least afford it, this drops one FULL-SCREEN
-      pass out of the default camera's chain — about a fifth of the
-      screen-sized pixels the frame touches. Every other camera and every
-      other tier keeps FXAA exactly as before; this gates one camera on one
-      device class, which is why it is not simply the fxaa setting. */
-  povFxaa?: boolean;
-
-  /** Does the sun cast at all on this tier?
-
-      Two costs hang off `DirectionalLight.castShadow`, and the expensive one
-      is not the depth pass. It is that castShadow feeds the directional
-      shadow COUNT in three's program cache key, so every lit material in the
-      scene compiles the PCF-soft shadow lookup into its fragment shader and
-      takes those taps on every lit pixel, all night, for a term that
-      engine.sunShadow() is holding at zero strength.
-
-      That zero is what makes this cap free after dark rather than merely
-      cheap: `shadow.intensity` 0 makes the shader's `mix(1.0, shadow, 0)`
-      exactly 1.0, so a night frame with the sun casting and a night frame
-      with it not casting are the same frame — the second one just does not
-      pay for the taps, the 2048x2048 depth attachment, or the depth-program
-      variant of every mesh.
-
-      What it costs is DAYLIGHT: on a tier with this off, the sun casts no
-      shadows at any hour. `settings.shadows` still works and still wins on
-      the way down, so nobody who wants them off is affected either way.
-
-      Read once, in applySettings(), which is the only writer of castShadow —
-      see engine.sunShadow() for why the per-frame writer had to go. */
-  sunShadow?: boolean;
-
-  /** Render the cockpit mirror every Nth frame.
-
-      The mirror is a SECOND FULL SCENE TRAVERSAL. Its 160x64 target
-      (mirrorHalf above) makes it nearly free in pixels and not free at all
-      in the half of a frame that runs on the CPU: the same frustum walk, the
-      same few hundred draw calls, the same uniform uploads as the main pass,
-      every time it runs. At every 2nd frame that is half a scene's worth of
-      CPU added to every frame.
-
-      3 is 20 Hz at 60 fps, in a 160x64 rectangle, seen through the dashcam
-      degrade. Desktop stays at 2. */
-  mirrorEvery?: number;
-
-  /** Ceiling on anisotropic filtering for world textures (textures.makeTex
-      and the PBR set loader, which both ask for 16).
-
-      Anisotropy is a per-fragment tap multiplier, and it spends itself on
-      exactly the surfaces that fill a driving frame: the road, seen at a
-      grazing angle from a dashcam, is the geometry that makes the sampler
-      take every tap it is allowed. 16 of them is the right answer for a
-      desktop frame at DPR 1.75 off a 1024-px deck atlas. It is not the right
-      answer on a phone, where the same road is sampled into a 429-px-wide
-      buffer from a 256-px atlas (deckTexPx above) and then halved again by
-      the dashcam pass — the taps are resolving detail two other caps have
-      already thrown away.
-
-      A ceiling, not a value: three clamps to the driver maximum anyway, and
-      anything that wants to be crisper than this (the instrument cluster,
-      the car's own paint) sets its own anisotropy and is untouched. */
-  texAniso?: number;
-
-  /** Separable-blur ping-pong iterations in the bloom chain (post.ts).
-
-      This is a cap on PASS COUNT rather than on pixels. The bloom targets are
-      quarter res and cost almost nothing to fill, but each iteration is two
-      more render-target binds, and on a tile-based mobile GPU a bind is a
-      tile flush — the cost is in the switching, not the shading. At three
-      iterations the bloom chain is SEVEN of the fifteen passes a mobile POV
-      frame runs.
-
-      2 is the value the reactive perf fallback already drops to, so it is a
-      look the game ships today; what changes is that the tier reaches it
-      without waiting for four slow seconds first. The glow is slightly
-      tighter and its quarter-res edges slightly harder. */
-  bloomIters?: number;
-
   /** Stream the 1024px-atlas HD NPC bodyshells (public/models/cars-hd/)
       after the first drivable frame and hot-swap them into the fleet.
       Desktop-only: the BASE fleet everyone loads is already the same
@@ -299,12 +195,6 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
     wheelTracks: false, deckDressing: 0.35, districts: 0.55, mtnDetail: 0.5, hdFleet: false,
     vegetation: 0.55,
-    sceneMsaa: 0,
-    povFxaa: false,
-    sunShadow: false,
-    mirrorEvery: 3,
-    texAniso: 4,
-    bloomIters: 2,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -317,12 +207,6 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
     wheelTracks: true, deckDressing: 0.7, districts: 0.8, mtnDetail: 0.75, hdFleet: false,
     vegetation: 0.8,
-    sceneMsaa: 0,
-    povFxaa: false,
-    sunShadow: false,
-    mirrorEvery: 3,
-    texAniso: 8,
-    bloomIters: 2,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -335,12 +219,6 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
     wheelTracks: true, deckDressing: 1, districts: 1, mtnDetail: 1, hdFleet: true,
     vegetation: 1,
-    sceneMsaa: 4,
-    povFxaa: true,
-    sunShadow: true,
-    mirrorEvery: 2,
-    texAniso: 16,
-    bloomIters: 3,
   },
 };
 
