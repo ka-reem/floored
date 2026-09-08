@@ -520,7 +520,7 @@ export function buildRoadside(
       let d = Math.abs(w - o.z);
       d = Math.min(d, cor.LOOP - d);
       if (d - reach < o.girderW / 2
-        && latAbs - reach < cor.halfWidth(wz) + o.outSet + 6)
+        && latAbs - reach < cor.edgeHalf(wz, -1) + o.outSet + 6)
         cap = Math.min(cap, deckY + o.clear - 1.4);
     }
     return cap;
@@ -535,8 +535,11 @@ export function buildRoadside(
       // the eastside frontage strip gets its formal street trees in PASS B
       if (side > 0 && wz > -560 && wz < 40) continue;
       if (rng() >= 0.44 * wave(wz) * level) continue;
-      // one cluster: 1-4 trees around an anchor, correlated sizes
-      const hw = cor.halfWidth(wz);
+      /* one cluster: 1-4 trees around an anchor, correlated sizes.
+         `edgeHalf`, not halfWidth: the west edge carries the gores' auxiliary
+         lanes and a crown sited off the through-lane edge would be inside the
+         new deck. */
+      const hw = cor.edgeHalf(wz, side);
       /* Standoff from the deck edge. Pushed out from the old 9-24 m because
          a crown is now up to ~20 m ACROSS as well as tall, and the crossed
          planes reach w/2 either side of the trunk: at 9 m the inner leaf edge
@@ -653,7 +656,7 @@ export function buildRoadside(
       if (inBand(wz, side > 0 ? EAST_SKIP : WEST_SKIP)) continue;
       if (side > 0 && wz > -560 && wz < 40) continue;
       if (rng() >= 0.42 * wave(wz + 900 * side) * level) continue;
-      const hw = cor.halfWidth(wz);
+      const hw = cor.edgeHalf(wz, side);
       const n = rrandi(rng, 1, 2);
       for (let k = 0; k < n; k++) {
         const dz = rrand(rng, -6, 6);
@@ -754,7 +757,7 @@ export function buildRoadside(
     if (inGap(wz, side)) return false;
     if (side < 0) {
       // the two ramp gores cut the west parapet; their boxes know where
-      const w = cor.worldOf(wz, -(cor.halfWidth(wz) + 0.3));
+      const w = cor.worldOf(wz, cor.edgeLat(wz, -1) - 0.3);
       if (inRampBox(w.x, w.z, 10)) return false;
     }
     return true;
@@ -770,7 +773,7 @@ export function buildRoadside(
     if (dSos < 8) continue;
     const r = mulberry32((cor.latticeIndex(z, 250, 115) * 0x9e3779b1 ^ 0x5eed) >>> 0);
     if (r() < 0.3) continue;
-    const p = cor.worldOf(z, -(cor.halfWidth(z) + 0.32));
+    const p = cor.worldOf(z, cor.edgeLat(z, -1) - 0.32);
     const h = cor.pose(z).h;
     const kind = r();
     if (kind < 0.55) {
@@ -798,7 +801,7 @@ export function buildRoadside(
           const wz = cor.wrapZ(z);
           if (cor.inTunnel(wz, 4) || cor.inToll(wz) || inGap(wz, side, 3)) continue;
           const off = end === s.z0 ? -1.1 : 1.1;
-          const p = cor.worldOf(z + off, side * (cor.halfWidth(z + off) + 0.16));
+          const p = cor.worldOf(z + off, cor.edgeLat(z + off, side) + side * 0.16);
           const h = cor.pose(z + off).h;
           put(boxG, p.x, p.y + 0.55, p.z, 0.3, 1.06, 1.9, h, C.set(0x565b63));
           put(boxG, p.x, p.y + 1.02, p.z, 0.34, 0.14, 2.1, h, C.set(0x3b4046));
@@ -835,7 +838,7 @@ export function buildRoadside(
     }
     if (wz === null) return;
     for (const z of copies(wz)) {
-      const p = cor.worldOf(z, -(cor.halfWidth(z) + 0.34));
+      const p = cor.worldOf(z, cor.edgeLat(z, -1) - 0.34);
       const h = cor.pose(z).h;
       put(cylG, p.x, p.y + 1.05 + 0.42, p.z, 0.05, 0.84, 0.05, 0, C.set(0x3d4148));
       const pg = kmQuad.clone();
@@ -887,7 +890,7 @@ export function buildRoadside(
         if (cor.inTunnel(wz, 4) || cor.inToll(wz)) continue;
         if (cor.sectionAt(wz) === "bridge" || inGap(wz, side, 4)) continue;
         if (side < 0) {
-          const w = cor.worldOf(wz, -(cor.halfWidth(wz) + 0.2));
+          const w = cor.worldOf(wz, cor.edgeLat(wz, -1) - 0.2);
           if (inRampBox(w.x, w.z, 10)) continue;
         }
         const n = r() < 0.3 ? 2 : 1;
@@ -912,7 +915,7 @@ export function buildRoadside(
         new THREE.InstancedBufferAttribute(new Float32Array(kept.length * 2), 2));
       const im = new THREE.InstancedMesh(g, folMat, kept.length);
       kept.forEach((s, i) => {
-        const lat = s.side * (cor.halfWidth(s.z) - 0.28);
+        const lat = s.side * (cor.edgeHalf(s.z, s.side) - 0.28);
         const p = cor.worldOf(s.z, lat);
         E.set(0, cor.pose(s.z).h + (rng() < 0.5 ? 0 : Math.PI / 2), 0);
         Q.setFromEuler(E);

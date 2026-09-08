@@ -5413,7 +5413,8 @@ export class Game {
        the ellipse would have given — longer along the road than across it —
        because the long table simply has stops further out. */
     const dLong = Math.abs(s) * PITCH.light;
-    const lampLat = (li % 2 ? 1 : -1) * (this.cor.halfWidth(z) - 1.32);
+    const lampSide = li % 2 ? 1 : -1;
+    const lampLat = lampSide * (this.cor.edgeHalf(z, lampSide) - 1.32);
     const dLat = Math.abs(this.cor.latAt(this.car.x, this.car.z) - lampLat);
     const w = washStops(WASH_LONG, dLong) * washStops(WASH_LAT, dLat) * night;
     /* The sweep travels front-to-back so a lamp reads as light passing THROUGH

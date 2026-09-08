@@ -37,8 +37,19 @@ export const RAMP_W = 10.5;
     peaked at 17%, which is a cliff, not a ramp. This is as long as the two
     ramps can be without overlapping inside the corridor's straight window. */
 export const RAMP_RUN = 190;
-/** length of the gore taper where the ramp pavement opens out of the deck edge */
+/** length of the gore taper where the ramp pavement opens out of the deck edge
+    (only used by a ramp with no auxiliary lane feeding it — see RAMP_LEAD) */
 export const RAMP_NOSE = 13;
+/** How far a ramp runs DEAD PARALLEL to the deck, at deck height and at full
+    width, on the gore side of its curve.
+
+    This is the handover between the deck's auxiliary lane (corridor.AUX_LANES)
+    and the ramp: over these 60 m the deck's extra pavement closes to nothing
+    and the ramp's own pavement takes over the exact same band, so the two
+    tile with no seam, no overlap and no hole. Without it the aux lane would
+    have to end in a step, and a step 10.5 m wide is either z-fighting or a
+    hole in the road, right at the one place the driver is looking. */
+export const RAMP_LEAD = 60;
 
 export const FRONT_X = 435; // west frontage road centerline (ramp feet land here)
 export const EFRONT_X = 2 * HX - FRONT_X; // east frontage road centerline

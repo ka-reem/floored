@@ -81,7 +81,7 @@ for (const r of ramps) {
       if (a.s > wallEnd) continue;
       if (sgn > 0) {
         const zc = cor.zAt(a.x, a.z);
-        const clear = -cor.halfWidth(zc) - (cor.latAt(a.x, a.z) + a.hIn);
+        const clear = cor.edgeLat(zc, -1) - (cor.latAt(a.x, a.z) + a.hIn);
         if (clear < 0.75) continue;
       }
       const off = sgn * (WALL_T / 2 + 0.12);
@@ -102,10 +102,10 @@ for (const r of ramps) {
   // nose connector: clipped parapet end -> the outer wall's first post
   const g = parapetGap(r);
   const zP = r.dir > 0 ? g.z0 : g.z1;
-  const latP = -(cor.halfWidth(zP) + 0.34 / 2 + 0.06);
+  const latP = cor.edgeLat(zP, -1) - (0.34 / 2 + 0.06);
   const wP = cor.worldOf(zP, latP);
   const p0 = pts[0];
-  const nOff = WALL_T / 2 + 0.12;
+  const nOff = p0.hOut + WALL_T / 2 + 0.12;
   const nx0 = p0.x - p0.nx * nOff, nz0 = p0.z - p0.nz * nOff;
   const dx = nx0 - wP.x, dz = nz0 - wP.z;
   const dl = Math.hypot(dx, dz) || 1;
@@ -127,8 +127,9 @@ function collide(car) {
   if (Math.abs(car.y - cor.centerY(car.z)) < SURFACE_TOL && car.z > cor.ZB0 && car.z < cor.ZB1) {
     const zc = cor.zAt(car.x, car.z);
     const lat = cor.latAt(car.x, car.z);
-    const lim = cor.halfWidth(zc) + 0.06 - halfW;
     const side = lat >= 0 ? 1 : -1;
+    // the west edge carries the auxiliary ramp lanes — see collide.ts
+    const lim = cor.edgeHalf(zc, side) + 0.06 - halfW;
     let guarded = true;
     if (side < 0) {
       for (const g of gaps) if (car.z > g.z0 && car.z < g.z1) guarded = false;
@@ -204,9 +205,13 @@ for (const r of ramps) {
     if (hit && hit.ramp === r)
       bad(`${r.kind}: lane-0 car at z=${f(z)} classified as on-ramp (lat=${f(hit.lat)})`);
   }
-  // while every centreline point past the nose taper is still claimed
+  /* …while every centreline point on real ramp pavement is still claimed.
+     Over the handover from an auxiliary lane the ramp is a strip lying
+     entirely OUTBOARD of its own centreline (hIn < 0) and the deck still
+     holds the centreline itself, so those samples are the deck's to claim,
+     not the ramp's. */
   for (const p of r.pts) {
-    if (p.s < 2 || p.s > r.len - 2) continue;
+    if (p.s < 2 || p.s > r.len - 2 || p.hIn < 0.05) continue;
     if (!rampAt(ramps, p.x, p.z, 0))
       bad(`${r.kind}: centreline at s=${f(p.s)} not claimed`);
   }
@@ -219,7 +224,11 @@ const dt = 1 / 120, V = 38;
 for (let frac = -1; frac <= 0.01; frac += 0.025) {
   // ride a fixed fraction of the drivable width, like a driver holding a lane
   // as tapers slide it: frac -1 hugs the west edge, 0 is the centreline
-  const latOf = (z) => frac * (cor.halfWidth(z) - halfW - 0.1);
+  /* The west edge carries the auxiliary ramp lanes, so "the drivable width"
+     is not symmetric any more — riding frac = −1 means hugging the aux lane's
+     outer edge where there is one. */
+  const latOf = (z) =>
+    frac * ((frac < 0 ? cor.edgeHalf(z, -1) : cor.halfWidth(z)) - halfW - 0.1);
   const w0 = cor.worldOf(-700, latOf(-700));
   const car = { x: w0.x, y: cor.centerY(-700), z: w0.z, h: 0 };
   const lat0 = latOf(CONNECT_Z[0]);
@@ -404,8 +413,17 @@ console.log("scenario 5: barrier continuity at the gores");
       if (z > open[0] && z < open[1]) continue;
       const inGap = z > g.z0 && z < g.z1;
       if (!inGap) continue; // parapet (and the analytic clamp) stand here
-      const w = cor.worldOf(z, -(cor.halfWidth(z) + 0.5));
+      /* Probe just outboard of the OUTERMOST pavement at this z. Over the
+         handover from an auxiliary lane that is the ramp's own outer edge,
+         not the deck's — the deck's is closing inboard under the ramp, and a
+         probe that follows it walks into the middle of the road. */
       const dw = cor.centerY(z);
+      let outer = cor.edgeHalf(z, -1);
+      for (const q of r.pts) {
+        if (Math.abs(q.z - z) > 3 || Math.abs(q.y - dw) > 0.5) continue;
+        outer = Math.max(outer, -(cor.latAt(q.x, q.z) - q.hOut));
+      }
+      const w = cor.worldOf(z, -(outer + 0.5));
       let d = 1e9;
       for (const o of obbs) {
         if (dw + 1 < o.y0 || dw > o.y1) continue;

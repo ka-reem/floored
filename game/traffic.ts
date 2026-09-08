@@ -2360,7 +2360,9 @@ export class Traffic {
         if (gaps.some((g) => z > g.z0 && z < g.z1 && (g.side > 0) === (flip > 0)))
           continue;
         if (ki % (2 * poolEvery) >= 2) continue; // pools thin in pole pairs
-        this.deckLampLat[ki] = flip * (cor.halfWidth(z) - 2.12);
+        // off the real edge on this side — the west one carries the gores'
+        // auxiliary lanes, and the lamp mast moved out with it
+        this.deckLampLat[ki] = flip * (cor.edgeHalf(z, flip) - 2.12);
       }
     const by = this.routes.bypass;
     const kbN = Math.max(0, Math.floor((by.len - phase) / PITCH.light) + 1);
