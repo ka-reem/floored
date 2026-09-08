@@ -1,4 +1,4 @@
-# NEON EXPRESSWAY — the whole game in one file
+# FLOORED — the whole game in one file
 
 Written 2026-08-21; factual claims re-verified and updated 2026-08-29 against
 `main` after the two-day overhaul (the 2026-08-28 merge wave — see
@@ -35,7 +35,7 @@ still the drive.
 
 Built with Next.js 16 + React 19 + Three.js (r180). Everything is client-side
 WebGL; the server does nothing but serve the bundle. Package name
-`neon-expressway`, version 3.0.0. `racing-game.html` at the repo root is the
+`floored`, version 3.0.0. `racing-game.html` at the repo root is the
 pre-Next single-file v2 original, kept for reference and not part of the build.
 
 ---
@@ -132,7 +132,7 @@ npm run lint
 Deploy is Vercel from git. `vercel.json` is one line of config and it disables
 auto-deploy **on `main` only** — feature branches auto-deploy to preview URLs,
 production ships by explicit manual promote. The Vercel project is named
-`wangan`, not `neon-expressway`.
+`wangan`, not `floored`.
 
 `next.config.mjs` sets `reactStrictMode: false`. That is load-bearing: StrictMode
 double-invokes effects, which would construct two `Game` instances and two WebGL
@@ -1267,7 +1267,7 @@ statement.
   approximate.
 - **Size-budget figures are a snapshot.** §3's numbers were verified by running
   the script, but an asset-compression pass was mid-flight. Re-run it.
-- **The Vercel project is named `wangan`**, not `neon-expressway`. Worth knowing;
+- **The Vercel project is named `wangan`**, not `floored`. Worth knowing;
   I did not investigate why.
 - ~~**`fenceOverdraw`** exists in `TIER_CAPS` with no consumer found~~ — it
   has one now (`highway.ts` ~1263: mobile-base falls back to slab walls); only

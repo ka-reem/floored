@@ -146,7 +146,7 @@ function speedFigure() {
     o.push(txt(cx0 + cols.length * cw + 92, y + 18, `${r.vmaxKmh.toFixed(0)} km/h`,
       { size: 19, anchor: "middle", fill: MUTED }));
   });
-  o.push(txt(L, H - 26, "NEON EXPRESSWAY · player car · full throttle, flat road, no traffic · measured with test/topend-sim.mjs on the real physics",
+  o.push(txt(L, H - 26, "FLOORED · player car · full throttle, flat road, no traffic · measured with test/topend-sim.mjs on the real physics",
     { size: 19, fill: MUTED }));
   return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${o.join("")}</svg>`, W, H };
 }
@@ -234,7 +234,7 @@ function accelFigure() {
       { size: 23, anchor: "end" }));
   });
 
-  o.push(txt(L, H - 26, "NEON EXPRESSWAY · player car · gear-change notches are real — the box is shifting · test/topend-sim.mjs",
+  o.push(txt(L, H - 26, "FLOORED · player car · gear-change notches are real — the box is shifting · test/topend-sim.mjs",
     { size: 19, fill: MUTED }));
   return { svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${o.join("")}</svg>`, W, H };
 }

@@ -5613,7 +5613,7 @@ export class Game {
     } catch {
       n = this.photoShots + 1; // private mode etc. — session-local numbering
     }
-    const name = `neon-expressway-${n}.png`;
+    const name = `floored-${n}.png`;
     this.renderer.domElement.toBlob((blob) => {
       if (!blob) {
         this.ui.toast("CAPTURE FAILED");
