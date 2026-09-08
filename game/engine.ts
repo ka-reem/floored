@@ -4005,35 +4005,35 @@ export class Game {
       car.y = w.y;
       car.z = w.z;
       car.h = e.poseAt(s).h;
-    } else if (car.y > 4) {
-      /* Back onto the corridor. It is one-way now, so there is no travel
-         direction to preserve — the alignment supplies the lane centre, the
-         deck height and the heading, all at the z we are already at. */
-      const p = this.cor.respawn(car.z);
+    } else {
+      /* Everything else goes back to the EXPRESSWAY, wherever the car is.
+
+         N used to have two answers here: from up on the deck it snapped to
+         the corridor, but from down in the town it looked up the nearest
+         street in the road net and righted the car there. That second answer
+         is the one the owner asked to change — "pressing n should reset you
+         on the nearest highway. so if im on the city road i can press n and
+         itll reset me to highway not keep me in the city".
+
+         It matters more than a convenience. N is the only way out of a stuck
+         car, and the town is where a player gets stuck WITHOUT a way back:
+         miss the on-ramp and the street net will happily keep handing you
+         another street. One answer — the highway — makes the key mean the
+         same thing everywhere, which is also what makes it usable as the
+         escape hatch when something on the ramps goes wrong.
+
+         `zAt` projects the car's world position onto the alignment, so this
+         is genuinely the NEAREST point on the highway rather than the point
+         that happens to share the car's z. The two differ a lot in town: the
+         streets sit ~430 m east of the deck and the frontage road runs at an
+         angle to it. The corridor is one-way, so there is no travel direction
+         to preserve — the alignment supplies the lane centre, the deck height
+         and the heading together. */
+      const p = this.cor.respawn(this.cor.zAt(car.x, car.z));
       car.x = p.x;
       car.y = p.y;
       car.z = p.z;
       car.h = p.h;
-    } else {
-      let near = this.world.net.nearest(car.x, car.z);
-      if (!near) {
-        // stranded far from any road — fall back to the town centre road
-        const e = this.world.net.nearest(0, 0);
-        if (e) near = e;
-      }
-      if (near) {
-        const pose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
-        this.world.net.sampleEdge(near.edge, near.s, pose);
-        let hRoad = Math.atan2(pose.tx, pose.tz);
-        // choose the direction closest to the car's current heading
-        const d1 = Math.abs(Math.atan2(Math.sin(car.h - hRoad), Math.cos(car.h - hRoad)));
-        if (d1 > Math.PI / 2) hRoad += Math.PI;
-        const rx = Math.sin(hRoad + Math.PI / 2), rz = Math.cos(hRoad + Math.PI / 2);
-        car.x = pose.x + rx * 1.95;
-        car.z = pose.z + rz * 1.95;
-        car.y = pose.y;
-        car.h = hRoad;
-      }
     }
     car.u = 0;
     car.v = 0;
