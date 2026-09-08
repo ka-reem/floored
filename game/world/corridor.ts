@@ -395,14 +395,15 @@ export const NO_TAPER: readonly (readonly [number, number])[] = [
    through lanes exactly as before, and an NPC never wanders into the exit.
    Everything that draws or clamps the west edge asks `edgeLat(z, -1)`.
 
-   Lengths. The exit lane opens 400 m ahead of the gore — 280 m of opening
-   taper (a 1:27 divergence, flatter than any lane taper on the lap) and 120 m
-   at full width, which is the stretch the "EXIT ONLY" paint and the arrows
-   live in. It cannot start earlier: the west tunnel's structure may reach
+   Lengths. The exit lane opens 400 m ahead of the gore: 200 m of opening
+   taper (1:19, flatter than any lane taper on the lap), 140 m at full width —
+   the stretch the arrows and the 出口 paint live in — and RAMP_LEAD of
+   handover. It cannot start earlier: the west tunnel's structure may reach
    z = -930 on some seeds and a lane cannot open inside a bore. The entrance
-   lane runs the other way — full width off the gore, then 160 m of merge
-   taper — and stops short of the bypass diverge window (WIDE_PIN) so the two
-   never share a deck edge.
+   runs the other way: RAMP_LEAD of handover, 60 m of parallel running, then
+   a 160 m merge taper (1:15). It is finished by z = 300, where the tied-arch
+   span begins — that span's ribs stand at a fixed lateral offset and a deck
+   edge past them would have nothing under it.
 
    Before this the "deceleration lane" was the outside through lane with three
    arrows painted in it over 52 m. */
@@ -436,9 +437,10 @@ export const AUX_LANES: readonly AuxSpec[] = [
     z2: CONNECT_Z[0] - RAMP_LEAD, z3: CONNECT_Z[0], w: AUX_W,
   },
   /* EXIT 1's entrance ramp, the same film backwards: the ramp hands the lane
-     to the deck over RAMP_LEAD, it runs on for 110 m, and then merges into
-     the through lanes over a 110 m taper. It stops short of z = 300 so the
-     bypass diverge's own gore wedge never shares a deck edge with it. */
+     to the deck over RAMP_LEAD, it runs on for 60 m, and then merges into the
+     through lanes over a 160 m taper. It is done by z = 300 — the tied-arch
+     span starts there, and the bypass diverge takes its own gore wedge from
+     halfWidth at a single z further on. */
   {
     kind: "entry",
     z0: CONNECT_Z[1], z1: CONNECT_Z[1] + RAMP_LEAD,
@@ -447,7 +449,7 @@ export const AUX_LANES: readonly AuxSpec[] = [
 ];
 
 /** Extra pavement on the WEST side of the deck at z, metres. Zero on all but
-    the ~700 m of the lap that carries a ramp lane. */
+    the 680 m of the lap that carries a ramp lane. */
 export function auxWidth(z: number) {
   let w = 0;
   for (const a of AUX_LANES) {
