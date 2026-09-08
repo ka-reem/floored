@@ -427,6 +427,37 @@ console.log("scenario 4: pass the exit gore drifting onto/over the edge");
   }
 }
 
+/* ---- scenario 4b: the counterpart of the climb rule ----
+   `riser` (terrain.ts) lets pavement rising under the wheels take the car off
+   the ground, which is what makes the entry ramp climbable. The price of
+   getting that wrong in the other direction is worse than the bug it fixes: a
+   car driving UNDER a ramp, or under the viaduct, must not be plucked up onto
+   it. So drive the ground beneath the entry ramp from its foot outward and
+   assert the car stays on the ground for every metre where the deck over its
+   head is more than a kerb up. ---- */
+console.log("scenario 4b: a car under the ramp stays under the ramp");
+{
+  const r = ramps.find((q) => q.kind === "entry");
+  let worst = null, probes = 0;
+  for (const p of r.pts) {
+    const up = p.y - p.gy;
+    if (up <= STEP_UP + 0.01) continue; // at the mouth the ramp IS the ground
+    // stand on the ground directly under the ramp centreline, and under both
+    // edges, and ask what surface the physics would hand the car
+    for (const lat of [-p.hOut * 0.6, 0, p.hIn * 0.6]) {
+      const x = p.x + p.nx * lat, z = p.z + p.nz * lat;
+      const y = heightAt(x, z, 0);
+      probes++;
+      if (y > STEP_UP && (!worst || y > worst.y))
+        worst = { y, x, z, up, s: p.s };
+    }
+  }
+  if (worst)
+    bad(`under the ramp at (${f(worst.x)}, ${f(worst.z)}), deck ${f(worst.up)} m up:`
+      + ` heightAt lifted the car to ${f(worst.y)}`);
+  else console.log(`  ok: ${probes} probes on the ground under the ramp all stay at ground level`);
+}
+
 /* ---- scenario 5: barrier continuity along the west deck edge ----
    Outside each gore's drivable mouth (nose -> pavement separation, plus a
    short handover where the slot between the pavements is still too narrow to
