@@ -1040,12 +1040,12 @@ export function guideSignTexF(
     ctx.fillStyle = "#12140a";
     ctx.font = "800 40px sans-serif";
     ctx.fillText("EXIT " + exitNo, 34, 62);
-    // destination
+    // destination — lifted when the EXIT ONLY strip is taking the bottom band
     ctx.fillStyle = "#f6fbf7";
     ctx.font = '700 62px "Hiragino Sans","Noto Sans JP",sans-serif';
-    ctx.fillText(jp, 24, 152);
+    ctx.fillText(jp, 24, opts.only ? 138 : 152);
     ctx.font = "600 38px sans-serif";
-    ctx.fillText(en, 26, 198);
+    ctx.fillText(en, 26, opts.only ? 176 : 198);
     // distance — the biggest glyphs on the board
     if (dist) {
       ctx.textAlign = "right";
@@ -1064,11 +1064,11 @@ export function guideSignTexF(
     // "EXIT ONLY" strip: the lane below this panel leaves the expressway
     if (opts.only) {
       ctx.fillStyle = "#f4cf2e";
-      ctx.fillRect(14, h - 52, w - 28, 38);
+      ctx.fillRect(14, h - 46, w - 28, 32);
       ctx.fillStyle = "#12140a";
-      ctx.font = "800 27px sans-serif";
+      ctx.font = "800 25px sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("EXIT ONLY   出口専用", w / 2, h - 23);
+      ctx.fillText("EXIT ONLY   出口専用", w / 2, h - 22);
     }
   });
 }
