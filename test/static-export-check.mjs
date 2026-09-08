@@ -145,12 +145,35 @@ page.on("response", (r) => {
   net.push(rec);
   /* Print a miss the moment it happens — a 404 four minutes into a load is
      otherwise invisible until the run ends, and the runs are long. */
-  if (rec.status >= 400) console.log(`  ⛔ ${rec.status} ${rec.url}`);
+  if (rec.status >= 400)
+    console.log(`  ${knownMiss(rec.url) ? "⚠️ " : "⛔"} ${rec.status} ${rec.url}`);
 });
+/* KNOWN, EXPLAINED misses. A 404 listed here is reported as a warning rather
+   than a failure, so this stays usable as a gate; anything NOT listed fails.
+   Keep the list at zero entries if you can. */
+const KNOWN_404 = [
+  [
+    "/_vercel/insights/script.js",
+    "<Analytics /> in app/layout.tsx injects Vercel Web Analytics, which only " +
+      "exists on Vercel. Harmless on Cloudflare (it is answered by the 404 page, " +
+      "still a free static asset) but it logs one console error per load. " +
+      "Delete that line, or render it only when process.env.VERCEL is set, and " +
+      "then delete this entry.",
+  ],
+];
+const knownMiss = (u) => KNOWN_404.find(([p]) => p === u);
+
 const failedReq = [];
+let tearingDown = false;
 page.on("requestfailed", (r) => {
-  if (ownOrigin(r.url()))
-    failedReq.push(`${r.url().slice(srv.url.length)} — ${r.failure()?.errorText}`);
+  if (!ownOrigin(r.url())) return;
+  const err = r.failure()?.errorText || "";
+  /* ERR_ABORTED is a CANCELLED request, not a missing one: the browser closing
+     mid-stream, or the fetch after a 404 body. It says nothing about whether
+     the asset is in the export, and a 20 MB game always has something in
+     flight when the run ends. */
+  if (err.includes("ERR_ABORTED") || tearingDown) return;
+  failedReq.push(`${r.url().slice(srv.url.length)} — ${err}`);
 });
 
 const consoleErrors = [];
@@ -158,6 +181,10 @@ page.on("console", (m) => {
   if (m.type() !== "error") return;
   const t = m.text();
   if (t.includes("favicon")) return;
+  /* The browser reports a 404 on a script tag as a bare "Failed to load
+     resource" with no URL in the text, so it cannot be matched to a path.
+     While a known miss is outstanding, that message is its. */
+  if (KNOWN_404.length && /Failed to load resource.*404/.test(t)) return;
   /* Third parties this box cannot reach. Not the export's doing. */
   if (
     t.includes("ERR_TUNNEL_CONNECTION_FAILED") ||
@@ -226,9 +253,26 @@ console.log(`  final: ${st.chunksVisible}/${st.chunksTotal} chunks, ${st.npcs} n
 
 await page.screenshot({ path: path.join(ROOT, "test", "artifacts", "static-export-lap.png") }).catch(() => {});
 
+/* The 404 page, in a second tab: this is the frame a crawler or a stale link
+   actually gets, and it is worth looking at rather than trusting. */
+{
+  const p404 = await browser.newPage();
+  await p404.setViewport({ width: 1280, height: 800 });
+  await p404.goto(srv.url + "/definitely-not-a-route", {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  });
+  await sleep(1200);
+  await p404
+    .screenshot({ path: path.join(ROOT, "test", "artifacts", "static-export-404.png") })
+    .catch(() => {});
+  await p404.close();
+}
+
 if (process.argv.includes("--keep-open")) {
   console.log(`\n(--keep-open) serving at ${srv.url}; ctrl-c to stop`);
 } else {
+  tearingDown = true;
   await browser.close();
   await srv.close();
 }
@@ -243,7 +287,11 @@ console.log(
 const byStatus = {};
 for (const r of net) byStatus[r.status] = (byStatus[r.status] || 0) + 1;
 console.log("  " + JSON.stringify(byStatus));
-for (const r of bad) fail(`${r.status} ${r.url}`);
+for (const r of bad) {
+  const known = knownMiss(r.url);
+  if (known) console.log(`  ⚠️  known 404 ${r.url}\n     ${known[1]}`);
+  else fail(`${r.status} ${r.url}`);
+}
 for (const f of failedReq) fail(`request failed: ${f}`);
 for (const c of consoleErrors) errors.push(`console: ${c}`);
 
