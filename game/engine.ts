@@ -2373,8 +2373,16 @@ export class Game {
              map where there was none, which changes three's program cache key,
              so each is a relink — and they all become due at once, seconds
              after the load's own COMPILING SHADERS stage has already run.
-             Whatever the player is looking at then eats the whole burst in one
-             frame. Measured on the open deck: +30 programs on a single frame.
+             Whatever the player is looking at then eats the whole burst in
+             one frame.
+
+             How often that ordering actually happens is the whole question,
+             and the honest answer is "when the download outlasts the world
+             build". On the sandbox it never does — the scans are applied 147
+             s BEFORE the game is playable and cost nothing — so this is
+             insurance for the real first-time player on a phone connection,
+             not a fix for a stall anyone has reproduced on a driving frame.
+             test/pbr-hitch.mjs --late forces the ordering to check it.
 
              compileDirty is the mechanism the async toll props (highway.ts)
              and the HD bodyshells (traffic.ts) already use for exactly this;

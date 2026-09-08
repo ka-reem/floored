@@ -438,13 +438,27 @@ export interface Mats {
       instead of paying for them on whatever frame each surface is next drawn
       on. Every upgrade path adds a map where there was none (normalMap,
       roughnessMap, metalnessMap, alphaMap), and three's program cache key is
-      keyed on `!!material.normalMap` and friends, so each one is a genuine
-      relink, not a texture swap. They resolve together, seconds after the
-      load's own compile stage has finished, which is exactly the "stutter a
-      few seconds into driving" the owner has reported from three different
-      places on the map — the toll plaza, a camera switch, the CONSOLE view.
-      It follows the CLOCK, not the map, which is why it looked like three
-      unrelated bugs.
+      keyed on `!!material.normalMap` and friends (WebGLPrograms.js), so each
+      one is a genuine relink and not a texture swap.
+
+      WHEN THAT COSTS ANYTHING, precisely — because it was first committed
+      here with a claim that turned out to be wrong. If the scans resolve
+      BEFORE the load's own compile stage, they cost nothing: no programs
+      exist yet, the upgrades are just material state, and the load links the
+      finished materials once. Measured on the sandbox this is what happens,
+      by a margin of 147 seconds, because the world build is minutes long
+      there and the assets come off local disk.
+
+      The case this guards is the opposite ordering, which is the ordinary one
+      for a real first-time player: a machine that builds the world in a
+      couple of seconds while pulling ~5 MB of scans over a phone connection.
+      Then the upgrades land on a driving frame, and all ~25 of them land on
+      the SAME driving frame. test/pbr-hitch.mjs --late reproduces exactly
+      that by holding back only the /assets/pbr/ requests.
+
+      It is NOT established that this is the stutter the owner reported. The
+      burst those probes measured followed the CAMERA rather than the clock,
+      and that is a separate question (test/program-source.mjs).
 
       Resolves at most once, and never if the scans are never fetched (the
       low preset skips them; setPbrDetail(true) starts the load later and
