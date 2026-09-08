@@ -245,7 +245,9 @@ export function buildTown(
        a fixed centreline x. */
     const cor = terrain.corridor;
     const zc = cor.zAt(cx, cz);
-    if (Math.abs(cor.latAt(cx, cz)) < cor.halfWidth(zc) + 7 + rC0) return;
+    const cLat = cor.latAt(cx, cz);
+    if (cLat > -(cor.edgeHalf(zc, -1) + 7 + rC0) && cLat < cor.halfWidth(zc) + 7 + rC0)
+      return;
     const yaw = Math.atan2(pose.tx, pose.tz);
     const cos = Math.cos(yaw), sin = Math.sin(yaw);
     // reject if the footprint clips any nearby road
