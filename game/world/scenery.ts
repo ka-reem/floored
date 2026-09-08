@@ -765,7 +765,9 @@ export function buildScenery(
        in wrapped space, emitted at each built copy. */
     {
       /* EXIT 4's mountain pass (routegraph MTN) climbs THIS strip: its
-         pavement swings out to x ≈ 600 through z ∈ [−1968, −1644], with the
+         pavement swings out to x ≈ 575 through z ∈ [−1968, −1644] (it reached
+         600 before the 2026-09-08 rebuild traded excursion for radius; the
+         probe below reads the live route, so it followed on its own), with the
          cut-face flank 12 m west of it and the bank skirt 5 m east. Nothing
          in the yard may stand in that footprint — a straddle carrier's
          10 × 10 m collider used to sit across both lanes at s ≈ 167–181, the

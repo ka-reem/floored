@@ -954,6 +954,14 @@ function planPlayground(
      that reach it, leaning roomy so the section lands generous. */
   const have = new Set(spots.map((s) => s.peak));
   const opts = PLAY_WEIGHTS.filter(([t]) => have.has(t));
+  /* A spot can exist whose only reachable peak is 3 lanes — a "playground" no
+     wider than the base road, which PLAY_WEIGHTS (4/5/6) deliberately does not
+     offer. That left `opts` empty and the peak roll below dereferenced
+     undefined, THROWING out of setRoadSeed and taking the whole world build
+     with it: 14 of 4000 sampled seeds, so roughly 1 player in 285 got a game
+     that would not load at all. Such a seed simply gets no playground, the
+     same answer as no spot at all. */
+  if (!opts.length) return { steps: [...steps], spec: null };
   let r2 = rng() * opts.reduce((s, [, w]) => s + w, 0);
   let peak = opts[opts.length - 1][0];
   for (const [t, w] of opts) if ((r2 -= w) <= 0) { peak = t; break; }
@@ -1202,12 +1210,14 @@ export const OVERPASSES = [
     merges through a second east gore.
 
     REBUILT 2026-09-08 (owner's pick, "option G"). It used to be a genuine
-    tōge: 5.4 m of pavement and a 13 m radius corner, entered off a deck the
-    player crosses at 200 km/h. The owner's verdict was "so hard to drive,
+    tōge: 5.40 m of pavement and a 17.4 m radius corner, entered off a deck
+    the player crosses at 200 km/h. The owner's verdict was "so hard to drive,
     road is too tight", and the brief for the rebuild was "make it wide and
     easier to drive". So the character changed deliberately — this is no
-    longer a technical climb, it is a FAST SWEEPER: double the width, five
-    times the radius, a third of the steering rate. The numbers that carry
+    longer a technical climb, it is a FAST SWEEPER: 11.00 m wide, 68.1 m
+    worst radius, and a quarter of the steering rate (3.48 → 0.89 °/station).
+    test/mountain-speed.mjs puts the consequence in one number: the pass used
+    to be under 80 km/h for 68% of its length, and now for none of it. The numbers that carry
     that intent are asserted in test/routegraph-check.mjs, whose old bounds
     (a 60 m radius CEILING, a 6.2 m width ceiling) encoded the old design and
     were moved with it rather than worked around. The
