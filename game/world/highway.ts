@@ -568,14 +568,18 @@ export function buildHighway(
       const a0 = cor.edgeHalf(z, -1) - 0.45, a1 = cor.edgeHalf(z + E, -1) - 0.45;
       stripe(z, z + E, -a0, -a1, 0.2);
       stripe(z, z + E, h0, h1, 0.2);
-      if (cor.auxWidth(z) > 0.5 || cor.auxWidth(z + E) > 0.5)
+      /* …but not where it would land on top of the shoulder line it grew out
+         of (the first metres of the opening taper), and not down an
+         entrance's merge taper, which is the one stretch traffic is meant to
+         cross. */
+      const solid = AUX_LANES.some(
+        (a) => z > a.z0 && z + E < a.z3 && !(a.kind === "entry" && z > a.z2));
+      if (solid && (cor.auxWidth(z) > 1.2 || cor.auxWidth(z + E) > 1.2))
         stripe(z, z + E, -h0, -h1, 0.3);
     }
-    /* The merge taper at an entrance is the one stretch where that divider
-       must NOT be solid — traffic is supposed to cross it — so it runs as a
-       dash there instead, on the dash lattice like every other broken line. */
+    // the merge taper's divider, broken, on the dash lattice
     for (const a of AUX_LANES) {
-      if (a.z2 >= a.z3) continue;
+      if (a.kind !== "entry") continue;
       const DASH_M = 6;
       for (const z of cor.lattice(PITCH.dash)) {
         if (z < a.z2 || z + DASH_M > a.z3) continue;

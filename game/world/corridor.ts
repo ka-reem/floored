@@ -410,6 +410,11 @@ export const NO_TAPER: readonly (readonly [number, number])[] = [
     continues the lane rather than stepping in or out of it. */
 export const AUX_W = RAMP_W;
 interface AuxSpec {
+  /** How the lane ENDS. "exit": the ramp takes it away, so the divider stays
+      solid to the gore. "entry": it merges back into the through lanes, so
+      the divider has to break into a dash over the closing taper — that is
+      the line traffic is meant to cross. */
+  kind: "exit" | "entry";
   /** widening starts */
   z0: number;
   /** …and is complete */
@@ -426,6 +431,7 @@ export const AUX_LANES: readonly AuxSpec[] = [
      RAMP_LEAD metres — the deck's share closes as the ramp's pavement opens
      into the same band, which is why there is no step and no gore wedge. */
   {
+    kind: "exit",
     z0: CONNECT_Z[0] - 400, z1: CONNECT_Z[0] - 200,
     z2: CONNECT_Z[0] - RAMP_LEAD, z3: CONNECT_Z[0], w: AUX_W,
   },
@@ -434,6 +440,7 @@ export const AUX_LANES: readonly AuxSpec[] = [
      the through lanes over a 110 m taper. It stops short of z = 300 so the
      bypass diverge's own gore wedge never shares a deck edge with it. */
   {
+    kind: "entry",
     z0: CONNECT_Z[1], z1: CONNECT_Z[1] + RAMP_LEAD,
     z2: CONNECT_Z[1] + 170, z3: CONNECT_Z[1] + 280, w: AUX_W,
   },
