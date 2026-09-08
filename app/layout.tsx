@@ -113,8 +113,23 @@ export default function RootLayout({
         <PostHogProvider>{children}</PostHogProvider>
         {/* Vercel Web Analytics: ~1KB, cookieless visitor counting. The
             numbers live in the Vercel dashboard's Analytics tab — the owner
-            flips the project-level switch there; without it this no-ops. */}
-        <Analytics />
+            flips the project-level switch there; without it this no-ops.
+
+            GATED ON VERCEL, because its script lives at a path only Vercel
+            serves. On any other host the browser asks for
+            /_vercel/insights/script.js, gets the 404 page, and logs a console
+            error on every single load — which is exactly what the Cloudflare
+            static-export check caught (the one non-200 in an otherwise clean
+            160-request load). Free, but noise in every replay and every
+            tester's console.
+
+            Gated rather than deleted: Vercel stays the fallback host for this
+            release, so on Vercel this keeps working untouched and on
+            Cloudflare it is simply never rendered. process.env.VERCEL is set
+            by Vercel's build and inlined at build time, so the export carries
+            no reference to it at all. PostHog is the primary analytics either
+            way and is unaffected. */}
+        {process.env.VERCEL ? <Analytics /> : null}
       </body>
     </html>
   );
