@@ -6,12 +6,15 @@
     "dev": "next dev",
     "prebuild": "node tools/build-pwa-icons.mjs",
     "build": "next build",
+    "prebuild:static": "node tools/build-pwa-icons.mjs",
+    "build:static": "NEXT_OUTPUT=export next build --webpack && rm -rf out/assets-staging",
     "icons": "node tools/build-pwa-icons.mjs",
     "start": "next start",
     "lint": "next lint",
     "smoke": "node test/smoke.mjs",
     "engine-rpm": "node test/engine-rpm-check.mjs",
-    "qa:ui": "node test/ui-qa.mjs"
+    "qa:ui": "node test/ui-qa.mjs",
+    "cf:check": "node test/static-export-check.mjs"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",

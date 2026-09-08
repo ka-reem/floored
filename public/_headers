@@ -1,0 +1,64 @@
+# Cloudflare Workers static-asset response headers. THIS FILE IS THE
+# CLOUDFLARE HALF OF vercel.json's "headers" block — the two hosts read
+# different files, so a rule added to one and not the other ships on one host
+# only.
+#
+# public/ is copied into the export verbatim, so this lands at out/_headers,
+# which is wrangler.jsonc's assets.directory and where Workers looks for it.
+# Workers PARSES this file and never serves it: /_headers is a 404, so the
+# rules below cannot be read off the live site.
+#
+# It applies to STATIC ASSET responses only. There is no Worker script in
+# wrangler.jsonc (deliberately — see the note there), so every response the
+# game gets is a static asset and every rule here applies. If a Worker script
+# is ever added, its own responses do NOT inherit these headers.
+#
+# NOTHING HERE MAY EVER MATCH HTML. Cloudflare caches hard at the edge and a
+# browser honours `immutable` for a year with no revalidation, so an immutable
+# rule on / or on index.html would pin an old build on every player who has
+# already visited, with no way to bust it. The rules below are scoped to four
+# prefixes that hold no HTML at all — `npm run cf:check` asserts exactly that
+# against this file before it lets a build pass.
+#
+# Syntax (Cloudflare's, not Vercel's JSON):
+#   a line starting with "/" is a path rule; the INDENTED lines under it are
+#   "Name: value" headers applied to it. "*" is a splat, one per rule, and it
+#   spans path separators. "#" comments, blank lines ignored. Matching is on
+#   the PATH only — a query string cannot be matched on.
+#
+# ---------------------------------------------------------------------------
+# The big downloads: ~20 MB of models, textures, audio and sky, and the whole
+# reason this file exists. They are the same three prefixes vercel.json gives
+# a one-year immutable lifetime, so a returning player pays for none of them
+# twice. Without these lines every visit re-downloads or at best re-validates
+# tens of megabytes, one round trip per file.
+#
+# Their filenames are STABLE across builds while their contents are not, which
+# is normally the one case where "immutable" is unsafe. What makes it safe is
+# lib/build.ts's buildStamped(): the game asks for /models/foo.glb?v=<build>,
+# so the URL changes whenever the bundle does and a new deploy can never be
+# answered out of the old entry. Read the note in lib/build.ts before
+# shortening any of these.
+#
+# One deliberate difference from next.config.mjs: its rule is gated on the
+# request carrying a `v` query, and a _headers rule cannot look at the query.
+# vercel.json's rule is ungated too, and it is the one that runs in production
+# today, so this matches what is live rather than widening it.
+/models/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/hdri/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# ---------------------------------------------------------------------------
+# The JS/CSS bundle. Not in vercel.json because it did not need to be: Next
+# serves /_next/static with exactly this header on its own, and Vercel keeps
+# that. A plain static host does not — Pages' default for an asset is
+# revalidate-every-time — so without this line the move to Cloudflare would
+# QUIETLY make the game slower to start than it is on Vercel. Every file under
+# here is content-hashed by the build, so the name changes when the bytes do.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
