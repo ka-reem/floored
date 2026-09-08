@@ -968,24 +968,58 @@ export function buildHighway(
       return a > 2 ? -(cor.halfWidth(z) + a / 2) : -(cor.halfWidth(z) - 1.9);
     };
     if (isExit) world.exits.push({ z: r.zr, no: gi + 1, name });
+    /* The physical nose: where the deck's own parapet picks up again past
+       the mouth — with a deceleration lane that is RAMP_LEAD + the gore
+       further on than the gore z, not a few metres. */
+    const pg = parapetGap(r);
+    const noseZ = isExit ? pg.z1 : pg.z0;
     /* Painted gore. What used to be here was ONE 3.2 x 6.4 m chevron patch at
        the nose — 6 m of paint for a divergence that is 50 m long, and at
        100 km/h it went past in a fifth of a second. The real gore is the
        triangle that opens between the through-lane edge and the ramp as the
        two pull apart, so the hatch is laid down the whole of it, widening the
        way the triangle does. */
-    for (let d = 5; d < 56; d += 6.4) {
-      const z = r.zr + fwd * d;
-      const wd = Math.min(8.6, 0.17 * d + 0.7);
-      const inner = -(cor.halfWidth(z) - 0.3);
-      const g = decal(z, inner - wd / 2, wd, 6.0, goreMat);
-      if (!isExit) g.rotation.y += Math.PI;
+    {
+      /** the ramp's inner pavement edge at z, in corridor lateral coords */
+      const rampEdge = (z: number) => {
+        let best = 0, bd = 1e9;
+        for (const q of r.pts) {
+          const d2 = Math.abs(q.z - z);
+          if (d2 < bd) { bd = d2; best = cor.latAt(q.x, q.z) + q.hIn; }
+        }
+        return best;
+      };
+      for (let d = 4; d < 66; d += 5.6) {
+        const z = r.zr + fwd * d;
+        const hi = -(cor.halfWidth(z) - 0.35); // the through lanes' edge line
+        const lo = rampEdge(z);
+        const wd = hi - lo;
+        if (wd < 0.55) continue;
+        const g = decal(z, (lo + hi) / 2, Math.min(wd, 6), 5.4, goreMat);
+        if (!isExit) g.rotation.y += Math.PI;
+      }
+      /* And the physical nose: a chevron board on a concrete block where the
+         deck's own parapet picks up again. The bypass gores have had one
+         since they were built; the town gores never did, and the mouth just
+         ended. */
+      const nz = noseZ + (isExit ? 1.2 : -1.2);
+      const np = cor.worldOf(nz, -(cor.halfWidth(nz) + 0.55));
+      const nh = cor.pose(nz).h;
+      const blk = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.85, 1.4), mats.concDark);
+      blk.position.set(np.x, np.y + 0.42, np.z);
+      blk.rotation.y = nh;
+      blk.castShadow = true;
+      scene.add(blk);
+      const bd2 = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.0),
+        new THREE.MeshBasicMaterial({ map: mats.chevTex }));
+      bd2.position.set(np.x, np.y + 1.42, np.z);
+      bd2.rotation.y = nh + Math.PI; // face the oncoming stream
+      scene.add(bd2);
+      add({
+        x0: np.x - 0.7, x1: np.x + 0.7, z0: np.z - 0.85, z1: np.z + 0.85,
+        y0: np.y - 0.5, y1: np.y + 1.15,
+      });
     }
-    /* Amber beacon on the physical nose — the point where the deck's own
-       parapet picks up again past the mouth, which with a deceleration lane
-       is 60 m further on than the gore z. */
-    const pg = parapetGap(r);
-    const noseZ = isExit ? pg.z1 : pg.z0;
     const bp = cor.worldOf(noseZ, -(cor.halfWidth(noseZ) + 0.5));
     const bea = new THREE.Sprite(world.goreBeaconMat!);
     bea.scale.set(1.9, 1.9, 1);
