@@ -603,51 +603,71 @@ const LANE_FOLLOW_RATE = 3.4;
    A real plaza is picked on the APPROACH: you read the gantry, choose a
    booth, and hold that lane under the canopy. NPCs did not. The ordinary
    comfort change, the rival yield and the hail courtesy move all stayed live
-   through the gates, so cars cut across booth lanes at the last moment and
-   the plaza read as chaos rather than as a queue — and a player who had
-   already committed to a booth got crossed in front of at the worst moment
-   on the lap.
+   through the gates, so cars cut across booth lanes at the last moment, the
+   plaza read as chaos rather than as a queue, and a player who had already
+   committed to a booth got crossed in front of at the worst moment on the lap.
 
-   Two designs were on the table: suppress merges through the plaza and hand
-   the leftovers a booth ASSIGNMENT to unwind at the exit, or simply pick on
-   the approach and hold. Which one is right is a question about the geometry,
-   so it was measured (test/toll-nomerge-sim.mjs, over 200 road seeds):
+   Two designs were on the table: suppress merges through the plaza and give
+   the leftovers a booth ASSIGNMENT to unwind at the exit, or pick on the
+   approach and hold. Which is right is a question about the geometry, so it
+   was measured first (test/toll-nomerge-sim.mjs, part 1, 200 road seeds):
 
    - The plaza does NOT add lanes. corridor.ts buys the gate clearance by
      widening the lane PITCH (LANE_W → TOLL_PITCH over z 1290..1390, and back
      over 1450..1550) and pins the lane COUNT to BASE_LANES from TOLL_PIN_Z
-     onward. Across 200 road seeds the LAST lane-count change before the
-     plaza is at z = 1225, and the deck holds 3 lanes from there to past
-     z = 1700.
-   - So booth index IS lane index, and every booth lane still exists at the
-     plaza exit. A car that holds its lane cannot be stranded, and there is
-     nothing for an assignment to unwind.
+     onward. Across 200 road seeds the LAST lane-count change before the plaza
+     is at z = 1225, and the deck holds three lanes from there to past 1700.
+   - So booth index IS lane index, and it survives to the far side. A car that
+     holds cannot be stranded, and an assignment would have nothing to unwind.
 
-   Hold, then, and do not reassign. `tollHold()` refuses DISCRETIONARY lane
-   changes from TOLL_HOLD_PRE metres ahead of the fan-out to TOLL_HOLD_POST
-   past the fan-in — and refuses them TOLL_HOLD_COMMIT seconds of travel
-   earlier again, which is the "pick your booth on the approach" half: a
-   change may not be STARTED that would still be crossing when the lane
-   centres begin to spread.
+   Hold, then, and do not reassign.
 
-   FORCED taper merges are deliberately NOT gated, and that is the whole
-   design problem rather than an oversight. A lane that ends is a survival
-   case; the last drop can finish as late as z = 1225, which is inside the
-   zone, and gating it there would hand cars to the snap net under the
-   gantry — the exact stranding this zone exists to prevent. It needs no
-   gate: past 1225 no lane dies, so the forced path cannot fire in the fan-out,
-   the plaza or the fan-in anyway. The sim asserts both halves. */
-/** Zone starts this far ahead of TOLL.z0, i.e. of the pitch fan-out. */
-const TOLL_HOLD_PRE = 90;
-/** …and ends this far past TOLL.z1, so the bunch leaving the booths settles
-    before anybody dives for a lane. */
+   ---- where the zone starts, and why it is not a fixed z ----
+
+   The first cut held from a fixed 90 m ahead of the fan-out. That deadlocks
+   the road: the last lane drop can FINISH as late as z = 1225, 35 m inside
+   such a window, and a stopped zipper merger there leans on its lane line
+   with the blinker on (see the taper block in updateHwy) — which is what
+   makes target-lane followers hold back. Forbid those followers to move over
+   and the pair freezes: the merger cannot get in, the follower will not go
+   past, and the sim jammed a whole seed solid behind them.
+
+   So the zone has a speed in it, in two places.
+
+   Where it STARTS is "will you still be crossing when the lane centres start
+   to spread": a comfort change is up to TOLL_HOLD_MAN seconds of blinker plus
+   crossing, so a car doing 30 m/s must have decided 180 m before the fan-out,
+   while one at TOLL_HOLD_VMIN or below is held from the nominal 90 m. The
+   zone is therefore widest exactly when traffic is flowing fast enough for a
+   late dive to be dangerous.
+
+   And a car below TOLL_HOLD_CRAWL is exempt outright, anywhere in the zone.
+   That is the deadlock valve. A car moving at walking pace is not weaving
+   through a plaza, it is shuffling in a queue — and a queue is exactly where
+   the hold could otherwise trap the road: the stopped merger leans, its
+   would-be follower stops rather than passing it, and neither can move. It
+   costs nothing where it does not apply, because at a plaza in free flow
+   nobody is doing 3 m/s.
+
+   FORCED taper merges are not gated at all, and that is the design rather
+   than an oversight: a lane that ends is a survival case, and gating it would
+   hand cars to the snap net under the gantry — the exact stranding this zone
+   exists to prevent. It needs no gate: past z = 1225 no lane dies, so the
+   forced path cannot fire in the fan-out, the plaza or the fan-in anyway. */
+/** Worst-case seconds of a signalled comfort change: up to 2 s of blinker
+    before the wheel moves, plus up to 4 s to cross (lanePitch / laneRate). */
+const TOLL_HOLD_MAN = 6;
+/** …evaluated at no less than this speed, so the zone never starts later than
+    a nominal 90 m ahead of the fan-out however slowly the stream is moving. */
+const TOLL_HOLD_VMIN = 15;
+/** Below this the hold does not apply at all: a car at walking pace is
+    shuffling in a queue, not diving between booths, and letting it move is
+    what stops a stopped zipper merger and the follower leaning on it from
+    freezing the road. */
+const TOLL_HOLD_CRAWL = 3.5;
+/** The zone runs past the fan-in by this much: the bunch leaving the booths
+    settles before anybody dives for a lane. */
 const TOLL_HOLD_POST = 40;
-/** Seconds of travel BEFORE the zone in which a change may not be started:
-    a signalled comfort change is ~1-2 s of blinker plus 2-4 s of crossing, so
-    three seconds of approach is what makes "settled by the gantry" true
-    rather than merely likely. */
-const TOLL_HOLD_COMMIT = 3;
-const TOLL_HOLD_LEN = TOLL_HOLD_PRE + (TOLL.z1 - TOLL.z0) + TOLL_HOLD_POST;
 
 /* dawdler · cautious · average · brisk · speeder */
 const ARCH: Arch[] = [
@@ -3276,8 +3296,13 @@ export class Traffic {
       so an ungated read of it would gate a random stretch of those roads. */
   private tollHold(n: Npc): boolean {
     if (n.route !== -1) return false;
-    const d = this.cor.deltaZ(TOLL.z0 - TOLL_HOLD_PRE, n.s);
-    return d >= -Math.max(n.v, 0) * TOLL_HOLD_COMMIT && d <= TOLL_HOLD_LEN;
+    if (n.v < TOLL_HOLD_CRAWL) return false; // queue shuffle — see above
+    const cor = this.cor;
+    const dz = cor.deltaZ(n.s, TOLL.z0); // metres still to run to the fan-out
+    // already in it: hold flat out to the end of the zone
+    if (dz <= 0) return cor.deltaZ(n.s, TOLL.z1 + TOLL_HOLD_POST) >= 0;
+    // approaching: hold as soon as a change could still be crossing on arrival
+    return dz <= Math.max(n.v, TOLL_HOLD_VMIN) * TOLL_HOLD_MAN;
   }
 
   private yieldToRival(n: Npc): boolean {
@@ -3288,7 +3313,7 @@ export class Traffic {
     if (n.pendK >= 0 || n.blink !== 0 || n.mergeLean !== 0) return false;
     // …and not through the toll plaza: a courtesy dive across booth lanes is
     // the single worst place on the lap to be moved over for. The rival
-    // queues behind like anybody else for the 410 m the zone lasts.
+    // queues behind like anybody else until the gates are behind them.
     if (this.tollHold(n)) return false;
     const cor = this.cor;
     // is it coming up behind this car, in this car's path, and faster?
