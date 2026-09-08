@@ -452,9 +452,16 @@ export interface Mats {
       The case this guards is the opposite ordering, which is the ordinary one
       for a real first-time player: a machine that builds the world in a
       couple of seconds while pulling ~5 MB of scans over a phone connection.
-      Then the upgrades land on a driving frame, and all ~25 of them land on
-      the SAME driving frame. test/pbr-hitch.mjs --late reproduces exactly
-      that by holding back only the /assets/pbr/ requests.
+      Then the upgrades land on a driving frame, and they all land on the SAME
+      driving frame.
+
+      MEASURED SIZE: 20 programs. Serving the scans a 404 builds the same
+      world without them (loadPbrSet resolves either way and a null albedo
+      makes every upgrade return early), and the renderer holds 245 programs
+      when the game becomes playable against 265 with the scans in. So 20
+      links is what would land together, not the ~30 first claimed — that
+      number came from a probe that was driving, and belonged to something
+      else. test/pbr-hitch.mjs --noscans is that measurement.
 
       It is NOT established that this is the stutter the owner reported. The
       burst those probes measured followed the CAMERA rather than the clock,
