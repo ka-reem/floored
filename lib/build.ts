@@ -81,7 +81,7 @@ export const buildStamped = (url: string): string =>
   BUILD_REV ? `${url}?v=${BUILD_REV}` : url;
 
 /** The game's own name, unqualified. */
-export const GAME_NAME = "NEON EXPRESSWAY";
+export const GAME_NAME = "FLOORED";
 
 /** The word on the plate, and its Japanese. 試験版 = "trial edition" — the
     supplementary-plate reading, to match the sign language everywhere else. */
@@ -91,11 +91,11 @@ export const BETA_JP = "試験版";
 /** "v3.0.0 BETA" / "v3.0.0" — the version chip on home, pause and credits. */
 export const VERSION_LABEL = IS_BETA ? `v${VERSION} ${BETA_LABEL}` : `v${VERSION}`;
 
-/** "NEON EXPRESSWAY v3.0.0 BETA" — where the name and build print together
+/** "FLOORED v3.0.0 BETA" — where the name and build print together
     (the pause footbar, the credits corner, the bug-report mail body). */
 export const NAME_VERSION = `${GAME_NAME} ${VERSION_LABEL}`;
 
-/** "NEON EXPRESSWAY (BETA)" — the name where a plate cannot be drawn: the
+/** "FLOORED (BETA)" — the name where a plate cannot be drawn: the
     browser tab, the share card, the install manifest, the plain-DOM error
     screens. */
 export const NAME_LABEL = IS_BETA ? `${GAME_NAME} (${BETA_LABEL})` : GAME_NAME;

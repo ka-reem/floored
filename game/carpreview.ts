@@ -181,6 +181,7 @@ let studio: {
 } | null = null;
 
 function getStudio() {
+  cancelStudioRelease();
   if (studio) return studio;
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
   renderer.setSize(480, 260);
@@ -300,7 +301,11 @@ type Job = { run: () => void; cancelled: boolean };
 const queue: Job[] = [];
 let pumping = false;
 function pump() {
-  if (pumping || !queue.length) return;
+  if (pumping) return;
+  if (!queue.length) {
+    releaseStudioWhenIdle();
+    return;
+  }
   pumping = true;
   requestAnimationFrame(() => {
     setTimeout(() => {
@@ -312,6 +317,66 @@ function pump() {
     }, 0);
   });
 }
+/* ---------- handing the studio's GL context back ----------
+
+   getStudio() builds a SECOND WebGLRenderer, with its own WebGL context, its
+   own 1024² shadow map and a preserveDrawingBuffer canvas. It was cached in a
+   module-level `studio` and never released, so one visit to the garage left
+   that context and its driver-side allocation alive for the rest of the
+   session, alongside the game's own.
+
+   That matters because a context is a capped resource: the browser allows
+   only so many live at once and drops the OLDEST to stay under the cap. In a
+   page whose main context is the game, the thing dropped is the game — which
+   is the "Graphics context lost" panel the owner is seeing in replays and
+   hitting himself. On a phone the memory alone is reason enough.
+
+   Releasing it is safe because the card art is CACHED (in memory and in the
+   persisted `remember` store), so the studio is only ever needed again for a
+   car+paint combination that has never been shot. Re-creating it costs one
+   renderer construction on that path and nothing at all on the common one.
+
+   Two conditions, and the second is the subtle one: the render queue must be
+   empty, AND `realWaiting` must be empty. shootReal() acquires the studio
+   BEFORE its GLB fetch, parks a hidden rig in the studio scene, and renders
+   from `st` captured in its own closure when the fetch lands. Disposing while
+   such a rig is parked would render into a dead renderer. A fetch that never
+   resolves therefore keeps the context — failing towards "kept" rather than
+   "used after free" is the right way round. */
+const STUDIO_IDLE_MS = 8000;
+let studioIdleT: ReturnType<typeof setTimeout> | undefined;
+
+function cancelStudioRelease() {
+  if (studioIdleT !== undefined) {
+    clearTimeout(studioIdleT);
+    studioIdleT = undefined;
+  }
+}
+
+function releaseStudioWhenIdle() {
+  cancelStudioRelease();
+  if (!studio) return;
+  studioIdleT = setTimeout(() => {
+    studioIdleT = undefined;
+    if (!studio || queue.length || realWaiting.size) return;
+    const st = studio;
+    studio = null;
+    st.scene.traverse((o) => {
+      const m = o as THREE.Mesh;
+      m.geometry?.dispose();
+      const mats = Array.isArray(m.material) ? m.material : m.material ? [m.material] : [];
+      for (const mm of mats) mm.dispose();
+    });
+    st.envMap.dispose();
+    st.glowTex.dispose();
+    st.blankTex.dispose();
+    /* dispose() frees three's own GPU objects; only forceContextLoss() hands
+       the CONTEXT itself back, which is the scarce thing here. */
+    st.renderer.dispose();
+    st.renderer.forceContextLoss();
+  }, STUDIO_IDLE_MS);
+}
+
 function enqueue(run: () => void, first = false): Job {
   const job: Job = { run, cancelled: false };
   if (first) queue.unshift(job);
