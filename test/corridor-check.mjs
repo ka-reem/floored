@@ -33,7 +33,7 @@ for (const f of ["corridor.js", "ramps.js"]) {
 const {
   getCorridor, assertPitches, signPlan, tunnels, SIGN, PITCH, PHASE, TUNNEL, TOLL,
   TOLL_PLAZA, BRIDGE, playground, WIDE_PIN, NO_TAPER, PORTAL_PAD, TAPER_BAND, PLAY_PEAK_MIN,
-  AUX_LANES, AUX_W, auxWidth,
+  AUX_LANES, AUX_W, auxWidth, OVERPASSES, GUIDE_H,
 } = await import(path.join(dir, "corridor.js"));
 const { buildRamps, parapetGap, spawnWindow, spawnZ, RAMP_PLAN } =
   await import(path.join(dir, "ramps.js"));
@@ -333,6 +333,16 @@ if (0.053 > LANE_FOLLOW_RATE / TOP_SPEED)
 
 /* ---- cantilever signs -------------------------------------------------- */
 console.log("cantilever signs:");
+{
+  /* The height budget, stated once: this is what caps GUIDE_H. */
+  const mastMax = SIGN.CLEAR + GUIDE_H + SIGN.ARM_T + 0.12;
+  const soffit = Math.min(...OVERPASSES.map((o) => o.clear));
+  console.log(`  guide panel ${f(GUIDE_H)} m deep → mast ${f(mastMax)} m,` +
+    ` ${f(soffit - mastMax)} m under the lowest crossing soffit (${f(soffit)} m)`);
+  if (mastMax > soffit)
+    bad(`GUIDE_H ${f(GUIDE_H)} m makes an ${f(mastMax)} m mast, over the` +
+      ` ${f(soffit)} m crossing soffit — no seed may put a board under one`);
+}
 const ramps = buildRamps(() => 0);
 const signs = signPlan();
 for (const s of signs) {
@@ -364,6 +374,23 @@ for (const s of signs) {
   for (const t of tunnels())
     if (s.z > t.z0 - PORTAL_PAD && s.z < t.z1 + PORTAL_PAD)
       bad(`${s.kind} @${s.z}: mast is inside ${PORTAL_PAD} m of a tunnel portal`);
+  /* …nor under a crossing overpass. The guide panels grew to GUIDE_H = 3.30 m
+     for the two-tier face, which puts a mast top at 8.83 m against the
+     crossings' 9.0 m soffit — 17 cm, so this stopped being obviously true.
+     countdownZ() relocates a board to a tunnel portal ±45 m, and a seeded
+     tube mouth can put that relocation right under a crossing, which is the
+     case this catches. girderW is the crossing's extent ALONG the road. */
+  for (const op of OVERPASSES) {
+    const half = op.girderW / 2 + SIGN.POST_T / 2 + 0.2;
+    if (Math.abs(s.z - op.z) > half) continue;
+    const soffit = c.pose(op.z).y + op.clear;
+    if (mast > soffit)
+      bad(`${s.kind} @${f(s.z)}: mast ${f(mast)} m spears the crossing at` +
+        ` z=${op.z} (soffit ${f(soffit)} m)`);
+    else
+      console.log(`  note: ${s.kind} @${f(s.z)} is under the crossing at z=${op.z}` +
+        ` with ${f(soffit - mast)} m to spare`);
+  }
   // the toll canopy is a rigid 7.4 m slab centred in the full-width window
   const plazaC = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
   if (Math.abs(s.z - plazaC) < 17 + 2) bad(`${s.kind} @${s.z}: mast is under the toll canopy`);

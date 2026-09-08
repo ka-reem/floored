@@ -1951,6 +1951,16 @@ function countdownZ(gore: number, d: number, tubes: readonly TunnelSpec[]) {
   return { z, dist: Math.max(0, Math.round((gore - z) / 10) * 10) };
 }
 
+/** Panel depth of a guide board (the two-tier face). Every board that carries
+    guideSignTexF uses it — the freeway countdowns, the bypass diverge and the
+    mountain's EXIT 4 — so one number sets the face's scale on all of them.
+
+    It pairs with a 9.4 m width: 9.4 / 3.30 is 2.848 against the 768 x 270
+    texture's 2.844, so the artwork is squeezed by 0.14% — 0.4 px over the
+    whole panel. Move the height and move the texture with it, or the squeeze
+    stops being a rounding error. */
+export const GUIDE_H = 3.3;
+
 /** The cantilever boards, in one place so the geometry and the checks agree.
     Ordered by z. */
 export function signPlan(): SignSpec[] {
@@ -1960,19 +1970,28 @@ export function signPlan(): SignSpec[] {
   /* EXIT 1 countdown. The panels are wider than the old boards (9.4 m against
      7.4) because the mast now stands outboard of the deceleration lane: at
      7.4 m the panel hung entirely over the aux lane and never reached the
-     through lanes a driver is actually in. Height is unchanged — the crossing
-     overpasses at z −912/−816/−720 have a 9.0 m soffit and the mast tops out
-     at 8.4 m under it. */
+     through lanes a driver is actually in.
+
+     GUIDE_H is the height, and 3.30 m is a ceiling, not a preference. The
+     face is two-tier now (textures.ts guideSignTexF, the owner's pick) and a
+     second tier has to be ADDED to the board or the type in the first one
+     shrinks. What stops it growing further is the crossing overpasses at
+     z −912/−816/−720, whose soffit is 9.0 m: a mast is CLEAR + h + ARM_T +
+     0.12 tall, so 3.30 m puts its top at 8.83 m and leaves 17 cm. Nothing on
+     the default seed stands under a crossing, but countdownZ can move a board
+     to a portal ±45 m and a seeded tube mouth near −957 would land one at
+     −912 exactly; test/corridor-check.mjs asserts the clearance so this is a
+     failed check rather than a mast through a bridge. */
   for (const d of EXIT_COUNTDOWN) {
     const { z, dist } = countdownZ(exitZ, d, tubes);
-    out.push({ z, w: 9.4, h: 2.8, kind: "exit-count", gore: 0, dist });
+    out.push({ z, w: 9.4, h: GUIDE_H, kind: "exit-count", gore: 0, dist });
   }
   /* The EXIT ONLY panel. It hangs over the deceleration lane at the point
      the lane is handed to the ramp — 40 m used to put it at the mouth, but
      the mouth is now RAMP_LEAD longer and a mast there would be standing in
      the parapet gap, on the ramp's own pavement. */
   out.push({
-    z: exitZ - RAMP_LEAD - 30, w: 9.4, h: 2.8, kind: "exit-gore", gore: 0, dist: 0,
+    z: exitZ - RAMP_LEAD - 30, w: 9.4, h: GUIDE_H, kind: "exit-gore", gore: 0, dist: 0,
   });
   /* Merging traffic ahead, twice, so it is not a surprise either. */
   for (const d of MERGE_COUNTDOWN) {
