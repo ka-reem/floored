@@ -33,10 +33,12 @@ for (const f of ["corridor.js", "ramps.js"]) {
 const {
   getCorridor, assertPitches, signPlan, tunnels, SIGN, PITCH, PHASE, TUNNEL, TOLL,
   TOLL_PLAZA, BRIDGE, playground, WIDE_PIN, NO_TAPER, PORTAL_PAD, TAPER_BAND, PLAY_PEAK_MIN,
+  AUX_LANES, AUX_W, auxWidth,
 } = await import(path.join(dir, "corridor.js"));
 const { buildRamps, parapetGap, spawnWindow, spawnZ, RAMP_PLAN } =
   await import(path.join(dir, "ramps.js"));
-const { CONNECT_Z, RAMP_W, RAMP_RUN, MAX_LANES } = await import(path.join(dir, "const.js"));
+const { CONNECT_Z, RAMP_W, RAMP_RUN, RAMP_LEAD, MAX_LANES } =
+  await import(path.join(dir, "const.js"));
 
 const c = getCorridor();
 /** numbers that live in highway.ts and have no home in the corridor yet */
@@ -416,7 +418,85 @@ if (!signs.some((s) => s.kind === "exit-gore")) bad("no board at the exit gore")
     }
   }
   if (start !== null && c.Z1 - start >= MIN_RUN) windows.push([start, c.Z1]);
-  console.log("spawnable windows (straight, level, clear of every parapet gap):");
+  /* ---- auxiliary (deceleration / acceleration) lanes --------------------- */
+console.log("auxiliary lanes:");
+{
+  /* The rate a lane EDGE may open at. The lane-count budget in corridor.ts is
+     about lane CENTRES sliding under traffic that is trying to hold a lane;
+     nothing holds a lane inside an aux taper, so the number that matters here
+     is only that the divergence reads as a freeway taper rather than a step.
+     1:15 is about the steepest a real parallel-type taper gets; anything
+     steeper reads as a chicane. The RAMP_LEAD handover is exempt — it is not
+     a taper at all, it is the deck and the ramp swapping the same pavement
+     between them at a fixed width. */
+  const MIN_RATE = 15;
+  const sorted = [...AUX_LANES].sort((a, b) => a.z0 - b.z0);
+  for (let i = 0; i < sorted.length; i++) {
+    const a = sorted[i];
+    const open = a.z1 - a.z0, hold = a.z2 - a.z1, close = a.z3 - a.z2;
+    const tap = a.kind === "exit" ? open : close;
+    console.log(`  ${a.kind.padEnd(5)} z ∈ [${f(a.z0)}, ${f(a.z3)}]  ${f(a.z3 - a.z0)} m` +
+      `  (open ${f(open)} / hold ${f(hold)} / close ${f(close)})  width ${f(a.w)} m` +
+      `  taper ${f(tap)} m = 1:${f(tap / a.w)}`);
+    if (a.w !== RAMP_W)
+      bad(`aux lane at ${a.z0}: ${f(a.w)} m wide but the ramp is ${f(RAMP_W)} — they must match`);
+    const taper = tap;
+    if (taper / a.w < MIN_RATE)
+      bad(`aux lane at ${a.z0}: tapers at 1:${f(taper / a.w)}, steeper than 1:${MIN_RATE}`);
+    if (a.z3 - a.z0 < 250)
+      bad(`aux lane at ${a.z0}: only ${f(a.z3 - a.z0)} m long — the point is that it is long`);
+    // the handover to the ramp has to be exactly RAMP_LEAD, or the deck and
+    // the ramp pavement stop tiling (see ramps.ts)
+    const handover = a.kind === "exit" ? close : open;
+    if (Math.abs(handover - RAMP_LEAD) > 0.5)
+      bad(`aux lane at ${a.z0}: ${f(handover)} m handover, RAMP_LEAD is ${f(RAMP_LEAD)}`);
+    // an aux lane is pavement: it may not be inside a bore or on the plaza
+    for (let z = a.z0; z <= a.z3; z += 4) {
+      if (c.inTunnel(z)) bad(`aux lane at ${a.z0} runs into a tunnel at z=${f(z)}`);
+      if (z > TOLL.z0 && z < TOLL.z1) bad(`aux lane at ${a.z0} runs into the toll plaza`);
+    }
+    if (a.z0 < TAPER_BAND[0] || a.z3 > TAPER_BAND[1])
+      bad(`aux lane at ${a.z0} reaches outside the taper band — the splice would show it`);
+    if (i && sorted[i - 1].z3 > a.z0)
+      bad(`aux lanes at ${sorted[i - 1].z0} and ${a.z0} overlap`);
+  }
+  // and the width really is zero everywhere else on the lap
+  for (let z = c.ZB0; z <= c.ZB1; z += 7) {
+    const inAny = AUX_LANES.some((a) => z > a.z0 - 1 && z < a.z3 + 1);
+    if (!inAny && auxWidth(z) > 1e-6) bad(`auxWidth is ${f(auxWidth(z))} at z=${f(z)}, outside every band`);
+  }
+  for (const a of AUX_LANES) {
+    const full = auxWidth((a.z1 + a.z2) / 2);
+    if (Math.abs(full - a.w) > 0.01)
+      bad(`aux lane at ${a.z0} never reaches full width (peaks at ${f(full)})`);
+  }
+}
+
+/* ---- the advance-warning countdown ------------------------------------- */
+console.log("exit countdown:");
+for (let gi = 0; gi < CONNECT_Z.length; gi++) {
+  const run = signs.filter((s) => s.gore === gi).sort((a, b) => a.z - b.z);
+  const gz = CONNECT_Z[gi];
+  console.log(`  gore ${gi} (z=${gz}): ` +
+    run.map((s) => `${s.kind}@${f(s.z)}${s.dist ? ` "${s.dist} m"` : ""}`).join("  "));
+  if (!run.length) { bad(`gore ${gi} has no boards at all`); continue; }
+  // distances have to fall monotonically as the gore comes up
+  for (let i = 1; i < run.length; i++)
+    if (run[i].dist > run[i - 1].dist)
+      bad(`gore ${gi}: board at ${f(run[i].z)} announces ${run[i].dist} m after one announcing ${run[i - 1].dist} m`);
+  // and the label has to be the truth
+  for (const s of run)
+    if (s.dist > 0 && Math.abs(gz - s.z - s.dist) > 12)
+      bad(`gore ${gi}: board at ${f(s.z)} says ${s.dist} m but is ${f(gz - s.z)} m out`);
+  const far = Math.max(...run.map((s) => s.dist));
+  const want = gi === 0 ? 800 : 300;
+  if (far < want)
+    bad(`gore ${gi}: earliest warning is only ${far} m out (want ${want}+)`);
+  if (!run.some((s) => s.dist > 0 && s.dist < 260))
+    bad(`gore ${gi}: nothing between 0 and 260 m — the last reminder is missing`);
+}
+
+console.log("spawnable windows (straight, level, clear of every parapet gap):");
   for (const [a, b] of windows)
     console.log(`  z ∈ [${String(a).padStart(6)}, ${String(b).padStart(5)}]` +
       `  ${String(b - a).padStart(4)} m, ${c.lanes((a + b) / 2)} lanes` +

@@ -442,7 +442,7 @@ export const AUX_LANES: readonly AuxSpec[] = [
   {
     kind: "entry",
     z0: CONNECT_Z[1], z1: CONNECT_Z[1] + RAMP_LEAD,
-    z2: CONNECT_Z[1] + 170, z3: CONNECT_Z[1] + 280, w: AUX_W,
+    z2: CONNECT_Z[1] + 120, z3: CONNECT_Z[1] + 280, w: AUX_W,
   },
 ];
 
