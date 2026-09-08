@@ -106,7 +106,9 @@ export function makeTerrain(rng: Rng): Terrain {
   function heightAt(x: number, z: number, refY: number) {
     let best = h(x, z);
     let bestD = Math.abs(best - refY);
-    let riser = h(x, z) >= refY - EPS && h(x, z) <= refY + STEP_UP ? h(x, z) : -Infinity;
+    // seeded from the ground, which `best` already holds — h() is three sines
+    // and this is the hottest function in the game (up to 18 calls a frame)
+    let riser = best >= refY - EPS && best <= refY + STEP_UP ? best : -Infinity;
     /** ties go to the higher surface — a car straddling two sits on top */
     const take = (y: number) => {
       const d = Math.abs(y - refY);
