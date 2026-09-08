@@ -22,7 +22,7 @@ const URL = arg("url", "http://localhost:3311");
 const TAG = arg("tag", "shot");
 const CAM = Number(arg("cam", 3)); // 3 = CAM_POV dashcam
 const OUT = arg("out", path.join(process.cwd(), "test", "artifacts", "freeway"));
-const TIME = arg("time", "13.0");
+const TIME = arg("time", "16.5");
 const ONLY = arg("only", "");
 mkdirSync(OUT, { recursive: true });
 const VW = Number(process.env.SHOT_W || 1440), VH = Number(process.env.SHOT_H || 900);
@@ -36,14 +36,11 @@ const STATIONS = [
   ["exit-200", EXIT_Z - 200, 0],
   ["exit-060", EXIT_Z - 60, 0],
   ["exit-gore", EXIT_Z + 6, 0],
-  ["entry-300", ENTRY_Z - 300, 0],
   ["entry-120", ENTRY_Z - 120, 0],
   ["entry-gore", ENTRY_Z + 4, 0],
-  ["div-1000", DIVERGE - 1000, 0],
   ["div-500", DIVERGE - 500, 0],
   ["div-200", DIVERGE - 200, 0],
   ["div-gore", DIVERGE + 6, 0],
-  ["mrg-200", MERGE - 200, 0],
   ["mrg-gore", MERGE + 6, 0],
 ];
 const list = ONLY ? STATIONS.filter((s) => ONLY.split(",").some((o) => s[0].startsWith(o))) : STATIONS;

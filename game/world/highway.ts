@@ -561,11 +561,22 @@ export function buildHighway(
        uses to say "past here you are committed to the exit". It is 0.30 m
        against the shoulder line's 0.20: on a 400 m approach the extra width
        is most of what tells the two lines apart at range. */
+    /* Where the west shoulder line runs. Off the deck's own edge everywhere
+       except across a RAMP_LEAD handover, where that edge is a seam in the
+       middle of continuous pavement (the deck's share is closing and the
+       ramp's is opening into the same band) — a line painted on it would be
+       a diagonal drawn across the exit lane. There the shoulder line is the
+       ramp's outer edge, which is straight and does not move. */
+    const westLine = (z: number) => {
+      const h = AUX_LANES.find((a) => a.kind === "exit"
+        ? z > a.z2 && z < a.z3 : z > a.z0 && z < a.z1);
+      return (h ? cor.halfWidth(z) + h.w : cor.edgeHalf(z, -1)) - 0.45;
+    };
     const E = PITCH.edge;
     for (const z of cor.lattice(E)) {
       if (z + E > cor.ZB1) continue;
       const h0 = cor.halfWidth(z) - 0.45, h1 = cor.halfWidth(z + E) - 0.45;
-      const a0 = cor.edgeHalf(z, -1) - 0.45, a1 = cor.edgeHalf(z + E, -1) - 0.45;
+      const a0 = westLine(z), a1 = westLine(z + E);
       stripe(z, z + E, -a0, -a1, 0.2);
       stripe(z, z + E, h0, h1, 0.2);
       /* …but not where it would land on top of the shoulder line it grew out
@@ -618,7 +629,7 @@ export function buildHighway(
     for (const z of cor.lattice(PITCH.dash, DASH + (PITCH.dash - DASH) / 2)) {
       if (z > cor.ZB1) continue;
       const into = cor.inTunnel(z) ? tubePts : studPts;
-      const lats = [cor.halfWidth(z) - 0.45, -(cor.edgeHalf(z, -1) - 0.45)];
+      const lats = [cor.halfWidth(z) - 0.45, -westLine(z)];
       if (cor.auxWidth(z) > 0.5) lats.push(-(cor.halfWidth(z) - 0.45));
       for (let k = 1; k < Math.ceil(cor.laneCount(z) - 0.35); k++) lats.push(cor.laneEdge(k, z));
       for (const lat of lats) {
