@@ -172,6 +172,35 @@ cached by browsers and is painful to take back.
   `vercel.json` already does the same in production today, so nothing changes;
   it is only looser than `next.config.mjs`'s `has: [{ type: "query", key: "v" }]`.
 
+## What is already done in the repo
+
+- `npm run build:static` = PWA icons → `NEXT_OUTPUT=export next build
+  --webpack` → drop `out/assets-staging` (4.1 MB of donor source that
+  `.vercelignore` keeps off Vercel and Cloudflare has no equivalent for).
+- `wrangler.jsonc`: `assets.directory` → `./out`, `404-page`,
+  `auto-trailing-slash`, no `main`, no `run_worker_first`.
+- `public/_headers` → `out/_headers`, the one-year immutable rules.
+- `app/manifest.ts` declares `export const dynamic = "force-static"`. Without
+  it the export build *stops*: Next compiles that file into a route, and a
+  route has to say it is static before `output: "export"` will write it to a
+  file. It changes nothing on Vercel — the route table already printed it as
+  static.
+- No `_redirects` file, on purpose. The game is one route, and an unknown path
+  already gets `out/404.html` at 404, which is what Vercel does.
+- `next build` with no `NEXT_OUTPUT` is untouched, so Vercel keeps deploying
+  from this same branch. Verified: both builds pass on this commit.
+
+Two things deliberately NOT done, both because they need an `npm install` that
+would rewrite the lockfile other lanes are sharing:
+
+- `wrangler` is not a devDependency, so `npx wrangler deploy` resolves the
+  latest version at build time. Pinning it (`npm i -D wrangler`) is worth doing
+  before you rely on this for a release — Workers Builds uses the version in
+  `package.json` when there is one.
+- `/fonts/*` gets no cache rule. `vercel.json` does not give it one either, so
+  this is host parity, not an oversight; the self-hosted sign faces are 168 KB
+  and revalidate with an ETag.
+
 ## Limits worth knowing (free plan)
 
 | | |
