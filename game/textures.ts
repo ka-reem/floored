@@ -980,3 +980,139 @@ export const carbonTexF = () => {
   t.repeat.set(5, 5);
   return t;
 };
+
+/* ---------------------------------------------------------------------------
+   Freeway guide signage.
+
+   The advance-warning boards on the expressway. Deliberately a second family
+   rather than a rework of exitSignTexF() above: the mountain road's own EXIT 4
+   boards use that one and are owned elsewhere, so this leaves them untouched.
+
+   What makes a guide sign readable at 100 m in a dashcam frame, in order of
+   how much it matters: contrast (the yellow EXIT tab is the only warm thing
+   in the frame), one big number, and an arrow whose direction you read before
+   you read any text. Everything else — the second script, the route shield —
+   is detail for when you are close enough to have already decided.
+   ------------------------------------------------------------------------ */
+
+/** A big diagonal exit arrow, drawn into `ctx` with its elbow at (x, y). */
+function guideArrow(ctx: CanvasRenderingContext2D, x: number, y: number, s: number) {
+  ctx.save();
+  ctx.strokeStyle = "#f4faf6";
+  ctx.fillStyle = "#f4faf6";
+  ctx.lineWidth = 0.19 * s;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(x, y + 0.44 * s);
+  ctx.lineTo(x, y - 0.02 * s);
+  ctx.lineTo(x + 0.34 * s, y - 0.36 * s);
+  ctx.stroke();
+  // arrowhead on the 45° leg
+  const hx = x + 0.40 * s, hy = y - 0.42 * s;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  ctx.lineTo(hx - 0.34 * s, hy + 0.06 * s);
+  ctx.lineTo(hx - 0.06 * s, hy + 0.34 * s);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Advance guide board: EXIT tab, destination in both scripts, the distance
+    as the biggest thing on the panel, and the arrow. `dist` is the label
+    ("1 km", "500 m"); pass an empty string for the panel at the gore. */
+export function guideSignTexF(
+  exitNo: number, jp: string, en: string, dist: string, opts: { only?: boolean } = {}
+) {
+  const W = 768, H = 230;
+  return makeTex(W, H, (ctx, w, h) => {
+    ctx.fillStyle = "#0a5a2d";
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = "#eaf5ee";
+    ctx.lineWidth = 7;
+    ctx.strokeRect(9, 9, w - 18, h - 18);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    // yellow EXIT tab, top left — the one warm patch, and what carries at range
+    ctx.fillStyle = "#f4cf2e";
+    ctx.fillRect(22, 20, 176, 56);
+    ctx.fillStyle = "#12140a";
+    ctx.font = "800 40px sans-serif";
+    ctx.fillText("EXIT " + exitNo, 34, 62);
+    // destination
+    ctx.fillStyle = "#f6fbf7";
+    ctx.font = '700 62px "Hiragino Sans","Noto Sans JP",sans-serif';
+    ctx.fillText(jp, 24, 152);
+    ctx.font = "600 38px sans-serif";
+    ctx.fillText(en, 26, 198);
+    // distance — the biggest glyphs on the board
+    if (dist) {
+      ctx.textAlign = "right";
+      ctx.font = "800 78px sans-serif";
+      ctx.fillText(dist, w - 152, 116);
+      ctx.font = "600 30px sans-serif";
+      ctx.fillText("出口", w - 152, 158);
+    } else {
+      ctx.textAlign = "right";
+      ctx.font = '800 66px "Hiragino Sans","Noto Sans JP",sans-serif';
+      ctx.fillText("出口", w - 152, 118);
+      ctx.font = "700 34px sans-serif";
+      ctx.fillText("EXIT", w - 152, 160);
+    }
+    guideArrow(ctx, w - 108, 108, 110);
+    // "EXIT ONLY" strip: the lane below this panel leaves the expressway
+    if (opts.only) {
+      ctx.fillStyle = "#f4cf2e";
+      ctx.fillRect(14, h - 52, w - 28, 38);
+      ctx.fillStyle = "#12140a";
+      ctx.font = "800 27px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("EXIT ONLY   出口専用", w / 2, h - 23);
+    }
+  });
+}
+
+/** Merge board for an entrance: what a through driver needs is the warning,
+    not a destination, so this one is amber-on-black with a merge arrow. */
+export function mergeSignTexF(dist: string) {
+  const W = 640, H = 242;
+  return makeTex(W, H, (ctx, w, h) => {
+    ctx.fillStyle = "#16181d";
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = "#f2b33a";
+    ctx.lineWidth = 8;
+    ctx.strokeRect(10, 10, w - 20, h - 20);
+    ctx.fillStyle = "#f7e6c2";
+    ctx.textAlign = "left";
+    ctx.font = '700 56px "Hiragino Sans","Noto Sans JP",sans-serif';
+    ctx.fillText("合流注意", 30, 92);
+    ctx.font = "700 34px sans-serif";
+    ctx.fillText("MERGING TRAFFIC", 32, 140);
+    if (dist) {
+      ctx.font = "800 56px sans-serif";
+      ctx.fillText(dist, 32, 206);
+    }
+    // merging arrow: a side stream folding into the main one
+    ctx.strokeStyle = "#f2b33a";
+    ctx.lineWidth = 13;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(w - 66, h - 26);
+    ctx.lineTo(w - 66, 74);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(w - 150, h - 26);
+    ctx.lineTo(w - 150, 150);
+    ctx.lineTo(w - 70, 96);
+    ctx.stroke();
+    ctx.fillStyle = "#f2b33a";
+    ctx.beginPath();
+    ctx.moveTo(w - 66, 42);
+    ctx.lineTo(w - 92, 84);
+    ctx.lineTo(w - 40, 84);
+    ctx.closePath();
+    ctx.fill();
+  });
+}

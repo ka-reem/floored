@@ -239,9 +239,15 @@ export function collidePlayer(
        what contains a flat-out wall-hugger that the mountain road's own
        (route-frame) clamps could never catch. */
     const apron = world.routes && lat > 0 ? world.routes.apronW(zc) : 0;
-    const lim = cor.halfWidth(zc) + apron + 0.06 - halfW;
-    onDeckPocket = Math.abs(lat) <= cor.halfWidth(zc) + apron + 0.3;
     const side = lat >= 0 ? 1 : -1;
+    /* The WEST edge carries the auxiliary ramp lanes (corridor.AUX_LANES), so
+       the analytic wall on that side has to be read off `edgeHalf`, not off
+       halfWidth. Read off halfWidth it was an invisible barrier down the
+       middle of the deceleration lane. */
+    const edge = cor.edgeHalf(zc, side);
+    const lim = edge + apron + 0.06 - halfW;
+    onDeckPocket = lat <= cor.halfWidth(zc) + apron + 0.3 &&
+      -lat <= cor.edgeHalf(zc, -1) + 0.3;
     let guarded = true;
     if (side < 0) {
       // the parapet mesh is cut away across the divergence zone…

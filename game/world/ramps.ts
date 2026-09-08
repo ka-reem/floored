@@ -1,6 +1,6 @@
 import { sstep } from "../util";
 import {
-  RAMP_W, RAMP_RUN, RAMP_NOSE, CONNECT_Z, FRONT_X,
+  RAMP_W, RAMP_RUN, RAMP_NOSE, RAMP_LEAD, CONNECT_Z, FRONT_X,
 } from "./const";
 import { getCorridor, TOLL } from "./corridor";
 
@@ -24,10 +24,17 @@ import { getCorridor, TOLL } from "./corridor";
    frontage road for a ramp to reach it. See CONNECT_Z. */
 
 const HALF = RAMP_W / 2;
-/** samples per ramp; ~2.3 m apart at RAMP_RUN = 112 */
+/** samples per ramp over the curving run; ~3.4 m apart at RAMP_RUN = 190 */
 const NS = 56;
+/** extra samples over the dead-parallel lead (see RAMP_LEAD) */
+const NL = 16;
 /** cubic-Bezier control offset that approximates a quarter arc */
 const K = 0.5523;
+/** How far the ramp's inner edge must clear the deck edge before the ramp is
+    allowed to start falling — i.e. how wide the painted gore triangle gets
+    before the barrier nose caps it. Bigger is a longer gore and a steeper
+    descent; 2.4 m keeps the drop at ~10%, which is where it has always been. */
+const GORE_SEP = 2.4;
 
 /** The gores served today: one exit and one entrance, both on the west side,
     both inside the corridor's straight window beside the town. */
@@ -59,8 +66,10 @@ export interface RampSample {
   nz: number;
   /** arclength from the gore nose */
   s: number;
-  /** lateral half-widths: inner is clipped so pavement never overlaps the deck,
-      outer opens from zero at the nose */
+  /** Lateral half-widths, measured from the centreline: `hIn` toward the deck
+      and `hOut` away from it. `hIn` is clipped so the pavement never overlaps
+      the deck, and on a ramp fed by an auxiliary lane it goes NEGATIVE over
+      the handover — see buildRamps. */
   hIn: number;
   hOut: number;
   /** ground height under this sample */
@@ -68,6 +77,8 @@ export interface RampSample {
 }
 
 export interface Ramp {
+  /** length of the dead-parallel run on the gore side (0 with no aux lane) */
+  lead: number;
   /** z of the gore this ramp serves (matches the exit sign / HUD) */
   zr: number;
   /** "exit" leaves the deck ahead of the gore, "entry" joins it at the gore */
@@ -102,7 +113,24 @@ export function buildRamps(gh: (x: number, z: number) => number): Ramp[] {
     const pose = cor.pose(zr);
     // where the pavement leaves the deck edge, and how far it has to travel
     // laterally to reach the frontage road
-    const lat0 = -(cor.halfWidth(zr) + 0.6);
+    /* Where the ramp's centreline sits at the gore.
+
+       With a deceleration/acceleration lane open here (corridor.AUX_LANES)
+       the ramp does not peel a wedge off the deck edge — it simply CARRIES
+       THAT LANE AWAY, so its centreline is the aux lane's centreline and its
+       pavement starts at full width. That is the whole point of the aux lane:
+       nothing narrows, nothing is a wedge, the lane you were already in
+       becomes the ramp.
+
+       Without one (no aux lane at this gore) the old wedge is kept: the
+       centreline sits 0.6 m outboard of the deck edge and the pavement opens
+       from nothing over RAMP_NOSE. */
+    const aux = cor.auxAtGore(zr);
+    const fed = aux !== null;
+    const lat0 = fed
+      ? -(cor.halfWidth(zr) + aux.w / 2)
+      : -(cor.halfWidth(zr) + 0.6);
+    const lead = fed ? RAMP_LEAD : 0;
     const edgeX = pose.x + lat0 * pose.nx;
     const DX = edgeX - FRONT_X;
     // control points in the gore frame: (forward along the deck, lateral west)
@@ -110,10 +138,17 @@ export function buildRamps(gh: (x: number, z: number) => number): Ramp[] {
     const pl = [0, 0, -DX * (1 - K), -DX];
     const pts: RampSample[] = [];
     let acc = 0, lx = 0, lz = 0;
-    for (let i = 0; i <= NS; i++) {
-      const t = i / NS;
-      const f = bez(pf[0], pf[1], pf[2], pf[3], t) * dir;
-      const l = bez(pl[0], pl[1], pl[2], pl[3], t);
+    /* The first N0 samples are the dead-parallel lead — full width, deck
+       height, zero lateral drift — over which the deck's auxiliary lane hands
+       this pavement over (or takes it back, at an entrance). `i - N0` is the
+       Bezier index, so a ramp with no aux lane walks exactly the curve it
+       always did. */
+    const N0 = fed ? NL : 0;
+    for (let i = 0; i <= NS + N0; i++) {
+      const j = i - N0;
+      const t = Math.max(0, j) / NS;
+      const f = (j < 0 ? (j / N0) * lead : bez(pf[0], pf[1], pf[2], pf[3], t)) * dir;
+      const l = j < 0 ? 0 : bez(pl[0], pl[1], pl[2], pl[3], t);
       // gore frame → world (the gore frame's forward axis is the corridor
       // tangent there, its lateral axis the corridor normal)
       const x = edgeX + f * pose.tx + l * pose.nx;
@@ -122,21 +157,37 @@ export function buildRamps(gh: (x: number, z: number) => number): Ramp[] {
       lx = x;
       lz = z;
       // the deck edge moves with the lane taper, so re-read it at this z
+      /* The deck edge moves with the lane taper AND with the aux lane, so
+         re-read the real edge at this z. While `hIn` is below HALF the ramp's
+         inner edge lands exactly on that edge — the two pavements tile with
+         no seam and no hole — and the moment it saturates the ramp has
+         separated and starts to fall away. */
       const zc = cor.zAt(x, z);
-      const deckEdgeLat = -cor.halfWidth(zc);
+      const deckEdgeLat = cor.edgeLat(zc, -1);
       const latHere = cor.latAt(x, z);
+      /* hIn may go NEGATIVE on a fed ramp, and has to. Over the handover the
+         deck still covers part of the ramp's own band, so the ramp is a strip
+         lying entirely OUTBOARD of its centreline — which is exactly a
+         negative inner half-width. It runs from −HALF (zero-width pavement,
+         the deck has it all) at the start of the lead to +HALF (full width,
+         the deck has cut back to the through lanes) at the gore, and the two
+         surfaces tile with no overlap and no hole at every z between. */
+      const inner = deckEdgeLat - latHere;
       pts.push({
         x, z, y: 0, tx: 0, tz: 0, nx: 0, nz: 0, s: acc,
-        hIn: Math.min(HALF, Math.max(0, deckEdgeLat - latHere)),
-        hOut: HALF * sstep(acc / RAMP_NOSE),
+        hIn: fed
+          ? Math.max(-HALF, Math.min(HALF, inner))
+          : Math.min(HALF, Math.max(0, inner)),
+        hOut: fed ? HALF : HALF * sstep(acc / RAMP_NOSE),
         gy: gh(x, z),
       });
     }
     const len = acc;
+    const NT = pts.length - 1;
     // tangents / normals from neighbouring samples; the normal points at the deck
     const sgn = mir * dir;
-    for (let i = 0; i <= NS; i++) {
-      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(NS, i + 1)];
+    for (let i = 0; i <= NT; i++) {
+      const a = pts[Math.max(0, i - 1)], b = pts[Math.min(NT, i + 1)];
       const dx = b.x - a.x, dz = b.z - a.z;
       const d = Math.hypot(dx, dz) || 1;
       const p = pts[i];
@@ -145,21 +196,37 @@ export function buildRamps(gh: (x: number, z: number) => number): Ramp[] {
       p.nx = sgn * p.tz;
       p.nz = -sgn * p.tx;
     }
-    // where the pavement has fully cleared the deck edge: descent starts here
+    /* Where the pavement has fully cleared the deck edge: the descent starts
+       here, and this is also how much parapet the gore has to remove.
+
+       A fed ramp reaches hIn = HALF the instant the aux handover finishes —
+       its inner edge IS the through-lane edge at that point — so the old test
+       would start the descent at the gore itself and open the gore triangle
+       into a hole. What matters for a fed ramp is the CLEARANCE between the
+       through-lane edge and the ramp's inner edge: once that is a half-width
+       the two roadways are genuinely separate and the ramp can fall away. */
     let sSep = len * 0.25, gapZ = 0;
-    for (const p of pts)
-      if (p.hIn >= HALF - 0.001) {
+    for (const p of pts) {
+      const ok = fed
+        ? cor.edgeLat(cor.zAt(p.x, p.z), -1) - (cor.latAt(p.x, p.z) + p.hIn) >= GORE_SEP
+        : p.hIn >= HALF - 0.001;
+      if (ok) {
         sSep = p.s;
         gapZ = Math.abs(p.z - zr);
         break;
       }
+    }
     const sEnd = Math.max(sSep + 8, len - 6); // short flat apron at the foot
-    const topY = cor.centerY(zr);
+    /* While the ramp is still attached it must sit on the DECK's own vertical
+       alignment, not on a single height read at the gore: the parallel lead
+       is 60 m long and the entrance's lead runs into the z=40 crest, where a
+       flat lead would leave a 10 cm step down the middle of the lane. */
     for (const p of pts) {
       const k = 1 - drop((p.s - sSep) / (sEnd - sSep));
-      p.y = p.gy + (topY - p.gy) * k;
+      const deckY = cor.centerY(cor.zAt(p.x, p.z));
+      p.y = p.gy + (deckY - p.gy) * k;
     }
-    const foot = pts[NS];
+    const foot = pts[NT];
     let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
     for (const p of pts) {
       x0 = Math.min(x0, p.x - HALF - 1);
@@ -168,7 +235,7 @@ export function buildRamps(gh: (x: number, z: number) => number): Ramp[] {
       z1 = Math.max(z1, p.z + HALF + 1);
     }
     out.push({
-      zr, kind, mir, dir, pts, len, sSep, gapZ,
+      zr, kind, mir, dir, lead, pts, len, sSep, gapZ,
       footX: foot.x, footZ: foot.z, x0, x1, z0, z1,
     });
   }
@@ -184,7 +251,10 @@ export function buildRamps(gh: (x: number, z: number) => number): Ramp[] {
     no parapet to stand on. */
 export function parapetGap(r: Ramp): { z0: number; z1: number } {
   const g = Math.max(r.gapZ + 4, HALF + 3);
-  const lead = 8; // a short opening either side of the nose itself
+  /* A short opening either side of the nose itself — plus the whole parallel
+     lead, where the ramp's own outer wall is the barrier and the deck's would
+     stand in the middle of the lane. */
+  const lead = 8 + r.lead;
   return r.dir > 0
     ? { z0: r.zr - lead, z1: r.zr + g }
     : { z0: r.zr - g, z1: r.zr + lead };

@@ -180,9 +180,17 @@ if (rt > 0.01) bad("the corridor's inverse mapping has drifted");
       const y = c.heightAt(w.x, w.z);
       if (y === null || Math.abs(y - c.centerY(c.zAt(w.x, w.z))) > 0.02) hOk = false;
     }
-    for (const lat of [-hw - 3, hw + 3]) {
+    /* Off the edge on each side — and the WEST edge carries the auxiliary
+       ramp lanes, so it is `edgeHalf`, not halfWidth, that says where the
+       pavement stops there. */
+    for (const lat of [-c.edgeHalf(z, -1) - 3, hw + 3]) {
       const w = c.worldOf(z, lat);
       if (c.heightAt(w.x, w.z) !== null) offOk = false;
+    }
+    // …and the aux lane itself IS pavement
+    if (c.auxWidth(z) > 1) {
+      const w = c.worldOf(z, -(hw + c.auxWidth(z) / 2));
+      if (c.heightAt(w.x, w.z) === null) hOk = false;
     }
   }
   console.log(`deck height: ${hOk ? "matches the swept surface on the pavement" : "MISMATCH"}` +
@@ -327,6 +335,9 @@ const ramps = buildRamps(() => 0);
 const signs = signPlan();
 for (const s of signs) {
   const hw = c.halfWidth(s.z);
+  /* The west deck edge the mast stands on — outboard of any auxiliary lane,
+     which is why this is edgeLat and not −halfWidth. */
+  const wEdge = c.edgeLat(s.z, -1);
   const postLat = c.signPostLat(s.z);
   const p0 = postLat + SIGN.ARM_X, p1 = p0 + s.w;
   const panelTop = SIGN.CLEAR + s.h;
@@ -334,14 +345,16 @@ for (const s of signs) {
   console.log(`  z=${String(s.z).padStart(6)}  ${s.kind.padEnd(11)} edge ${f(-hw)}` +
     `  post ${f(postLat)}  panel [${f(p0)}, ${f(p1)}]  clear ${f(SIGN.CLEAR)}–${f(panelTop)} m`);
   // post outboard of the parapet, so a car scraping the barrier cannot reach it
-  if (postLat + SIGN.POST_T / 2 > -(hw + 0.06))
+  if (postLat + SIGN.POST_T / 2 > wEdge + 0.06)
     bad(`${s.kind} @${s.z}: post is inboard of the parapet — the car drives through it`);
   // ...but still over the structure, not hanging in space past the fascia
-  if (postLat - SIGN.POST_T / 2 < -(hw + 0.5))
+  if (postLat - SIGN.POST_T / 2 < wEdge - 0.5)
     bad(`${s.kind} @${s.z}: post hangs off the fascia`);
   // panel over the roadway, not out past the far edge
   if (p1 > hw) bad(`${s.kind} @${s.z}: panel overhangs the far deck edge`);
-  if (p0 > -hw + 1.0) bad(`${s.kind} @${s.z}: panel does not reach over the lanes`);
+  if (p0 > wEdge + 1.0) bad(`${s.kind} @${s.z}: panel does not reach over the roadway`);
+  // and it must cover a running lane, not only the shoulder it stands on
+  if (p1 < wEdge + 3.5) bad(`${s.kind} @${s.z}: panel is too narrow to read as a board`);
   // vertical: above any vehicle, below the tunnel ceiling if it were in one
   if (SIGN.CLEAR < 5.0) bad(`${s.kind} @${s.z}: panel hangs into vehicle clearance`);
   if (c.inTunnel(s.z)) bad(`${s.kind} @${s.z}: inside the tunnel (mast ${f(mast)} m vs ${TUNNEL.clearH} m clear)`);
@@ -641,7 +654,11 @@ for (const r of ramps) {
   if (Math.abs(r.footX - 435) > 1.5) bad(`${r.kind}: foot misses the frontage road`);
   // the ramp must start level with the deck and end near the ground
   const top = r.pts[0], foot = r.pts[r.pts.length - 1];
-  if (Math.abs(top.y - c.centerY(r.zr)) > 0.05) bad(`${r.kind}: gore end is not at deck height`);
+  /* Against the deck height at the sample's OWN z: with a parallel lead the
+     attached end of the ramp is RAMP_LEAD upstream (or downstream) of the
+     gore, and the deck is not flat over that run. */
+  if (Math.abs(top.y - c.centerY(c.zAt(top.x, top.z))) > 0.05)
+    bad(`${r.kind}: gore end is not at deck height`);
   if (Math.abs(foot.y - foot.gy) > 0.2) bad(`${r.kind}: foot does not reach the ground`);
   // no ramp sample may sit over the drivable deck once it has separated
   for (const q of r.pts) {
