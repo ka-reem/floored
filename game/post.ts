@@ -354,6 +354,15 @@ export class PostFX {
   /** false for one frame after a hard view change: the temporal blend is
       skipped so a camera teleport cuts instead of dragging a ghost. */
   private histValid = false;
+  /** Bloom blur ping-pong iterations, from tierCaps.bloomIters (setBloomIters).
+   *  3 is the desktop shipping value and the default. */
+  private bloomIters = 3;
+  /** Whether FXAA runs under the dashcam POV — tierCaps.povFxaa, via
+   *  setPovFxaa(). True everywhere except the mobile tiers. */
+  private povFxaaOn = true;
+  /** MSAA samples for sceneRT — see setMsaa(). 4 is the desktop shipping
+   *  value and the default, so a PostFX nobody configures behaves as before. */
+  private msaa = 4;
   private overCv: HTMLCanvasElement;
   private overTex: THREE.CanvasTexture;
   private overAt = -1;
@@ -918,6 +927,17 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.makeTargets(false);
   }
 
+  /** MSAA samples on the HDR scene target, from tierCaps.sceneMsaa. Stored
+   *  rather than passed to makeTargets() because the engine rebuilds targets
+   *  from several places (resize, DPR change, perf drop) and none of them
+   *  should have to know the tier. Returns true when the value actually
+   *  changed, so the caller knows a rebuild is owed. */
+  setMsaa(n: number): boolean {
+    if (n === this.msaa) return false;
+    this.msaa = n;
+    return true;
+  }
+
   makeTargets(perfMode: boolean) {
     const r = this.renderer;
     const w = Math.floor(innerWidth * r.getPixelRatio());
@@ -934,7 +954,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     ])
       rt?.dispose();
     this.sceneRT = new THREE.WebGLRenderTarget(w, h, {
-      type: THREE.HalfFloatType, samples: 4,
+      type: THREE.HalfFloatType, samples: this.msaa,
     });
     const bw = Math.max(160, w >> 2), bh = Math.max(90, h >> 2);
     this.brightRT = new THREE.WebGLRenderTarget(bw, bh, FLAT_HDR);
@@ -998,6 +1018,19 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.mobile = on;
     this.mirrorRT.setSize(on ? 160 : 320, on ? 64 : 128);
     return true;
+  }
+
+  /** Does the FXAA pass run while the POV degrade is on (tierCaps.povFxaa)?
+   *  Nothing else about FXAA changes: `opts.fxaa` is still the user setting
+   *  and still governs every other camera on every tier. */
+  setPovFxaa(on: boolean) {
+    this.povFxaaOn = on;
+  }
+
+  /** Bloom blur iterations for this tier — see TierCaps.bloomIters. The perf
+   *  fallback still overrides it downward; this only sets the ceiling. */
+  setBloomIters(n: number) {
+    this.bloomIters = Math.max(1, Math.min(4, n | 0));
   }
 
   /** Whether to build the wet-road reflection source this frame. The engine
@@ -1293,7 +1326,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // single-scale: a third ping-pong widens the glow and kills the boxy
       // quarter-res edges. Two-scale: stop at 2 — the core is *meant* to stay
       // tight (crisp taillight centres); the width moves to the halo chain.
-      const iters = this.perf ? 2 : dual ? 2 : 3;
+      const iters = this.perf ? 2 : dual ? 2 : this.bloomIters;
       for (let b = 0; b < iters; b++) {
         this.blurMat.uniforms.tIn.value = (b === 0 ? this.brightRT : this.blurB).texture;
         this.blurMat.uniforms.uDir.value.set(1, 0);
@@ -1452,12 +1485,21 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
        documents as a no-op read. */
     const doPeriph = PERIPH_BLUR && !this.perf && !dash && !pov && !opts.inCar && speedT > 0.02;
     const doFinal = doMbSetting || doPeriph;
+    /* The user's FXAA setting, minus the one case where the pass has almost
+       nothing left to contribute: under the dashcam POV on a tier that has
+       opted out (tierCaps.povFxaa). The degrade downsamples the frame to
+       half res and snaps it to that grid immediately afterwards, so outside
+       the shield rects FXAA's work is averaged away one pass later. Used in
+       place of opts.fxaa everywhere below, INCLUDING in `after()` — get that
+       wrong and the composite renders to a target nothing then reads, and
+       the screen stays on whatever it had. */
+    const fxaa = opts.fxaa && (!pov || this.povFxaaOn);
     /* Each stage renders to screen only when nothing follows it. */
     const after = (stage: 0 | 1 | 2) =>
-      (stage < 1 && opts.fxaa) || (stage < 2 && dash) || doFinal;
+      (stage < 1 && fxaa) || (stage < 2 && dash) || doFinal;
     this.runPass(this.compMat, after(0) ? this.ldrRT : null);
     let cur = this.ldrRT;
-    if (opts.fxaa) {
+    if (fxaa) {
       this.fxaaMat.uniforms.tIn.value = cur.texture;
       this.fxaaMat.uniforms.uRes.value.set(this.fxaaRT.width, this.fxaaRT.height);
       this.runPass(this.fxaaMat, after(1) ? this.fxaaRT : null);
@@ -1509,20 +1551,81 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       const mb = pov
         ? (opts.mbOn ? Math.exp(-povDt / tune.mbTau) : 0)
         : doMbSetting ? Math.min(0.6, opts.mblur + mbBoost) : 0;
-      this.mbMat.uniforms.tCur.value = cur.texture;
-      this.mbMat.uniforms.tPrev.value = this.prevRT.texture;
-      this.mbMat.uniforms.uMB.value = this.histValid ? mb : 0;
-      this.mbMat.uniforms.uPeriph.value = doPeriph ? speedT : 0;
-      this.runPass(this.mbMat, this.mbRT);
-      this.copyMat.uniforms.tIn.value = this.mbRT.texture;
-      this.runPass(this.copyMat, this.prevRT);
-      this.histValid = true;
-      cur = this.mbRT;
+      /* A BLEND OF ZERO IS A COPY, so don't draw it.
+
+         Motion blur ships OFF by default (settings.mblur), and the dashcam
+         POV honours that setting by AMOUNT rather than by skipping the pass
+         — see the note just above, and the one on doMbSetting, for why the
+         pass may not simply be dropped out of the chain. Both still hold.
+         What they add up to on a DEFAULT profile, though, is a full-screen
+         pass whose shader reduces to `gl_FragColor = texture2D(tCur, vUv)`:
+
+           uPeriph 0  ->  all six taps collapse onto vUv — the shader's own
+                          note at the mask line already says as much
+           uMB     0  ->  mix(c, p, 0.0) is c exactly, and the edge-darkening
+                          term is multiplied by uMB as well
+
+         With both at zero the pass reads a target and writes those same
+         bytes into another one. Skipping it leaves `cur` pointing at the
+         target that already holds them.
+
+         `histValid` going false is the part that has to be right: the
+         history target now holds a stale frame, so if the player turns
+         motion blur on mid-drive the first blended frame must not reach for
+         it. Same one-frame invalidation a view change already does.
+
+         Nothing downstream notices which target `cur` is. The POV degrade
+         takes it as its full-res source (tFull) either way, and the non-POV
+         branch below binds it into the copy that reaches the screen. */
+      const blendIsCopy = mb === 0 && !doPeriph;
+      if (blendIsCopy) {
+        this.histValid = false;
+      } else {
+        this.mbMat.uniforms.tCur.value = cur.texture;
+        this.mbMat.uniforms.tPrev.value = this.prevRT.texture;
+        this.mbMat.uniforms.uMB.value = this.histValid ? mb : 0;
+        this.mbMat.uniforms.uPeriph.value = doPeriph ? speedT : 0;
+        this.runPass(this.mbMat, this.mbRT);
+        cur = this.mbRT;
+        /* History by SWAP, not by copy.
+
+           The blend needs last frame's output to still exist when this frame
+           runs. It used to get that by rendering a full-screen copy of mbRT
+           into prevRT — a whole extra screen-sized read+write, every frame, on
+           top of a chain that already runs four of them. Swapping the two
+           handles instead gives exactly the same thing for no pixels at all:
+           the target we just wrote becomes next frame's `prevRT`, and the one
+           the blend just READ becomes the target we write next frame. The two
+           are the same size and format, nothing outside this method holds
+           either handle across a frame boundary, and the write covers the
+           whole target, so whatever stale content it inherits is gone before
+           anything samples it.
+
+           `cur` is captured BEFORE the swap and stays pointing at the target
+           that actually holds this frame's blended image — the POV degrade
+           below consumes it as `tFull`, and the non-POV branch copies it to
+           the screen. Reading `this.mbRT` after this line would get the wrong
+           one, which is why nothing does.
+
+           Output is bit-identical: same shader, same inputs, same order. */
+        const swap = this.mbRT;
+        this.mbRT = this.prevRT;
+        this.prevRT = swap;
+        this.histValid = true;
+      }
       // in POV the blended frame is the *input* to the degrade, not the output:
       // the smear is optical and happens at the lens, the noise and the codec
       // artefacts come after it. Keeping grain out of the history also stops
       // the blend from dragging comet trails of it across the frame.
-      if (!pov) this.runPass(this.copyMat, null);
+      //
+      // tIn is bound HERE. It used to arrive already bound, as a side effect
+      // of the history copy that ran a few lines up; with that copy gone the
+      // binding has to be made on purpose, or this pass blits whatever the
+      // last user of copyMat left in it (the dashcam soft downsample).
+      if (!pov) {
+        this.copyMat.uniforms.tIn.value = cur.texture;
+        this.runPass(this.copyMat, null);
+      }
     }
     if (pov) {
       // impact-glitch envelope: quadratic ease-out reaches exactly 0 at
@@ -1563,7 +1666,8 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       this.povMat.uniforms.tLow.value = this.povA.texture;
       this.povMat.uniforms.tSmear.value = this.povB.texture;
       // the mirror shield's clean layer: the full-res pre-degrade frame (cur
-      // is always mbRT here — POV forces doFinal on). Live even on holdFrame
+      // is whichever of the blend pair this frame wrote — POV forces doFinal
+      // on, so it is always set). Live even on holdFrame
       // frames, which is right: the DVR "drops a frame" but the shielded
       // glass is presented as unmangled optics, not part of the encode.
       this.povMat.uniforms.tFull.value = cur.texture;

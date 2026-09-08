@@ -1,5 +1,13 @@
 import * as THREE from "three";
 import { rand, randi, pick } from "./util";
+import { worldTierCaps } from "./settings";
+
+/** Anisotropic tap ceiling for everything this module builds or loads, from
+ *  the render tier (TierCaps.texAniso). worldTierCaps() is the same cached,
+ *  SSR-safe resolver the world builders use, so this needs no plumbing from
+ *  the engine and cannot disagree with the tier the rest of the build ran
+ *  at. three clamps the value to the driver maximum on its own. */
+const aniso = () => worldTierCaps().texAniso ?? 16;
 
 type PaintFn = (ctx: CanvasRenderingContext2D, w: number, h: number) => void;
 
@@ -20,8 +28,9 @@ export function makeTex(
   const t = new THREE.CanvasTexture(c);
   if (wrap) t.wrapS = t.wrapT = THREE.RepeatWrapping;
   // three clamps this to the driver maximum; 16 keeps road markings from
-  // dissolving into mush a few metres ahead of the car
-  t.anisotropy = 16;
+  // dissolving into mush a few metres ahead of the car — but only up to the
+  // tier's ceiling, which is lower on a phone for the reasons in TierCaps
+  t.anisotropy = aniso();
   return t;
 }
 
@@ -107,7 +116,7 @@ function loadMap(
       (t) => {
         t.wrapS = t.wrapT = THREE.RepeatWrapping;
         t.repeat.copy(repeat);
-        t.anisotropy = 16;
+        t.anisotropy = aniso();
         if (srgb) t.colorSpace = THREE.SRGBColorSpace;
         if (onMean && t.image) onMean(measureMean(t.image as CanvasImageSource, srgb));
         resolve(t);
