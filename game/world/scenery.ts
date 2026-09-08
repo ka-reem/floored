@@ -474,11 +474,14 @@ export function buildScenery(
       const p = cor.worldOf(z, lat);
       addTree(p.x, p.z, rng() < 0.4, nearLamp(z));
     }
-    // west tree line, denser and nearer — it strobes past the right window
+    /* West tree line, denser and nearer — it strobes past the right window.
+       Off `edgeHalf`, not halfWidth: the grove runs to z = −620 and the
+       exit's deceleration lane opens at −900, so a tree sited 8 m off the
+       through-lane edge would be growing through the new deck. */
     const nW = Math.round(((b - a) / 11) * density);
     for (let i = 0; i < nW; i++) {
       const z = rrand(rng, a + 6, b - 6);
-      const hw = cor.halfWidth(z);
+      const hw = cor.edgeHalf(z, -1);
       const lat = -(hw + rrand(rng, 8, 34));
       const p = cor.worldOf(z, lat);
       addTree(p.x, p.z, rng() < 0.55, nearLamp(z));
@@ -557,8 +560,8 @@ export function buildScenery(
     for (let i = 0; i < n; i++) {
       const z = rrand(rng, a + 4, b - 4);
       if (cor.inTunnel(z, 20) || cor.inToll(z)) continue;
-      const hw = cor.halfWidth(z);
       const side = rng() < 0.5 ? 1 : -1;
+      const hw = cor.edgeHalf(z, side);
       const lat = side * (hw + rrand(rng, 9, 30));
       const p = cor.worldOf(z, lat);
       addTree(p.x, p.z, rng() < 0.35, nearLamp(z));
@@ -574,8 +577,8 @@ export function buildScenery(
     for (let i = 0; i < nGlow; i++) {
       const z = rrand(rng, a + 20, b - 20);
       if (cor.inTunnel(z, 20) || cor.inToll(z)) continue;
-      const hw = cor.halfWidth(z);
       const side = rng() < 0.5 ? 1 : -1;
+      const hw = cor.edgeHalf(z, side);
       const lat = side * (hw + rrand(rng, 45, 90));
       const p = cor.worldOf(z, lat);
       const gy = terrain.h(p.x, p.z);
@@ -618,7 +621,7 @@ export function buildScenery(
     boards.forEach(([wz, side], bi) => {
       const design = bi % 4;
       for (const z of copies(wz)) {
-        const hw = cor.halfWidth(z);
+        const hw = cor.edgeHalf(z, side);
         const p = cor.worldOf(z, side * (hw + 7.5));
         const pose = cor.pose(z);
         const gy = terrain.h(p.x, p.z);
@@ -1024,7 +1027,7 @@ export function buildScenery(
         const design = rrandi(rng2, 0, 3);
         const W = rrand(rng2, 9, 12), H = W * 0.49;
         for (const z of copies(wz)) {
-          const hw = cor.halfWidth(z);
+          const hw = cor.edgeHalf(z, side);
           const p = cor.worldOf(z, side * (hw + rrand(rng2, 7, 10)));
           const pose = cor.pose(z);
           const gy = terrain.h(p.x, p.z);
