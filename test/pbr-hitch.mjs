@@ -47,6 +47,13 @@ const AWAY = 400; // open elevated deck: no plaza, no tunnel, no gore
 /* Hold the photo-scan downloads back by this many ms so they land AFTER the
    world is drawn — see the LATE note below. 0 = leave the network alone. */
 const LATE = Number(arg("--late", 0));
+/* Serve the scans a 404 instead. loadPbrSet always resolves and an absent set
+   has a null albedo that every upgrade path returns early on, so the world
+   builds identically minus the scans — which makes the program count at load
+   the NO-SCAN baseline, and the difference against a normal run the number of
+   programs the scans are responsible for. That is the burst size, measured
+   without having to reproduce the burst's timing. */
+const NOSCANS = process.argv.includes("--noscans");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const browser = await puppeteer.launch({
@@ -79,11 +86,12 @@ const page = await browser.newPage();
    other assets and make the world build itself take an hour here — this
    delays ONLY the scan requests. Everything else runs at full speed, so the
    ordering under test is reproduced without any other variable moving. */
-if (LATE) {
+if (LATE || NOSCANS) {
   await page.setRequestInterception(true);
   page.on("request", (r) => {
-    if (r.url().includes("/assets/pbr/")) setTimeout(() => r.continue().catch(() => {}), LATE);
-    else r.continue().catch(() => {});
+    if (!r.url().includes("/assets/pbr/")) return void r.continue().catch(() => {});
+    if (NOSCANS) return void r.respond({ status: 404, body: "" }).catch(() => {});
+    setTimeout(() => r.continue().catch(() => {}), LATE);
   });
 }
 await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 300000 });
@@ -106,6 +114,14 @@ await page.evaluate((z) => {
 /* Per-frame samples, in short chunks: one evaluate() spanning 90 SwiftShader
    frames blows puppeteer's protocolTimeout. Each chunk records the frame
    delta AND the program count, so a jump can be pinned to a frame. */
+/* The program count the moment the game is playable. With --noscans this is
+   the world WITHOUT the photo scans; the difference between the two runs is
+   what the scans cost in programs, and therefore the size of the burst they
+   would land on one frame if they arrived late. */
+const atLoad = await page.evaluate(
+  () => window.__neonx.game.renderer?.info?.programs?.length ?? null);
+console.log(`programs when the game became playable: ${atLoad}${NOSCANS ? "  (no scans)" : ""}`);
+
 const rows = [];
 for (let got = 0; got < FRAMES; got += 6) {
   const part = await page.evaluate(async (n) => {
@@ -154,5 +170,6 @@ for (const j of jumps.slice(0, 12))
   console.log(`    frame ${String(j.frame).padStart(3)}  +${String(j.n).padStart(2)} programs   ${String(j.dt).padStart(6)} ms`);
 
 mkdirSync(path.dirname(OUT), { recursive: true });
-writeFileSync(OUT, JSON.stringify({ label: LABEL, med, worst, worstAt, total, jumps, rows }, null, 2));
+writeFileSync(OUT, JSON.stringify(
+  { label: LABEL, noscans: NOSCANS, atLoad, med, worst, worstAt, total, jumps, rows }, null, 2));
 console.log("wrote", OUT);
