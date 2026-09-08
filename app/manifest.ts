@@ -19,6 +19,15 @@ import { NAME_LABEL } from "@/lib/build";
    - Icons are committed renders from `node tools/build-pwa-icons.mjs`
      (procedural, no downloaded assets); the maskable variant keeps the
      emblem inside Android's safe circle so adaptive masks don't clip it. */
+/* Next compiles this file into a ROUTE (a GET handler for
+   /manifest.webmanifest), and a route has to say out loud that it is static
+   before `output: "export"` will write it to a file — without this the
+   Cloudflare export build stops here with "export const dynamic =
+   \"force-static\" not configured on route /manifest.webmanifest".
+   It changes nothing on Vercel: the route table already prints this route as
+   ○ (Static), so this only writes down what the build had already worked out. */
+export const dynamic = "force-static";
+
 export default function manifest(): MetadataRoute.Manifest {
   return {
     name: NAME_LABEL,
