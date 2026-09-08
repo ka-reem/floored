@@ -6378,13 +6378,14 @@ export class Game {
       this.hud(now, dt);
       this.chunkT += dt;
       if (this.chunkT > 0.16) {
+        const tickT = this.chunkT; // real elapsed, not the 0.16 threshold
         this.chunkT = 0;
         this.chunksUpdate();
         /* Drive telemetry rides this tick rather than owning a timer: it is
            already the engine's 6.25 Hz slow lane, and it only runs while the
            game is running. Returns on its first line when analytics is off
            (lib/telemetry.ts). */
-        telemetryTick(0.16, this.car.x, this.car.z, this.car.h, this.car.u,
+        telemetryTick(tickT, this.car.x, this.car.z, this.car.h, this.car.u,
           this.camMode, this.tunIn, this.stats.mtnOn,
           this.stats.crashes, this.stats.nearMisses,
           this.run.resets, this.run.lastImpact);

@@ -214,6 +214,9 @@ export function flush(reason: "timer" | "hidden" | "end") {
 export const telemetryDebug = {
   /** Run the sampler even though analytics is off (headless harness only). */
   force(on: boolean) { forced = on; },
+  /** The sampler itself, so a headless harness can feed it exactly what the
+      engine feeds it while driving through simStep() instead of frames. */
+  tick: telemetryTick,
   /** Divert batches to a local sink instead of PostHog. */
   setSink(fn: ((props: Record<string, string | number>) => void) | null) { sink = fn; },
   flush: () => flush("end"),
