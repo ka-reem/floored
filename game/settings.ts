@@ -250,11 +250,31 @@ export function detectRenderTier(
   const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
   if (dpr < 2) return "mobile-base";
   let r = "";
+  /* The probe context is RELEASED again when we made it ourselves.
+
+     A WebGL context is a scarce, expensive object: the browser caps how many
+     may be live at once and drops the OLDEST to stay under the cap — which,
+     in a page whose main context is the game, means dropping the game. Every
+     leaked context also holds its own driver-side allocation for the life of
+     the page.
+
+     This function is called BOTH ways: engine.ts hands it the renderer's live
+     context (nothing to release, and releasing it would kill the game), while
+     cockpit.ts calls it with none and so made a throwaway one here that was
+     never freed. Note the desktop early-return above, which means the leak
+     only ever happened on TOUCH devices — phones, where contexts are
+     scarcest and the owner's "Graphics context lost" panel actually fires.
+
+     gfxfail.ts's webglAvailable() probe already does exactly this; this one
+     was missed. WEBGL_lose_context is the only way to hand a context back
+     without waiting for GC, and it is deliberately in a finally so a throw
+     inside the sniff cannot leak it either. */
+  let owned: WebGLRenderingContext | WebGL2RenderingContext | undefined;
   try {
     let ctx = gl ?? undefined;
     if (!ctx) {
       const cv = document.createElement("canvas");
-      ctx = (cv.getContext("webgl2") || cv.getContext("webgl")) as
+      ctx = owned = (cv.getContext("webgl2") || cv.getContext("webgl")) as
         | WebGLRenderingContext
         | WebGL2RenderingContext
         | undefined;
@@ -265,6 +285,8 @@ export function detectRenderTier(
     }
   } catch {
     /* sniff blocked ⇒ unknown GPU ⇒ base */
+  } finally {
+    try { owned?.getExtension("WEBGL_lose_context")?.loseContext(); } catch { /* nothing to do */ }
   }
   const s = r.toLowerCase();
   const adreno = s.match(/adreno[^0-9]*(\d{3,4})/);
