@@ -853,6 +853,27 @@ export function loadProfile(): Profile {
        car is left alone, and once the flag is stamped the car belongs to the
        player again — someone who picks the KAZE GT after this keeps it. */
     if (migrateCar && prof.carId === "kaze") prof.carId = DEFAULT_CAR_ID;
+    /* TILT STEERING IS LOCKED for the beta, so a profile that stored it has
+       to be moved off it. Not cosmetic: the on-screen steer buttons are
+       HIDDEN in tilt mode (see GameApp's steer cluster), so a player left in
+       a mode the picker no longer offers would have no steering at all and no
+       way to change it.
+
+       Why it is locked rather than shipped: hookTilt() in engine.ts has three
+       faults that cannot be checked without a real phone, and this box has no
+       accelerometer at all. (1) iOS 13+ only delivers orientation events
+       after requestPermission() RESOLVES "granted", and the result is
+       discarded — a refusal is silent, and the tiltHooked latch means it
+       never asks again. (2) There is no neutral capture, so the zero point is
+       "phone exactly upright" and the car pulls to one side depending on how
+       it is actually held. (3) window.orientation is deprecated and undefined
+       on many Android browsers, where it falls back to 90 and reads `beta`
+       when it should read `gamma` — wrong axis.
+
+       Any of those leaves a tester unable to steer, and a tester who cannot
+       steer quits without telling anyone why. The engine path is untouched,
+       so unlocking is putting the option back in the two pickers. */
+    if (prof.settings?.steerMode === "tilt") prof.settings.steerMode = base.settings.steerMode;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     if (
       typeof prof.cleanRunBest !== "number" || !Number.isFinite(prof.cleanRunBest) ||

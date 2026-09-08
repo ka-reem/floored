@@ -1085,7 +1085,10 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
               { v: "buttons", t: "BUTTONS" },
               { v: "wheel", t: "WHEEL" },
               { v: "slider", t: "SLIDER" },
-              { v: "tilt", t: "TILT" },
+              /* TILT is locked for the beta — see the migration note in
+                 settings.ts for the three faults in hookTilt() that cannot be
+                 verified without a real phone. Putting this row back is the
+                 whole of unlocking it. */
             ]}
             onChange={(v) =>
               upd("steerMode", (x) => {
@@ -2043,7 +2046,7 @@ function SettingsPanel({
                     <option value="buttons">Buttons</option>
                     <option value="wheel">Touch wheel</option>
                     <option value="slider">Swipe slider</option>
-                    <option value="tilt">Tilt</option>
+                    {/* TILT locked for the beta — see settings.ts */}
                   </SignSelect>
                 </SignSrow>
                 <SignSrow stack last name="Traffic density" lit={L("traffic")}>
@@ -2335,7 +2338,7 @@ const KEYS_TOUCH: [string, string][] = [
   ["PUCKS", "steer · pedals · CAM · LTS (high beams) · HORN"],
   ["⋯", "quick controls drawer: lights, map, mirrors, rain, wipers, time-lapse, dashcam FX, reset, photo mode"],
   ["TOP EDGE", "tap the middle — interior light"],
-  ["STEERING", "buttons / touch wheel / swipe slider / tilt — pick in settings"],
+  ["STEERING", "buttons / touch wheel / swipe slider — pick in settings"],
 ];
 const KEYS_PAD: [string, string][] = [
   ["STICKS", "left stick steers · RT throttle · LT brake"],
