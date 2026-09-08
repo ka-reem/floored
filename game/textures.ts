@@ -606,44 +606,6 @@ export function signTexF(l1: string, l2: string) {
   );
 }
 
-/** Large exit sign with lane-drop arrow — extra legible from distance. */
-export function exitSignTexF(exitNo: number, dist: string, jp: string) {
-  return makeTex(512, 192, (ctx, w, h) => {
-    ctx.fillStyle = "#0b5c2e";
-    ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = "#e9f4ee";
-    ctx.lineWidth = 7;
-    ctx.strokeRect(6, 6, w - 12, h - 12);
-    // exit number tab
-    ctx.fillStyle = "#f2cf3a";
-    ctx.fillRect(18, 18, 118, 52);
-    ctx.fillStyle = "#131303";
-    ctx.font = "800 36px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("EXIT " + exitNo, 77, 56);
-    ctx.fillStyle = "#f4faf6";
-    ctx.font = '700 44px "Hiragino Sans",sans-serif';
-    ctx.fillText(jp + " 出口", w / 2 + 60, 60);
-    ctx.font = "800 54px sans-serif";
-    ctx.fillText(dist, w / 2 - 60, 140);
-    // arrow
-    ctx.strokeStyle = "#f4faf6";
-    ctx.lineWidth = 12;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(w / 2 + 90, 100);
-    ctx.lineTo(w / 2 + 90, 150);
-    ctx.lineTo(w / 2 + 130, 165);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(w / 2 + 138, 168);
-    ctx.lineTo(w / 2 + 100, 168);
-    ctx.moveTo(w / 2 + 138, 168);
-    ctx.lineTo(w / 2 + 124, 138);
-    ctx.stroke();
-  });
-}
-
 /** Procedural perforated-steel panel: opaque sheet with a punched hole grid.
     Fallback for the Fence007A photo scan — the canvas carries its own alpha,
     so an alphaTest material works identically whether or not the scan lands
@@ -984,91 +946,118 @@ export const carbonTexF = () => {
 /* ---------------------------------------------------------------------------
    Freeway guide signage.
 
-   The advance-warning boards on the expressway. Deliberately a second family
-   rather than a rework of exitSignTexF() above: the mountain road's own EXIT 4
-   boards use that one and are owned elsewhere, so this leaves them untouched.
+   The advance-warning boards on the expressway — and, since 2026-09-08, on
+   the mountain road too. There used to be a second, older family here
+   (exitSignTexF: a yellow tab, a stroked elbow arrow, 512 x 192) kept alive
+   solely because the mountain's EXIT 4 boards used it. Having one exit on the
+   lap look unlike the other three was the more visible bug, so EXIT 4 moved
+   onto this face and that family is gone.
 
    What makes a guide sign readable at 100 m in a dashcam frame, in order of
-   how much it matters: contrast (the yellow EXIT tab is the only warm thing
-   in the frame), one big number, and an arrow whose direction you read before
-   you read any text. Everything else — the second script, the route shield —
-   is detail for when you are close enough to have already decided.
+   how much it matters: one BIG place name, an arrow whose direction you read
+   before you read any text, and a clear split between "where" and "how far"
+   so neither has to be read to find the other. Everything else — the second
+   script, the exit number — is detail for when you are close enough to have
+   already decided.
    ------------------------------------------------------------------------ */
 
-/** A big diagonal exit arrow, drawn into `ctx` with its elbow at (x, y). */
-function guideArrow(ctx: CanvasRenderingContext2D, x: number, y: number, s: number) {
+/** The fat white DOWN arrow face B is built around, drawn into `ctx` with its
+    tip at (cx, y1) and its tail at (cx, y0).
+
+    A down-arrow says "the lane under me", which is what an overhead board on
+    a deceleration lane actually means; the diagonal arrow face A carried says
+    "somewhere off to the right" and needs the text to disambiguate it. It is
+    drawn solid rather than stroked because a stroked arrow at 45 m is four
+    thin lines and a filled one is still a shape. */
+function guideArrowDown(
+  ctx: CanvasRenderingContext2D, cx: number, y0: number, y1: number
+) {
+  const H = y1 - y0;
+  const head = H * 0.46; // head:shaft ratio — under ~0.4 it reads as a bar
+  const sw = H * 0.148, hw = H * 0.325;
   ctx.save();
-  ctx.strokeStyle = "#f4faf6";
-  ctx.fillStyle = "#f4faf6";
-  ctx.lineWidth = 0.19 * s;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
+  ctx.fillStyle = "#f6fbf7";
+  ctx.fillRect(cx - sw, y0, sw * 2, H - head + 1);
   ctx.beginPath();
-  ctx.moveTo(x, y + 0.44 * s);
-  ctx.lineTo(x, y - 0.02 * s);
-  ctx.lineTo(x + 0.34 * s, y - 0.36 * s);
-  ctx.stroke();
-  // arrowhead on the 45° leg
-  const hx = x + 0.40 * s, hy = y - 0.42 * s;
-  ctx.beginPath();
-  ctx.moveTo(hx, hy);
-  ctx.lineTo(hx - 0.34 * s, hy + 0.06 * s);
-  ctx.lineTo(hx - 0.06 * s, hy + 0.34 * s);
+  ctx.moveTo(cx - hw, y1 - head);
+  ctx.lineTo(cx + hw, y1 - head);
+  ctx.lineTo(cx, y1);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
 }
 
-/** Advance guide board: EXIT tab, destination in both scripts, the distance
-    as the biggest thing on the panel, and the arrow. `dist` is the label
-    ("1 km", "500 m"); pass an empty string for the panel at the gore. */
+/** Advance guide board, FACE B (the owner's pick, 2026-09-08).
+
+    Two tiers. The upper one is the destination and nothing else — the exit
+    number small above it, both scripts on one baseline — with the down-arrow
+    filling the full height on the right. The lower one is a darker band
+    carrying the distance, or `EXIT ONLY 出口専用` on the panel at the gore.
+
+    Why two tiers beats face A's one: on A the distance was the biggest thing
+    on the board and competed with the place name for the first glance, and the
+    yellow EXIT tab spent the panel's only warm accent on a number the driver
+    does not steer by. Banding it puts one job on each tier — *where* on top,
+    *how far* underneath — so the destination is read first at range and the
+    distance is there when you are close enough to care.
+
+    The panel is 3.30 m deep against A's 2.80 (see corridor.signPlan): the
+    second tier is added to the board rather than taken out of the first, so
+    中野 is drawn at 88 px here against 62 px on A and is bigger on the real
+    panel, not merely rearranged. `dist` is the label ("1 km", "500 m"); pass
+    an empty string plus `only` for the panel at the gore. */
 export function guideSignTexF(
   exitNo: number, jp: string, en: string, dist: string, opts: { only?: boolean } = {}
 ) {
-  const W = 768, H = 230;
+  /* 768 x 270 is 2.844:1, which is the 9.4 x 3.30 m board — the texture and
+     the geometry are matched deliberately so nothing on the face is stretched.
+     Change one and change the other. */
+  const W = 768, H = 270;
+  const JP = '"Hiragino Sans","Noto Sans JP","Zen Kaku Gothic New",sans-serif';
   return makeTex(W, H, (ctx, w, h) => {
     ctx.fillStyle = "#0a5a2d";
     ctx.fillRect(0, 0, w, h);
+    // the lower tier, a shade down from the upper one so the split reads as a
+    // band even at the range where the type in it does not
+    const BAND = 182;
+    ctx.fillStyle = "#053f1d";
+    ctx.fillRect(13, BAND, w - 26, h - BAND - 13);
     ctx.strokeStyle = "#eaf5ee";
     ctx.lineWidth = 7;
     ctx.strokeRect(9, 9, w - 18, h - 18);
+    // hairline on the band edge: without it the two greens meet in a soft
+    // seam that the mipmaps turn to mush by 100 m
+    ctx.fillStyle = "rgba(234,245,238,.55)";
+    ctx.fillRect(13, BAND - 1.5, w - 26, 3);
+
+    guideArrowDown(ctx, w - 118, 26, 244);
+
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
-    // yellow EXIT tab, top left — the one warm patch, and what carries at range
-    ctx.fillStyle = "#f4cf2e";
-    ctx.fillRect(22, 20, 176, 56);
-    ctx.fillStyle = "#12140a";
-    ctx.font = "800 40px sans-serif";
-    ctx.fillText("EXIT " + exitNo, 34, 62);
-    // destination — lifted when the EXIT ONLY strip is taking the bottom band
+    // exit number, small and above the name — a caption, not a headline
+    ctx.fillStyle = "#dcefe2";
+    ctx.font = "700 38px " + JP;
+    ctx.fillText(exitNo + "番出口", 28, 66);
+    // destination, both scripts on one baseline: the biggest thing on the board
     ctx.fillStyle = "#f6fbf7";
-    ctx.font = '700 62px "Hiragino Sans","Noto Sans JP",sans-serif';
-    ctx.fillText(jp, 24, opts.only ? 138 : 152);
-    ctx.font = "600 38px sans-serif";
-    ctx.fillText(en, 26, opts.only ? 176 : 198);
-    // distance — the biggest glyphs on the board
-    if (dist) {
-      ctx.textAlign = "right";
-      ctx.font = "800 78px sans-serif";
-      ctx.fillText(dist, w - 152, 116);
-      ctx.font = "600 30px sans-serif";
-      ctx.fillText("出口", w - 152, 158);
-    } else {
-      ctx.textAlign = "right";
-      ctx.font = '800 66px "Hiragino Sans","Noto Sans JP",sans-serif';
-      ctx.fillText("出口", w - 152, 118);
-      ctx.font = "700 34px sans-serif";
-      ctx.fillText("EXIT", w - 152, 160);
+    ctx.font = "700 88px " + JP;
+    ctx.fillText(jp, 26, 166);
+    const jpW = ctx.measureText(jp).width;
+    if (en) {
+      ctx.font = "600 46px sans-serif";
+      ctx.fillText(en, 26 + jpW + 30, 164);
     }
-    guideArrow(ctx, w - 108, 108, 110);
-    // "EXIT ONLY" strip: the lane below this panel leaves the expressway
+    // the lower tier's one job
+    ctx.fillStyle = "#f2fbf5";
     if (opts.only) {
-      ctx.fillStyle = "#f4cf2e";
-      ctx.fillRect(14, h - 46, w - 28, 32);
-      ctx.fillStyle = "#12140a";
-      ctx.font = "800 25px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("EXIT ONLY   出口専用", w / 2, h - 22);
+      ctx.font = "800 46px sans-serif";
+      ctx.fillText("EXIT ONLY", 30, 240);
+      const eW = ctx.measureText("EXIT ONLY").width;
+      ctx.font = "700 46px " + JP;
+      ctx.fillText("出口専用", 30 + eW + 22, 240);
+    } else if (dist) {
+      ctx.font = "700 50px sans-serif";
+      ctx.fillText(dist, 30, 241);
     }
   });
 }

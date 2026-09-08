@@ -9,7 +9,7 @@
      node test/freeway-shots.mjs --url http://localhost:3311 --tag before
      node test/freeway-shots.mjs --url ... --tag after --cam 0   (CHASE)
 */
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import puppeteer from "./node_modules/puppeteer/lib/esm/puppeteer/puppeteer.js";
 import { debugUrl } from "./lib/debug-url.mjs";
@@ -24,6 +24,12 @@ const CAM = Number(arg("cam", 3)); // 3 = CAM_POV dashcam
 const OUT = arg("out", path.join(process.cwd(), "test", "artifacts", "freeway"));
 const TIME = arg("time", "16.5");
 const ONLY = arg("only", "");
+/* --dumptex: after the drive, write every guide-sign canvas in the page out
+   1:1 as a PNG. The panels are MeshBasicMaterials whose map.image IS the
+   canvas textures.ts drew, so this is the artwork at texture resolution with
+   no night grade, no perspective and no fog over it — the only way to judge
+   the type sizes on a face. */
+const DUMPTEX = arg("dumptex", "");
 mkdirSync(OUT, { recursive: true });
 const VW = Number(process.env.SHOT_W || 1440), VH = Number(process.env.SHOT_H || 900);
 
@@ -42,6 +48,12 @@ const STATIONS = [
   ["sign-only", EXIT_Z - 170, 0],
   ["sign-merge", ENTRY_Z - 230, 0],
   ["sign-bypass", DIVERGE - 280, 0],
+  /* The "near-*" stations are parked 30 m short of a board instead of 80, so
+     the panel fills enough of the frame to judge its FACE rather than just
+     "is a sign coming". near-1km is the 1000 m countdown board (z −1500,
+     nothing else near it); near-only is the EXIT ONLY panel at the gore. */
+  ["near-1km", -1530, 0],
+  ["near-only", EXIT_Z - 120, 0],
   ["exit-1000", EXIT_Z - 1000, 0],
   ["exit-500", EXIT_Z - 500, 0],
   ["exit-200", EXIT_Z - 200, 0],
@@ -66,6 +78,16 @@ const browser = await puppeteer.launch({
   protocolTimeout: 590000,
 });
 const page = await browser.newPage();
+if (DUMPTEX)
+  await page.evaluateOnNewDocument(() => {
+    const orig = document.createElement.bind(document);
+    window.__cvs = [];
+    document.createElement = (tag, ...a) => {
+      const el = orig(tag, ...a);
+      if (String(tag).toLowerCase() === "canvas") window.__cvs.push(el);
+      return el;
+    };
+  });
 page.on("pageerror", (e) => errors.push(String(e.message || e)));
 page.on("console", (m) => {
   if (m.type() === "error" && !m.text().includes("favicon") && !m.text().includes("WebSocket"))
@@ -96,6 +118,17 @@ for (const [name, z, lane] of list) {
   const f = path.join(OUT, `${TAG}-${name}.png`);
   await page.screenshot({ path: f });
   console.log("  📸", path.basename(f));
+}
+if (DUMPTEX) {
+  mkdirSync(DUMPTEX, { recursive: true });
+  const shots = await page.evaluate(() => (window.__cvs || [])
+    .filter((c) => c.width >= 512 && c.width <= 1024 && c.height >= 160 && c.height <= 512)
+    .map((c, i) => ({ i, w: c.width, h: c.height, url: c.toDataURL("image/png") })));
+  for (const s of shots) {
+    const f = path.join(DUMPTEX, `${TAG}-tex-${s.i}-${s.w}x${s.h}.png`);
+    writeFileSync(f, Buffer.from(s.url.split(",")[1], "base64"));
+    console.log("  🖼", path.basename(f));
+  }
 }
 await browser.close();
 if (errors.length) {

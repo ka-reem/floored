@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mulberry32, sstep, type Rng } from "../util";
 import {
-  makeTex, asphalt, signTexF, exitSignTexF, warnTexF, roadWordTexF,
+  makeTex, asphalt, signTexF, warnTexF, roadWordTexF,
   guideSignTexF, mergeSignTexF,
 } from "../textures";
 import { RAMP_W, CONNECT_Z, LOOP_LEN } from "./const";
@@ -10,7 +10,7 @@ import { parapetGap } from "./ramps";
 import { BYPASS, DIVERGE_Z, MERGE_Z, MOUNTAIN_EDGE, type RouteGraph } from "./routegraph";
 import {
   getCorridor, assertPitches, signPlan, roadSeed, PITCH, PHASE, SIGN, TUNNEL, TOLL,
-  TOLL_PLAZA, BRIDGE, BRIDGES, OVERPASS, OVERPASSES, MTN, AUX_LANES,
+  TOLL_PLAZA, BRIDGE, BRIDGES, OVERPASS, OVERPASSES, MTN, AUX_LANES, GUIDE_H,
   type SectionKind, type Station,
 } from "./corridor";
 import type { Mats } from "./mats";
@@ -3875,8 +3875,12 @@ function buildBypassViaduct(
      would stand under the toll canopy (and its 1240 fallback is still inside
      the tunnel, z1 = 1260) — 80 m of notice from z = 1500 clears both. */
   for (const d of BYPASS_BOARD_D)
-    board(DIVERGE_Z - d, 9.4, 2.8, guideSignTexF(3, "湾岸", "Bypass", distLabel(d)));
-  board(DIVERGE_Z - 40, 7.4, 2.8, guideSignTexF(3, "湾岸", "Bypass", "", { only: true }));
+    board(DIVERGE_Z - d, 9.4, GUIDE_H, guideSignTexF(3, "湾岸", "Bypass", distLabel(d)));
+  /* The gore panel keeps its narrower 7.4 m board — it hangs over the diverge
+     wedge rather than the through lanes — so its height comes off the face's
+     2.848 aspect instead of GUIDE_H. Same artwork, 79% of the size, nothing
+     stretched. */
+  board(DIVERGE_Z - 40, 7.4, 7.4 / 2.848, guideSignTexF(3, "湾岸", "Bypass", "", { only: true }));
   board(MERGE_Z - 80, 6.6, 2.5, mergeSignTexF("80 m"));
 }
 
@@ -4467,9 +4471,17 @@ function buildMountainRoad(
   }
 
   const [b400, b200, bGore, bOneWay, bMerge] = MTN_BOARD_Z();
-  board(b400, 7.4, 2.8, exitSignTexF(4, "400 m", "峠"));
-  board(b200, 7.4, 2.8, exitSignTexF(4, "200 m", "峠"));
-  board(bGore, 7.4, 2.8, exitSignTexF(4, "出口", "峠"));
+  /* EXIT 4 on the guide face, like every other exit on the lap. These hang
+     from the main deck's own masts on the approach (MTN_BOARD_Z is corridor
+     z, not mountain z), but they keep the narrower 7.4 m board they have
+     always had — the mountain exit is a LEFT exit off the fast lane and a
+     9.4 m panel reaching in from the west post would sit over the kerb lane,
+     the one side of the road this exit does NOT concern. Height off the face
+     aspect, as with the bypass gore. */
+  const MB_W = 7.4, MB_H = MB_W / 2.848;
+  board(b400, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "400 m"));
+  board(b200, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "200 m"));
+  board(bGore, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "", { only: true }));
   // the pass is a single lane in one direction — say so before the gore, not
   // after it, since the gore is the last place a driver can decline it
   board(bOneWay, 6.6, 2.5, warnTexF("一方通行 一車線", "ONE WAY · SINGLE LANE"));
