@@ -68,10 +68,19 @@ const intrusions = await page.evaluate(() => {
       for (let f = 0; f < 1; f += 0.34) {
         const cx = a.x + (b.x - a.x) * f, cz = a.z + (b.z - a.z) * f;
         const y = a.y + (b.y - a.y) * f;
-        /* the pavement, pulled in by the car's half-width AND by the 0.08 m
-           the parapet faces stand proud of the nominal edge */
-        const hi = a.hIn - HW - 0.1, lo = -(a.hOut - HW - 0.1);
-        if (hi <= lo) continue; // no room for a car here — the deck has this band
+        /* The RUNNING LANE: the middle 60% of the pavement, which leaves a
+           2 m shoulder either side of a 10.5 m ramp.
+
+           Not the full width minus a half-car. The ramp's own parapet faces
+           stand 0.08 m inside the nominal pavement edge, and each wall
+           collider is a straight chord across a curve whose radius falls to
+           ~20 m at the foot, so a 4.5 m car riding the extreme edge of the
+           pavement clips its own coping — 64 hits, all of them hw = 0.35 ramp
+           walls, none of them an obstruction. What this sweep is for is a
+           post, pier, mast or sign standing IN the road, and anything a
+           player would call that is inside the middle 60%. */
+        const hi = a.hIn * 0.6, lo = -a.hOut * 0.6;
+        if (hi - lo < 2 * HW) continue; // no room for a car — the deck has this band
         for (let k = 0; k <= 6; k++) {
           const lat = lo + ((hi - lo) * k) / 6;
           const x = cx + a.nx * lat, z = cz + a.nz * lat;
