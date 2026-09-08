@@ -29,6 +29,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import puppeteer from "puppeteer";
+import { debugUrl } from "./lib/debug-url.mjs";
 import { serveExport, headerRulesOf, applyHeaders } from "./lib/cf-assets-server.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -139,7 +140,12 @@ const net = [];
 const ownOrigin = (u) => u.startsWith(srv.url + "/") || u === srv.url;
 page.on("response", (r) => {
   const u = r.url();
-  if (ownOrigin(u)) net.push({ url: u.slice(srv.url.length), status: r.status() });
+  if (!ownOrigin(u)) return;
+  const rec = { url: u.slice(srv.url.length), status: r.status() };
+  net.push(rec);
+  /* Print a miss the moment it happens — a 404 four minutes into a load is
+     otherwise invisible until the run ends, and the runs are long. */
+  if (rec.status >= 400) console.log(`  ⛔ ${rec.status} ${rec.url}`);
 });
 const failedReq = [];
 page.on("requestfailed", (r) => {
@@ -169,7 +175,11 @@ page.on("pageerror", (e) => {
 });
 
 console.log("→ loading the game from the export");
-await page.goto(srv.url + "/", { waitUntil: "domcontentloaded", timeout: 120000 });
+/* ?debug=1, via the same helper every other harness uses: window.__neonx is
+   gated behind it in a PRODUCTION build (game/debug.ts), and the export is a
+   production build. Without it the run waits five minutes on a hook that is
+   never going to appear and reads as "the game did not boot". */
+await page.goto(debugUrl(srv.url + "/"), { waitUntil: "domcontentloaded", timeout: 120000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 300000 });
 ok("window.__neonx — the bundle booted");
 await sleep(1500);
