@@ -41,12 +41,19 @@ const routes = getRouteGraph();
 const ramps = buildRamps(() => 0);
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
-/* ---- terrain.heightAt, replicated (ground = 0 in the band) ---- */
+/* ---- terrain.heightAt, replicated (ground = 0 in the band) ----
+   Including the `riser` rule: a surface at, or a kerb's worth above, the car's
+   own height beats anything lower, because pavement rising under the wheels
+   cannot be driven through. Keep this in step with game/world/terrain.ts —
+   the two drifting apart is what let the entry ramp ship unclimbable. */
+const STEP_UP = 0.35, EPS = 1e-6;
 function heightAt(x, z, refY) {
   let best = 0;
   let bestD = Math.abs(best - refY);
+  let riser = best >= refY - EPS && best <= refY + STEP_UP ? best : -Infinity;
   const take = (y) => {
     const d = Math.abs(y - refY);
+    if (y >= refY - EPS && y <= refY + STEP_UP && y > riser) riser = y;
     if (d < bestD || (d === bestD && y > best)) { best = y; bestD = d; }
   };
   if (refY > cor.centerY(z) - SURFACE_TOL) {
@@ -57,7 +64,7 @@ function heightAt(x, z, refY) {
   if (r && Math.abs(r.y - refY) < SURFACE_TOL) take(r.y);
   const g = routes.surfaceAt(x, z, 1.0);
   if (g && Math.abs(g.y - refY) < SURFACE_TOL) take(g.y);
-  return best;
+  return riser > best ? riser : best;
 }
 const onRamp = (x, z) => {
   const r = rampAt(ramps, x, z, 1.0);
@@ -327,6 +334,21 @@ console.log("scenario 3: climb the entry ramp and merge");
   }
   const car = { x: path0[0][0], y: r.pts[r.pts.length - 1].y, z: path0[0][1], h: 0 };
   let worst = { jump: 0 };
+  /* THE OTHER HALF OF THE TEST, and the one that was missing.
+
+     "No jump" is not "drivable". This scenario used to score only the size of
+     the per-frame correction, so a car that never got picked up by the ramp
+     at all — that ran the whole climb along the flat ground UNDERNEATH it and
+     rose 0 m over 264 m of a 10% grade — scored a perfect 0.00 and passed.
+     That is exactly what shipped: the entry ramp could not be driven from the
+     town, because terrain.heightAt's "nearest surface to refY wins" rule had
+     the bare ground at EXACTLY the car's height (d = 0) and the ramp a
+     centimetre above it, so the ground never gave the car up. The player
+     drove under the ramp and hit its first pier.
+
+     So: track how far the car ends up from the pavement it is supposed to be
+     standing on. */
+  let worstOff = { off: 0 };
   for (let i = 1; i < path0.length; i++) {
     const [tx, tz] = path0[i];
     const d = Math.hypot(tx - car.x, tz - car.z);
@@ -344,11 +366,28 @@ console.log("scenario 3: climb the entry ramp and merge");
       const kick = Math.hypot(car.x - preX, car.z - preZ);
       const jump = Math.max(Math.abs(dy) > 0.118 ? Math.abs(dy) : 0, kick);
       if (jump > worst.jump) worst = { jump, x: preX, z: preZ, kick, dy };
+      // …and is the car actually on the ramp it is driving up?
+      const ry = onRamp(car.x, car.z);
+      if (ry !== null) {
+        const off = Math.abs(car.y - ry);
+        if (off > worstOff.off) worstOff = { off, x: car.x, z: car.z, y: car.y, ry };
+      }
     }
   }
   if (worst.jump > 0.35)
     bad(`entry ramp: jump ${f(worst.jump)} m at (${f(worst.x)}, ${f(worst.z)}) kick=${f(worst.kick)} dy=${f(worst.dy)}`);
   else console.log(`  ok: worst per-frame correction ${f(worst.jump)} m`);
+  /* 0.35 m is a kerb; anything more and the car is not on the road. */
+  if (worstOff.off > 0.35)
+    bad(`entry ramp: car left the pavement — y=${f(worstOff.y)} vs ramp ${f(worstOff.ry)}`
+      + ` (${f(worstOff.off)} m) at (${f(worstOff.x)}, ${f(worstOff.z)})`);
+  else console.log(`  ok: worst |y - ramp surface| ${f(worstOff.off)} m`);
+  // and it has to arrive at deck height, not at the bottom of the hill
+  // (read at the car's own z — the deck is on a grade past the gore)
+  const topY = cor.centerY(cor.zAt(car.x, car.z));
+  if (Math.abs(car.y - topY) > 0.5)
+    bad(`entry ramp: the climb ended at y=${f(car.y)}, not on the deck (${f(topY)})`);
+  else console.log(`  ok: the climb reaches the deck (y=${f(car.y)})`);
 }
 
 /* ---- scenario 4: the reported bug — pass the exit while drifting right up

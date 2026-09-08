@@ -21,6 +21,22 @@ export interface Terrain {
   onBypass(x: number, z: number): number | null;
 }
 
+/** How far a surface may stand ABOVE the car and still be the one it is
+    standing ON rather than driving under.
+
+    A physics substep is 1/120 s, so at the corridor's steepest grade (10%) the
+    pavement under the wheels rises about 1 cm per substep at 100 km/h and
+    never more than ~7 cm at any speed this car reaches. A kerb's worth of
+    headroom is therefore generous for "the road is climbing", and far too
+    small for anything the car drives beneath: the entry ramp is already 2 m up
+    where it grows its first pier, and the bypass viaduct clears every live
+    street by 6 m. It also bounds the old worry this rule replaces — a gore
+    whose pavement crept over the deck edge can now lift a car by at most
+    STEP_UP, not by the metres Math.max would have allowed. */
+const STEP_UP = 0.35;
+/** float slack on "at the car's own height" */
+const EPS = 1e-6;
+
 export function makeTerrain(rng: Rng): Terrain {
   const corridor = getCorridor();
   // seeded hill field: 3 octaves of drifting sines
@@ -68,13 +84,33 @@ export function makeTerrain(rng: Rng): Terrain {
      snapping cars UP off the deck onto it, mid-lane, at speed. Nearest cannot
      do that — and refY is the car's own height from last frame, so the pick is
      already sticky: a surface has to come closer than the one the car is
-     riding before it can take over. */
+     riding before it can take over.
+
+     …with ONE exception, and it cost the entry ramp. "Agrees with the old
+     Math.max everywhere a car can reach" was wrong about the bare ground: the
+     ground is a candidate at every point in the world, and a car sitting on it
+     is at EXACTLY its height, so the ground scores d = 0 and nothing can ever
+     beat it. The instant the entry ramp lifted off the ground under the wheels
+     the ramp was a centimetre away and the ground was zero away, so the ground
+     kept the car — for the whole 264 m climb. The player drove along the flat
+     ground UNDERNEATH the ramp and stopped dead against its first pier, which
+     is the "the on ramp is broken, i cant drive on it" report. Nothing threw,
+     nothing jumped, and every browser-free sim scored it a clean 0.00, because
+     they were all measuring how far the car was JOLTED and the car was never
+     jolted; it just never went up.
+
+     So `riser` is carried alongside: the highest surface that is at, or a
+     kerb's worth above, the car's own height. Pavement rising under the wheels
+     cannot be driven through, so it wins over anything below it — while a road
+     the car is driving UNDER stays a road it is driving under. See STEP_UP. */
   function heightAt(x: number, z: number, refY: number) {
     let best = h(x, z);
     let bestD = Math.abs(best - refY);
+    let riser = h(x, z) >= refY - EPS && h(x, z) <= refY + STEP_UP ? h(x, z) : -Infinity;
     /** ties go to the higher surface — a car straddling two sits on top */
     const take = (y: number) => {
       const d = Math.abs(y - refY);
+      if (y >= refY - EPS && y <= refY + STEP_UP && y > riser) riser = y;
       if (d < bestD || (d === bestD && y > best)) {
         best = y;
         bestD = d;
@@ -103,7 +139,7 @@ export function makeTerrain(rng: Rng): Terrain {
       const ay = routes.apronAt(x, z, 1.0);
       if (ay !== null) take(ay);
     }
-    return best;
+    return riser > best ? riser : best;
   }
 
   const onBypass = (x: number, z: number) =>
