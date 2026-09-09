@@ -12,7 +12,7 @@ import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import {
   Gantry, NightRoad, SignKP, SignPlate, SignRow, SignRule, SignSep, SignShield, SignTitle,
   SignHead, SignBody, SignFootbar, SignBtn, SignToggle, SignSeg, SignSelect, SignSlider,
-  SignShead, SignSrow, SignPost, SignArrow, SignP,
+  SignShead, SignSrow, SignArrow, SignP,
 } from "@/components/ui/Sign";
 import { BETA_JP, BETA_LABEL, BETA_NOTE, GAME_NAME, IS_BETA, NAME_VERSION, SHOW_DEV_SETTINGS, VERSION_LABEL } from "@/lib/build";
 import {
@@ -903,14 +903,13 @@ export default function GameApp() {
         />
       )}
 
-      {/* Pause: a post-mounted 620-wide board (Pause.dc.html) over the frozen
-          frame. The rows paint their JP from data-jp so each button's text is
+      {/* Pause: a 620-wide board (Pause.dc.html) over the frozen frame. The
+          design's mounting post is gone — see ui-system.css for why. The rows paint their JP from data-jp so each button's text is
           exactly its EN label — every harness finds the pause menu by a
           button that says "RESUME". In landscape the rows sit in two columns
           so the whole board fits without scrolling (ui-system.css). */}
       {screen === "paused" && (
         <div className="menuRoot signRoot sub paused">
-          <SignPost />
           <div className="sign-stack sub narrow">
             <SignPlate screen>
               {/* No build mark and no kilometre post: this is a four-second
