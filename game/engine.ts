@@ -2085,6 +2085,16 @@ export class Game {
         this.chaseRefOk = false;
       },
       setCam: (i: number) => (this.camMode = i % CAM_COUNT),
+      /* Both AudioContext states plus whether the gesture fallback is waiting —
+         what test/audio-resume-check.mjs reads across a hide/show cycle. */
+      audioState: () => ({
+        audio: this.audio.contextState,
+        music: this.music.contextState,
+        gestureArmed: this.audioGestureArmed,
+        running: this.running,
+        vol: this.settings.vol,
+      }),
+      resumeAudio: () => this.resumeAudio(),
       setInput: (o: Partial<DriverInput> | null) => (this.debug.override = o),
       /* Drop the car onto the corridor at a given z, in lane, at speed. The
          two named spots are the ones worth eyeballing: the tunnel approach and
@@ -2272,6 +2282,9 @@ export class Game {
     };
     window.addEventListener("error", this.onWindowError);
     window.addEventListener("blur", this.onWindowBlur);
+    // see the "audio resume after backgrounding" block below primeAudio()
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
+    window.addEventListener("pageshow", this.onPageShow);
   }
 
   /* ---------------- staged load ---------------- */
@@ -3891,6 +3904,10 @@ export class Game {
     this.timeSpeed = s.autoTime ? (this.timeSpeed === 0 ? 150 : this.timeSpeed) : 0;
     this.audio.setLevels(s.vol, this.running ? 1 : 0.12);
     this.music.setLevels(s.vol);
+    /* Raising the volume off zero is also a moment to try: resumeAudio() is
+       gated on vol > 0, so a session that was muted when it came back from the
+       background would otherwise stay silent after unmuting. */
+    this.resumeAudio();
     /* THE ONLY WRITER of castShadow — see sunShadow() for why that matters and
        what took over the per-frame job. This is the one path that is allowed to
        recompile the scene's materials, and it is a safe one: the settings panel
@@ -3969,6 +3986,116 @@ export class Game {
     this.music.prime();
   }
 
+  /* ---------------- audio resume after backgrounding ----------------
+
+     REPORTED: "if i leave chrome and return to it the audio dont work" — a
+     real phone, backgrounded and brought back, silent for the rest of the
+     session.
+
+     The cause is not in the audio graph. Both AudioContexts (game/audio.ts's
+     and the music player's) are SUSPENDED by the browser when the page is
+     hidden, and nothing ever resumed them: every gain, oscillator and buffer
+     is exactly where it was, the context clock just never restarts. Only a
+     reload got the sound back, which is why it read as "audio is dead".
+
+     Three doors, because no one of them is enough on its own:
+
+       visibilitychange  — the ordinary tab switch / app switch, everywhere.
+       pageshow          — iOS's back-forward cache restores a page WITHOUT a
+                           visibilitychange, so the first door never opens.
+       the next gesture  — resume() outside a user gesture is refused on iOS,
+                           and the refusal arrives as a REJECTED PROMISE. That
+                           rejection, unhandled, is what made this fail
+                           silently. We await the state instead, and only if
+                           the context is still not running do we arm a
+                           one-shot pointerdown/touchstart/keydown that tries
+                           again from inside a real gesture.
+
+     What it deliberately does NOT do is start audio the player did not ask
+     for. resumeAudio() is gated on the game actually running and the master
+     volume being above zero, so returning to a PAUSED tab leaves both
+     contexts suspended — and setRunning(true) calls back in here, so pressing
+     RESUME is what brings them up. Nothing here touches a gain: the levels
+     setRunning/applySettings already wrote stay authoritative, this only
+     restarts the clock underneath them.
+
+     Ordering: the render loop does NOT stop on blur (rAF is merely throttled
+     by the browser and onWindowBlur only clears latched input), so there is no
+     "loop restarts first" race to sequence against. The one ordering that does
+     matter is against the pause, and it is handled by setRunning(true) being
+     the last word — it calls resumeAudio() after it has set `running` and
+     re-written the levels. */
+
+  /** Whether sound is wanted RIGHT NOW. Both halves are the owner's stated
+      requirement that coming back to the tab must not start audio playing on
+      its own. */
+  private audioWanted() {
+    return !this.disposed && this.started && this.running && this.settings.vol > 0;
+  }
+
+  private audioGestureArmed = false;
+
+  /** Try to bring both contexts back. Fire-and-forget; safe to call from
+      anywhere, any number of times, at any point in the lifecycle. */
+  private resumeAudio = () => {
+    if (!this.audioWanted()) {
+      // muted or paused: nothing to resume, and no reason to keep a gesture
+      // listener alive waiting to do it
+      this.disarmAudioGesture();
+      return;
+    }
+    void (async () => {
+      const a = await this.audio.resumeContext();
+      const m = await this.music.resumeContext();
+      /* Only "suspended" is worth a second attempt. null means the context was
+         never built (music on touch, audio before Drive) and "closed" is
+         terminal — arming a gesture for either would leave a listener that can
+         never disarm itself. */
+      const stuck = a === "suspended" || m === "suspended";
+      if (stuck && this.audioWanted()) this.armAudioGesture();
+      else this.disarmAudioGesture();
+    })();
+  };
+
+  private armAudioGesture() {
+    if (this.audioGestureArmed || this.disposed) return;
+    this.audioGestureArmed = true;
+    /* Capture phase and all three event names: the pucks and the drawer rows
+       stop nothing, but capture means we see the gesture even if something
+       downstream ever does, and touchstart is listed alongside pointerdown
+       because older iOS Safari does not fire pointer events for touch. */
+    addEventListener("pointerdown", this.onAudioGesture, true);
+    addEventListener("touchstart", this.onAudioGesture, true);
+    addEventListener("keydown", this.onAudioGesture, true);
+  }
+
+  private disarmAudioGesture() {
+    if (!this.audioGestureArmed) return;
+    this.audioGestureArmed = false;
+    removeEventListener("pointerdown", this.onAudioGesture, true);
+    removeEventListener("touchstart", this.onAudioGesture, true);
+    removeEventListener("keydown", this.onAudioGesture, true);
+  }
+
+  private onAudioGesture = () => {
+    // disarm first: resumeAudio may re-arm, and a listener that removes itself
+    // after the retry would race that.
+    this.disarmAudioGesture();
+    this.resumeAudio();
+  };
+
+  private onVisibilityChange = () => {
+    if (document.hidden) return;
+    this.resumeAudio();
+  };
+
+  /** iOS restores a bfcache'd page through pageshow, sometimes with no
+      visibilitychange at all. `persisted` is not checked: a plain pageshow
+      after a normal hide is just as good a moment to try. */
+  private onPageShow = () => {
+    this.resumeAudio();
+  };
+
   /** Begin the render loop. The warm-up stage of the load calls this too, so
       the loading screen's last stage is drawing real frames. */
   private beginLoop() {
@@ -3997,6 +4124,12 @@ export class Game {
     this.lastReverb = -1;
     this.music.setRunning(run);
     if (run) this.acc = 0;
+    /* LAST, and after `running` and the levels are already set: unpausing is
+       the other half of the backgrounding fix. A tab backgrounded while the
+       pause menu was up comes back with both contexts still suspended on
+       purpose (see resumeAudio), and this press is the user gesture that is
+       allowed to lift them. */
+    this.resumeAudio();
   }
 
   destroy() {
@@ -4012,6 +4145,9 @@ export class Game {
     removeEventListener("resize", this.onResize);
     window.removeEventListener("error", this.onWindowError);
     window.removeEventListener("blur", this.onWindowBlur);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
+    window.removeEventListener("pageshow", this.onPageShow);
+    this.disarmAudioGesture();
     if (this.isTouch) {
       removeEventListener("pointerdown", this.onLivePointerDown, true);
       removeEventListener("pointerup", this.onLivePointerGone, true);

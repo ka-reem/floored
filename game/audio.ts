@@ -2912,6 +2912,40 @@ export class GameAudio {
     }
   }
 
+  /** The context's own state, or null before init(). "suspended" here is the
+      whole of the "I came back to the tab and the game is silent" bug: a
+      backgrounded page has its AudioContext suspended by the browser, and
+      nothing in the graph below ever notices — every gain is still where it
+      was, the oscillators are still started, the clock simply is not running.
+      Read by the engine's resume path and by test/audio-resume-check.mjs. */
+  get contextState(): AudioContextState | null {
+    return this.ok ? this.ctx.state : null;
+  }
+
+  /** Ask the browser to un-suspend the context, and report where it landed.
+
+      Never throws and never rejects: resume() returns a promise that CAN
+      reject (a context resumed outside a user gesture is refused outright on
+      iOS), and an unhandled rejection there is exactly what makes this fail
+      in silence — the caller is left believing it fixed the audio. Awaiting
+      the state instead is what lets the engine decide whether it still needs
+      the user-gesture fallback.
+
+      Deliberately does NOT touch a single gain. Whether the game should be
+      making noise is the engine's business (pause, master volume); this only
+      restores the clock those levels are already written against, so it is
+      safe to call while paused or muted. */
+  async resumeContext(): Promise<AudioContextState | null> {
+    if (!this.ok) return null;
+    try {
+      if (this.ctx.state !== "running") await this.ctx.resume();
+    } catch {
+      // refused (no gesture / context already closed) — the state read below
+      // tells the caller the truth either way
+    }
+    return this.ctx.state;
+  }
+
   dispose() {
     if (!this.ok) return;
     this.hornSet(false);

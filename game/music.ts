@@ -637,6 +637,23 @@ export class MusicPlayer {
     }
   }
 
+  /** Same pair as GameAudio's, for the same reason and with the same
+      contract — see game/audio.ts. Null when music is disabled (touch) or
+      before the Drive tap primed the graph, which is not an error: this
+      player simply does not exist for that session. */
+  get contextState(): AudioContextState | null {
+    return this.ctx ? this.ctx.state : null;
+  }
+
+  async resumeContext(): Promise<AudioContextState | null> {
+    const ctx = this.ctx;
+    if (!ctx) return null;
+    try {
+      if (ctx.state !== "running") await ctx.resume();
+    } catch {}
+    return ctx.state;
+  }
+
   dispose() {
     if (!this.enabled) return;
     document.removeEventListener("visibilitychange", this.onVisibility);
