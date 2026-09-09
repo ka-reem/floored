@@ -287,12 +287,15 @@ try {
        wall chatter off it, and chatter reads as a bug.
      - it rises on a smoothstep to `peak` (0.42) at `full` (7 m/s ≈ 25 km/h
        of closing speed), which is the hit you feel.
-     - and past `soft` (13 m/s) it FALLS again, toward `high` (0.20) by
-       `crush` (26 m/s). Not a safety fudge: it is what a real structure
+     - and past `soft` (13 m/s) it FALLS again, toward `high` (0.23) by
+       `crush` (30 m/s). Not a safety fudge: it is what a real structure
        does. Past the point where sheet metal and a concrete parapet start
        deforming, the energy goes into the crush and less of it comes back.
        It also happens to be what stops a 150 km/h broadside firing the car
-       across the deck.
+       across the deck. The fall is sized so the REBOUND SPEED still rises
+       with the hit — it reaches `capOut` and stays there rather than dipping
+       back down, which would have made an 90 km/h hit come off the wall
+       softer than a 70 km/h one.
 
    `capOut` is the belt to those braces: whatever the curve says, the car
    never leaves a wall faster than 6 m/s along the normal. The deck is ~18 m
@@ -323,8 +326,8 @@ export const WALL = {
   full: 7.0,
   peak: 0.42,
   soft: 13.0,
-  crush: 26.0,
-  high: 0.2,
+  crush: 30.0,
+  high: 0.23,
   capOut: 6.0,
   /** Restitution for a contact closing at `vn` m/s along the wall normal. */
   bounce(vn: number) {
