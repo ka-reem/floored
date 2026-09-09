@@ -1623,6 +1623,21 @@ function QuickDrawer({
       on: game.car.lightsMode === "on" },
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
     { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
+    /* Field of view — the owner asked for it "from the 3 dots". A STEPPED row,
+       not a slider: every other row here is a tap that routes through
+       uiKeyTap, i.e. it literally is a keyboard key (K), and that is what
+       keeps a row and its key from ever drifting apart. The continuous
+       58..100 slider is still in SETTINGS for anyone who wants an exact
+       number; this cycles the four named stops in engine.ts's FOV_STOPS and
+       writes the SAME `settings.fovBase` the slider does — one FOV number in
+       the game, two ways to reach it.
+
+       Here rather than at the bottom of the list because the sheet SCROLLS on
+       a 390x664 phone (max-height: 100vh - 280px) — eleven rows do not fit —
+       and a control the owner asked to be able to reach should not be the one
+       below the fold. Beside MAP ZOOM is also where it belongs: both are "how
+       much of the world do I see". */
+    { k: "k", en: "FIELD OF VIEW", jp: "画角", state: game.fovRow.text, on: game.fovRow.changed },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
     /* RAIN AND WIPERS ARE HELD BACK for the beta, shown but not tappable.
        Wipers go with rain because a wiper control on dry glass is a dead
@@ -2434,10 +2449,8 @@ const KEYS_A: [string, string][] = [
   ["U", "wipers: off / int / lo / hi (rain auto-starts lo; also clickable beside the head unit)"],
   ["T", "time-lapse: ×150 → ×1500 → off"],
   ["V", "dashcam grade (the DASHCAM view forces its own, harder)"],
+  ["K", "field of view: narrow 58° → normal 67° → wide 80° → ultra 100° (settings has the full slider)"],
 ];
-/* K (test mode) is not in this list: it is a developer control, gated with
-   its settings row on lib/build.ts's SHOW_DEV_SETTINGS, and pushed in below
-   only where it actually works. */
 const KEYS_B: [string, string][] = [
   ["X", "minimap"],
   ["Z", "map zoom: close-up ↔ whole loop (or click the map)"],
@@ -2448,16 +2461,13 @@ const KEYS_B: [string, string][] = [
   [", / .", "previous / next piece"],
   ["ESC", "pause menu (music pauses with it)"],
 ];
-if (SHOW_DEV_SETTINGS) {
-  KEYS_B.splice(3, 0, ["K", "test mode: extra grip, brakes & power (also in settings; persists)"]);
-}
 const KEYS_MOUSE: [string, string][] = [
   ["DASH SCREEN", "click to switch panes — map / music / trip (desktop)"],
   ["ROOF CONSOLE", "click the overhead panel — interior light"],
 ];
 const KEYS_TOUCH: [string, string][] = [
   ["PUCKS", "steer · pedals · CAM · LTS (high beams) · HORN"],
-  ["⋯", "quick controls drawer: lights, map, mirrors, rain, wipers, time-lapse, dashcam FX, reset, photo mode"],
+  ["⋯", "quick controls drawer: lights, map, mirrors, rain, wipers, time-lapse, field of view, dashcam FX, reset, photo mode"],
   ["TOP EDGE", "tap the middle — interior light"],
   ["STEERING", "buttons / touch wheel / swipe slider — pick in settings"],
 ];

@@ -1508,6 +1508,15 @@ body.touch #tcDrawer {
 .qdLabel {
   font-family: var(--font-display);
   font-weight: 500;
+  /* One line, always. The sheet is min(248px, 66vw) wide and the longest
+     label in it (FIELD OF VIEW 画角) wrapped onto a second line on a 390px
+     phone, which made that one row taller than every other and read as a
+     broken sheet. Truncating is the behaviour the landscape grid already
+     chose for the same reason (see ui-system.css). */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .qdLabel i {
   font-style: normal;

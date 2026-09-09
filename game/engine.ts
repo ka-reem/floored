@@ -1156,6 +1156,27 @@ const POV_FOV_MAX = 100;
    shipped. If settings.ts's default ever moves, this moves with it or the
    console camera silently re-frames for everyone. */
 const FOV_SLIDER_REF = 67;
+/* The Field of view STOPS the touch drawer's FOV row steps through (K, and
+   Game.cycleFov). The same setting and the same scale as the settings panel's
+   slider — `fovBase`, 58..100 vertical degrees at 16:9 — never a second one:
+   there is exactly one FOV number in this game and both controls write it.
+
+   Four stops rather than a slider because the drawer's grammar is a list of
+   TAPS: every row in it is a keyboard key, and the drawer is a glovebox you
+   reach for at 120 km/h with one thumb, not a settings screen. The slider
+   stays where it is for anyone who wants 73 degrees exactly.
+
+   The stops are the slider's two ends, its default, and one between the
+   default and the top — 58 is the narrowest the interior is built for, 67 is
+   DEFAULTS.fovBase and FOV_SLIDER_REF (the anchor the console lens scales
+   about, so it is the one value that must be a stop), 80 is a real wide-angle
+   dashcam, and 100 is POV_FOV_MAX, the widest the projection is clamped to. */
+const FOV_STOPS: { v: number; name: string }[] = [
+  { v: 58, name: "NARROW" },
+  { v: FOV_SLIDER_REF, name: "NORMAL" },
+  { v: 80, name: "WIDE" },
+  { v: POV_FOV_MAX, name: "ULTRA" },
+];
 /* Sanity bound on the console and backseat lenses, well clear of the 116 the
    top of the slider asks for. Same job as POV_FOV_MAX and nothing more: settings.ts
    type-checks fovBase but does not range-check it, so a profile can carry any
@@ -2085,6 +2106,16 @@ export class Game {
         this.chaseRefOk = false;
       },
       setCam: (i: number) => (this.camMode = i % CAM_COUNT),
+      /* Both AudioContext states plus whether the gesture fallback is waiting —
+         what test/audio-resume-check.mjs reads across a hide/show cycle. */
+      audioState: () => ({
+        audio: this.audio.contextState,
+        music: this.music.contextState,
+        gestureArmed: this.audioGestureArmed,
+        running: this.running,
+        vol: this.settings.vol,
+      }),
+      resumeAudio: () => this.resumeAudio(),
       setInput: (o: Partial<DriverInput> | null) => (this.debug.override = o),
       /* Drop the car onto the corridor at a given z, in lane, at speed. The
          two named spots are the ones worth eyeballing: the tunnel approach and
@@ -2273,6 +2304,9 @@ export class Game {
     };
     window.addEventListener("error", this.onWindowError);
     window.addEventListener("blur", this.onWindowBlur);
+    // see the "audio resume after backgrounding" block below primeAudio()
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
+    window.addEventListener("pageshow", this.onPageShow);
   }
 
   /* ---------------- staged load ---------------- */
@@ -3012,8 +3046,13 @@ export class Game {
       this.resetCar();
       this.ui.toast("RESET");
     }
-    /* (K was the test-mode toggle. There is nothing to toggle now that the
-       arcade spec IS the car — see Game.arcade — so the key is free again.) */
+    /* K — Field of view, stepped through FOV_STOPS. (K used to be the
+       test-mode toggle; there is nothing to toggle now that the arcade spec IS
+       the car — see Game.arcade — so the key came free and this took it.) Same
+       route as every other drawer row: the touch FOV row is uiKeyTap("k"), so
+       the row IS this key. No isTouch gate — unlike I, this one is wanted on
+       both. */
+    if (k === "k") this.cycleFov();
     /* Interior light. I for its initial, and it was free: the handler above
        already spends C L Q E R T V M J N K H X P B G and the , . transport
        pair, and W A S D, the arrows, space and F are the driving controls.
@@ -3719,6 +3758,39 @@ export class Game {
     this.ui.toast("LIGHTS " + this.car.lightsMode.toUpperCase());
   }
 
+  /** Step the Field of view to the next stop up, wrapping at the top — the K
+      key and the drawer's FOV row, the same one body for both (uiKeyTap).
+
+      "Next stop strictly above the current value" rather than an index, so a
+      value the SETTINGS SLIDER left between two stops (73, say) still steps
+      somewhere sensible instead of jumping to a remembered position the number
+      no longer matches. Writing `settings.fovBase` is the whole of it: the
+      camera reads that field per frame (see the fovT block in camera()), so
+      the lens moves on the next frame in every view, and persist() copies
+      `game.settings` into the profile exactly as it does for MAP ZOOM. */
+  cycleFov(): void {
+    const next = FOV_STOPS.find((s) => s.v > this.settings.fovBase + 0.5) ?? FOV_STOPS[0];
+    this.settings.fovBase = next.v;
+    this.ui.toast("FOV " + next.name + " " + next.v + "°");
+  }
+
+  /** What the drawer's FOV row shows: DEGREES, exactly as the settings
+      panel's slider reads them out (`${s.fovBase}°`), and whether the value
+      sits off its default (the row's lit state, the same convention
+      TIME-LAPSE's ×0 uses).
+
+      Degrees and not the stop's name, for two reasons. It is the same readout
+      the one other FOV control in the game already gives, so the two cannot
+      look like different settings; and a chip is 44px wide next to a label
+      that is already the longest in the sheet — "NARROW 58°" pushed the label
+      onto a second line on a 390px phone and truncated it in the landscape
+      grid. The NAME is not lost: cycleFov's toast says "FOV WIDE 80°" on
+      every tap, which is where a name is actually useful. */
+  get fovRow(): { text: string; changed: boolean } {
+    const v = this.settings.fovBase;
+    return { text: v + "°", changed: v !== FOV_SLIDER_REF };
+  }
+
   private padEdge: PadEdge = {
     cam: () => {
       this.camMode = nextCam(this.camMode);
@@ -3892,6 +3964,10 @@ export class Game {
     this.timeSpeed = s.autoTime ? (this.timeSpeed === 0 ? 150 : this.timeSpeed) : 0;
     this.audio.setLevels(s.vol, this.running ? 1 : 0.12);
     this.music.setLevels(s.vol);
+    /* Raising the volume off zero is also a moment to try: resumeAudio() is
+       gated on vol > 0, so a session that was muted when it came back from the
+       background would otherwise stay silent after unmuting. */
+    this.resumeAudio();
     /* THE ONLY WRITER of castShadow — see sunShadow() for why that matters and
        what took over the per-frame job. This is the one path that is allowed to
        recompile the scene's materials, and it is a safe one: the settings panel
@@ -3970,6 +4046,116 @@ export class Game {
     this.music.prime();
   }
 
+  /* ---------------- audio resume after backgrounding ----------------
+
+     REPORTED: "if i leave chrome and return to it the audio dont work" — a
+     real phone, backgrounded and brought back, silent for the rest of the
+     session.
+
+     The cause is not in the audio graph. Both AudioContexts (game/audio.ts's
+     and the music player's) are SUSPENDED by the browser when the page is
+     hidden, and nothing ever resumed them: every gain, oscillator and buffer
+     is exactly where it was, the context clock just never restarts. Only a
+     reload got the sound back, which is why it read as "audio is dead".
+
+     Three doors, because no one of them is enough on its own:
+
+       visibilitychange  — the ordinary tab switch / app switch, everywhere.
+       pageshow          — iOS's back-forward cache restores a page WITHOUT a
+                           visibilitychange, so the first door never opens.
+       the next gesture  — resume() outside a user gesture is refused on iOS,
+                           and the refusal arrives as a REJECTED PROMISE. That
+                           rejection, unhandled, is what made this fail
+                           silently. We await the state instead, and only if
+                           the context is still not running do we arm a
+                           one-shot pointerdown/touchstart/keydown that tries
+                           again from inside a real gesture.
+
+     What it deliberately does NOT do is start audio the player did not ask
+     for. resumeAudio() is gated on the game actually running and the master
+     volume being above zero, so returning to a PAUSED tab leaves both
+     contexts suspended — and setRunning(true) calls back in here, so pressing
+     RESUME is what brings them up. Nothing here touches a gain: the levels
+     setRunning/applySettings already wrote stay authoritative, this only
+     restarts the clock underneath them.
+
+     Ordering: the render loop does NOT stop on blur (rAF is merely throttled
+     by the browser and onWindowBlur only clears latched input), so there is no
+     "loop restarts first" race to sequence against. The one ordering that does
+     matter is against the pause, and it is handled by setRunning(true) being
+     the last word — it calls resumeAudio() after it has set `running` and
+     re-written the levels. */
+
+  /** Whether sound is wanted RIGHT NOW. Both halves are the owner's stated
+      requirement that coming back to the tab must not start audio playing on
+      its own. */
+  private audioWanted() {
+    return !this.disposed && this.started && this.running && this.settings.vol > 0;
+  }
+
+  private audioGestureArmed = false;
+
+  /** Try to bring both contexts back. Fire-and-forget; safe to call from
+      anywhere, any number of times, at any point in the lifecycle. */
+  private resumeAudio = () => {
+    if (!this.audioWanted()) {
+      // muted or paused: nothing to resume, and no reason to keep a gesture
+      // listener alive waiting to do it
+      this.disarmAudioGesture();
+      return;
+    }
+    void (async () => {
+      const a = await this.audio.resumeContext();
+      const m = await this.music.resumeContext();
+      /* Only "suspended" is worth a second attempt. null means the context was
+         never built (music on touch, audio before Drive) and "closed" is
+         terminal — arming a gesture for either would leave a listener that can
+         never disarm itself. */
+      const stuck = a === "suspended" || m === "suspended";
+      if (stuck && this.audioWanted()) this.armAudioGesture();
+      else this.disarmAudioGesture();
+    })();
+  };
+
+  private armAudioGesture() {
+    if (this.audioGestureArmed || this.disposed) return;
+    this.audioGestureArmed = true;
+    /* Capture phase and all three event names: the pucks and the drawer rows
+       stop nothing, but capture means we see the gesture even if something
+       downstream ever does, and touchstart is listed alongside pointerdown
+       because older iOS Safari does not fire pointer events for touch. */
+    addEventListener("pointerdown", this.onAudioGesture, true);
+    addEventListener("touchstart", this.onAudioGesture, true);
+    addEventListener("keydown", this.onAudioGesture, true);
+  }
+
+  private disarmAudioGesture() {
+    if (!this.audioGestureArmed) return;
+    this.audioGestureArmed = false;
+    removeEventListener("pointerdown", this.onAudioGesture, true);
+    removeEventListener("touchstart", this.onAudioGesture, true);
+    removeEventListener("keydown", this.onAudioGesture, true);
+  }
+
+  private onAudioGesture = () => {
+    // disarm first: resumeAudio may re-arm, and a listener that removes itself
+    // after the retry would race that.
+    this.disarmAudioGesture();
+    this.resumeAudio();
+  };
+
+  private onVisibilityChange = () => {
+    if (document.hidden) return;
+    this.resumeAudio();
+  };
+
+  /** iOS restores a bfcache'd page through pageshow, sometimes with no
+      visibilitychange at all. `persisted` is not checked: a plain pageshow
+      after a normal hide is just as good a moment to try. */
+  private onPageShow = () => {
+    this.resumeAudio();
+  };
+
   /** Begin the render loop. The warm-up stage of the load calls this too, so
       the loading screen's last stage is drawing real frames. */
   private beginLoop() {
@@ -3998,6 +4184,12 @@ export class Game {
     this.lastReverb = -1;
     this.music.setRunning(run);
     if (run) this.acc = 0;
+    /* LAST, and after `running` and the levels are already set: unpausing is
+       the other half of the backgrounding fix. A tab backgrounded while the
+       pause menu was up comes back with both contexts still suspended on
+       purpose (see resumeAudio), and this press is the user gesture that is
+       allowed to lift them. */
+    this.resumeAudio();
   }
 
   destroy() {
@@ -4013,6 +4205,9 @@ export class Game {
     removeEventListener("resize", this.onResize);
     window.removeEventListener("error", this.onWindowError);
     window.removeEventListener("blur", this.onWindowBlur);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
+    window.removeEventListener("pageshow", this.onPageShow);
+    this.disarmAudioGesture();
     if (this.isTouch) {
       removeEventListener("pointerdown", this.onLivePointerDown, true);
       removeEventListener("pointerup", this.onLivePointerGone, true);
