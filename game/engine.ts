@@ -41,6 +41,7 @@ import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap, type MiniMapOpts } from "./minimap";
 import { track, trackThrottled, registerSuper } from "../lib/analytics";
+import { telemetryTick, telemetryDebug } from "../lib/telemetry";
 import { DEBUG_HOOKS } from "./debug";
 import { SHOW_DEV_SETTINGS } from "@/lib/build";
 import { showGfxFail } from "./gfxfail";
@@ -2147,6 +2148,9 @@ export class Game {
         errors: this.debug.errors,
         frames: this.debug.frames,
       }),
+      /* lib/telemetry.ts's test seam: force the sampler on under webdriver
+         and read the payloads track() would have been handed. */
+      telemetry: telemetryDebug,
       clearImpacts: () => {
         this.impactLog.length = 0;
         this.impactMax = 0;
@@ -6374,8 +6378,17 @@ export class Game {
       this.hud(now, dt);
       this.chunkT += dt;
       if (this.chunkT > 0.16) {
+        const tickT = this.chunkT; // real elapsed, not the 0.16 threshold
         this.chunkT = 0;
         this.chunksUpdate();
+        /* Drive telemetry rides this tick rather than owning a timer: it is
+           already the engine's 6.25 Hz slow lane, and it only runs while the
+           game is running. Returns on its first line when analytics is off
+           (lib/telemetry.ts). */
+        telemetryTick(tickT, this.car.x, this.car.z, this.car.h, this.car.u,
+          this.camMode, this.tunIn, this.stats.mtnOn,
+          this.stats.crashes, this.stats.nearMisses,
+          this.run.resets, this.run.lastImpact);
       }
       if (this.mmapVisible() && this.frameN % 4 === 0) {
         const mmapCv = this.miniMap();
