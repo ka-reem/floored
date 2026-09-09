@@ -42,17 +42,10 @@ page.on("console", (m) => {
     errors.push(m.text());
 });
 
-/* Deterministic Math.random, so the roster, the driver personalities and the
-   spawn stream are the same on every run of this script. */
-await page.evaluateOnNewDocument(() => {
-  let a = 0x9e3779b9;
-  Math.random = () => {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-});
+/* No Math.random override here on purpose. The before/after is shot by
+   flipping ONE uniform between two frames of the same run, so the traffic,
+   the light and the framing are identical by construction — seeding the page
+   would buy nothing, and an overridden Math.random stalled the world build. */
 
 await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 180000 });
 await page.waitForFunction(() => !!window.__neonx, { timeout: 180000 });
@@ -69,7 +62,7 @@ const click = (text) =>
   }, text);
 
 await click("DRIVE");
-await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 300000 });
+await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 900000 });
 await sleep(6000);
 
 /* Park at a fixed spot on the deck with a fixed traffic density, then let the
@@ -126,14 +119,21 @@ const meter = () =>
   });
 
 const report = {};
-const shoot = async (tag) => {
+/* Re-assert the flip before every capture: a desktop tier streams the HD
+   bodyshells in mid-drive, and applyModel installs a FRESH material clone
+   (and a fresh paintRef) when it does. A flip set once could be quietly
+   undone between two shots. */
+const shoot = async (tag, on) => {
+  await setCompactTint(on);
   // dashcam first: the default and the most-played frame
   await page.evaluate(() => window.__neonx.setCam(3));
   await sleep(2500);
   await jpg(`npcpaint-pov-${tag}.jpg`);
+  await setCompactTint(on);
   await page.evaluate(() => window.__neonx.setCam(0));
   await sleep(2500);
   await jpg(`npcpaint-chase-${tag}.jpg`);
+  await setCompactTint(on);
   await page.evaluate(() => window.__neonx.setCam(3));
   await sleep(1800);
   report[tag] = await meter();
@@ -143,11 +143,11 @@ const shoot = async (tag) => {
 await settle();
 console.log("tint off ->", await setCompactTint(false));
 await sleep(1500);
-await shoot("before");
+await shoot("before", false);
 
 console.log("tint on ->", await setCompactTint(true));
 await sleep(1500);
-await shoot("after");
+await shoot("after", true);
 
 /* --- daylight, after only + a matched before ----------------------------- */
 await page.evaluate(() => window.__neonx.setTime(12.5));
