@@ -27,7 +27,7 @@ const arg = (k, d) => {
 const URL = arg("--url", "http://localhost:3421");
 const OUT = arg("--out", path.join(process.cwd(), "test", "artifacts"));
 mkdirSync(OUT, { recursive: true });
-const VW = Number(process.env.SHOT_W || 1440), VH = Number(process.env.SHOT_H || 900);
+const VW = Number(process.env.SHOT_W || 1100), VH = Number(process.env.SHOT_H || 690);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const errors = [];
 
@@ -47,12 +47,31 @@ page.on("console", (m) => {
 });
 
 console.log("loading…");
-await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 180000 });
-await page.waitForFunction(() => !!window.__neonx, { timeout: 180000 });
+await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 900000 });
+/* The box this runs on is shared with other lanes' browsers, and under
+   SwiftShader at load 80+ the client bundle can take many minutes just to
+   parse and boot. Poll loudly rather than waiting in silence on a single
+   timeout that says nothing about where it got to. */
+for (let i = 0; ; i++) {
+  const st = await page.evaluate(() => ({
+    nx: !!window.__neonx, loaded: !!window.__neonx?.game?.loaded,
+    body: document.body?.childElementCount || 0,
+  })).catch(() => ({ nx: false, loaded: false, body: -1 }));
+  if (st.nx) { console.log(`  __neonx up after ${i * 10}s`); break; }
+  if (i % 6 === 0) console.log(`  waiting for __neonx… ${i * 10}s (body ${st.body})`);
+  if (i > 180) throw new Error("no __neonx after 30 min");
+  await sleep(10000);
+}
 await page.evaluate(() => {
   [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"))?.click();
 });
-await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 300000 });
+for (let i = 0; ; i++) {
+  const ok = await page.evaluate(() => !!window.__neonx?.game?.loaded).catch(() => false);
+  if (ok) { console.log(`  world built after ${i * 10}s`); break; }
+  if (i % 6 === 0) console.log(`  building world… ${i * 10}s`);
+  if (i > 180) throw new Error("world never finished loading");
+  await sleep(10000);
+}
 await sleep(3000);
 console.log("loaded");
 

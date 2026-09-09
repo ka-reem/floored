@@ -68,7 +68,12 @@ const io = new NodeIO()
 
 const CELL = 0.05;
 const AREA_FRAC = 0.015;
-const STEP = 0.035;   // barycentric sample spacing on a triangle
+/* Barycentric sample spacing on a triangle. --fast doubles it and skips the
+   two end grids, which is enough for the width PROFILE the plot draws (a 7 cm
+   sample on a 5 cm bin) and about five times cheaper — worth having on a
+   shared box. The half-extents in the table are always measured at the fine
+   spacing. */
+let STEP = 0.035;
 const SLICES = 60;
 
 const IDENT = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
@@ -132,7 +137,7 @@ function sampleTri(a, b, c, pt) {
 
 /** Everything the report needs, accumulated in one streaming pass — the point
     cloud itself is never kept (it runs to millions of samples per style). */
-function measure(doc, xf, bboxOnly = false) {
+function measure(doc, xf, bboxOnly = false, profOnly = false) {
   const bb = {
     x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity, z0: Infinity, z1: -Infinity,
   };
@@ -151,10 +156,11 @@ function measure(doc, xf, bboxOnly = false) {
     if (z < bb.z0) bb.z0 = z;
     if (z > bb.z1) bb.z1 = z;
     if (bboxOnly) return;
+    bump(prof, Math.round(z / CELL), Math.abs(x));
+    if (profOnly) return;
     bump(flank, key(z, y), Math.abs(x));
     bump(front, key(x, y), z);
     bump(rear, key(x, y), -z);
-    bump(prof, Math.round(z / CELL), Math.abs(x));
   }));
   /** The widest value that at least AREA_FRAC of `area` reaches. */
   const cut = (m, area) => {
@@ -164,6 +170,7 @@ function measure(doc, xf, bboxOnly = false) {
   };
   const H = bb.y1 - bb.y0, L = bb.z1 - bb.z0, W = bb.x1 - bb.x0;
   if (bboxOnly) return { bb };
+  if (profOnly) return { bb, prof, fullHalfW: Math.max(Math.abs(bb.x0), Math.abs(bb.x1)) };
   return {
     bb,
     fullHalfW: Math.max(Math.abs(bb.x0), Math.abs(bb.x1)),
@@ -200,6 +207,24 @@ const SHOW_PROFILE = args.includes("--profile");
 const AS_JSON = args.includes("--json");
 const ONLY = args.includes("--only") ? args[args.indexOf("--only") + 1] : null;
 const OUT = args.includes("--out") ? args[args.indexOf("--out") + 1] : null;
+/* --fast: profiles only, coarser sampling. The half-extents then come from
+   the numbers this file already published (see MEASURED below) rather than
+   being re-derived, so a --fast run can draw the picture on a loaded box
+   without pretending to have re-measured. */
+const FAST = args.includes("--fast");
+if (FAST) STEP = 0.07;
+/* The fine-sampling result, kept so --fast can draw without re-deriving it.
+   Regenerate by running this file without --fast. */
+const MEASURED = {
+  bus: [1.130, 0.956, 4.683, -4.686], compact: [0.855, 0.784, 1.970, -1.969],
+  hybrid: [0.880, 0.741, 2.262, -2.260], mhybrid: [0.880, 0.802, 2.264, -2.267],
+  ocompact: [0.855, 0.768, 1.966, -1.970], ohybrid: [0.880, 0.806, 2.261, -2.263],
+  osedan: [0.895, 0.784, 2.209, -2.216], osuv: [0.950, 0.824, 2.357, -2.355],
+  police: [0.895, 0.879, 2.220, -2.169], sedan: [0.895, 0.774, 2.210, -2.218],
+  suv: [0.950, 0.853, 2.358, -2.349], taxi: [0.895, 0.827, 2.215, -2.217],
+  truck: [1.050, 0.780, 3.142, -3.150], van: [0.890, 0.740, 2.312, -2.316],
+  volvo: [1.030, 0.956, 2.499, -2.425], kaze: [1.010, 0.920, 2.210, -2.210],
+};
 
 const jobs = [];
 for (const f of fs.readdirSync("public/models/cars").sort())
@@ -247,7 +272,11 @@ for (const j of jobs) {
         dz: -((raw.bb.z0 + raw.bb.z1) / 2) * sz + (P.wzF - P.wzR) / 2 - DONOR_AXLE_MID * sz,
       };
     }
-    m = measure(doc, xf);
+    m = measure(doc, xf, false, FAST);
+    if (FAST) {
+      const k = MEASURED[j.style];
+      m.fullHalfW = k[0]; m.bodyHalfW = k[1]; m.bodyFront = k[2]; m.bodyRear = k[3];
+    }
   }
   const d = j.kind === "npc" ? NPC_DIM[j.style] : null;
   const colHalfW = d ? d[1] / 2 : j.P.W / 2 - 0.005;
