@@ -407,6 +407,11 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
     tint ? tint.refLum : 0,
     tint?.satMax ?? 0
   );
+  /* The uniform's Vector3 lives here too, so a harness can flip one style's
+     tint live and shoot a true before/after of the SAME frame rather than
+     two runs it then has to line up by eye (test/npc-paint-shots.mjs). Three
+     uploads the uniform every frame, so a write lands on the next one. */
+  mat.userData.paintRef = paintRef;
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uPaintRef = { value: paintRef };
     shader.uniforms.uDayFill = dayUni.fill;
