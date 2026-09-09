@@ -1156,6 +1156,27 @@ const POV_FOV_MAX = 100;
    shipped. If settings.ts's default ever moves, this moves with it or the
    console camera silently re-frames for everyone. */
 const FOV_SLIDER_REF = 67;
+/* The Field of view STOPS the touch drawer's FOV row steps through (K, and
+   Game.cycleFov). The same setting and the same scale as the settings panel's
+   slider — `fovBase`, 58..100 vertical degrees at 16:9 — never a second one:
+   there is exactly one FOV number in this game and both controls write it.
+
+   Four stops rather than a slider because the drawer's grammar is a list of
+   TAPS: every row in it is a keyboard key, and the drawer is a glovebox you
+   reach for at 120 km/h with one thumb, not a settings screen. The slider
+   stays where it is for anyone who wants 73 degrees exactly.
+
+   The stops are the slider's two ends, its default, and one between the
+   default and the top — 58 is the narrowest the interior is built for, 67 is
+   DEFAULTS.fovBase and FOV_SLIDER_REF (the anchor the console lens scales
+   about, so it is the one value that must be a stop), 80 is a real wide-angle
+   dashcam, and 100 is POV_FOV_MAX, the widest the projection is clamped to. */
+const FOV_STOPS: { v: number; name: string }[] = [
+  { v: 58, name: "NARROW" },
+  { v: FOV_SLIDER_REF, name: "NORMAL" },
+  { v: 80, name: "WIDE" },
+  { v: POV_FOV_MAX, name: "ULTRA" },
+];
 /* Sanity bound on the console and backseat lenses, well clear of the 116 the
    top of the slider asks for. Same job as POV_FOV_MAX and nothing more: settings.ts
    type-checks fovBase but does not range-check it, so a profile can carry any
@@ -3024,8 +3045,13 @@ export class Game {
       this.resetCar();
       this.ui.toast("RESET");
     }
-    /* (K was the test-mode toggle. There is nothing to toggle now that the
-       arcade spec IS the car — see Game.arcade — so the key is free again.) */
+    /* K — Field of view, stepped through FOV_STOPS. (K used to be the
+       test-mode toggle; there is nothing to toggle now that the arcade spec IS
+       the car — see Game.arcade — so the key came free and this took it.) Same
+       route as every other drawer row: the touch FOV row is uiKeyTap("k"), so
+       the row IS this key. No isTouch gate — unlike I, this one is wanted on
+       both. */
+    if (k === "k") this.cycleFov();
     /* Interior light. I for its initial, and it was free: the handler above
        already spends C L Q E R T V M J N K H X P B G and the , . transport
        pair, and W A S D, the arrows, space and F are the driving controls.
@@ -3729,6 +3755,34 @@ export class Game {
     const next = { auto: "on", on: "off", off: "auto" } as const;
     this.car.lightsMode = next[this.car.lightsMode];
     this.ui.toast("LIGHTS " + this.car.lightsMode.toUpperCase());
+  }
+
+  /** Step the Field of view to the next stop up, wrapping at the top — the K
+      key and the drawer's FOV row, the same one body for both (uiKeyTap).
+
+      "Next stop strictly above the current value" rather than an index, so a
+      value the SETTINGS SLIDER left between two stops (73, say) still steps
+      somewhere sensible instead of jumping to a remembered position the number
+      no longer matches. Writing `settings.fovBase` is the whole of it: the
+      camera reads that field per frame (see the fovT block in camera()), so
+      the lens moves on the next frame in every view, and persist() copies
+      `game.settings` into the profile exactly as it does for MAP ZOOM. */
+  cycleFov(): void {
+    const next = FOV_STOPS.find((s) => s.v > this.settings.fovBase + 0.5) ?? FOV_STOPS[0];
+    this.settings.fovBase = next.v;
+    this.ui.toast("FOV " + next.name + " " + next.v + "°");
+  }
+
+  /** What the drawer's FOV row shows: the stop's name with its degrees, and
+      whether the setting sits off its default (the row's lit state, the same
+      convention TIME-LAPSE's ×0 uses). A value the SETTINGS SLIDER left
+      between two stops reads as its own number with no name, which is honest —
+      it says the setting is live and where it is, and the next tap puts it
+      back on the ladder. */
+  get fovRow(): { text: string; changed: boolean } {
+    const v = this.settings.fovBase;
+    const hit = FOV_STOPS.find((s) => Math.abs(s.v - v) < 0.5);
+    return { text: hit ? hit.name + " " + hit.v + "°" : v + "°", changed: v !== FOV_SLIDER_REF };
   }
 
   private padEdge: PadEdge = {
