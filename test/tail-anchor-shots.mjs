@@ -16,7 +16,7 @@
    far too small to judge where a lamp anchor sits.
 
    Usage: node test/tail-anchor-shots.mjs --url http://localhost:3414 \
-            --type bus --out DIR [--gap 14] [--cams pov,chase]
+            --type bus --out DIR [--cams pov:6,chase:5] [--crop-width 780]
 */
 import { mkdirSync } from "node:fs";
 import path from "node:path";
@@ -30,8 +30,17 @@ const arg = (k, d) => {
 };
 const URL = arg("--url", "http://localhost:3414");
 const TYPE = arg("--type", "bus");
-const GAP = Number(arg("--gap", 14));
-const CAMS = arg("--cams", "pov,chase").split(",");
+/* Per-camera following gap, metres, `cam:gap` — the chase eye sits 4.4 m
+   further back than the dashcam, so matching apparent size needs a smaller
+   gap there, and a lamp anchor is only judgeable when the rear fills a real
+   share of the frame. */
+const CAMS = arg("--cams", "pov:6,chase:5").split(",").map((s) => {
+  const [c, g] = s.split(":");
+  return [c, Number(g || 6)];
+});
+/* every crop is upscaled to this width: the rear of a car 6 m ahead is only
+   ~200 px across at 1440, and the owner has to be able to see the lens */
+const CROP_W = Number(arg("--crop-width", 780));
 const OUT = arg("--out", path.join(process.cwd(), "test", "artifacts", "tail-anchor"));
 mkdirSync(OUT, { recursive: true });
 
@@ -105,7 +114,7 @@ for (let tries = 0; tries < 25 && !picked; tries++) {
     window.__pinTimer = setInterval(pin, 40);
     pin();
     return { id: n.id, type: n.type, style: n.style, L: n.L, W: n.W, v: n.v, of: cands.length };
-  }, TYPE, GAP);
+  }, TYPE, CAMS[0][1]);
 }
 if (!picked) {
   console.log(`no active ${TYPE} — aborting`);
@@ -150,9 +159,9 @@ const rearRect = (bodyH) => page.evaluate((TYPE, bodyH) => {
 
 const CAMI = { chase: 0, cockpit: 1, hood: 2, pov: 3, console: 4 };
 const shots = [];
-for (const cam of CAMS) {
-  await page.evaluate((c) => window.__neonx.setCam(c), CAMI[cam]);
-  await sleep(1500);
+for (const [cam, gap] of CAMS) {
+  await page.evaluate((c, g) => { window.__neonx.setCam(c); window.__gap = g; }, CAMI[cam], gap);
+  await sleep(2000);
   for (const [tag, v] of [["before", STY[TYPE].before], ["after", null]]) {
     await setAnchor(v);
     await sleep(1500);
@@ -170,7 +179,7 @@ await browser.close();
 /* Crop: one size per camera (the largest rear box seen, padded), each frame
    centred on its OWN box, so the pair matches in size and framing. */
 const PAD = 0.42; // of box size, so the lamps are never against the crop edge
-for (const cam of CAMS) {
+for (const [cam] of CAMS) {
   const pair = shots.filter((s) => s.cam === cam);
   if (pair.length !== 2) continue;
   const w = Math.max(...pair.map((s) => s.box[2] - s.box[0]));
@@ -183,11 +192,14 @@ for (const cam of CAMS) {
     const top = Math.round(Math.max(0, Math.min(900 - ch, cy - ch / 2)));
     s.crop = path.join(OUT, `${TYPE}-${cam}-${s.tag}.png`);
     await sharp(s.file).extract({ left, top, width: cw, height: ch })
-      .resize({ width: Math.min(900, cw * 2), kernel: "nearest" }).png().toFile(s.crop);
+      .resize({ width: CROP_W, kernel: "nearest" }).png().toFile(s.crop);
     console.log("cropped", s.crop, `${cw}x${ch} @ ${left},${top}`);
   }
 }
-console.log(JSON.stringify({ type: TYPE, gap: GAP, picked, shots }, null, 1));
+console.log(JSON.stringify({ type: TYPE, cams: CAMS, picked,
+  shots: shots.map(({ file, cam, tag, box, anchors, crop }) => ({
+    cam, tag, box: box.map((v) => Math.round(v)),
+    anchors: anchors.map((a) => a.map((v) => Math.round(v))), file, crop })) }, null, 1));
 if (errors.length) {
   console.log("ERRORS:");
   for (const e of errors.slice(0, 8)) console.log(" -", e.slice(0, 300));
