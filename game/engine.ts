@@ -544,7 +544,33 @@ const CHASE_SHAKE = 0;
    Live knob, same pattern as __povMount / __cockpitEye — `window.__consoleCam.z
    = -0.1` re-frames on the next frame — because this is the view whose whole
    point is being moved around. Settled values come back here. */
-const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
+const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02, procDy: 0.14 };
+
+/* procDy above is the one number in CONSOLE_CAM that is NOT the donor's, and
+   it is why this camera was reported as sitting at hood level on the KAZE GT.
+
+   Every figure in the block above is measured off the DONOR cabin
+   (volvo-s90-full), whose driver's eye is at y 1.21 and whose roof is at 1.42.
+   `y 1.22` was chosen as "a hair over the driver's own eye". The PROCEDURAL
+   cabin — which is what every car without a donor wears, i.e. the Kaze — is a
+   taller room: cockpit.ts puts its EYE at 1.35 and crowns its headliner at
+   ROOF_Y 1.70, 28 cm above the donor's roof. Read into that cabin, 1.22 is not
+   a hair over the driver's eye, it is 13 cm UNDER it and only 21 cm over the
+   pad crest (~1.01) — a bracket bolted to the side of the console rather than
+   standing on top of it, which is exactly what the frame looked like: dash
+   filling the bottom two-thirds and the near road hidden behind the cowl.
+
+   So the mount is split by interior after all, the same way povMount() and
+   cockpitEye() are, and for the same reason they are: two cabins disagree
+   about where a surface is. procDy is added ONLY when the procedural cabin is
+   up, and it is exactly the difference between the two cabins' eye heights
+   (1.35 - 1.21 = 0.14), so the camera keeps its authored relationship to the
+   driver's eye in either room instead of keeping a literal. On the Kaze that
+   puts the lens at 1.36, 4 cm above its own dashcam (1.32) rather than 10 cm
+   below it. The donor cabin is untouched: the Volvo's console camera stays at
+   1.32 to the millimetre.
+
+   Live with the rest of the knob: `window.__consoleCam.procDy = 0.2`. */
 
 /* Backseat camera (CAM_BACKSEAT): a passenger's phone held up from the rear
    bench, looking forward past the front headrests and out the windscreen —
@@ -1044,7 +1070,7 @@ declare global {
     __povMount?: { dx: number; dy: number; dz: number };
     __cockpitEye?: { dy: number; dz: number };
     __chaseShake?: number;
-    __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number };
+    __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number; procDy: number };
     __backseatCam?: { x: number; y: number; z: number; fov: number; tilt: number; yaw: number };
     __roofTap?: { top: number; half: number };
     __hood?: { on: number; dy: number; dz: number };
@@ -1506,14 +1532,25 @@ export class Game {
   /** Mount, lens and cant for the experimental centre-console camera — see
       CONSOLE_CAM for where every number comes from.
 
-      NOT split by interior, unlike povMount() and cockpitEye(). Those two exist
-      to hold a framing that two different dashes disagree about; this camera is
-      aimed at the road over the console, and neither dash is in the shot the
-      way a binnacle is. It reads the same knob either way, which also keeps the
-      J toggle from moving it underneath someone who is tuning it. */
-  private consoleCam(): { x: number; y: number; z: number; fov: number; tilt: number } {
+      SPLIT BY INTERIOR, like povMount() and cockpitEye() — one knob object, one
+      field of which (procDy) applies only without a donor cabin. It used to be
+      unsplit on the grounds that "neither dash is in the shot the way a
+      binnacle is", and that was wrong: the procedural pad is very much in the
+      shot, and its cabin sits its eye 14 cm higher than the donor's, so the
+      donor-derived y read as a lens buried in the dash on every car wearing
+      the procedural interior. See CONSOLE_CAM.procDy.
+
+      Still ONE knob rather than two, so the J toggle cannot move the numbers
+      someone is tuning out from under them — only which of them is summed. */
+  private consoleCam(): { x: number; y: number; z: number; fov: number; tilt: number; procDy: number } {
     if (!window.__consoleCam) window.__consoleCam = { ...CONSOLE_CAM };
     return window.__consoleCam;
+  }
+
+  /** Height the centre-console lens gains in the procedural cabin — 0 with a
+      donor cabin up, since CONSOLE_CAM.y is measured in the donor. */
+  private consoleRise(): number {
+    return this.rig.cockpitModel ? 0 : this.consoleCam().procDy;
   }
 
   /** Mount, lens, cant and aim for the backseat camera — see BACKSEAT_CAM for
@@ -5837,7 +5874,7 @@ export class Game {
             // x scaled with the shell like both other in-car mounts, so a
             // narrower car keeps the lens in the channel between its seats
             k.x * (P.W / COCKPIT_REF.W),
-            P.belt - COCKPIT_REF.belt + k.y,
+            P.belt - COCKPIT_REF.belt + k.y + this.consoleRise(),
             k.z
           )
         )
