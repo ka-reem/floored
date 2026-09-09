@@ -32,22 +32,25 @@ const REF = arg("--git", "");
 const JSON_OUT = arg("--json", "");
 const TITLE = arg("--title", REF ? `at ${REF}` : "working tree");
 
+/* game/util.ts is in the list because corridor.ts and ramps.ts import it;
+   compiling from a copy means every source they reach has to be copied too. */
 const SRC = ["game/world/corridor.ts", "game/world/ramps.ts", "game/world/routegraph.ts",
-  "game/world/const.ts"];
+  "game/world/const.ts", "game/util.ts"];
 const work = mkdtempSync(path.join(tmpdir(), "mtngap-"));
-let root = process.cwd();
-if (REF) {
-  root = path.join(work, "src");
-  for (const f of SRC) {
-    mkdirSync(path.join(root, path.dirname(f)), { recursive: true });
-    writeFileSync(path.join(root, f),
-      execFileSync("git", ["show", `${REF}:${f}`], { encoding: "utf8", maxBuffer: 1 << 26 }));
-  }
+/* Always compile from a COPY, never from the repo root: a tsconfig.json
+   beside the sources makes some TypeScript versions refuse a file list
+   outright, and which version npx picks here is not stable. */
+const root = path.join(work, "src");
+for (const f of SRC) {
+  mkdirSync(path.join(root, path.dirname(f)), { recursive: true });
+  writeFileSync(path.join(root, f), REF
+    ? execFileSync("git", ["show", `${REF}:${f}`], { encoding: "utf8", maxBuffer: 1 << 26 })
+    : readFileSync(f, "utf8"));
 }
 const js = path.join(work, "js");
 execFileSync("npx", ["tsc", ...SRC, "--outDir", js, "--rootDir", ".",
   "--module", "esnext", "--target", "es2020", "--moduleResolution", "bundler",
-  "--skipLibCheck", "--ignoreConfig"], { cwd: root, stdio: ["ignore", "ignore", "inherit"] });
+  "--skipLibCheck"], { cwd: root, stdio: ["ignore", "inherit", "inherit"] });
 const dir = path.join(js, "game", "world");
 for (const f of ["corridor.js", "ramps.js", "routegraph.js", "const.js"]) {
   const p = path.join(dir, f);
@@ -62,25 +65,38 @@ const st = mt.stations;
 /* ---- highway.ts buildMountainRoad constants, re-derived ---- */
 const WALL_T = 0.3;
 const sstep = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
-const rockK = (s) => sstep((s - 18) / 50) * sstep((mt.len - 22 - s) / 50);
+const rockKs = (s) => sstep((s - 18) / 50) * sstep((mt.len - 22 - s) / 50);
+/* the scenery limit routegraph measures beside each station, and the two
+   things highway.ts does with it (see buildMountainRoad). It reads Infinity
+   on a revision that predates the fix, which collapses both back to the old
+   unclamped behaviour — so one harness measures both sides of it. */
+const lim = (s) => (typeof mt.westLimit === "function" ? mt.westLimit(s) : Infinity);
+const wlim = (s, lat) => Math.min(lat, lim(s));
+const rockK = (s, hwR) => rockKs(s) * sstep((lim(s) - (hwR + 1.0)) / 9);
 /** the west (rock) side pieces, as lateral offsets from the station centre,
     most-westward first. lat is NEGATIVE toward the deck. */
 function westPieces(p) {
   const sh = mt.sharedSides(p.s);
   const { hwL, hwR } = mt.halfWidths(p.s);
   const out = [];
+  const K = rockK(p.s, hwR);
   out.push({ kind: "PAVEMENT", lat: -hwR, y: p.y - hwR * p.bank });
-  if (!sh.shR && hwR >= 0.55 && rockK(p.s) < 0.7)
+  if (!sh.shR && hwR >= 0.55 && K < 0.7)
     out.push({ kind: "PARAPET", lat: -(hwR + 0.06 + WALL_T), y: p.y });
-  if (!sh.shR && rockK(p.s) > 0.02) {
+  if (!sh.shR && K > 0.02) {
     // the back flank reaches the flat bank at y = 0.02, 12 m out from the edge
-    out.push({ kind: "ROCK", lat: -(hwR + 12), y: 0.02 });
-    out.push({ kind: "ROCK", lat: -(hwR + 4.6 + 1.6), y: p.y + 6.4 });
+    out.push({ kind: "ROCK", lat: -wlim(p.s, hwR + 12), y: 0.02 });
+    out.push({ kind: "ROCK", lat: -wlim(p.s, hwR + 4.6 + 1.6), y: p.y + 6.4 });
   }
   /* the four waypoint lamps: the two gore-mouth ones sit at s = 14 and
      len − 16, on the rock side, 5.6 m of pole */
   for (const ls of [14, mt.len - 16])
-    if (Math.abs(p.s - ls) < 0.51) out.push({ kind: "LAMP", lat: -(hwR + 0.55), y: p.y });
+    if (Math.abs(p.s - ls) < 0.51)
+      out.push({
+        kind: "LAMP",
+        lat: hwR + 0.55 <= lim(ls) ? -(hwR + 0.55) : hwL + 1.35,
+        y: p.y,
+      });
   return { out, hwL, hwR, sh };
 }
 

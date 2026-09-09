@@ -143,6 +143,18 @@ export interface RouteStation {
   bank: number;
   /** grade dy/ds */
   grade: number;
+  /** MOUNTAIN ROAD ONLY (see fillMtnWestRoom). How far west of this station's
+      centre the pass's SCENERY may reach before it stands on pavement the
+      main deck owns — the expressway itself, plus the gore runoff apron
+      alongside it — with MTN_SCENERY_CLEAR of margin.
+
+      It exists because arclength is not a proxy for room. The rock face used
+      to open at a fixed 12 m the instant a station stopped being deck-shared,
+      which at both gores is ~5 m of road before there is 12 m of ground to
+      stand it on, and the hillside went straight through the expressway.
+      Undefined on every other edge, where nothing is near the deck; callers
+      clamp against PolyRouteEdge.westLimit(), which reads Infinity there. */
+  westRoom?: number;
 }
 
 export interface RouteNode {
@@ -565,6 +577,16 @@ export class PolyRouteEdge extends RouteEdge {
     }
     return { shL: p.shL, shR: p.shR };
   }
+  /** The scenery limit at arclength s — see RouteStation.westRoom. Infinity
+      on edges that carry none, so a caller may clamp unconditionally. */
+  westLimit(s: number): number {
+    const st = this.stations;
+    const i = this.locate(s);
+    const a = st[i], b = st[i + 1] ?? a;
+    if (a.westRoom === undefined || b.westRoom === undefined) return Infinity;
+    return a.westRoom + ((b.westRoom ?? a.westRoom) - a.westRoom) * this.segT;
+  }
+
   project(x: number, z: number, maxLat = 30, out?: { s: number; lat: number }) {
     if (
       x < this.x0 - maxLat || x > this.x1 + maxLat ||
@@ -762,6 +784,9 @@ export class RouteGraph {
     )) as PolyRouteEdge;
     this.attached = [this.bypass, this.mtn];
     this.mtnAprons = buildMtnAprons(cor, this.mtn);
+    /* last, and deliberately: the scenery limit is measured against the deck
+       edge AND the aprons, so it cannot be filled in until they exist */
+    fillMtnWestRoom(cor, this);
 
     this.crossings = findCrossings(cor, this.bypass);
   }
@@ -1429,6 +1454,46 @@ function buildMtnAprons(
   const div = build(MTN.divergeZ - 8, MTN.divergeZ + 150, 1);
   const mrg = build(MTN.mergeZ + 8, MTN.mergeZ - 150, -1);
   return [mrg, div].sort((a, b) => a.z0 - b.z0);
+}
+
+/** Margin the pass's scenery keeps east of the nearest pavement edge the main
+    deck owns. A deck parapet is ~0.25 m thick and stands ON that edge, so
+    anything under ~0.5 m here is still touching it. */
+const MTN_SCENERY_CLEAR = 0.8;
+/** Search ceiling: past this the deck is simply not near, and the hillside is
+    free to be as deep as it likes. Comfortably over the 12 m the cut face and
+    its back flank actually want. */
+const MTN_WEST_MAX = 26;
+
+/** Fill in RouteStation.westRoom for every mountain station.
+
+    `clearAt(p, w)` puts a probe w metres WEST of the station centre (−lat, the
+    deck side on this road at both gores), projects it into the corridor's
+    frame and asks how far it is beyond the outermost pavement the deck owns
+    there: its own edge plus the gore apron. westRoom is the largest w that
+    still leaves MTN_SCENERY_CLEAR, found by bisection because the two
+    centrelines are not parallel through a gore and a small-angle guess is
+    wrong by metres exactly where it matters most.
+
+    Monotone in w (walking west can only reduce the clearance), so the
+    bisection is exact to 26 / 2^30 m. */
+function fillMtnWestRoom(cor: Corridor, rg: RouteGraph) {
+  const clearAt = (p: RouteStation, w: number) => {
+    const x = p.x - p.nx * w, z = p.z - p.nz * w;
+    const zc = cor.zAt(x, z);
+    return cor.latAt(x, z) - (cor.halfWidth(zc) + rg.apronW(zc));
+  };
+  for (const p of rg.mtn.stations) {
+    if (clearAt(p, MTN_WEST_MAX) >= MTN_SCENERY_CLEAR) { p.westRoom = MTN_WEST_MAX; continue; }
+    if (clearAt(p, 0) < MTN_SCENERY_CLEAR) { p.westRoom = 0; continue; }
+    let lo = 0, hi = MTN_WEST_MAX;
+    for (let k = 0; k < 30; k++) {
+      const mid = (lo + hi) / 2;
+      if (clearAt(p, mid) >= MTN_SCENERY_CLEAR) lo = mid;
+      else hi = mid;
+    }
+    p.westRoom = lo;
+  }
 }
 
 /** Wrap a corridor connector ramp (ramps.ts) as a graph edge. Entry ramps are
