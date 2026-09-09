@@ -1264,6 +1264,12 @@ async function build(style, cfg) {
       side.x += c[0]; side.y += c[1]; side.z += c[2]; side.n++;
     }
   }
+  /* The fallback below is a blind guess and it has shipped two wrong lamps:
+     the suv's tail landed 0.24 m under its lenses and the bus's landed 0.08 m
+     INSIDE the rear panel, where the depth test ate the glow sprite whole.
+     Both are corrected by the measured TAIL_FIX table in game/npcmodels.ts —
+     if this finder is ever taught to see those two lens clusters, retire that
+     entry rather than leaving the two corrections stacked. */
   const pair = (k, fallbackY, fallbackZ) => {
     const s = lampSum[k];
     if (s[0].n > 3 && s[1].n > 3)

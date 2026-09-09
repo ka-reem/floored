@@ -1,13 +1,17 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mulberry32, sstep, type Rng } from "../util";
-import { makeTex, asphalt, signTexF, exitSignTexF, warnTexF, roadWordTexF } from "../textures";
+import {
+  makeTex, asphalt, signTexF, warnTexF, roadWordTexF,
+  guideSignTexF, mergeSignTexF,
+} from "../textures";
 import { RAMP_W, CONNECT_Z, LOOP_LEN } from "./const";
 import { parapetGap } from "./ramps";
 import { BYPASS, DIVERGE_Z, MERGE_Z, MOUNTAIN_EDGE, type RouteGraph } from "./routegraph";
 import {
   getCorridor, assertPitches, signPlan, roadSeed, PITCH, PHASE, SIGN, TUNNEL, TOLL,
-  TOLL_PLAZA, BRIDGE, BRIDGES, OVERPASS, OVERPASSES, MTN, type SectionKind, type Station,
+  TOLL_PLAZA, BRIDGE, BRIDGES, OVERPASS, OVERPASSES, MTN, AUX_LANES, GUIDE_H,
+  type SectionKind, type Station,
 } from "./corridor";
 import type { Mats } from "./mats";
 import type { WorldData } from "./data";
@@ -17,6 +21,20 @@ import { buildRoadDecals } from "./decals";
 import { buildWheelTracks, buildDeckDressing } from "./deckdetail";
 
 const EXIT_NAMES = ["中野 Nakano", "本町 Honchō"];
+
+/** Advance-warning distances for the bypass diverge. Not 1000/500/200 like
+    the town exit: a board a kilometre back from z = 500 lands on the town
+    exit's own gore, so the run starts at 800 instead. Shared with the
+    mastGaps list above so the soundwall lattice steps around the same masts
+    the boards are actually built on. */
+const BYPASS_BOARD_D = [800, 400, 200];
+
+/** "1 km" / "500 m". A board that says 1000 m reads as a typo. */
+function distLabel(d: number) {
+  return d >= 1000
+    ? (d % 1000 === 0 ? String(d / 1000) : (d / 1000).toFixed(1)) + " km"
+    : d + " m";
+}
 const LAYER_NOREF = 1;
 
 /* One-way elevated expressway.
@@ -314,7 +332,7 @@ export function buildHighway(
   for (const s of signPlan()) mastGaps.push({ z0: s.z - 1.5, z1: s.z + 1.5, side: -1 });
   // …and the bypass's own boards, which buildBypassViaduct hangs off the same
   // corridor edge from its own gores
-  for (const z of [DIVERGE_Z - 400, DIVERGE_Z - 200, DIVERGE_Z - 40, MERGE_Z - 80])
+  for (const z of [...BYPASS_BOARD_D.map((d) => DIVERGE_Z - d), DIVERGE_Z - 40, MERGE_Z - 80])
     mastGaps.push({ z0: z - 1.5, z1: z + 1.5, side: -1 });
   /* …and the mountain road's (buildMountainRoad). Its approach runs into the
      seam, so the boards sit at wrapped z back inside the canonical band. */
@@ -429,20 +447,23 @@ export function buildHighway(
     const a = ST[i], b = ST[i + 1];
     const c = chunkOf(a.z);
     // pavement
-    const la = pt(i, -a.hw), ra = pt(i, a.hw);
-    const lb = pt(i + 1, -b.hw), rb = pt(i + 1, b.hw);
+    /* `hwL` is the WEST half-width — `hw` plus whatever auxiliary ramp lane
+       is open here (corridor.AUX_LANES). The deck is the only asymmetric
+       thing on the corridor and this is where that starts. */
+    const la = pt(i, -a.hwL), ra = pt(i, a.hw);
+    const lb = pt(i + 1, -b.hwL), rb = pt(i + 1, b.hw);
     soup(road, c).quadUv(
       la, lb, rb, ra,
       [0, a.s / TILE], [0, b.s / TILE],
-      [(2 * b.hw) / TILE, b.s / TILE], [(2 * a.hw) / TILE, a.s / TILE]
+      [(b.hw + b.hwL) / TILE, b.s / TILE], [(a.hw + a.hwL) / TILE, a.s / TILE]
     );
     // fascia: the box girder under the deck. Its depth follows the section —
     // the bridge span's girder is the arch tie and is nearly twice as deep,
     // which is most of what makes the span read as a bridge from below and
     // from the mirrors on the way off it.
     const dtA = deckTh(a.z), dtB = deckTh(b.z);
-    const lad = pt(i, -a.hw - 0.5, -dtA), rad = pt(i, a.hw + 0.5, -dtA);
-    const lbd = pt(i + 1, -b.hw - 0.5, -dtB), rbd = pt(i + 1, b.hw + 0.5, -dtB);
+    const lad = pt(i, -a.hwL - 0.5, -dtA), rad = pt(i, a.hw + 0.5, -dtA);
+    const lbd = pt(i + 1, -b.hwL - 0.5, -dtB), rbd = pt(i + 1, b.hw + 0.5, -dtB);
     const F = soup(fascia, c);
     F.quad(la, lb, lbd, lad); // west side
     F.quad(ra, rad, rbd, rb); // east side
@@ -463,7 +484,7 @@ export function buildHighway(
         for (const [zA, zB] of wallSpans(a.z, e.z, sgn > 0)) {
           const W = soup(walls, c);
           const P = (z: number, out: number, dy = 0): Vec3 => {
-            const lat = sgn * (cor.halfWidth(z) + WALL_T / 2 + 0.06) + out;
+            const lat = cor.edgeLat(z, sgn) + sgn * (WALL_T / 2 + 0.06) + out;
             const w = cor.worldOf(z, lat);
             return [w.x, w.y + dy, w.z];
           };
@@ -531,13 +552,51 @@ export function buildHighway(
         [0, v0], [0, v1], [1, v1], [1, v0]
       );
     };
-    // solid edge lines down both shoulders
+    /* Solid edge lines down both shoulders. The WEST one rides the outer edge
+       of the auxiliary lane where one is open, which is what makes the exit
+       lane read as pavement peeling away rather than as a wider shoulder.
+
+       And where it has peeled away, the line it left behind is drawn too —
+       a wide SOLID divider on the through-lane edge, the line a real freeway
+       uses to say "past here you are committed to the exit". It is 0.30 m
+       against the shoulder line's 0.20: on a 400 m approach the extra width
+       is most of what tells the two lines apart at range.
+
+       The one exception is a RAMP_LEAD handover, where the deck's own edge is
+       a seam in the middle of continuous pavement (the deck's share closing,
+       the ramp's opening into the same band) — a line painted on it would be
+       a white diagonal drawn across the exit lane. There the shoulder line is
+       the ramp's outer edge, which is straight and does not move. */
+    const westLine = (z: number) => {
+      const h = AUX_LANES.find((a) => a.kind === "exit"
+        ? z > a.z2 && z < a.z3 : z > a.z0 && z < a.z1);
+      return (h ? cor.halfWidth(z) + h.w : cor.edgeHalf(z, -1)) - 0.45;
+    };
     const E = PITCH.edge;
     for (const z of cor.lattice(E)) {
       if (z + E > cor.ZB1) continue;
       const h0 = cor.halfWidth(z) - 0.45, h1 = cor.halfWidth(z + E) - 0.45;
-      stripe(z, z + E, -h0, -h1, 0.2);
+      const a0 = westLine(z), a1 = westLine(z + E);
+      stripe(z, z + E, -a0, -a1, 0.2);
       stripe(z, z + E, h0, h1, 0.2);
+      /* …but not where it would land on top of the shoulder line it grew out
+         of (the first metres of the opening taper), and not down an
+         entrance's merge taper, which is the one stretch traffic is meant to
+         cross. */
+      const solid = AUX_LANES.some(
+        (a) => z > a.z0 && z + E < a.z3 && !(a.kind === "entry" && z > a.z2));
+      if (solid && (cor.auxWidth(z) > 1.2 || cor.auxWidth(z + E) > 1.2))
+        stripe(z, z + E, -h0, -h1, 0.3);
+    }
+    // the merge taper's divider, broken, on the dash lattice
+    for (const a of AUX_LANES) {
+      if (a.kind !== "entry") continue;
+      const DASH_M = 6;
+      for (const z of cor.lattice(PITCH.dash)) {
+        if (z < a.z2 || z + DASH_M > a.z3) continue;
+        stripe(z, z + DASH_M,
+          -(cor.halfWidth(z) - 0.45), -(cor.halfWidth(z + DASH_M) - 0.45), 0.3);
+      }
     }
     // dashed lane boundaries; a boundary only exists once its lane is real
     const DASH = 6;
@@ -570,7 +629,8 @@ export function buildHighway(
     for (const z of cor.lattice(PITCH.dash, DASH + (PITCH.dash - DASH) / 2)) {
       if (z > cor.ZB1) continue;
       const into = cor.inTunnel(z) ? tubePts : studPts;
-      const lats = [cor.halfWidth(z) - 0.45, -(cor.halfWidth(z) - 0.45)];
+      const lats = [cor.halfWidth(z) - 0.45, -westLine(z)];
+      if (cor.auxWidth(z) > 0.5) lats.push(-(cor.halfWidth(z) - 0.45));
       for (let k = 1; k < Math.ceil(cor.laneCount(z) - 0.35); k++) lats.push(cor.laneEdge(k, z));
       for (const lat of lats) {
         const p = cor.worldOf(z, lat);
@@ -910,30 +970,87 @@ export function buildHighway(
   const postMat = new THREE.MeshStandardMaterial({
     color: 0x39404e, roughness: 0.6, metalness: 0.6 });
 
+  const mergeWordMat = wordMat("合流");
   terrain.ramps.forEach((r) => {
     const isExit = r.kind === "exit";
     const gi = CONNECT_Z.indexOf(r.zr);
     const name = EXIT_NAMES[gi] || "出口";
-    const lat = -(cor.halfWidth(r.zr) - 1.9);
+    const fwd = isExit ? 1 : -1; // "toward the gore" in z
+    /** Centre of the lane that leaves (or joins): the auxiliary lane where
+        one is open, the kerb lane where there is not. */
+    const auxLat = (z: number) => {
+      const a = cor.auxWidth(z);
+      return a > 2 ? -(cor.halfWidth(z) + a / 2) : -(cor.halfWidth(z) - 1.9);
+    };
     if (isExit) world.exits.push({ z: r.zr, no: gi + 1, name });
-    // painted gore chevrons at the nose
-    const gp = cor.worldOf(r.zr + (isExit ? 4 : -4), lat);
-    const gore = new THREE.Mesh(flatQuad(3.2, 6.4), goreMat);
-    gore.rotation.y = cor.pose(r.zr).h + (isExit ? 0 : Math.PI);
-    gore.position.set(gp.x, gp.y + 0.03, gp.z);
-    gore.layers.set(LAYER_NOREF);
-    scene.add(gore);
-    // amber beacon on the nose
-    const bp = cor.worldOf(r.zr, -(cor.halfWidth(r.zr) - 0.5));
+    /* The physical nose: where the deck's own parapet picks up again past
+       the mouth — with a deceleration lane that is RAMP_LEAD + the gore
+       further on than the gore z, not a few metres. */
+    const pg = parapetGap(r);
+    const noseZ = isExit ? pg.z1 : pg.z0;
+    /* Painted gore. What used to be here was ONE 3.2 x 6.4 m chevron patch at
+       the nose — 6 m of paint for a divergence that is 50 m long, and at
+       100 km/h it went past in a fifth of a second. The real gore is the
+       triangle that opens between the through-lane edge and the ramp as the
+       two pull apart, so the hatch is laid down the whole of it, widening the
+       way the triangle does. */
+    {
+      /** the ramp's inner pavement edge at z, in corridor lateral coords */
+      const rampEdge = (z: number) => {
+        let best = 0, bd = 1e9;
+        for (const q of r.pts) {
+          const d2 = Math.abs(q.z - z);
+          if (d2 < bd) { bd = d2; best = cor.latAt(q.x, q.z) + q.hIn; }
+        }
+        return best;
+      };
+      for (let d = 4; d < 66; d += 5.6) {
+        const z = r.zr + fwd * d;
+        const hi = -(cor.halfWidth(z) - 0.35); // the through lanes' edge line
+        const lo = rampEdge(z);
+        const wd = hi - lo;
+        if (wd < 0.55) continue;
+        const g = decal(z, (lo + hi) / 2, Math.min(wd, 6), 5.4, goreMat);
+        if (!isExit) g.rotation.y += Math.PI;
+      }
+      /* And the physical nose: a chevron board on a concrete block where the
+         deck's own parapet picks up again. The bypass gores have had one
+         since they were built; the town gores never did, and the mouth just
+         ended. */
+      const nz = noseZ + (isExit ? 1.2 : -1.2);
+      const np = cor.worldOf(nz, -(cor.halfWidth(nz) + 0.55));
+      const nh = cor.pose(nz).h;
+      const blk = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.85, 1.4), mats.concDark);
+      blk.position.set(np.x, np.y + 0.42, np.z);
+      blk.rotation.y = nh;
+      blk.castShadow = true;
+      scene.add(blk);
+      const bd2 = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.0),
+        new THREE.MeshBasicMaterial({ map: mats.chevTex }));
+      bd2.position.set(np.x, np.y + 1.42, np.z);
+      bd2.rotation.y = nh + Math.PI; // face the oncoming stream
+      scene.add(bd2);
+      add({
+        x0: np.x - 0.7, x1: np.x + 0.7, z0: np.z - 0.85, z1: np.z + 0.85,
+        y0: np.y - 0.5, y1: np.y + 1.15,
+      });
+    }
+    const bp = cor.worldOf(noseZ, -(cor.halfWidth(noseZ) + 0.5));
     const bea = new THREE.Sprite(world.goreBeaconMat!);
     bea.scale.set(1.9, 1.9, 1);
     bea.position.set(bp.x, bp.y + 1.9, bp.z);
     scene.add(bea);
 
-    // decel-lane arrows leading into the exit, and 出口 painted in the lane
+    /* Lane guidance down the auxiliary lane. Four arrows and three 出口 over
+       350 m, against three arrows and one word over 122 m before — the paint
+       is what says "this whole lane is leaving", and it has to be readable
+       from the moment the lane opens. */
     if (isExit) {
-      for (let k = 0; k < 3; k++) decal(r.zr - 34 - k * 26, lat + 0.5, 1.6, 3.4, arrowMat);
-      word(r.zr - 122, lat + 0.5, exitWordMat, 2);
+      for (const d of [44, 84, 124, 164])
+        decal(r.zr - d, auxLat(r.zr - d), 1.8, 4.0, arrowMat);
+      for (const d of [210, 280, 350]) word(r.zr - d, auxLat(r.zr - d), exitWordMat, 2);
+    } else {
+      for (const d of [80, 130, 180]) word(r.zr + d, auxLat(r.zr + d), mergeWordMat, 2);
     }
     // ground-level sign at the ramp foot
     const gx = r.footX - 6, gz = r.footZ + (isExit ? -1 : 1) * (RAMP_W / 2 + 2.4);
@@ -952,11 +1069,12 @@ export function buildHighway(
      corridor.signPlan() so the browser-free checks can assert the real
      placement rather than a copy of it. */
   for (const s of signPlan()) {
-    const nm = (EXIT_NAMES[s.gore] || "出口").split(" ")[0];
+    const [jp, en] = (EXIT_NAMES[s.gore] || "出口 Exit").split(" ");
     const tex =
-      s.kind === "exit-count" ? exitSignTexF(s.gore + 1, s.dist + " m", nm)
-        : s.kind === "exit-gore" ? exitSignTexF(s.gore + 1, "出口", nm)
-          : s.kind === "merge" ? warnTexF("合流注意", "MERGING TRAFFIC")
+      s.kind === "exit-count" ? guideSignTexF(s.gore + 1, jp, en || "", distLabel(s.dist))
+        : s.kind === "exit-gore"
+          ? guideSignTexF(s.gore + 1, jp, en || "", "", { only: true })
+          : s.kind === "merge" ? mergeSignTexF(distLabel(s.dist))
             : warnTexF("料金所 " + s.dist + " m", "TOLL");
     board(s.z, s.w, s.h, tex);
   }
@@ -993,18 +1111,18 @@ export function buildHighway(
     const pts: number[] = [];
     for (const z of cor.lattice(PITCH.reflector)) {
       if (cor.inTunnel(z)) continue;
-      const hw = cor.halfWidth(z) + 0.23;
+      const hwE = cor.halfWidth(z) + 0.23, hwW = cor.edgeHalf(z, -1) + 0.23;
       /* not in a parapet gap: a delineator rides the coping, and where a gore
          has cut the barrier away it would float in mid-air over the mouth */
       const inGap = (side: 1 | -1) =>
         newGaps.some((g) => g.side === side && z > g.z0 && z < g.z1) ||
         (side < 0 && gapZ.some((g) => z > g.z0 && z < g.z1));
       if (!inGap(-1)) {
-        const a = cor.worldOf(z, -hw);
+        const a = cor.worldOf(z, -hwW);
         pts.push(a.x, a.y + 1.02, a.z);
       }
       if (!inGap(1)) {
-        const b = cor.worldOf(z, hw);
+        const b = cor.worldOf(z, hwE);
         pts.push(b.x, b.y + 1.02, b.z);
       }
     }
@@ -1043,7 +1161,7 @@ export function buildHighway(
       if (gapZ.some((g) => z > g.z0 - 2 && z < g.z1 + 2)) continue;
       if (newGaps.some((g) => g.side < 0 && z > g.z0 - 2 && z < g.z1 + 2)) continue;
       const p = cor.pose(z);
-      const lat = -(cor.halfWidth(z) + 0.23);
+      const lat = cor.edgeLat(z, -1) - 0.23;
       slots.push({
         x: p.x + lat * p.nx, y: p.y + WALL_H, z: p.z + lat * p.nz,
         h: p.h, nx: p.nx, nz: p.nz,
@@ -1581,8 +1699,7 @@ export function buildHighway(
       const p = cor.pose(z);
       // mounted on the parapet, not inside the shoulder where a car scraping
       // the barrier would drive through the pole
-      const hw = cor.halfWidth(z);
-      const lat = flip * (hw + 0.23);
+      const lat = cor.edgeLat(z, flip) + flip * 0.23;
       E.set(0, p.h, 0);
       Q.setFromEuler(E);
       V.set(p.x + lat * p.nx, p.y + 3.8, p.z + lat * p.nz);
@@ -1616,7 +1733,7 @@ export function buildHighway(
       }
       // pool hangs off the head itself (lampLat), flat deck so yAt is constant
       if (wantPools && keepNth(poolEvery))
-        emitPool(p, lampLat, flip, hw * POOL_IN_F, () => p.y);
+        emitPool(p, lampLat, flip, cor.edgeHalf(z, flip) * POOL_IN_F, () => p.y);
       n++;
     }
     /* the viaduct's lights: same fittings, bypass station frame, cross-fall
@@ -1980,11 +2097,13 @@ function buildOverpasses(
   for (const spec of OVERPASSES) {
     const { z, clear, girderD, girderW, outSet } = spec;
     const p = cor.pose(z);
-    const hw = cor.halfWidth(z);
     const soffitY = p.y + clear;
     const topY = soffitY + girderD;
-    const pierLat = hw + outSet;
-    const halfLen = pierLat + 6;
+    /* Outboard of the REAL edge on each side. Two of the four crossings
+       (z −816 and −720) stand over the exit's deceleration lane, and a pier
+       sited off halfWidth alone would be planted in it. */
+    const pierLatW = cor.edgeHalf(z, -1) + outSet, pierLatE = cor.halfWidth(z) + outSet;
+    const halfLen = Math.max(pierLatW, pierLatE) + 6;
     const centre = cor.worldOf(z, 0);
 
     /* box girder, spanning the lateral (normal) direction — local X after a
@@ -2002,7 +2121,7 @@ function buildOverpasses(
     /* two piers, outboard of the deck edge — clear of every lane count the
        seed can roll at this z, since pierLat is halfWidth(z) + outSet */
     for (const side of [-1, 1]) {
-      const w = cor.worldOf(z, side * pierLat);
+      const w = cor.worldOf(z, side * (side < 0 ? pierLatW : pierLatE));
       const gy = terrain.h(w.x, w.z);
       const h = Math.max(2, soffitY - gy);
       put(piers, w.x, gy + h / 2, w.z, 1, h, 1, 0);
@@ -3404,7 +3523,7 @@ function buildRampMeshes(
              hugging the outside lane line got kicked by it. The deck parapet
              (clipped to the gap window) takes over on the deck side. */
           const zc = cor.zAt(a.x, a.z);
-          const clear = -cor.halfWidth(zc) - (cor.latAt(a.x, a.z) + a.hIn);
+          const clear = cor.edgeLat(zc, -1) - (cor.latAt(a.x, a.z) + a.hIn);
           if (clear < 0.75) continue;
         }
         const off = sgn * (WALL_T / 2 + 0.12);
@@ -3428,13 +3547,17 @@ function buildRampMeshes(
           cos: wdz / wl, sin: wdx / wl, y0: a.y - 1.2, y1: a.y + WALL_H + 1.2,
         });
       }
-      // edge lighting down both sides
-      if (i % 8 === 0 && a.s < wallEnd) {
+      /* Edge lighting down both sides — but only once the ramp is its own
+         road. While it is still attached (the auxiliary-lane handover and the
+         gore) its "inner edge" is a painted line in the middle of running
+         pavement, and a lamp there is a bollard in the lane. */
+      if (i % 8 === 0 && a.s < wallEnd && a.s > r.sSep) {
         const lo = edge(i, -a.hOut - 0.5, 0.95), li = edge(i, a.hIn + 0.5, 0.95);
         postPts.push(lo[0], lo[1], lo[2], li[0], li[1], li[2]);
       }
-      // support columns
-      if (i % 7 === 0 && upA > 2.2 && nCol < 96) {
+      // support columns — likewise: while attached the deck's own piers carry
+      // this pavement, and a column here would stand under the deck
+      if (i % 7 === 0 && upA > 2.2 && a.s > r.sSep && nCol < 96) {
         CE.set(0, Math.atan2(a.tx, a.tz), 0);
         CQ.setFromEuler(CE);
         CV.set(a.x, a.gy + (upA - 0.5) / 2, a.z);
@@ -3458,10 +3581,14 @@ function buildRampMeshes(
       const g = parapetGap(r);
       const zP = r.dir > 0 ? g.z0 : g.z1;
       // deck parapet centreline at its clipped end (0.34/0.06 match buildHighway)
-      const latP = -(cor.halfWidth(zP) + 0.34 / 2 + 0.06);
+      const latP = cor.edgeLat(zP, -1) - (0.34 / 2 + 0.06);
       const wP = cor.worldOf(zP, latP);
       const p0 = pts[0];
-      const nOff = WALL_T / 2 + 0.12; // the outer wall's centre offset at hOut = 0
+      /* Where the ramp's OWN outer wall starts. A ramp fed by an auxiliary
+         lane begins at full width, so this is `hOut` out from the centreline,
+         not the zero it used to assume — assuming zero ran the connector wall
+         diagonally across the deceleration lane. */
+      const nOff = p0.hOut + WALL_T / 2 + 0.12;
       const nx0 = p0.x - p0.nx * nOff, nz0 = p0.z - p0.nz * nOff;
       const dx = nx0 - wP.x, dz = nz0 - wP.z;
       const dl = Math.hypot(dx, dz) || 1;
@@ -3747,9 +3874,14 @@ function buildBypassViaduct(
      ahead of the gore. The doc suggested MERGE_Z − 150 ≈ 1430, but that mast
      would stand under the toll canopy (and its 1240 fallback is still inside
      the tunnel, z1 = 1260) — 80 m of notice from z = 1500 clears both. */
-  for (const d of [400, 200]) board(DIVERGE_Z - d, 7.4, 2.8, exitSignTexF(3, d + " m", "湾岸"));
-  board(DIVERGE_Z - 40, 7.4, 2.8, exitSignTexF(3, "出口", "湾岸"));
-  board(MERGE_Z - 80, 6.6, 2.5, warnTexF("合流注意", "MERGING TRAFFIC"));
+  for (const d of BYPASS_BOARD_D)
+    board(DIVERGE_Z - d, 9.4, GUIDE_H, guideSignTexF(3, "湾岸", "Bypass", distLabel(d)));
+  /* The gore panel keeps its narrower 7.4 m board — it hangs over the diverge
+     wedge rather than the through lanes — so its height comes off the face's
+     2.848 aspect instead of GUIDE_H. Same artwork, 79% of the size, nothing
+     stretched. */
+  board(DIVERGE_Z - 40, 7.4, 7.4 / 2.848, guideSignTexF(3, "湾岸", "Bypass", "", { only: true }));
+  board(MERGE_Z - 80, 6.6, 2.5, mergeSignTexF("80 m"));
 }
 
 /* ============================ mountain road ============================= */
@@ -4339,9 +4471,17 @@ function buildMountainRoad(
   }
 
   const [b400, b200, bGore, bOneWay, bMerge] = MTN_BOARD_Z();
-  board(b400, 7.4, 2.8, exitSignTexF(4, "400 m", "峠"));
-  board(b200, 7.4, 2.8, exitSignTexF(4, "200 m", "峠"));
-  board(bGore, 7.4, 2.8, exitSignTexF(4, "出口", "峠"));
+  /* EXIT 4 on the guide face, like every other exit on the lap. These hang
+     from the main deck's own masts on the approach (MTN_BOARD_Z is corridor
+     z, not mountain z), but they keep the narrower 7.4 m board they have
+     always had — the mountain exit is a LEFT exit off the fast lane and a
+     9.4 m panel reaching in from the west post would sit over the kerb lane,
+     the one side of the road this exit does NOT concern. Height off the face
+     aspect, as with the bypass gore. */
+  const MB_W = 7.4, MB_H = MB_W / 2.848;
+  board(b400, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "400 m"));
+  board(b200, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "200 m"));
+  board(bGore, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "", { only: true }));
   // the pass is a single lane in one direction — say so before the gore, not
   // after it, since the gore is the last place a driver can decline it
   board(bOneWay, 6.6, 2.5, warnTexF("一方通行 一車線", "ONE WAY · SINGLE LANE"));

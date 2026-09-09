@@ -189,7 +189,7 @@ async function compose(browser, vp, shots) {
   .hd { color:#8fa6d8; font-size:12px; padding:12px 14px 0; letter-spacing:0.08em; }
 </style>
 <div class="wrap" id="wrap">
-  <div class="hd">NEON EXPRESSWAY · CLEAN-RUN HUD TREATMENTS · ${vp.name} · dashcam (CAM_POV)</div>
+  <div class="hd">FLOORED · CLEAN-RUN HUD TREATMENTS · ${vp.name} · dashcam (CAM_POV)</div>
   ${panels
     .map(
       ([lbl, b64]) => `<div class="p"><div class="lbl">${lbl}</div>

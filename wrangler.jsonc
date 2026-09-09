@@ -1,0 +1,64 @@
+/* Cloudflare Workers — static assets only. THERE IS NO WORKER SCRIPT, AND
+   THAT IS THE POINT. See docs/deploy-cloudflare.md for the button press.
+
+   ── WHY NO `main` ────────────────────────────────────────────────────────
+   Cloudflare bills a request only if it INVOKES a Worker script. Requests
+   answered from the asset store are free and unlimited on every plan
+   (/workers/static-assets/billing-and-limitations/). A Worker with an
+   `assets` block and no `main` has nothing to invoke, so every request the
+   game makes — the HTML, all of /_next/static, all ~20 MB of models and
+   textures, the 404 page — is a free static asset, forever.
+
+   That matters here more than on most sites: one first load of this game is
+   roughly 30-60 requests. Route those through a Worker and the free plan's
+   100,000 invocations/day stops being "more traffic than we will ever see"
+   and becomes ~1,500-3,000 page loads/day — worse than the Vercel bandwidth
+   ceiling this move exists to escape. So:
+
+     - DO NOT add `main`. Next builds to a plain file tree (`output: "export"`
+       in next.config.mjs); there is nothing for a Worker to do.
+     - DO NOT set `run_worker_first`. It is false by default, which is what we
+       want; setting it true invokes the script for EVERY request, and on the
+       free plan a request over the limit gets a 429 instead of falling back
+       to the asset (Cloudflare's own warning, same doc).
+     - DO NOT reach for @cloudflare/next-on-pages or @opennextjs/cloudflare.
+       Those adapters exist to run Next's server on Workers; they would turn
+       every navigation into a billed invocation to render pages that are
+       already static files.
+
+   Anything that would need a server belongs on Vercel, which still builds
+   from this same branch (vercel.json is untouched).
+
+   ── EVERYTHING ELSE ──────────────────────────────────────────────────────
+   Response headers come from public/_headers, which the build copies to
+   out/_headers; Workers parses it natively and never serves it. Verified
+   against /workers/static-assets/headers/. There is no _redirects file — the
+   game is one route.
+
+   Local proof that this config is right: `npm run cf:check` serves out/ with
+   these exact rules and drives the game in it (test/lib/cf-assets-server.mjs).
+*/
+{
+  "name": "floored",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    /* The static export. `npm run build:static` writes it. */
+    "directory": "./out",
+
+    /* auto-trailing-slash is the default and the right one for a Next export:
+       out/index.html serves at "/", and out/404.html is reachable but not
+       linked. The app is a single route, so nothing else depends on it. */
+    "html_handling": "auto-trailing-slash",
+
+    /* MATCHES VERCEL. An unknown path today renders app/not-found and returns
+       404; "404-page" serves the nearest 404.html at status 404, which is the
+       file Next exported from that same component. NOT
+       "single-page-application" — that answers every unknown path with
+       index.html at 200, which would boot the whole game for a crawler
+       hitting /wp-login.php and tell Google the URL is real. */
+    "not_found_handling": "404-page"
+
+    /* No "binding": nothing can call env.ASSETS when there is no script.
+       No "run_worker_first": see above. Leave both absent. */
+  }
+}

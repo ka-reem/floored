@@ -2848,19 +2848,24 @@ a.sign-plate-btn {
 body.touch .tc:active,
 body.touch .tc.pressed,
 #tcMore:active,
-.qdRow:active {
+#tcMore.pressed,
+#gearBtn.pressed,
+.qdRow:active,
+.qdRow.pressed {
   border-color: #ffd280;
   background: rgba(255, 180, 84, 0.28);
   color: #fff0be;
   box-shadow: 0 0 22px rgba(255, 180, 84, 0.85), 0 0 0 4px rgba(255, 180, 84, 0.18);
   text-shadow: 0 0 10px rgba(255, 210, 128, 0.9);
 }
-.qdRow:active .qdState {
+.qdRow:active .qdState,
+.qdRow.pressed .qdState {
   border-color: #ffd280;
   background: rgba(255, 180, 84, 0.35);
   color: #fff0be;
 }
-.qdRow:active .qdLabel i {
+.qdRow:active .qdLabel i,
+.qdRow.pressed .qdLabel i {
   color: #ffd280;
 }
 /* Narrow phones (≤420): the HORN puck used to sit at right:168, which on a
@@ -3718,5 +3723,128 @@ body.touch .tc.pressed,
     white-space: nowrap;
     overflow: clip visible;
     text-overflow: ellipsis;
+  }
+}
+
+/* ---------- settings while it loads (GameApp LoadSettings) ----------
+
+   More of the loading board, under the caption — not a panel on top of it.
+   The rule above is the same hairline the sign kit uses between sections, so
+   this reads as the board continuing rather than as something that arrived.
+
+   It only ever mounts on a load that has run past SHOW_AFTER_MS, so it is
+   allowed to change the board's height: there is nothing on screen at that
+   moment whose position anybody has learned. */
+.signLoad .loadSet {
+  width: auto;
+  margin: calc(26 * var(--su)) var(--sign-inset) 0;
+  padding-top: calc(20 * var(--su));
+  border-top: calc(3 * var(--su)) solid var(--sign-rule);
+  text-align: left;
+  /* the board is already up when this appears — arrive, do not pop */
+  animation: loadSetIn 320ms ease-out both;
+}
+@keyframes loadSetIn {
+  from { opacity: 0; transform: translateY(calc(8 * var(--su))); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .signLoad .loadSet { animation: none; }
+}
+.signLoad .loadSetHead {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: calc(6 * var(--su)) calc(12 * var(--su));
+  margin-bottom: calc(10 * var(--su));
+}
+.signLoad .loadSetHead b {
+  font-family: var(--font-sign);
+  font-weight: 800;
+  font-size: calc(14 * var(--su));
+  letter-spacing: 0.16em;
+  color: var(--sign-sodium);
+}
+.signLoad .loadSetHead span {
+  font-family: var(--font-sign-jp);
+  font-weight: 900;
+  font-size: calc(14 * var(--su));
+  letter-spacing: 0.16em;
+  color: var(--sign-ink-dim);
+}
+.signLoad .loadSetHead i {
+  margin-left: auto;
+  font-style: normal;
+  font-family: var(--font-sign);
+  font-weight: 700;
+  font-size: calc(11 * var(--su));
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sign-ink-dim);
+}
+/* Two columns where the board is wide enough for them, one on a phone. The
+   rows are the sign kit's own .sign-srow, so nothing about their type,
+   spacing or controls is re-specified here. */
+.signLoad .loadSetRows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: calc(34 * var(--su));
+}
+/* NARROW BOARD. The loading board is much narrower than the settings screen
+   and this is the phone the whole idea was for, so the rows stack rather than
+   trying to hold a label and a four-way control on one line — at 390px the
+   side-by-side layout pushed TILT, KM/H, the toggle and the volume readout
+   straight off the sign. Every control goes full width and shares it. */
+@media (max-width: 720px) {
+  .signLoad .loadSetRows { grid-template-columns: 1fr; }
+  .signLoad .loadSet .sign-srow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: calc(6 * var(--su));
+    padding: calc(8 * var(--su)) 0;
+  }
+  .signLoad .loadSet {
+    margin-top: calc(18 * var(--su));
+    padding-top: calc(14 * var(--su));
+  }
+  .signLoad .loadSet .sign-srow {
+    min-height: 0;
+  }
+  .signLoad .loadSet .sign-srow .ctl {
+    width: 100%;
+    max-width: 100%;
+    flex-shrink: 1;
+  }
+  .signLoad .loadSet .sign-seg {
+    display: flex;
+    width: 100%;
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  .signLoad .loadSet .sign-seg > * {
+    flex: 1 1 0;
+    min-width: 0;
+    justify-content: center;
+    /* BUTTONS is the widest label in here and it has to fit inside a quarter
+       of a 390px board: the padding goes first, the type second. */
+    padding-inline: calc(3 * var(--su));
+    font-size: calc(11.5 * var(--su));
+    letter-spacing: 0.04em;
+  }
+  /* A toggle is never wider than its half of the row, so the one row that
+     carries one keeps the label-left/control-right shape the rest of the game
+     uses rather than spending a whole extra line on it. */
+  .signLoad .loadSet .sign-srow:has(.sign-toggle) {
+    flex-direction: row;
+    align-items: center;
+  }
+  .signLoad .loadSet .sign-srow:has(.sign-toggle) .ctl {
+    width: auto;
+    margin-left: auto;
+    max-width: 40%;
+  }
+  .signLoad .loadSet .sign-sval {
+    width: 100%;
+    min-width: 0;
   }
 }

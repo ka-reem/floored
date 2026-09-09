@@ -41,12 +41,19 @@ const routes = getRouteGraph();
 const ramps = buildRamps(() => 0);
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
-/* ---- terrain.heightAt, replicated (ground = 0 in the band) ---- */
+/* ---- terrain.heightAt, replicated (ground = 0 in the band) ----
+   Including the `riser` rule: a surface at, or a kerb's worth above, the car's
+   own height beats anything lower, because pavement rising under the wheels
+   cannot be driven through. Keep this in step with game/world/terrain.ts —
+   the two drifting apart is what let the entry ramp ship unclimbable. */
+const STEP_UP = 0.35, EPS = 1e-6;
 function heightAt(x, z, refY) {
   let best = 0;
   let bestD = Math.abs(best - refY);
+  let riser = best >= refY - EPS && best <= refY + STEP_UP ? best : -Infinity;
   const take = (y) => {
     const d = Math.abs(y - refY);
+    if (y >= refY - EPS && y <= refY + STEP_UP && y > riser) riser = y;
     if (d < bestD || (d === bestD && y > best)) { best = y; bestD = d; }
   };
   if (refY > cor.centerY(z) - SURFACE_TOL) {
@@ -57,7 +64,7 @@ function heightAt(x, z, refY) {
   if (r && Math.abs(r.y - refY) < SURFACE_TOL) take(r.y);
   const g = routes.surfaceAt(x, z, 1.0);
   if (g && Math.abs(g.y - refY) < SURFACE_TOL) take(g.y);
-  return best;
+  return riser > best ? riser : best;
 }
 const onRamp = (x, z) => {
   const r = rampAt(ramps, x, z, 1.0);
@@ -81,7 +88,7 @@ for (const r of ramps) {
       if (a.s > wallEnd) continue;
       if (sgn > 0) {
         const zc = cor.zAt(a.x, a.z);
-        const clear = -cor.halfWidth(zc) - (cor.latAt(a.x, a.z) + a.hIn);
+        const clear = cor.edgeLat(zc, -1) - (cor.latAt(a.x, a.z) + a.hIn);
         if (clear < 0.75) continue;
       }
       const off = sgn * (WALL_T / 2 + 0.12);
@@ -102,10 +109,10 @@ for (const r of ramps) {
   // nose connector: clipped parapet end -> the outer wall's first post
   const g = parapetGap(r);
   const zP = r.dir > 0 ? g.z0 : g.z1;
-  const latP = -(cor.halfWidth(zP) + 0.34 / 2 + 0.06);
+  const latP = cor.edgeLat(zP, -1) - (0.34 / 2 + 0.06);
   const wP = cor.worldOf(zP, latP);
   const p0 = pts[0];
-  const nOff = WALL_T / 2 + 0.12;
+  const nOff = p0.hOut + WALL_T / 2 + 0.12;
   const nx0 = p0.x - p0.nx * nOff, nz0 = p0.z - p0.nz * nOff;
   const dx = nx0 - wP.x, dz = nz0 - wP.z;
   const dl = Math.hypot(dx, dz) || 1;
@@ -127,8 +134,9 @@ function collide(car) {
   if (Math.abs(car.y - cor.centerY(car.z)) < SURFACE_TOL && car.z > cor.ZB0 && car.z < cor.ZB1) {
     const zc = cor.zAt(car.x, car.z);
     const lat = cor.latAt(car.x, car.z);
-    const lim = cor.halfWidth(zc) + 0.06 - halfW;
     const side = lat >= 0 ? 1 : -1;
+    // the west edge carries the auxiliary ramp lanes — see collide.ts
+    const lim = cor.edgeHalf(zc, side) + 0.06 - halfW;
     let guarded = true;
     if (side < 0) {
       for (const g of gaps) if (car.z > g.z0 && car.z < g.z1) guarded = false;
@@ -204,9 +212,13 @@ for (const r of ramps) {
     if (hit && hit.ramp === r)
       bad(`${r.kind}: lane-0 car at z=${f(z)} classified as on-ramp (lat=${f(hit.lat)})`);
   }
-  // while every centreline point past the nose taper is still claimed
+  /* …while every centreline point on real ramp pavement is still claimed.
+     Over the handover from an auxiliary lane the ramp is a strip lying
+     entirely OUTBOARD of its own centreline (hIn < 0) and the deck still
+     holds the centreline itself, so those samples are the deck's to claim,
+     not the ramp's. */
   for (const p of r.pts) {
-    if (p.s < 2 || p.s > r.len - 2) continue;
+    if (p.s < 2 || p.s > r.len - 2 || p.hIn < 0.05) continue;
     if (!rampAt(ramps, p.x, p.z, 0))
       bad(`${r.kind}: centreline at s=${f(p.s)} not claimed`);
   }
@@ -219,7 +231,11 @@ const dt = 1 / 120, V = 38;
 for (let frac = -1; frac <= 0.01; frac += 0.025) {
   // ride a fixed fraction of the drivable width, like a driver holding a lane
   // as tapers slide it: frac -1 hugs the west edge, 0 is the centreline
-  const latOf = (z) => frac * (cor.halfWidth(z) - halfW - 0.1);
+  /* The west edge carries the auxiliary ramp lanes, so "the drivable width"
+     is not symmetric any more — riding frac = −1 means hugging the aux lane's
+     outer edge where there is one. */
+  const latOf = (z) =>
+    frac * ((frac < 0 ? cor.edgeHalf(z, -1) : cor.halfWidth(z)) - halfW - 0.1);
   const w0 = cor.worldOf(-700, latOf(-700));
   const car = { x: w0.x, y: cor.centerY(-700), z: w0.z, h: 0 };
   const lat0 = latOf(CONNECT_Z[0]);
@@ -318,6 +334,21 @@ console.log("scenario 3: climb the entry ramp and merge");
   }
   const car = { x: path0[0][0], y: r.pts[r.pts.length - 1].y, z: path0[0][1], h: 0 };
   let worst = { jump: 0 };
+  /* THE OTHER HALF OF THE TEST, and the one that was missing.
+
+     "No jump" is not "drivable". This scenario used to score only the size of
+     the per-frame correction, so a car that never got picked up by the ramp
+     at all — that ran the whole climb along the flat ground UNDERNEATH it and
+     rose 0 m over 264 m of a 10% grade — scored a perfect 0.00 and passed.
+     That is exactly what shipped: the entry ramp could not be driven from the
+     town, because terrain.heightAt's "nearest surface to refY wins" rule had
+     the bare ground at EXACTLY the car's height (d = 0) and the ramp a
+     centimetre above it, so the ground never gave the car up. The player
+     drove under the ramp and hit its first pier.
+
+     So: track how far the car ends up from the pavement it is supposed to be
+     standing on. */
+  let worstOff = { off: 0 };
   for (let i = 1; i < path0.length; i++) {
     const [tx, tz] = path0[i];
     const d = Math.hypot(tx - car.x, tz - car.z);
@@ -335,11 +366,28 @@ console.log("scenario 3: climb the entry ramp and merge");
       const kick = Math.hypot(car.x - preX, car.z - preZ);
       const jump = Math.max(Math.abs(dy) > 0.118 ? Math.abs(dy) : 0, kick);
       if (jump > worst.jump) worst = { jump, x: preX, z: preZ, kick, dy };
+      // …and is the car actually on the ramp it is driving up?
+      const ry = onRamp(car.x, car.z);
+      if (ry !== null) {
+        const off = Math.abs(car.y - ry);
+        if (off > worstOff.off) worstOff = { off, x: car.x, z: car.z, y: car.y, ry };
+      }
     }
   }
   if (worst.jump > 0.35)
     bad(`entry ramp: jump ${f(worst.jump)} m at (${f(worst.x)}, ${f(worst.z)}) kick=${f(worst.kick)} dy=${f(worst.dy)}`);
   else console.log(`  ok: worst per-frame correction ${f(worst.jump)} m`);
+  /* 0.35 m is a kerb; anything more and the car is not on the road. */
+  if (worstOff.off > 0.35)
+    bad(`entry ramp: car left the pavement — y=${f(worstOff.y)} vs ramp ${f(worstOff.ry)}`
+      + ` (${f(worstOff.off)} m) at (${f(worstOff.x)}, ${f(worstOff.z)})`);
+  else console.log(`  ok: worst |y - ramp surface| ${f(worstOff.off)} m`);
+  // and it has to arrive at deck height, not at the bottom of the hill
+  // (read at the car's own z — the deck is on a grade past the gore)
+  const topY = cor.centerY(cor.zAt(car.x, car.z));
+  if (Math.abs(car.y - topY) > 0.5)
+    bad(`entry ramp: the climb ended at y=${f(car.y)}, not on the deck (${f(topY)})`);
+  else console.log(`  ok: the climb reaches the deck (y=${f(car.y)})`);
 }
 
 /* ---- scenario 4: the reported bug — pass the exit while drifting right up
@@ -379,6 +427,37 @@ console.log("scenario 4: pass the exit gore drifting onto/over the edge");
   }
 }
 
+/* ---- scenario 4b: the counterpart of the climb rule ----
+   `riser` (terrain.ts) lets pavement rising under the wheels take the car off
+   the ground, which is what makes the entry ramp climbable. The price of
+   getting that wrong in the other direction is worse than the bug it fixes: a
+   car driving UNDER a ramp, or under the viaduct, must not be plucked up onto
+   it. So drive the ground beneath the entry ramp from its foot outward and
+   assert the car stays on the ground for every metre where the deck over its
+   head is more than a kerb up. ---- */
+console.log("scenario 4b: a car under the ramp stays under the ramp");
+{
+  const r = ramps.find((q) => q.kind === "entry");
+  let worst = null, probes = 0;
+  for (const p of r.pts) {
+    const up = p.y - p.gy;
+    if (up <= STEP_UP + 0.01) continue; // at the mouth the ramp IS the ground
+    // stand on the ground directly under the ramp centreline, and under both
+    // edges, and ask what surface the physics would hand the car
+    for (const lat of [-p.hOut * 0.6, 0, p.hIn * 0.6]) {
+      const x = p.x + p.nx * lat, z = p.z + p.nz * lat;
+      const y = heightAt(x, z, 0);
+      probes++;
+      if (y > STEP_UP && (!worst || y > worst.y))
+        worst = { y, x, z, up, s: p.s };
+    }
+  }
+  if (worst)
+    bad(`under the ramp at (${f(worst.x)}, ${f(worst.z)}), deck ${f(worst.up)} m up:`
+      + ` heightAt lifted the car to ${f(worst.y)}`);
+  else console.log(`  ok: ${probes} probes on the ground under the ramp all stay at ground level`);
+}
+
 /* ---- scenario 5: barrier continuity along the west deck edge ----
    Outside each gore's drivable mouth (nose -> pavement separation, plus a
    short handover where the slot between the pavements is still too narrow to
@@ -404,8 +483,17 @@ console.log("scenario 5: barrier continuity at the gores");
       if (z > open[0] && z < open[1]) continue;
       const inGap = z > g.z0 && z < g.z1;
       if (!inGap) continue; // parapet (and the analytic clamp) stand here
-      const w = cor.worldOf(z, -(cor.halfWidth(z) + 0.5));
+      /* Probe just outboard of the OUTERMOST pavement at this z. Over the
+         handover from an auxiliary lane that is the ramp's own outer edge,
+         not the deck's — the deck's is closing inboard under the ramp, and a
+         probe that follows it walks into the middle of the road. */
       const dw = cor.centerY(z);
+      let outer = cor.edgeHalf(z, -1);
+      for (const q of r.pts) {
+        if (Math.abs(q.z - z) > 3 || Math.abs(q.y - dw) > 0.5) continue;
+        outer = Math.max(outer, -(cor.latAt(q.x, q.z) - q.hOut));
+      }
+      const w = cor.worldOf(z, -(outer + 0.5));
       let d = 1e9;
       for (const o of obbs) {
         if (dw + 1 < o.y0 || dw > o.y1) continue;

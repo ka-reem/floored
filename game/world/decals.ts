@@ -184,7 +184,8 @@ export function buildRoadDecals(scene: THREE.Scene) {
     if (rng() < 0.4) continue;
     const p = cor.pose(z);
     const side = idx % 2 ? 1 : -1;
-    const w = cor.worldOf(z, side * (cor.halfWidth(z) + 0.03));
+    // the west parapet stands outboard of any auxiliary ramp lane here
+    const w = cor.worldOf(z, cor.edgeLat(z, side) + side * 0.03);
     paraSlots.push({
       pos: new THREE.Vector3(w.x, w.y + 0.48, w.z),
       quat: new THREE.Quaternion().setFromEuler(

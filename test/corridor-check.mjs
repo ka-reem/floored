@@ -33,10 +33,12 @@ for (const f of ["corridor.js", "ramps.js"]) {
 const {
   getCorridor, assertPitches, signPlan, tunnels, SIGN, PITCH, PHASE, TUNNEL, TOLL,
   TOLL_PLAZA, BRIDGE, playground, WIDE_PIN, NO_TAPER, PORTAL_PAD, TAPER_BAND, PLAY_PEAK_MIN,
+  AUX_LANES, AUX_W, auxWidth, OVERPASSES, GUIDE_H,
 } = await import(path.join(dir, "corridor.js"));
 const { buildRamps, parapetGap, spawnWindow, spawnZ, RAMP_PLAN } =
   await import(path.join(dir, "ramps.js"));
-const { CONNECT_Z, RAMP_W, RAMP_RUN, MAX_LANES } = await import(path.join(dir, "const.js"));
+const { CONNECT_Z, RAMP_W, RAMP_RUN, RAMP_LEAD, MAX_LANES } =
+  await import(path.join(dir, "const.js"));
 
 const c = getCorridor();
 /** numbers that live in highway.ts and have no home in the corridor yet */
@@ -180,9 +182,17 @@ if (rt > 0.01) bad("the corridor's inverse mapping has drifted");
       const y = c.heightAt(w.x, w.z);
       if (y === null || Math.abs(y - c.centerY(c.zAt(w.x, w.z))) > 0.02) hOk = false;
     }
-    for (const lat of [-hw - 3, hw + 3]) {
+    /* Off the edge on each side — and the WEST edge carries the auxiliary
+       ramp lanes, so it is `edgeHalf`, not halfWidth, that says where the
+       pavement stops there. */
+    for (const lat of [-c.edgeHalf(z, -1) - 3, hw + 3]) {
       const w = c.worldOf(z, lat);
       if (c.heightAt(w.x, w.z) !== null) offOk = false;
+    }
+    // …and the aux lane itself IS pavement
+    if (c.auxWidth(z) > 1) {
+      const w = c.worldOf(z, -(hw + c.auxWidth(z) / 2));
+      if (c.heightAt(w.x, w.z) === null) hOk = false;
     }
   }
   console.log(`deck height: ${hOk ? "matches the swept surface on the pavement" : "MISMATCH"}` +
@@ -323,10 +333,23 @@ if (0.053 > LANE_FOLLOW_RATE / TOP_SPEED)
 
 /* ---- cantilever signs -------------------------------------------------- */
 console.log("cantilever signs:");
+{
+  /* The height budget, stated once: this is what caps GUIDE_H. */
+  const mastMax = SIGN.CLEAR + GUIDE_H + SIGN.ARM_T + 0.12;
+  const soffit = Math.min(...OVERPASSES.map((o) => o.clear));
+  console.log(`  guide panel ${f(GUIDE_H)} m deep → mast ${f(mastMax)} m,` +
+    ` ${f(soffit - mastMax)} m under the lowest crossing soffit (${f(soffit)} m)`);
+  if (mastMax > soffit)
+    bad(`GUIDE_H ${f(GUIDE_H)} m makes an ${f(mastMax)} m mast, over the` +
+      ` ${f(soffit)} m crossing soffit — no seed may put a board under one`);
+}
 const ramps = buildRamps(() => 0);
 const signs = signPlan();
 for (const s of signs) {
   const hw = c.halfWidth(s.z);
+  /* The west deck edge the mast stands on — outboard of any auxiliary lane,
+     which is why this is edgeLat and not −halfWidth. */
+  const wEdge = c.edgeLat(s.z, -1);
   const postLat = c.signPostLat(s.z);
   const p0 = postLat + SIGN.ARM_X, p1 = p0 + s.w;
   const panelTop = SIGN.CLEAR + s.h;
@@ -334,17 +357,40 @@ for (const s of signs) {
   console.log(`  z=${String(s.z).padStart(6)}  ${s.kind.padEnd(11)} edge ${f(-hw)}` +
     `  post ${f(postLat)}  panel [${f(p0)}, ${f(p1)}]  clear ${f(SIGN.CLEAR)}–${f(panelTop)} m`);
   // post outboard of the parapet, so a car scraping the barrier cannot reach it
-  if (postLat + SIGN.POST_T / 2 > -(hw + 0.06))
+  if (postLat + SIGN.POST_T / 2 > wEdge + 0.06)
     bad(`${s.kind} @${s.z}: post is inboard of the parapet — the car drives through it`);
   // ...but still over the structure, not hanging in space past the fascia
-  if (postLat - SIGN.POST_T / 2 < -(hw + 0.5))
+  if (postLat - SIGN.POST_T / 2 < wEdge - 0.5)
     bad(`${s.kind} @${s.z}: post hangs off the fascia`);
   // panel over the roadway, not out past the far edge
   if (p1 > hw) bad(`${s.kind} @${s.z}: panel overhangs the far deck edge`);
-  if (p0 > -hw + 1.0) bad(`${s.kind} @${s.z}: panel does not reach over the lanes`);
+  if (p0 > wEdge + 1.0) bad(`${s.kind} @${s.z}: panel does not reach over the roadway`);
+  // and it must cover a running lane, not only the shoulder it stands on
+  if (p1 < wEdge + 3.5) bad(`${s.kind} @${s.z}: panel is too narrow to read as a board`);
   // vertical: above any vehicle, below the tunnel ceiling if it were in one
   if (SIGN.CLEAR < 5.0) bad(`${s.kind} @${s.z}: panel hangs into vehicle clearance`);
   if (c.inTunnel(s.z)) bad(`${s.kind} @${s.z}: inside the tunnel (mast ${f(mast)} m vs ${TUNNEL.clearH} m clear)`);
+  // …and not jammed against a portal either: the arm would be in the headwall
+  for (const t of tunnels())
+    if (s.z > t.z0 - PORTAL_PAD && s.z < t.z1 + PORTAL_PAD)
+      bad(`${s.kind} @${s.z}: mast is inside ${PORTAL_PAD} m of a tunnel portal`);
+  /* …nor under a crossing overpass. The guide panels grew to GUIDE_H = 3.30 m
+     for the two-tier face, which puts a mast top at 8.83 m against the
+     crossings' 9.0 m soffit — 17 cm, so this stopped being obviously true.
+     countdownZ() relocates a board to a tunnel portal ±45 m, and a seeded
+     tube mouth can put that relocation right under a crossing, which is the
+     case this catches. girderW is the crossing's extent ALONG the road. */
+  for (const op of OVERPASSES) {
+    const half = op.girderW / 2 + SIGN.POST_T / 2 + 0.2;
+    if (Math.abs(s.z - op.z) > half) continue;
+    const soffit = c.pose(op.z).y + op.clear;
+    if (mast > soffit)
+      bad(`${s.kind} @${f(s.z)}: mast ${f(mast)} m spears the crossing at` +
+        ` z=${op.z} (soffit ${f(soffit)} m)`);
+    else
+      console.log(`  note: ${s.kind} @${f(s.z)} is under the crossing at z=${op.z}` +
+        ` with ${f(soffit - mast)} m to spare`);
+  }
   // the toll canopy is a rigid 7.4 m slab centred in the full-width window
   const plazaC = (TOLL.plazaZ0 + TOLL.plazaZ1) / 2;
   if (Math.abs(s.z - plazaC) < 17 + 2) bad(`${s.kind} @${s.z}: mast is under the toll canopy`);
@@ -403,7 +449,85 @@ if (!signs.some((s) => s.kind === "exit-gore")) bad("no board at the exit gore")
     }
   }
   if (start !== null && c.Z1 - start >= MIN_RUN) windows.push([start, c.Z1]);
-  console.log("spawnable windows (straight, level, clear of every parapet gap):");
+  /* ---- auxiliary (deceleration / acceleration) lanes --------------------- */
+console.log("auxiliary lanes:");
+{
+  /* The rate a lane EDGE may open at. The lane-count budget in corridor.ts is
+     about lane CENTRES sliding under traffic that is trying to hold a lane;
+     nothing holds a lane inside an aux taper, so the number that matters here
+     is only that the divergence reads as a freeway taper rather than a step.
+     1:15 is about the steepest a real parallel-type taper gets; anything
+     steeper reads as a chicane. The RAMP_LEAD handover is exempt — it is not
+     a taper at all, it is the deck and the ramp swapping the same pavement
+     between them at a fixed width. */
+  const MIN_RATE = 15;
+  const sorted = [...AUX_LANES].sort((a, b) => a.z0 - b.z0);
+  for (let i = 0; i < sorted.length; i++) {
+    const a = sorted[i];
+    const open = a.z1 - a.z0, hold = a.z2 - a.z1, close = a.z3 - a.z2;
+    const tap = a.kind === "exit" ? open : close;
+    console.log(`  ${a.kind.padEnd(5)} z ∈ [${f(a.z0)}, ${f(a.z3)}]  ${f(a.z3 - a.z0)} m` +
+      `  (open ${f(open)} / hold ${f(hold)} / close ${f(close)})  width ${f(a.w)} m` +
+      `  taper ${f(tap)} m = 1:${f(tap / a.w)}`);
+    if (a.w !== RAMP_W)
+      bad(`aux lane at ${a.z0}: ${f(a.w)} m wide but the ramp is ${f(RAMP_W)} — they must match`);
+    const taper = tap;
+    if (taper / a.w < MIN_RATE)
+      bad(`aux lane at ${a.z0}: tapers at 1:${f(taper / a.w)}, steeper than 1:${MIN_RATE}`);
+    if (a.z3 - a.z0 < 250)
+      bad(`aux lane at ${a.z0}: only ${f(a.z3 - a.z0)} m long — the point is that it is long`);
+    // the handover to the ramp has to be exactly RAMP_LEAD, or the deck and
+    // the ramp pavement stop tiling (see ramps.ts)
+    const handover = a.kind === "exit" ? close : open;
+    if (Math.abs(handover - RAMP_LEAD) > 0.5)
+      bad(`aux lane at ${a.z0}: ${f(handover)} m handover, RAMP_LEAD is ${f(RAMP_LEAD)}`);
+    // an aux lane is pavement: it may not be inside a bore or on the plaza
+    for (let z = a.z0; z <= a.z3; z += 4) {
+      if (c.inTunnel(z)) bad(`aux lane at ${a.z0} runs into a tunnel at z=${f(z)}`);
+      if (z > TOLL.z0 && z < TOLL.z1) bad(`aux lane at ${a.z0} runs into the toll plaza`);
+    }
+    if (a.z0 < TAPER_BAND[0] || a.z3 > TAPER_BAND[1])
+      bad(`aux lane at ${a.z0} reaches outside the taper band — the splice would show it`);
+    if (i && sorted[i - 1].z3 > a.z0)
+      bad(`aux lanes at ${sorted[i - 1].z0} and ${a.z0} overlap`);
+  }
+  // and the width really is zero everywhere else on the lap
+  for (let z = c.ZB0; z <= c.ZB1; z += 7) {
+    const inAny = AUX_LANES.some((a) => z > a.z0 - 1 && z < a.z3 + 1);
+    if (!inAny && auxWidth(z) > 1e-6) bad(`auxWidth is ${f(auxWidth(z))} at z=${f(z)}, outside every band`);
+  }
+  for (const a of AUX_LANES) {
+    const full = auxWidth((a.z1 + a.z2) / 2);
+    if (Math.abs(full - a.w) > 0.01)
+      bad(`aux lane at ${a.z0} never reaches full width (peaks at ${f(full)})`);
+  }
+}
+
+/* ---- the advance-warning countdown ------------------------------------- */
+console.log("exit countdown:");
+for (let gi = 0; gi < CONNECT_Z.length; gi++) {
+  const run = signs.filter((s) => s.gore === gi).sort((a, b) => a.z - b.z);
+  const gz = CONNECT_Z[gi];
+  console.log(`  gore ${gi} (z=${gz}): ` +
+    run.map((s) => `${s.kind}@${f(s.z)}${s.dist ? ` "${s.dist} m"` : ""}`).join("  "));
+  if (!run.length) { bad(`gore ${gi} has no boards at all`); continue; }
+  // distances have to fall monotonically as the gore comes up
+  for (let i = 1; i < run.length; i++)
+    if (run[i].dist > run[i - 1].dist)
+      bad(`gore ${gi}: board at ${f(run[i].z)} announces ${run[i].dist} m after one announcing ${run[i - 1].dist} m`);
+  // and the label has to be the truth
+  for (const s of run)
+    if (s.dist > 0 && Math.abs(gz - s.z - s.dist) > 12)
+      bad(`gore ${gi}: board at ${f(s.z)} says ${s.dist} m but is ${f(gz - s.z)} m out`);
+  const far = Math.max(...run.map((s) => s.dist));
+  const want = gi === 0 ? 800 : 300;
+  if (far < want)
+    bad(`gore ${gi}: earliest warning is only ${far} m out (want ${want}+)`);
+  if (!run.some((s) => s.dist > 0 && s.dist < 260))
+    bad(`gore ${gi}: nothing between 0 and 260 m — the last reminder is missing`);
+}
+
+console.log("spawnable windows (straight, level, clear of every parapet gap):");
   for (const [a, b] of windows)
     console.log(`  z ∈ [${String(a).padStart(6)}, ${String(b).padStart(5)}]` +
       `  ${String(b - a).padStart(4)} m, ${c.lanes((a + b) / 2)} lanes` +
@@ -641,7 +765,11 @@ for (const r of ramps) {
   if (Math.abs(r.footX - 435) > 1.5) bad(`${r.kind}: foot misses the frontage road`);
   // the ramp must start level with the deck and end near the ground
   const top = r.pts[0], foot = r.pts[r.pts.length - 1];
-  if (Math.abs(top.y - c.centerY(r.zr)) > 0.05) bad(`${r.kind}: gore end is not at deck height`);
+  /* Against the deck height at the sample's OWN z: with a parallel lead the
+     attached end of the ramp is RAMP_LEAD upstream (or downstream) of the
+     gore, and the deck is not flat over that run. */
+  if (Math.abs(top.y - c.centerY(c.zAt(top.x, top.z))) > 0.05)
+    bad(`${r.kind}: gore end is not at deck height`);
   if (Math.abs(foot.y - foot.gy) > 0.2) bad(`${r.kind}: foot does not reach the ground`);
   // no ramp sample may sit over the drivable deck once it has separated
   for (const q of r.pts) {

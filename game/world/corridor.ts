@@ -1,5 +1,6 @@
 import {
   HX, DECKY, HZ, LOOP_LEN, DECK_EXT, LANE_W, SHOULDER, MAX_LANES, CONNECT_Z,
+  RAMP_W, RAMP_LEAD,
 } from "./const";
 /* The only import beyond ./const, and deliberately a leaf one: ten pure-node
    harnesses compile this file standalone with tsc, so anything reached from
@@ -378,6 +379,101 @@ export const NO_TAPER: readonly (readonly [number, number])[] = [
   [-210, 70], // entrance gore (CONNECT_Z[1]) + its approach
   WIDE_PIN,
 ];
+
+/* ---- auxiliary (deceleration / acceleration) lanes ----------------------
+
+   A real freeway does not drop you onto a ramp out of a through lane. It
+   opens a whole extra lane hundreds of metres upstream, separates it from the
+   through lanes with a SOLID white line, and lets the ramp simply carry that
+   lane away. The entrance is the same film run backwards: the ramp arrives as
+   a full lane and that lane tapers back into the deck a long way downstream.
+
+   The lane is real pavement, not paint: `auxWidth(z)` widens the deck on the
+   WEST side only (the town side, which is the driver's right and the only
+   side a ramp ever leaves from). It is deliberately NOT part of `laneCount`:
+   traffic keeps its lane centres, its lane changes and its edge clamp on the
+   through lanes exactly as before, and an NPC never wanders into the exit.
+   Everything that draws or clamps the west edge asks `edgeLat(z, -1)`.
+
+   Lengths. The exit lane opens 400 m ahead of the gore: 200 m of opening
+   taper (1:19, flatter than any lane taper on the lap), 140 m at full width —
+   the stretch the arrows and the 出口 paint live in — and RAMP_LEAD of
+   handover. It cannot start earlier: the west tunnel's structure may reach
+   z = -930 on some seeds and a lane cannot open inside a bore. The entrance
+   runs the other way: RAMP_LEAD of handover, 60 m of parallel running, then
+   a 160 m merge taper (1:15). It is finished by z = 300, where the tied-arch
+   span begins — that span's ribs stand at a fixed lateral offset and a deck
+   edge past them would have nothing under it.
+
+   Before this the "deceleration lane" was the outside through lane with three
+   arrows painted in it over 52 m. */
+/** Width of an auxiliary lane: the ramp's own pavement width, so the ramp
+    continues the lane rather than stepping in or out of it. */
+export const AUX_W = RAMP_W;
+interface AuxSpec {
+  /** How the lane ENDS. "exit": the ramp takes it away, so the divider stays
+      solid to the gore. "entry": it merges back into the through lanes, so
+      the divider has to break into a dash over the closing taper — that is
+      the line traffic is meant to cross. */
+  kind: "exit" | "entry";
+  /** widening starts */
+  z0: number;
+  /** …and is complete */
+  z1: number;
+  /** full width holds to here */
+  z2: number;
+  /** …then closes by here */
+  z3: number;
+  w: number;
+}
+export const AUX_LANES: readonly AuxSpec[] = [
+  /* EXIT 1. Opens 400 m ahead of the gore, holds full width for 140 m of
+     "EXIT ONLY" paint, then hands the lane over to the ramp across the last
+     RAMP_LEAD metres — the deck's share closes as the ramp's pavement opens
+     into the same band, which is why there is no step and no gore wedge. */
+  {
+    kind: "exit",
+    z0: CONNECT_Z[0] - 400, z1: CONNECT_Z[0] - 200,
+    z2: CONNECT_Z[0] - RAMP_LEAD, z3: CONNECT_Z[0], w: AUX_W,
+  },
+  /* EXIT 1's entrance ramp, the same film backwards: the ramp hands the lane
+     to the deck over RAMP_LEAD, it runs on for 60 m, and then merges into the
+     through lanes over a 160 m taper. It is done by z = 300 — the tied-arch
+     span starts there, and the bypass diverge takes its own gore wedge from
+     halfWidth at a single z further on. */
+  {
+    kind: "entry",
+    z0: CONNECT_Z[1], z1: CONNECT_Z[1] + RAMP_LEAD,
+    z2: CONNECT_Z[1] + 120, z3: CONNECT_Z[1] + 280, w: AUX_W,
+  },
+];
+
+/** Extra pavement on the WEST side of the deck at z, metres. Zero on all but
+    the 680 m of the lap that carries a ramp lane. */
+export function auxWidth(z: number) {
+  let w = 0;
+  for (const a of AUX_LANES) {
+    if (z <= a.z0 || z >= a.z3) continue;
+    w += a.w * (z < a.z1 ? sm((z - a.z0) / (a.z1 - a.z0))
+      : z <= a.z2 ? 1
+        : 1 - sm((z - a.z2) / (a.z3 - a.z2)));
+  }
+  return w;
+}
+/** The auxiliary lane that hands its pavement to (or takes it from) the ramp
+    at this gore, or null when the gore has no aux lane. An exit's lane ENDS
+    at its gore (z3), an entrance's BEGINS at it (z0). */
+export function auxAtGore(zr: number): AuxSpec | null {
+  for (const a of AUX_LANES)
+    if (Math.abs(a.z3 - zr) < 1 || Math.abs(a.z0 - zr) < 1) return a;
+  return null;
+}
+
+/** The z span each auxiliary lane occupies, for the checks and for the paint. */
+export function auxSpan(i: number) {
+  const a = AUX_LANES[i];
+  return { z0: a.z0, z1: a.z1, z2: a.z2, z3: a.z3, w: a.w };
+}
 
 /** Tunnel names, drawn per tunnel so a re-seed renames them too. */
 const TUNNEL_NAMES: readonly (readonly [string, string])[] = [
@@ -954,6 +1050,14 @@ function planPlayground(
      that reach it, leaning roomy so the section lands generous. */
   const have = new Set(spots.map((s) => s.peak));
   const opts = PLAY_WEIGHTS.filter(([t]) => have.has(t));
+  /* A spot can exist whose only reachable peak is 3 lanes — a "playground" no
+     wider than the base road, which PLAY_WEIGHTS (4/5/6) deliberately does not
+     offer. That left `opts` empty and the peak roll below dereferenced
+     undefined, THROWING out of setRoadSeed and taking the whole world build
+     with it: 14 of 4000 sampled seeds, so roughly 1 player in 285 got a game
+     that would not load at all. Such a seed simply gets no playground, the
+     same answer as no spot at all. */
+  if (!opts.length) return { steps: [...steps], spec: null };
   let r2 = rng() * opts.reduce((s, [, w]) => s + w, 0);
   let peak = opts[opts.length - 1][0];
   for (const [t, w] of opts) if ((r2 -= w) <= 0) { peak = t; break; }
@@ -1196,9 +1300,23 @@ export const OVERPASSES = [
   { ...OVERPASS, z: -720, clear: 9.6 },
   OVERPASS,
 ];
-/** The mountain road (EXIT 4, 峠 Tōge): a single-lane, ONE-WAY riverside pass
-    that leaves the deck through an east-side gore, climbs a rock shelf above
-    the river bank, winds, and merges back through a second east gore. The
+/** The mountain road (EXIT 4, 峠 Tōge): a single-carriageway, ONE-WAY
+    riverside pass that leaves the deck through an east-side gore, lifts onto
+    a rock shelf above the river bank, sweeps out over the water and back, and
+    merges through a second east gore.
+
+    REBUILT 2026-09-08 (owner's pick, "option G"). It used to be a genuine
+    tōge: 5.40 m of pavement and a 17.4 m radius corner, entered off a deck
+    the player crosses at 200 km/h. The owner's verdict was "so hard to drive,
+    road is too tight", and the brief for the rebuild was "make it wide and
+    easier to drive". So the character changed deliberately — this is no
+    longer a technical climb, it is a FAST SWEEPER: 11.00 m wide, 68.1 m
+    worst radius, and a quarter of the steering rate (3.48 → 0.89 °/station).
+    test/mountain-speed.mjs puts the consequence in one number: the pass used
+    to be under 80 km/h for 68% of its length, and now for none of it. The numbers that carry
+    that intent are asserted in test/routegraph-check.mjs, whose old bounds
+    (a 60 m radius CEILING, a 6.2 m width ceiling) encoded the old design and
+    were moved with it rather than worked around. The
     geometry itself is a routegraph PolyRouteEdge (routegraph.ts buildMountain
     reads this spec); the numbers live HERE, like BRIDGE and OVERPASS, so the
     browser-free checks can assert real placement and sections() can keep its
@@ -1229,35 +1347,42 @@ export const MTN = {
   /** gore noses, east side (+lat) both — the lap's first left exit */
   divergeZ: -1968,
   mergeZ: -1644,
-  /** ONE lane, ONE direction of travel: diverge → merge, the way the deck
-      runs. 4.20 m is a wide single lane, NOT half of the old pair — the 17 m
-      hairpin has to stay drivable by a car that is now allowed to use the
-      whole road, and an old lane exactly (3.30 m) puts the rock wall 2.2 m
-      off the mirror through it. Nothing on the pass is two-way any more:
-      no centre line, no oncoming stream, no wrong-way lay-by. */
+  /** ONE carriageway, ONE direction of travel: diverge → merge, the way the
+      deck runs. 8.60 m of running lane against the old 4.20: wide enough to
+      pick a line through a corner instead of tracking a kerb, wide enough
+      that the rock wall is never in the mirror, and wide enough for the
+      arcade car's 295 km/h top end to be survivable if the player carries it
+      in. It is still ONE lane in the route graph (no centre line, no
+      oncoming stream, no wrong-way lay-by) — the width is line-choice room,
+      not a second lane. 1.20 m of shoulder each side puts the parapet off
+      the pavement edge rather than at it. */
   lanes: 1,
-  laneW: 4.2,
-  shoulder: 0.6,
+  laneW: 8.6,
+  shoulder: 1.2,
   /** pavement half width when fully open (lanes · laneW / 2 + shoulder) */
-  half: (1 * 4.2) / 2 + 0.6,
-  /** gore taper length */
-  nose: 14,
+  half: (1 * 8.6) / 2 + 1.2,
+  /** Gore taper length. Longer than the old 14 m because the pavement it has
+      to open is twice as wide: at 14 m the mouth flared at nearly 45° and
+      read as a hole in the parapet rather than as an exit. */
+  nose: 20,
   /** structural skirt depth below the pavement */
   deckT: 0.9,
-  /** The TURNOUT — the old oncoming lay-by, repurposed, in edge arclength
-      from the diverge nose. A one-way single lane has nothing to dodge and
-      nowhere to overtake, so this pocket does the two jobs a real 待避所
-      does: a slower pass car you are closing on pulls in and lets you by
-      (traffic.ts updateMountain), and it is deep enough — ~10 m of pavement
-      across, against 5.4 m of running lane — to be the signed place to turn
-      round. That is this road's answer to "what if the player U-turns on a
-      one-way road": nothing walls them (the gore throats take a car both
-      ways, and the previous lane's three phantom-wall fixes are what make
-      that true), and there is somewhere built to come about. Extra width on
+  /** The TURNOUT — a 待避所, in edge arclength from the diverge nose. On the
+      old narrow pass this pocket was load-bearing: it was the only place a
+      slower car could let you by and the only place wide enough to turn
+      round. An 8.6 m carriageway can be overtaken on anywhere, so its job is
+      now mostly the second one — plus it is the scenic pull-off, which is
+      why it moved to the APEX of the outbound sweeper (s ≈ 168–212), the
+      point furthest out over the water with the city behind you. traffic.ts
+      updateMountain still pulls a slower pass car into it.
+
+      It is narrower than the old 4.6 m because the road it widens is twice
+      the width: +3.2 m on 11.0 m of pavement is 14.2 m across the pocket,
+      comfortably over the 9 m the turn-round check wants. Extra width on
       +lat, the fill side, where a shelf road's turnout is really built. */
-  turnoutS0: 52,
-  turnoutS1: 96,
-  turnoutW: 4.6,
+  turnoutS0: 168,
+  turnoutS1: 212,
+  turnoutW: 3.2,
   /** the river's near-bank riprap starts at x≈622 (scenery.ts) — the road,
       its skirt included, must stay west of it */
   xMax: 614,
@@ -1402,8 +1527,10 @@ export interface Station {
   s: number;
   /** fractional lane count here */
   nf: number;
-  /** pavement half-width */
+  /** pavement half-width (through lanes + shoulder, both sides) */
   hw: number;
+  /** west-side half-width: `hw` plus any auxiliary ramp lane here */
+  hwL: number;
 }
 
 const STEP = 4; // station spacing, metres of z
@@ -1433,9 +1560,10 @@ export class Corridor {
       px = x;
       pz = z;
       const nf = this.laneCount(z);
+      const hw = (nf * this.lanePitch(z)) / 2 + SHOULDER;
       this.stations.push({
         z, x, y, tx, tz, nx: tz, nz: -tx, s: acc, nf,
-        hw: (nf * this.lanePitch(z)) / 2 + SHOULDER,
+        hw, hwL: hw + auxWidth(z),
       });
     }
     const a = this.stations.find((q) => q.z >= this.Z0)!;
@@ -1513,6 +1641,25 @@ export class Corridor {
   halfWidth(z: number) {
     return (this.laneCount(z) * this.lanePitch(z)) / 2 + SHOULDER;
   }
+  /** Extra pavement on the west (town) side: the deceleration/acceleration
+      lane serving a gore. Zero everywhere else. See AUX_LANES. */
+  auxWidth(z: number) {
+    return auxWidth(z);
+  }
+  /** @see auxAtGore */
+  auxAtGore(zr: number) {
+    return auxAtGore(zr);
+  }
+  /** Unsigned half-width of the pavement on one side — west (`side` < 0)
+      carries the auxiliary lane, east never does. Anything that draws,
+      clamps or stands on a deck EDGE wants this, not halfWidth(). */
+  edgeHalf(z: number, side: number) {
+    return side < 0 ? this.halfWidth(z) + auxWidth(z) : this.halfWidth(z);
+  }
+  /** Signed lateral offset of that edge. */
+  edgeLat(z: number, side: number) {
+    return side < 0 ? -(this.halfWidth(z) + auxWidth(z)) : this.halfWidth(z);
+  }
   /** offset of the boundary between lane k-1 and lane k (k = 1..n-1) */
   laneEdge(k: number, z: number) {
     return this.laneOffset(k, z) - this.lanePitch(z) / 2;
@@ -1563,7 +1710,8 @@ export class Corridor {
     if (Math.abs(x - HX) > 90) return null; // cheap reject, bends stay inside ±62
     const zc = this.zAt(x, z);
     const lat = this.latAt(x, z);
-    if (Math.abs(lat) > this.halfWidth(zc) + pad) return null;
+    if (lat > this.halfWidth(zc) + pad) return null;
+    if (-lat > this.edgeHalf(zc, -1) + pad) return null;
     return this.centerY(zc);
   }
 
@@ -1760,7 +1908,7 @@ export class Corridor {
   /** lateral offset of a cantilever sign's post: outboard of the parapet, on
       the town side, so it is never standing in a lane or in mid-air */
   signPostLat(z: number) {
-    return -(this.halfWidth(z) + SIGN.POST_OUT);
+    return this.edgeLat(z, -1) - SIGN.POST_OUT;
   }
 }
 
@@ -1772,17 +1920,84 @@ export function assertPitches() {
       throw new Error(`corridor: PITCH.${k} = ${p} does not divide LOOP_LEN ${LOOP_LEN}`);
 }
 
+/** Advance-warning countdown for a gore, metres back from it. A real freeway
+    tells you about an exit at a kilometre, again at 500 and again at 200, and
+    only then puts a panel on the gore itself — so that is the sequence.
+    Before this the whole warning was two boards, at 400 m and 200 m. */
+export const EXIT_COUNTDOWN = [1000, 500, 200] as const;
+/** …and for an entrance, where what the through driver needs is notice that
+    traffic is about to join, not a destination. */
+export const MERGE_COUNTDOWN = [400, 150] as const;
+
+/** Place one countdown board, dodging the tunnels.
+
+    A mast does not fit under a tube, and the west bore moves with the seed,
+    so a board's nominal z may land inside one. Rather than deleting the board
+    (which is how the lap ended up with no warning at all through a long tube)
+    it is moved to whichever portal keeps its distance closest to the one
+    asked for, and RELABELLED with the distance it actually has. A countdown
+    that reads 950 / 460 / 200 is still a countdown; one with a hole in it is
+    not. */
+function countdownZ(gore: number, d: number, tubes: readonly TunnelSpec[]) {
+  let z = gore - d;
+  /* PORTAL_PAD of clearance, not a token 12 m: a mast standing a car's length
+     off a portal has its arm inside the headwall, and the board is unreadable
+     anyway against the black of the mouth. */
+  const t = tubes.find((q) => z > q.z0 - PORTAL_PAD - 6 && z < q.z1 + PORTAL_PAD + 6);
+  if (t) {
+    const back = t.z0 - 45, fwd = t.z1 + 45;
+    z = Math.abs(gore - back - d) <= Math.abs(gore - fwd - d) ? back : fwd;
+  }
+  return { z, dist: Math.max(0, Math.round((gore - z) / 10) * 10) };
+}
+
+/** Panel depth of a guide board (the two-tier face). Every board that carries
+    guideSignTexF uses it — the freeway countdowns, the bypass diverge and the
+    mountain's EXIT 4 — so one number sets the face's scale on all of them.
+
+    It pairs with a 9.4 m width: 9.4 / 3.30 is 2.848 against the 768 x 270
+    texture's 2.844, so the artwork is squeezed by 0.14% — 0.4 px over the
+    whole panel. Move the height and move the texture with it, or the squeeze
+    stops being a rounding error. */
+export const GUIDE_H = 3.3;
+
 /** The cantilever boards, in one place so the geometry and the checks agree.
     Ordered by z. */
 export function signPlan(): SignSpec[] {
   const out: SignSpec[] = [];
   const exitZ = CONNECT_Z[0], entryZ = CONNECT_Z[1];
-  for (const d of [400, 200])
-    out.push({ z: exitZ - d, w: 7.4, h: 2.8, kind: "exit-count", gore: 0, dist: d });
-  out.push({ z: exitZ - 40, w: 7.4, h: 2.8, kind: "exit-gore", gore: 0, dist: 0 });
-  /* Far enough back from the entrance to clear its parapet gap, near enough to
-     be five seconds' notice at expressway speed. */
-  out.push({ z: entryZ - 150, w: 6.6, h: 2.5, kind: "merge", gore: 1, dist: 150 });
+  const tubes = TUNNELS;
+  /* EXIT 1 countdown. The panels are wider than the old boards (9.4 m against
+     7.4) because the mast now stands outboard of the deceleration lane: at
+     7.4 m the panel hung entirely over the aux lane and never reached the
+     through lanes a driver is actually in.
+
+     GUIDE_H is the height, and 3.30 m is a ceiling, not a preference. The
+     face is two-tier now (textures.ts guideSignTexF, the owner's pick) and a
+     second tier has to be ADDED to the board or the type in the first one
+     shrinks. What stops it growing further is the crossing overpasses at
+     z −912/−816/−720, whose soffit is 9.0 m: a mast is CLEAR + h + ARM_T +
+     0.12 tall, so 3.30 m puts its top at 8.83 m and leaves 17 cm. Nothing on
+     the default seed stands under a crossing, but countdownZ can move a board
+     to a portal ±45 m and a seeded tube mouth near −957 would land one at
+     −912 exactly; test/corridor-check.mjs asserts the clearance so this is a
+     failed check rather than a mast through a bridge. */
+  for (const d of EXIT_COUNTDOWN) {
+    const { z, dist } = countdownZ(exitZ, d, tubes);
+    out.push({ z, w: 9.4, h: GUIDE_H, kind: "exit-count", gore: 0, dist });
+  }
+  /* The EXIT ONLY panel. It hangs over the deceleration lane at the point
+     the lane is handed to the ramp — 40 m used to put it at the mouth, but
+     the mouth is now RAMP_LEAD longer and a mast there would be standing in
+     the parapet gap, on the ramp's own pavement. */
+  out.push({
+    z: exitZ - RAMP_LEAD - 30, w: 9.4, h: GUIDE_H, kind: "exit-gore", gore: 0, dist: 0,
+  });
+  /* Merging traffic ahead, twice, so it is not a surprise either. */
+  for (const d of MERGE_COUNTDOWN) {
+    const { z, dist } = countdownZ(entryZ, d, tubes);
+    out.push({ z, w: 6.6, h: 2.5, kind: "merge", gore: 1, dist });
+  }
   /* Toll boards are placed by absolute z, not by distance: the tunnel sits
      between the plaza and anywhere a "500 m" board would naturally go, and a
      cantilever mast does not fit under the tube. One goes just short of the
@@ -1795,19 +2010,18 @@ export function signPlan(): SignSpec[] {
       // window, not at its leading edge
       dist: Math.round(((TOLL.plazaZ0 + TOLL.plazaZ1) / 2 - z) / 10) * 10,
     });
-  /* Nothing may end up under a tube — the mast would spear the ceiling — and
-     the west tube moves with the seed, so the exit-count boards are checked
-     against it rather than assumed clear. A board that lands inside one is
-     pushed out past the exit portal, and dropped if that would stack it on
-     the next board along. */
-  const kept = out.filter((s, i) => {
-    const t = TUNNELS.find((q) => s.z > q.z0 - 12 && s.z < q.z1 + 12);
-    if (!t) return true;
-    s.z = t.z1 + 45;
-    if (s.gore >= 0) s.dist = Math.max(0, Math.round((CONNECT_Z[s.gore] - s.z) / 10) * 10);
-    return out.every((o, j) => j === i || Math.abs(o.z - s.z) >= 40);
-  });
-  return kept.sort((a, b) => a.z - b.z);
+  /* Two boards on top of each other read as one unreadable board, and the
+     countdown resolver can stack two of them against the same portal. Keep
+     the one that is closer to its gore — the later warning is the one a
+     driver still needs. */
+  const sorted = out.slice().sort((a, b) => a.z - b.z);
+  const kept: SignSpec[] = [];
+  for (const s of sorted) {
+    const prev = kept[kept.length - 1];
+    if (prev && s.z - prev.z < 45) kept[kept.length - 1] = s;
+    else kept.push(s);
+  }
+  return kept;
 }
 
 /** Singleton. The corridor is deterministic *given the road seed*, which is

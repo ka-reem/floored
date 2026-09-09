@@ -19,12 +19,42 @@
    not read anything) — committing it is fine and is how PostHog snippets
    ship. A personal PostHog API key must never appear in this repo. */
 
-import posthog from "posthog-js";
+import type posthogT from "posthog-js";
+
+/* posthog-js is LAZY, and that is a load-time decision, not a taste one.
+
+   It was a static import, so webpack put its 273 KB (88 KB over the wire)
+   in the layout's own chunk — one of the handful of scripts the browser
+   must have parsed before React can render anything at all. A quarter of
+   the bytes standing between a cold visitor and the menu were product
+   analytics.
+
+   Now the module is fetched from an idle callback after the menu is up and
+   every export below buffers until it lands, so NOTHING is lost: an event
+   fired in the first second (game_start on a fast DRIVE press, a garage
+   tap) is replayed into posthog in order the moment init finishes. The
+   buffer is bounded — a browser where the module never arrives (blocked,
+   offline) must not grow an array forever. */
+type PostHog = typeof posthogT;
+let posthog: PostHog | null = null;
 
 const PH_KEY = "phc_wnyGBeLnfzWK3EgKMWeapbjtbDMuVrnVTkrjd5er2XYS";
 const PH_HOST = "https://us.i.posthog.com";
 
 let ready = false;
+/** Init has been asked for and the module fetch is in flight or done. */
+let started = false;
+/** Calls made before the module landed, replayed in order once it has.
+    Capped: past the cap the oldest are dropped, which is the right way
+    round — a stale queued event is worth less than a fresh one. */
+const pending: Array<() => void> = [];
+const PENDING_MAX = 64;
+function later(fn: () => void) {
+  if (ready) { fn(); return; }
+  if (!started) return; // opted out / webdriver / never initialised: drop
+  if (pending.length >= PENDING_MAX) pending.shift();
+  pending.push(fn);
+}
 
 /** True on the touch devices the engine itself treats as mobile —
     deliberately the same predicate as Game.isTouch (engine.ts), so the
@@ -61,13 +91,44 @@ function ownerOptedOut(): boolean {
   }
 }
 
+/** Fetch posthog-js when the main thread has nothing better to do.
+
+    requestIdleCallback with a timeout rather than a bare import: the module
+    and the game's own engine chunk are both wanted in the first seconds and
+    only one of them is on the path to a playable game. The timeout is the
+    backstop for a page that never goes idle (it never fires on Safari
+    without one, and Safari has no rIC at all — hence the setTimeout arm). */
+const IDLE_TIMEOUT_MS = 2500;
+function whenIdle(fn: () => void) {
+  const ric = (window as unknown as {
+    requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void;
+  }).requestIdleCallback;
+  if (ric) ric(fn, { timeout: IDLE_TIMEOUT_MS });
+  else setTimeout(fn, IDLE_TIMEOUT_MS);
+}
+
 export function initAnalytics() {
-  if (ready || typeof window === "undefined") return;
+  if (started || typeof window === "undefined") return;
   if (navigator.webdriver) return;
   if (ownerOptedOut()) {
     console.info("[analytics] owner opt-out active — nothing is sent from this browser");
     return;
   }
+  started = true;
+  whenIdle(() => {
+    void import("posthog-js").then((m) => bootPostHog(m.default)).catch(() => {
+      /* Blocked by an extension, offline, chunk 404 after a redeploy. Drop
+         the queue AND clear `started`, so later() stops buffering: with it
+         still set, every track() for the rest of the session would push a
+         closure onto a queue nothing will ever drain. */
+      started = false;
+      pending.length = 0;
+    });
+  });
+}
+
+function bootPostHog(ph: PostHog) {
+  posthog = ph;
   try {
     posthog.init(PH_KEY, {
       api_host: PH_HOST,
@@ -124,26 +185,47 @@ export function initAnalytics() {
        registered too, from the engine, once resolveRenderTier has run —
        see registerSuper calls in game/engine.ts. */
     registerSuper({ device: deviceType() });
+    /* replay what happened while the module was still coming down the wire,
+       in the order it happened — after registerSuper, so the buffered
+       events carry the same super properties a live one would */
+    for (const fn of pending.splice(0)) {
+      try { fn(); } catch {}
+    }
   } catch {
-    /* an init that throws leaves ready=false and every track() a no-op */
+    /* an init that throws leaves ready=false and every track() a no-op —
+       and, like the import failure above, stops the queue from filling */
+    started = false;
+    pending.length = 0;
   }
+}
+
+/** True while events have somewhere to go: init has been asked for and the
+    module is either in flight (calls buffer) or up (calls fire). False when
+    the owner opted out, under webdriver, before initAnalytics, and — the case
+    that matters — after a posthog-js that never arrived cleared `started`.
+
+    lib/telemetry.ts gates its whole sampler on this: with analytics off it
+    must not so much as accumulate. Exported rather than inferred so there is
+    one answer to "is anything being sent from this browser?". */
+export function analyticsLive(): boolean {
+  return started;
 }
 
 type Props = Record<string, string | number | boolean | null | undefined>;
 
 /** Capture one curated event. No-op until initAnalytics has run. */
 export function track(event: string, props?: Props) {
-  if (!ready) return;
+  if (!ready) { later(() => track(event, props)); return; }
   try {
-    posthog.capture(event, props);
+    posthog!.capture(event, props);
   } catch {}
 }
 
 /** Merge super properties (stamped onto every subsequent event). */
 export function registerSuper(props: Props) {
-  if (!ready) return;
+  if (!ready) { later(() => registerSuper(props)); return; }
   try {
-    posthog.register(props as Record<string, unknown>);
+    posthog!.register(props as Record<string, unknown>);
   } catch {}
 }
 
@@ -152,7 +234,9 @@ export function registerSuper(props: Props) {
    beep beep" is one use, not three events). */
 const lastAt = new Map<string, number>();
 export function trackThrottled(event: string, props?: Props, minMs = 8000) {
-  if (!ready) return;
+  if (!started) return;
+  /* Throttling is decided HERE, not after the module lands: the window has
+     to be measured from when the player actually honked. */
   const now = Date.now();
   const last = lastAt.get(event) ?? -Infinity;
   if (now - last < minMs) return;
@@ -167,7 +251,7 @@ export function trackThrottled(event: string, props?: Props, minMs = 8000) {
    two different sliders in one drag-happy visit don't swallow each other. */
 const debounces = new Map<string, ReturnType<typeof setTimeout>>();
 export function trackDebounced(key: string, event: string, props?: Props, waitMs = 1500) {
-  if (!ready) return;
+  if (!started) return;
   const t = debounces.get(key);
   if (t) clearTimeout(t);
   debounces.set(

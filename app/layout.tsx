@@ -39,8 +39,8 @@ const SITE_URL =
 const DESCRIPTION =
   "Night driving through a procedurally generated Japanese town and its elevated expressway. Sim-grade tire physics, dense AI traffic, rain, neon.";
 
-/* The tab title and the share card. NAME_LABEL is "NEON EXPRESSWAY (BETA)"
-   while lib/build.ts's IS_BETA is true and plain "NEON EXPRESSWAY" after it
+/* The tab title and the share card. NAME_LABEL is "FLOORED (BETA)"
+   while lib/build.ts's IS_BETA is true and plain "FLOORED" after it
    goes false — the browser tab, the OG card and the Twitter card all read the
    same one constant. public/og.png is untouched: it is a committed render and
    the beta mark lives in the text metadata only. */
@@ -63,7 +63,7 @@ export const metadata: Metadata = {
     title: TITLE,
     description: DESCRIPTION,
     locale: "en_US",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "NEON EXPRESSWAY — 首都高ナイトドライブ" }],
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "FLOORED — 首都高ナイトドライブ" }],
   },
   twitter: {
     card: "summary_large_image",
@@ -113,8 +113,23 @@ export default function RootLayout({
         <PostHogProvider>{children}</PostHogProvider>
         {/* Vercel Web Analytics: ~1KB, cookieless visitor counting. The
             numbers live in the Vercel dashboard's Analytics tab — the owner
-            flips the project-level switch there; without it this no-ops. */}
-        <Analytics />
+            flips the project-level switch there; without it this no-ops.
+
+            GATED ON VERCEL, because its script lives at a path only Vercel
+            serves. On any other host the browser asks for
+            /_vercel/insights/script.js, gets the 404 page, and logs a console
+            error on every single load — which is exactly what the Cloudflare
+            static-export check caught (the one non-200 in an otherwise clean
+            160-request load). Free, but noise in every replay and every
+            tester's console.
+
+            Gated rather than deleted: Vercel stays the fallback host for this
+            release, so on Vercel this keeps working untouched and on
+            Cloudflare it is simply never rendered. process.env.VERCEL is set
+            by Vercel's build and inlined at build time, so the export carries
+            no reference to it at all. PostHog is the primary analytics either
+            way and is unaffected. */}
+        {process.env.VERCEL ? <Analytics /> : null}
       </body>
     </html>
   );

@@ -13,6 +13,23 @@ import type { REdge, EdgePose } from "./world/roadnet";
 import type { CarState } from "./physics";
 import type { NpcHit } from "./collide";
 
+/* The fleet mix, hoisted out of the constructor so the ASSET PREFETCH can
+   read it without building a Traffic (see Game.prefetchAssets). Weights are
+   the share of the roster each bodyshell takes; the roster is drawn from the
+   seeded rng, so which styles actually appear varies a little between seeds —
+   every one of them is a possible fetch, which is what a prefetch has to
+   assume. Editing this table changes the traffic mix; it is read in exactly
+   two places and both want the whole list. */
+const FLEET_MIX: [string, number][] = [
+  ["sedan", 0.14], ["hybrid", 0.07], ["compact", 0.11], ["suv", 0.10],
+  ["osedan", 0.11], ["ohybrid", 0.06], ["ocompact", 0.08], ["osuv", 0.07],
+  ["mhybrid", 0.06],
+  ["taxi", 0.07], ["van", 0.06], ["truck", 0.05], ["bus", 0.02],
+];
+/** Every bodyshell the fleet can ask for, including the two forced police
+    cruisers the roster loop adds outside the weighted mix. */
+export const FLEET_STYLES: string[] = [...FLEET_MIX.map(([s]) => s), "police"];
+
 /* Traffic v4.
    Expressway NPCs drive the one-way corridor (see world/corridor.ts): IDM
    car-following plus MOBIL-ish lane changes, positioned by corridor z + a
@@ -580,6 +597,77 @@ type Arch = {
    change; LANE_FOLLOW_RATE only ever applies to the involuntary drift of
    staying put while the lane itself narrows or slides under a taper. */
 const LANE_FOLLOW_RATE = 3.4;
+
+/* ---- NO-MERGE ZONE THROUGH THE TOLL PLAZA -------------------------------
+
+   A real plaza is picked on the APPROACH: you read the gantry, choose a
+   booth, and hold that lane under the canopy. NPCs did not. The ordinary
+   comfort change, the rival yield and the hail courtesy move all stayed live
+   through the gates, so cars cut across booth lanes at the last moment, the
+   plaza read as chaos rather than as a queue, and a player who had already
+   committed to a booth got crossed in front of at the worst moment on the lap.
+
+   Two designs were on the table: suppress merges through the plaza and give
+   the leftovers a booth ASSIGNMENT to unwind at the exit, or pick on the
+   approach and hold. Which is right is a question about the geometry, so it
+   was measured first (test/toll-nomerge-sim.mjs, part 1, 200 road seeds):
+
+   - The plaza does NOT add lanes. corridor.ts buys the gate clearance by
+     widening the lane PITCH (LANE_W → TOLL_PITCH over z 1290..1390, and back
+     over 1450..1550) and pins the lane COUNT to BASE_LANES from TOLL_PIN_Z
+     onward. Across 200 road seeds the LAST lane-count change before the plaza
+     is at z = 1225, and the deck holds three lanes from there to past 1700.
+   - So booth index IS lane index, and it survives to the far side. A car that
+     holds cannot be stranded, and an assignment would have nothing to unwind.
+
+   Hold, then, and do not reassign.
+
+   ---- where the zone starts, and why it is not a fixed z ----
+
+   The first cut held from a fixed 90 m ahead of the fan-out. That deadlocks
+   the road: the last lane drop can FINISH as late as z = 1225, 35 m inside
+   such a window, and a stopped zipper merger there leans on its lane line
+   with the blinker on (see the taper block in updateHwy) — which is what
+   makes target-lane followers hold back. Forbid those followers to move over
+   and the pair freezes: the merger cannot get in, the follower will not go
+   past, and the sim jammed a whole seed solid behind them.
+
+   So the zone has a speed in it, in two places.
+
+   Where it STARTS is "will you still be crossing when the lane centres start
+   to spread": a comfort change is up to TOLL_HOLD_MAN seconds of blinker plus
+   crossing, so a car doing 30 m/s must have decided 180 m before the fan-out,
+   while one at TOLL_HOLD_VMIN or below is held from the nominal 90 m. The
+   zone is therefore widest exactly when traffic is flowing fast enough for a
+   late dive to be dangerous.
+
+   And a car below TOLL_HOLD_CRAWL is exempt outright, anywhere in the zone.
+   That is the deadlock valve. A car moving at walking pace is not weaving
+   through a plaza, it is shuffling in a queue — and a queue is exactly where
+   the hold could otherwise trap the road: the stopped merger leans, its
+   would-be follower stops rather than passing it, and neither can move. It
+   costs nothing where it does not apply, because at a plaza in free flow
+   nobody is doing 3 m/s.
+
+   FORCED taper merges are not gated at all, and that is the design rather
+   than an oversight: a lane that ends is a survival case, and gating it would
+   hand cars to the snap net under the gantry — the exact stranding this zone
+   exists to prevent. It needs no gate: past z = 1225 no lane dies, so the
+   forced path cannot fire in the fan-out, the plaza or the fan-in anyway. */
+/** Worst-case seconds of a signalled comfort change: up to 2 s of blinker
+    before the wheel moves, plus up to 4 s to cross (lanePitch / laneRate). */
+const TOLL_HOLD_MAN = 6;
+/** …evaluated at no less than this speed, so the zone never starts later than
+    a nominal 90 m ahead of the fan-out however slowly the stream is moving. */
+const TOLL_HOLD_VMIN = 15;
+/** Below this the hold does not apply at all: a car at walking pace is
+    shuffling in a queue, not diving between booths, and letting it move is
+    what stops a stopped zipper merger and the follower leaning on it from
+    freezing the road. */
+const TOLL_HOLD_CRAWL = 3.5;
+/** The zone runs past the fan-in by this much: the bunch leaving the booths
+    settles before anybody dives for a lane. */
+const TOLL_HOLD_POST = 40;
 
 /* dawdler · cautious · average · brisk · speeder */
 const ARCH: Arch[] = [
@@ -1931,12 +2019,7 @@ export class Traffic {
        (0.11 + 0.08 = 0.19, now 0.07/0.06/0.06) rather than the newcomer
        taking a slice out of everything else — adding a third generation of
        the same car should not make sedans or trucks rarer. */
-    const mix: [string, number][] = [
-      ["sedan", 0.14], ["hybrid", 0.07], ["compact", 0.11], ["suv", 0.10],
-      ["osedan", 0.11], ["ohybrid", 0.06], ["ocompact", 0.08], ["osuv", 0.07],
-      ["mhybrid", 0.06],
-      ["taxi", 0.07], ["van", 0.06], ["truck", 0.05], ["bus", 0.02],
-    ];
+    const mix = FLEET_MIX;
     for (let i = 0; i < N; i++) {
       let r = this.rng(), type = mix[mix.length - 1][0];
       for (const [t, w] of mix) {
@@ -2277,7 +2360,9 @@ export class Traffic {
         if (gaps.some((g) => z > g.z0 && z < g.z1 && (g.side > 0) === (flip > 0)))
           continue;
         if (ki % (2 * poolEvery) >= 2) continue; // pools thin in pole pairs
-        this.deckLampLat[ki] = flip * (cor.halfWidth(z) - 2.12);
+        // off the real edge on this side — the west one carries the gores'
+        // auxiliary lanes, and the lamp mast moved out with it
+        this.deckLampLat[ki] = flip * (cor.edgeHalf(z, flip) - 2.12);
       }
     const by = this.routes.bypass;
     const kbN = Math.max(0, Math.floor((by.len - phase) / PITCH.light) + 1);
@@ -3199,6 +3284,22 @@ export class Traffic {
     return bestOff;
   }
 
+  /** True where a driver must hold the lane it already has — the toll
+      plaza's no-merge zone plus the manoeuvre length in front of it. See the
+      TOLL_HOLD block. Corridor cars only: the bypass and the mountain road
+      never reach the plaza, and their `s` is in a different space entirely,
+      so an ungated read of it would gate a random stretch of those roads. */
+  private tollHold(n: Npc): boolean {
+    if (n.route !== -1) return false;
+    if (n.v < TOLL_HOLD_CRAWL) return false; // queue shuffle — see above
+    const cor = this.cor;
+    const dz = cor.deltaZ(n.s, TOLL.z0); // metres still to run to the fan-out
+    // already in it: hold flat out to the end of the zone
+    if (dz <= 0) return cor.deltaZ(n.s, TOLL.z1 + TOLL_HOLD_POST) >= 0;
+    // approaching: hold as soon as a change could still be crossing on arrival
+    return dz <= Math.max(n.v, TOLL_HOLD_VMIN) * TOLL_HOLD_MAN;
+  }
+
   /** Traffic getting out of the rival's way — see the yield block in RIVAL.
 
       Returns true if `n` committed to a lane change for it. Only ever called
@@ -3212,6 +3313,10 @@ export class Traffic {
     if (n.route !== -1 || !n.hw || n.wreck) return false;
     // already committed to something, or mid-manoeuvre — leave it alone
     if (n.pendK >= 0 || n.blink !== 0 || n.mergeLean !== 0) return false;
+    // …and not through the toll plaza: a courtesy dive across booth lanes is
+    // the single worst place on the lap to be moved over for. The rival
+    // queues behind like anybody else until the gates are behind them.
+    if (this.tollHold(n)) return false;
     const cor = this.cor;
     // is it coming up behind this car, in this car's path, and faster?
     const behind = cor.deltaZ(r.s, n.s);
@@ -5014,6 +5119,9 @@ export class Traffic {
       which is also what happens on a real road. */
   private yieldLane(n: Npc, pOff: number): number {
     if (n.pendK >= 0 || n.blink !== 0 || n.laneK <= 0) return -1;
+    // no courtesy move-over inside the plaza's no-merge zone — hailRoll falls
+    // through to the speed-up answer, which needs no lane
+    if (this.tollHold(n)) return -1;
     const k2 = n.laneK - 1;
     const off2 = this.laneOffOf(n, k2);
     /* The URGENT gap envelope, exactly as yieldToRival takes it and for
@@ -5578,7 +5686,8 @@ export class Traffic {
        per user call — a tuning nudge, not a behaviour change. */
     const held = !!lead && lead.ds < 18 + 30 * drv.lane && lead.v < n.v0 * (0.8 + 0.12 * drv.lane);
     const restless = drv.weave > 0 && (!lead || lead.ds > 30) && this.rng() < 0.28 * dt;
-    if (n.pendK < 0 && n.blink === 0 && n.turnCd <= 0 && (held || restless)) {
+    if (n.pendK < 0 && n.blink === 0 && n.turnCd <= 0 && (held || restless) &&
+      !this.tollHold(n)) {
       // pushy drivers reach for the outside lane first, patient ones move over
       const first = drv.lane > 0.55 ? 1 : -1;
       for (let pass = 0; pass < 2; pass++) {

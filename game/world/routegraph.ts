@@ -1199,42 +1199,83 @@ function applyBanking(
 
 /* ---- the mountain road (corridor.MTN) ----------------------------------- */
 
-/** Mountain-road banking: v²/g at a ~72 km/h design speed, half-applied like
-    the bypass, capped low — a rock-shelf pass leans, it does not railroad. */
-const MTN_BANK_V2G = 20;
+/** Mountain-road banking: v²/g at the rebuilt road's ~120 km/h design speed,
+    half-applied like the bypass, still capped at 6% — a rock-shelf road
+    leans, it does not railroad. The design speed nearly doubled with the
+    2026-09-08 rebuild, so this rose with it; at the old 20 the sweepers
+    would have come out visually flat, which is exactly the cue that tells a
+    driver a corner is faster than it looks. */
+const MTN_BANK_V2G = 55;
 const MTN_BANK_MAX = 0.06;
 const MTN_BANK_FADE = 40;
-/** mountain stations every metre of u: the pass's tightest corner turns ~5°
-    per metre of z, and the bypass's 4 m step would facet it */
+/** mountain stations every metre of u: kept from the tōge (whose tightest
+    corner turned ~5°/m and would have faceted at the bypass's 4 m step).
+    The sweeper turns ~0.8°/m and would survive a coarser step, but the
+    parapet, the rock wall and the aprons are all swept off these stations,
+    and 1 m is what keeps them smooth at 11 m of pavement width. */
 const MTN_STEP = 1;
 
+/** One long sweeper, as `n` smoothstep bends overlapped along z.
+
+    Why not just one bend: a smoothstep's curvature PEAKS at its two ENDS —
+    slope is zero there and |lat''| reaches 6·d/L² — so a single bend puts
+    its tightest radius exactly where the driver is still unwinding the
+    wheel, which is the worst place to hide one. Overlapping n copies
+    convolves that peak flat: same displacement, same road length, ~25% more
+    radius at the worst point, and no curvature step anywhere along it.
+
+    `core` is the fraction of the sweep each sub-bend spans. 0.72 is the
+    measured optimum — smaller stacks the ramps back up on top of each other,
+    larger collapses the sum back toward a single bend. Measured across the
+    grid: one bend 58 m worst radius, seven at 0.72 → 79 m. */
+function sweep(z0: number, z1: number, d: number, n = 7, core = 0.72): Bend[] {
+  const span = (z1 - z0) * core;
+  const step = ((z1 - z0) - span) / (n - 1);
+  return Array.from({ length: n }, (_, i) => ({
+    z0: z0 + i * step, z1: z0 + i * step + span, d: d / n,
+  }));
+}
+
 /** The pass's plan and profile, as bends over u = main-route z (same
-    machinery as the bypass). All +lat (east): the road swings out over the
-    river bank, takes an S through two apexes, and hooks back down to the
-    merge gore. The last delta of each set is computed so the ends land on
-    the deck edge and at deck height exactly, whatever BASE_LANES implies. */
-/* A smootherstep bend's tightest radius sits near its ENDS (slope ≈ 0,
-   |lat''| up to 5.77·d/L²), so R_min ≈ L²/(5.77·|d|) — each bend below is
-   sized L ≥ √(80·|d|) to keep every corner ≥ ~14 m radius: hairpin-tight,
-   which is the character of a pass, but still drivable (traffic gets a
-   curvature-derived speed cap in traffic.ts, like real mountain traffic). */
+    machinery as the bypass). All +lat (east): the road leans out over the
+    river bank, holds the apex above the water, and comes back to the merge
+    gore. The last delta of each set is computed so the ends land on the deck
+    edge and at deck height exactly, whatever BASE_LANES implies.
+
+    ONE out-and-back, not the old four-bend meander. That is not a
+    simplification for its own sake — within a fixed z window it is the
+    layout that buys the most radius. Curvature goes as d/L², so for a given
+    amount of extra road length, FEWER and LONGER bends always beat more and
+    shorter ones; three gentle sweeps measured 59 m worst radius against this
+    one's 79 m for the same route length.
+
+    What the window costs. The gores are pinned inside the guaranteed-straight
+    splice band, which leaves 332 m of z to work in, and the river bank caps
+    the excursion at ~105 m of lat. Inside that box radius and route length
+    trade against each other directly (R ≈ L²/(4.7·d) once swept, while the
+    extra length comes from d/L), so the old check's "≥ 28% longer than the
+    deck" and a fast sweeper cannot both be had here. The owner picked the
+    sweeper; 58 m of excursion is where the curve was cut — 79 m worst
+    radius, ~127 km/h, and still 12% more road than the deck it leaves. */
 function mtnLatBends(): Bend[] {
-  const D = MTN.divergeZ;
+  /* S stops at 156 rather than filling the window: every bend must be CLOSED
+     by z = D+316 so the last 8 m into the merge gore at D+324 runs dead
+     parallel to the deck. At 162 the return sweep was still turning 2.4
+     mrad/m as it reached the nose and the gore-continuity check caught it —
+     a heading step at a gore is a kerb you cannot see. */
+  const D = MTN.divergeZ, S = 156, OUT = 58;
   return [
-    { z0: D + 6, z1: D + 66, d: +42 }, // ease out over the bank
-    { z0: D + 72, z1: D + 134, d: +46 }, // climbing right-hander to the apex
-    { z0: D + 140, z1: D + 196, d: -40 }, // S back toward the ridge
-    { z0: D + 202, z1: D + 242, d: +18 }, // a flick out over the water
-    { z0: D + 246, z1: D + 318, d: 0 }, // the long left home; computed (≈ −66)
+    ...sweep(D + 4, D + 4 + S, +OUT), // out over the bank, one long right
+    ...sweep(D + 4 + S, D + 4 + 2 * S, -OUT), // and the long left home
+    { z0: D + 230, z1: D + 314, d: 0 }, // trim onto the merge gore; computed
   ];
 }
 function mtnYBends(): Bend[] {
   const D = MTN.divergeZ;
   return [
-    { z0: D + 30, z1: D + 150, d: +5.5 }, // climb through the first corners
-    { z0: D + 158, z1: D + 210, d: -2.0 }, // dip through the S
-    { z0: D + 216, z1: D + 252, d: +1.2 }, // second crest over the flick
-    { z0: D + 256, z1: D + 322, d: 0 }, // descend to the merge; computed
+    ...sweep(D + 20, D + 170, +5.0, 5), // lift onto the shelf
+    ...sweep(D + 176, D + 314, -5.0, 5), // and back down to deck height
+    { z0: D + 240, z1: D + 312, d: 0 }, // trim onto the merge; computed (≈ 0)
   ];
 }
 

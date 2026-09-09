@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { clamp, lerp, mulberry32, type Rng } from "./util";
+import { CAM_NAMES, WIPER_MODE_NAMES } from "./camnames";
 import {
   runStages, withBudget, type LoadReport, type LoadStage,
 } from "./loading";
@@ -28,10 +29,10 @@ import {
 import { spawnZ } from "./world/ramps";
 import { stepPhysics, freshCarState, type CarState, type DriverInput } from "./physics";
 import { collidePlayer } from "./collide";
-import { buildPlayerCar, type PlayerRig } from "./player";
+import { buildPlayerCar, donorAssetUrls, type PlayerRig } from "./player";
 import type { CockpitModelHandle, MirrorFraming } from "./cockpitmodel";
 import { COCKPIT_REF, EYE as COCKPIT_EYE, GLASS_REST, WIPER, type GaugeFlags } from "./cockpit";
-import { Traffic, setNpcDaylight } from "./traffic";
+import { Traffic, setNpcDaylight, FLEET_STYLES } from "./traffic";
 import { GameAudio } from "./audio";
 import { MusicPlayer } from "./music";
 import { hitScreen, type ScreenAction, type ScreenView } from "./carscreen";
@@ -40,9 +41,12 @@ import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap, type MiniMapOpts } from "./minimap";
 import { track, trackThrottled, registerSuper } from "../lib/analytics";
+import { telemetryTick, telemetryDebug } from "../lib/telemetry";
 import { DEBUG_HOOKS } from "./debug";
 import { SHOW_DEV_SETTINGS } from "@/lib/build";
 import { showGfxFail } from "./gfxfail";
+import { npcModelUrl } from "./npcmodels";
+import { prefetchAssets } from "./prefetch";
 
 const WX_SVG = (body: string) =>
   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px">${body}</svg>`;
@@ -338,11 +342,6 @@ const HI_HOLD = 2;
     camera button, long enough to be seen at arm's length. */
 const TAP_FLASH_MS = 140;
 
-/* touchHolds key for the steering-wheel hub horn. Not an element id — the hub
-   is a painted disc with pointer-events:none and no listeners of its own; the
-   wheel's existing handlers do the hit test — so it needs a name that cannot
-   collide with a real puck's getElementById id. */
-const WHEEL_HORN_HOLD = "swheelHub";
 
 /* Minimum time a horn press stays audible, seconds. input.horn is a per-frame
    sample of keydown["f"], so without a floor a press and release that both
@@ -363,7 +362,10 @@ const HORN_MIN_S = 0.11;
 const CAM_CHASE = 0, CAM_COCKPIT = 1, CAM_HOOD = 2, CAM_POV = 3, CAM_CONSOLE = 4;
 const CAM_BACKSEAT = 5;
 const CAM_COUNT = 6;
-export const CAM_NAMES = ["CHASE", "COCKPIT", "HOOD", "DASHCAM", "CONSOLE", "BACKSEAT"];
+/* Lives in ./camnames now and is re-exported here so that the main menu can
+   read it without importing the engine (and with it three.js). Every
+   `from "./engine"` call site is unchanged. */
+export { CAM_NAMES, WIPER_MODE_NAMES } from "./camnames";
 /* CYCLE ORDER IS NOT NUMERIC ORDER, and the split is deliberate.
 
    AGENTS.md requires the dashcam to be LAST in the cycle — it is the view the
@@ -543,7 +545,33 @@ const CHASE_SHAKE = 0;
    Live knob, same pattern as __povMount / __cockpitEye — `window.__consoleCam.z
    = -0.1` re-frames on the next frame — because this is the view whose whole
    point is being moved around. Settled values come back here. */
-const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02 };
+const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02, procDy: 0.14 };
+
+/* procDy above is the one number in CONSOLE_CAM that is NOT the donor's, and
+   it is why this camera was reported as sitting at hood level on the KAZE GT.
+
+   Every figure in the block above is measured off the DONOR cabin
+   (volvo-s90-full), whose driver's eye is at y 1.21 and whose roof is at 1.42.
+   `y 1.22` was chosen as "a hair over the driver's own eye". The PROCEDURAL
+   cabin — which is what every car without a donor wears, i.e. the Kaze — is a
+   taller room: cockpit.ts puts its EYE at 1.35 and crowns its headliner at
+   ROOF_Y 1.70, 28 cm above the donor's roof. Read into that cabin, 1.22 is not
+   a hair over the driver's eye, it is 13 cm UNDER it and only 21 cm over the
+   pad crest (~1.01) — a bracket bolted to the side of the console rather than
+   standing on top of it, which is exactly what the frame looked like: dash
+   filling the bottom two-thirds and the near road hidden behind the cowl.
+
+   So the mount is split by interior after all, the same way povMount() and
+   cockpitEye() are, and for the same reason they are: two cabins disagree
+   about where a surface is. procDy is added ONLY when the procedural cabin is
+   up, and it is exactly the difference between the two cabins' eye heights
+   (1.35 - 1.21 = 0.14), so the camera keeps its authored relationship to the
+   driver's eye in either room instead of keeping a literal. On the Kaze that
+   puts the lens at 1.36, 4 cm above its own dashcam (1.32) rather than 10 cm
+   below it. The donor cabin is untouched: the Volvo's console camera stays at
+   1.32 to the millimetre.
+
+   Live with the rest of the knob: `window.__consoleCam.procDy = 0.2`. */
 
 /* Backseat camera (CAM_BACKSEAT): a passenger's phone held up from the rear
    bench, looking forward past the front headrests and out the windscreen —
@@ -890,7 +918,6 @@ const WIPER_PARK_EASE = 6;
    rhythm, one confident stroke and a wait just long enough to make the next
    one read as an event. Indexed by mode; index 0 is unused (OFF animates in
    the park branch, not here). */
-export const WIPER_MODE_NAMES = ["OFF", "INT", "LO", "HI"] as const;
 const WIPER_RATE = [0, 1.15, 1.15, 2.2];
 const WIPER_INT_PAUSE = 2.6;
 /* How fast the rear-view's electrochromic dim arrives, same exponential form
@@ -1044,7 +1071,7 @@ declare global {
     __povMount?: { dx: number; dy: number; dz: number };
     __cockpitEye?: { dy: number; dz: number };
     __chaseShake?: number;
-    __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number };
+    __consoleCam?: { x: number; y: number; z: number; fov: number; tilt: number; procDy: number };
     __backseatCam?: { x: number; y: number; z: number; fov: number; tilt: number; yaw: number };
     __roofTap?: { top: number; half: number };
     __hood?: { on: number; dy: number; dz: number };
@@ -1183,6 +1210,11 @@ export class Game {
   paintIx: number;
   seed: number;
   camMode: number;
+  /* The camera warmCameras() must land the player back on, or -1 when the
+     warm pass is not running. It exists so a camera picked WHILE the warm
+     stage is awaiting a frame is not thrown away by that pass's restore —
+     see setCamMode(). */
+  private camWarmHome = -1;
   started = false;
   running = false; // simulation advancing (menus closed)
   rain = false;
@@ -1506,14 +1538,25 @@ export class Game {
   /** Mount, lens and cant for the experimental centre-console camera — see
       CONSOLE_CAM for where every number comes from.
 
-      NOT split by interior, unlike povMount() and cockpitEye(). Those two exist
-      to hold a framing that two different dashes disagree about; this camera is
-      aimed at the road over the console, and neither dash is in the shot the
-      way a binnacle is. It reads the same knob either way, which also keeps the
-      J toggle from moving it underneath someone who is tuning it. */
-  private consoleCam(): { x: number; y: number; z: number; fov: number; tilt: number } {
+      SPLIT BY INTERIOR, like povMount() and cockpitEye() — one knob object, one
+      field of which (procDy) applies only without a donor cabin. It used to be
+      unsplit on the grounds that "neither dash is in the shot the way a
+      binnacle is", and that was wrong: the procedural pad is very much in the
+      shot, and its cabin sits its eye 14 cm higher than the donor's, so the
+      donor-derived y read as a lens buried in the dash on every car wearing
+      the procedural interior. See CONSOLE_CAM.procDy.
+
+      Still ONE knob rather than two, so the J toggle cannot move the numbers
+      someone is tuning out from under them — only which of them is summed. */
+  private consoleCam(): { x: number; y: number; z: number; fov: number; tilt: number; procDy: number } {
     if (!window.__consoleCam) window.__consoleCam = { ...CONSOLE_CAM };
     return window.__consoleCam;
+  }
+
+  /** Height the centre-console lens gains in the procedural cabin — 0 with a
+      donor cabin up, since CONSOLE_CAM.y is measured in the donor. */
+  private consoleRise(): number {
+    return this.rig.cockpitModel ? 0 : this.consoleCam().procDy;
   }
 
   /** Mount, lens, cant and aim for the backseat camera — see BACKSEAT_CAM for
@@ -2147,6 +2190,9 @@ export class Game {
         errors: this.debug.errors,
         frames: this.debug.frames,
       }),
+      /* lib/telemetry.ts's test seam: force the sampler on under webdriver
+         and read the payloads track() would have been handed. */
+      telemetry: telemetryDebug,
       clearImpacts: () => {
         this.impactLog.length = 0;
         this.impactMax = 0;
@@ -2367,6 +2413,36 @@ export class Game {
           const ground = buildGround(this.terrain, this.mats.ground);
           ground.layers.set(LAYER_NOREF);
           this.scene.add(ground);
+
+          /* The photo scans land on their own clock (mats.ts ensurePbr: nine
+             texture fetches, then ~25 material upgrades). Each upgrade adds a
+             map where there was none, which changes three's program cache key,
+             so each is a relink — and they all become due at once, seconds
+             after the load's own COMPILING SHADERS stage has already run.
+             Whatever the player is looking at then eats the whole burst in
+             one frame.
+
+             How often that ordering actually happens is the whole question,
+             and the honest answer is "when the download outlasts the world
+             build". On the sandbox it never does — the scans are applied 147
+             s BEFORE the game is playable and cost nothing — so this is
+             insurance for the real first-time player on a phone connection,
+             not a fix for a stall anyone has reproduced on a driving frame.
+             test/pbr-hitch.mjs --late forces the ordering to check it.
+
+             compileDirty is the mechanism the async toll props (highway.ts)
+             and the HD bodyshells (traffic.ts) already use for exactly this;
+             the scans were the one async arrival that never set it. The slow
+             tick picks it up and walks the scene with compileAsync, which
+             links off the main thread wherever KHR_parallel_shader_compile
+             exists. Where it does not, the links still happen — on a frame of
+             our choosing rather than on the player's next corner.
+
+             Wired here rather than in mats.ts because mats is built a stage
+             EARLIER than the world it would have to flag. */
+          void this.mats.pbrApplied.then(() => {
+            if (this.world) this.world.compileDirty = true;
+          });
         },
       },
       {
@@ -2472,8 +2548,11 @@ export class Game {
              moves — for a few frames behind the loading screen. Whatever is
              still one-off cost gets paid here instead of in the player's first
              corner, and the canvas already holds a finished frame when the
-             overlay comes off, so the handoff has nothing to flash. */
-          await this.warmFrames(6, onStep);
+             overlay comes off, so the handoff has nothing to flash.
+
+             And not only the half of the car the starting camera shows —
+             see warmCameras. */
+          await this.warmCameras(onStep);
         },
       },
     ];
@@ -2490,6 +2569,47 @@ export class Game {
       second build. A double-tap on DRIVE is one tap as far as the player is
       concerned; without this it would be two towns in one scene. */
   private loading: Promise<void> | null = null;
+
+  private prefetched = false;
+
+  /** Ask the browser to fetch the world build's big downloads NOW, at the
+      lowest priority it has, while the player is still on the menu.
+
+      This is the honest half of "the menu is idle time being thrown away".
+      The other half — starting the BUILD on the menu — cannot work: every
+      stage in buildStages() is one synchronous block (RAISING THE EXPRESSWAY
+      is the longest single thing the game ever does on the main thread) and
+      a cancel is a teardown, not a pause (see the contract on runStages), so
+      a build begun under the menu freezes the menu until it finishes and
+      cannot be called off. The DOWNLOADS have neither problem: they cost no
+      main-thread time, they can be abandoned for free, and they are what the
+      two budgeted stages actually spend their seconds on.
+
+      Reads the same tables the build reads (FLEET_STYLES, donorAssetUrls) so
+      it can never speculate on a file this device and this profile would not
+      have asked for. No-op once the world is built, once per page, and on a
+      connection that has asked not to be spent on guesses (see prefetch.ts).
+
+      Returns what it queued, for the test harness. */
+  prefetchAssets(): string[] {
+    if (this.loaded || this.prefetched || this.disposed) return [];
+    this.prefetched = true;
+    /* Order is the order they are wanted in, with one exception: the fleet
+       (14 files, 2.7 MB) is what the FIRST budgeted stage waits on, and it is
+       the part that reliably finishes inside a menu dwell — the donor cabin is
+       5.7 MB on its own and on a slow link will not, whatever it is queued
+       behind. Putting the fleet first is what buys the measured
+       PUTTING CARS ON THE ROAD 5021 -> 2251 ms; leading with the cabin would
+       trade that certainty for a download that still does not land. */
+    const urls = [
+      ...FLEET_STYLES.map((s) => npcModelUrl(s)),
+      ...donorAssetUrls(this.carId, this.renderTier),
+    ];
+    const sent = prefetchAssets(urls);
+    const dbg = (window as any).__neonx;
+    if (dbg) dbg.prefetched = sent;
+    return sent;
+  }
 
   /** Build the world, reporting progress, with the browser free to paint
       between stages. Rejects if a stage throws — the caller owns the error
@@ -2574,6 +2694,80 @@ export class Game {
       };
       requestAnimationFrame(tick);
     });
+  }
+
+  /** Draw ONE frame in the camera that shows the half of the car the player's
+      starting camera hides, then settle in their own camera.
+
+      three links a shader program the first time a material is actually
+      DRAWN, and linking is a synchronous main-thread stall. updateCarVisual
+      shows exactly one half of the car at a time — the interior shell in the
+      cabin views, the exterior body in CHASE and HOOD — and the load only
+      ever warmed the STARTING camera. The game ships in the dashcam, so the
+      entire car exterior was drawn, and linked, on the player's first press
+      of C. That is the reported hitch, and it can only ever happen once.
+
+      Measured with test/cam-hitch.mjs, which cycles every mode TWICE because
+      a link can only stall the first time:
+
+        first  DASHCAM -> CHASE:  +26 programs, worst frame 8166 ms vs 4733 control
+        second DASHCAM -> CHASE:   +0 programs, spike gone
+
+      ONE frame, and only for the opposite half. An earlier version warmed all
+      six modes and cost five extra frames; the measurement says four of them
+      bought nothing — COCKPIT, HOOD and BACKSEAT each linked +0, and CONSOLE
+      linked a handful against CHASE's 26. Load time is somebody else's whole
+      night and it is not worth a handful of programs.
+
+      The pairing is symmetric rather than a hardcoded CHASE: a profile that
+      starts in CHASE has never drawn the INTERIOR, so it warms the dashcam
+      instead. Same one frame either way.
+
+      A CHEAPER VARIANT WAS TRIED AND DOES NOT WORK — do not re-attempt it
+      without re-measuring. The idea was to spend no extra frame at all and
+      instead force both halves visible during the frames the load already
+      renders. Measured, the first DASHCAM -> CHASE switch still linked +25
+      programs: with the lens inside the shell the exterior's meshes have
+      bounding spheres the frustum misses, so three culls them, and a culled
+      mesh never reaches a draw call and links nothing. Clearing frustumCulled
+      across the subtree to force them through made the load crash the tab on
+      this box. Actually putting the camera where the mode puts it is what
+      works. */
+  /** Set the camera from OUTSIDE the frame loop — the loading board's camera
+      row is the only caller today.
+
+      Straight `game.camMode = i` is wrong during the WARMING THE ENGINE
+      stage: warmCameras() parks the camera on the mode it is linking programs
+      for and `await`s a real frame, so a tap that lands in that gap is undone
+      by its restore a moment later, and the control would have lied. While
+      that pass is up the pick is written to its restore target instead, and
+      the finally applies it. Everywhere else it is a plain assignment, read
+      live by camUpdate() on the next frame. */
+  setCamMode(i: number) {
+    const n = ((i % CAM_COUNT) + CAM_COUNT) % CAM_COUNT;
+    if (this.camWarmHome >= 0) this.camWarmHome = n;
+    else this.camMode = n;
+  }
+
+  private async warmCameras(onStep?: (frac: number) => void): Promise<void> {
+    this.camWarmHome = this.camMode;
+    // the camera that draws the half the player's own mode does not
+    const other = this.inCar() ? CAM_CHASE : CAM_POV;
+    try {
+      /* 1, not 2: warmFrames(1) still renders exactly one full frame — the
+         render loop's own rAF is already queued ahead of the tick that
+         resolves it — and one drawn frame is what links a mode's programs. */
+      this.camMode = other;
+      await this.warmFrames(1, (f) => onStep?.(f * 0.2));
+    } finally {
+      /* Whatever happens above — a throw, a dispose mid-warm — the player must
+         land in the camera their profile holds, not in the warmed one. Read
+         from the field rather than a local so a camera picked on the loading
+         board mid-warm wins (setCamMode). */
+      this.camMode = this.camWarmHome;
+      this.camWarmHome = -1;
+    }
+    await this.warmFrames(6, (f) => onStep?.(0.2 + f * 0.8));
   }
 
   private onWindowError = (e: ErrorEvent) => {
@@ -3321,7 +3515,7 @@ export class Game {
          recover — without this guard it instead ZEROES its key on every
          frame the key is down, whoever put it down. That bites as soon as
          two things can press one key: the idle HORN puck's empty hold was
-         cutting the wheel hub's honk within a frame of it starting. It also
+         cutting short a honk started elsewhere within a frame of it. It also
          means a physical keyboard on a touch device could never hold W, A,
          S, D or F at all, since each has a puck sitting on it. */
       if (hold.ids.size === 0) continue;
@@ -3340,11 +3534,13 @@ export class Game {
     }
   }
 
-  /** Is `key` still held by some OTHER live touch hold? Two controls now
-      share "f" — the HORN puck and the steering-wheel hub (setWheelHorn) —
-      and either may be released while the other is still pressed. Without
-      this, letting go of one zeroes the key under the other and the horn
-      cuts out with a finger still on it. Holds whose ids are empty are
+  /** Is `key` still held by some OTHER live touch hold? Written when two
+      controls shared "f" — the HORN puck and the steering-wheel hub — and
+      either could be released while the other was still pressed, zeroing the
+      key under a finger that was still on it. The hub is gone (the owner had
+      it removed), but the guard is not about the hub: it is what makes it
+      safe for any two controls to write one key, and the pucks still sit on
+      keys a physical keyboard can also hold. Holds whose ids are empty are
       already released (bindPointerHold clears the set before calling onUp,
       and the blur reset clears every set), so size is the live test. */
   private keyStillHeld(key: string) {
@@ -3354,37 +3550,15 @@ export class Game {
 
   /** Counts down HORN_MIN_S from the last horn press edge (see readInput). */
   private hornMinT = 0;
-  /** Arm the minimum-honk floor. Called from all three press edges — the F
-      key, the HORN puck and the wheel hub — rather than from the per-frame
-      read, because the whole point is to catch a press the per-frame read
-      never sees. Idempotent: re-arming mid-honk just refreshes the floor. */
+  /** Arm the minimum-honk floor. Called from both press edges — the F key and
+      the HORN puck — rather than from the per-frame read, because the whole
+      point is to catch a press the per-frame read never sees. Idempotent:
+      re-arming mid-honk just refreshes the floor. */
   private armHorn() {
-    /* Throttled: every press edge (key, puck, wheel hub) lands here, and a
-       "beep beep beep" burst is one use of the horn, not three events. */
+    /* Throttled: both press edges (the F key and the HORN puck) land here,
+       and a "beep beep beep" burst is one use of the horn, not three. */
     trackThrottled("horn_used", undefined, 8000);
     this.hornMinT = HORN_MIN_S;
-  }
-
-  /** Horn from the steering-wheel hub — see SteerWheel in GameApp, which owns
-      the tap/drag discrimination. Writes the same keydown["f"] the HORN puck
-      and the keyboard write, so there is exactly one horn path downstream.
-
-      `pointerId` non-null registers the press in touchHolds under a synthetic
-      id, which buys the hub the identical third release path every puck has:
-      watchdogTouchInput drops it the frame that pointer leaves livePointers,
-      so a gesture hijack that eats the touch stream cannot leave the horn
-      blaring. Null is the tap-stab — its finger is already off the glass, so
-      it must NOT be watchdogged (that would kill the stab on the next frame);
-      the caller's own timer releases it. */
-  setWheelHorn(on: boolean, pointerId: number | null) {
-    if (on) {
-      this.keydown["f"] = 1;
-      this.armHorn();
-      if (pointerId !== null) this.touchHolds.set(WHEEL_HORN_HOLD, { key: "f", ids: new Set([pointerId]) });
-      return;
-    }
-    this.touchHolds.delete(WHEEL_HORN_HOLD);
-    if (!this.keyStillHeld("f")) this.keydown["f"] = 0;
   }
 
   private bindInput() {
@@ -3416,8 +3590,9 @@ export class Game {
           if (key === "f") this.armHorn();
         },
         () => {
-          // "f" is shared with the wheel hub; never zero it out from under
-          // a control that is still pressed (see keyStillHeld).
+          // never zero a key out from under a control that is still
+          // pressed — "f" and the WASD keys can each have more than one
+          // holder (a puck and a physical keyboard). See keyStillHeld.
           if (!this.keyStillHeld(key)) this.keydown[key] = 0;
         },
       );
@@ -3640,10 +3815,9 @@ export class Game {
     this.input.st += clamp(sTarget - this.input.st, -sRate * dt, sRate * dt);
     if (!sL && !sR && !analog) this.input.st *= Math.max(0, 1 - 6.5 * dt);
     this.input.hb = kd[" "] ? 1 : 0;
-    /* One horn path for all three inputs: the F key, the HORN puck (bindHold)
-       and the steering-wheel hub (setWheelHorn) all write keydown["f"], so the
-       mix, the NPC reaction and the release edge behave identically whichever
-       one honked. The HORN_MIN_S floor is OR'd in so a press too short to be
+    /* One horn path for both inputs: the F key and the HORN puck (bindHold)
+       both write keydown["f"], so the mix, the NPC reaction and the release
+       edge behave identically whichever one honked. The HORN_MIN_S floor is OR'd in so a press too short to be
        caught by this per-frame sample still sounds (see armHorn). */
     this.input.horn = kd["f"] || this.hornMinT > 0 ? 1 : 0;
   }
@@ -3896,35 +4070,35 @@ export class Game {
       car.y = w.y;
       car.z = w.z;
       car.h = e.poseAt(s).h;
-    } else if (car.y > 4) {
-      /* Back onto the corridor. It is one-way now, so there is no travel
-         direction to preserve — the alignment supplies the lane centre, the
-         deck height and the heading, all at the z we are already at. */
-      const p = this.cor.respawn(car.z);
+    } else {
+      /* Everything else goes back to the EXPRESSWAY, wherever the car is.
+
+         N used to have two answers here: from up on the deck it snapped to
+         the corridor, but from down in the town it looked up the nearest
+         street in the road net and righted the car there. That second answer
+         is the one the owner asked to change — "pressing n should reset you
+         on the nearest highway. so if im on the city road i can press n and
+         itll reset me to highway not keep me in the city".
+
+         It matters more than a convenience. N is the only way out of a stuck
+         car, and the town is where a player gets stuck WITHOUT a way back:
+         miss the on-ramp and the street net will happily keep handing you
+         another street. One answer — the highway — makes the key mean the
+         same thing everywhere, which is also what makes it usable as the
+         escape hatch when something on the ramps goes wrong.
+
+         `zAt` projects the car's world position onto the alignment, so this
+         is genuinely the NEAREST point on the highway rather than the point
+         that happens to share the car's z. The two differ a lot in town: the
+         streets sit ~430 m east of the deck and the frontage road runs at an
+         angle to it. The corridor is one-way, so there is no travel direction
+         to preserve — the alignment supplies the lane centre, the deck height
+         and the heading together. */
+      const p = this.cor.respawn(this.cor.zAt(car.x, car.z));
       car.x = p.x;
       car.y = p.y;
       car.z = p.z;
       car.h = p.h;
-    } else {
-      let near = this.world.net.nearest(car.x, car.z);
-      if (!near) {
-        // stranded far from any road — fall back to the town centre road
-        const e = this.world.net.nearest(0, 0);
-        if (e) near = e;
-      }
-      if (near) {
-        const pose = { x: 0, y: 0, z: 0, tx: 0, tz: 1 };
-        this.world.net.sampleEdge(near.edge, near.s, pose);
-        let hRoad = Math.atan2(pose.tx, pose.tz);
-        // choose the direction closest to the car's current heading
-        const d1 = Math.abs(Math.atan2(Math.sin(car.h - hRoad), Math.cos(car.h - hRoad)));
-        if (d1 > Math.PI / 2) hRoad += Math.PI;
-        const rx = Math.sin(hRoad + Math.PI / 2), rz = Math.cos(hRoad + Math.PI / 2);
-        car.x = pose.x + rx * 1.95;
-        car.z = pose.z + rz * 1.95;
-        car.y = pose.y;
-        car.h = hRoad;
-      }
     }
     car.u = 0;
     car.v = 0;
@@ -5304,7 +5478,8 @@ export class Game {
        the ellipse would have given — longer along the road than across it —
        because the long table simply has stops further out. */
     const dLong = Math.abs(s) * PITCH.light;
-    const lampLat = (li % 2 ? 1 : -1) * (this.cor.halfWidth(z) - 1.32);
+    const lampSide = li % 2 ? 1 : -1;
+    const lampLat = lampSide * (this.cor.edgeHalf(z, lampSide) - 1.32);
     const dLat = Math.abs(this.cor.latAt(this.car.x, this.car.z) - lampLat);
     const w = washStops(WASH_LONG, dLong) * washStops(WASH_LAT, dLat) * night;
     /* The sweep travels front-to-back so a lamp reads as light passing THROUGH
@@ -5503,7 +5678,7 @@ export class Game {
     } catch {
       n = this.photoShots + 1; // private mode etc. — session-local numbering
     }
-    const name = `neon-expressway-${n}.png`;
+    const name = `floored-${n}.png`;
     this.renderer.domElement.toBlob((blob) => {
       if (!blob) {
         this.ui.toast("CAPTURE FAILED");
@@ -5727,7 +5902,7 @@ export class Game {
             // x scaled with the shell like both other in-car mounts, so a
             // narrower car keeps the lens in the channel between its seats
             k.x * (P.W / COCKPIT_REF.W),
-            P.belt - COCKPIT_REF.belt + k.y,
+            P.belt - COCKPIT_REF.belt + k.y + this.consoleRise(),
             k.z
           )
         )
@@ -6264,8 +6439,17 @@ export class Game {
       this.hud(now, dt);
       this.chunkT += dt;
       if (this.chunkT > 0.16) {
+        const tickT = this.chunkT; // real elapsed, not the 0.16 threshold
         this.chunkT = 0;
         this.chunksUpdate();
+        /* Drive telemetry rides this tick rather than owning a timer: it is
+           already the engine's 6.25 Hz slow lane, and it only runs while the
+           game is running. Returns on its first line when analytics is off
+           (lib/telemetry.ts). */
+        telemetryTick(tickT, this.car.x, this.car.z, this.car.h, this.car.u,
+          this.camMode, this.tunIn, this.stats.mtnOn,
+          this.stats.crashes, this.stats.nearMisses,
+          this.run.resets, this.run.lastImpact);
       }
       if (this.mmapVisible() && this.frameN % 4 === 0) {
         const mmapCv = this.miniMap();

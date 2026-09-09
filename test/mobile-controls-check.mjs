@@ -187,15 +187,15 @@ async function main() {
     check("row state chip updated", await page.evaluate(() =>
       [...document.querySelectorAll("#tcDrawer .qdRow")].find((r) => r.textContent.includes("HEADLIGHTS"))
         ?.querySelector(".qdState")?.textContent === "ON"));
-    await tapRow(page, "RAIN");
-    check("RAIN row = R key", await page.evaluate(() => window.__neonx.game.rain === true));
-    await tapRow(page, "RAIN"); // leave the shots dry
-    /* (There was a TEST MODE row here, tapped twice to prove the drawer wrote
-       the persisted setting. Its spec is the only car now — carspecs.ts
-       arcadeSpec — so the row, the K key and the setting are all gone. RAIN
-       above still covers a drawer row writing through to the game.) */
-    await tapRow(page, "RAIN");
-    await tapRow(page, "RAIN");
+    /* (RAIN and WIPERS rows used to be checked here — both are locked for the
+       beta and gone from the drawer, so MIRRORS carries the same proof: a
+       drawer row writing through to the real key path on the game. The R and
+       U keys still work; only the rows went.) */
+    await tapRow(page, "MIRRORS");
+    check("MIRRORS row = M key", await page.evaluate(() => window.__neonx.game.mirror === false));
+    await tapRow(page, "MIRRORS"); // leave the shots with mirrors as found
+    await tapRow(page, "MIRRORS");
+    await tapRow(page, "MIRRORS");
     check("drawer still open after toggling rows", await page.evaluate(
       () => document.getElementById("tcDrawer").classList.contains("open")));
 
