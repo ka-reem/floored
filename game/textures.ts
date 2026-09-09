@@ -1063,8 +1063,16 @@ export function guideSignTexF(
 }
 
 /** Merge board for an entrance: what a through driver needs is the warning,
-    not a destination, so this one is amber-on-black with a merge arrow. */
-export function mergeSignTexF(dist: string) {
+    not a destination, so this one is amber-on-black with a merge arrow.
+
+    `from` is the side the joining stream comes from — +1 the driver's LEFT,
+    −1 the driver's RIGHT (signplan.Side). It is not decoration: the glyph is
+    the only thing on this board that says WHERE to expect the traffic, and
+    the panel's canvas is not mirrored (u = 0 lands on the driver's left), so
+    a fold drawn one way round is simply the wrong instruction the other. The
+    lap has one of each — the town entrance joins from the right, the bypass
+    from the east into the fast lane. */
+export function mergeSignTexF(dist: string, from: 1 | -1 = 1) {
   const W = 640, H = 242;
   return makeTex(W, H, (ctx, w, h) => {
     ctx.fillStyle = "#16181d";
@@ -1082,7 +1090,15 @@ export function mergeSignTexF(dist: string) {
       ctx.font = "800 56px sans-serif";
       ctx.fillText(dist, 32, 206);
     }
-    // merging arrow: a side stream folding into the main one
+    /* merging arrow: a side stream folding into the main one. Drawn once in
+       the "from the left" sense and mirrored about its OWN centre (x = w−108)
+       for a right-hand merge, so the glyph swaps hands without wandering out
+       of the corner and into the text. */
+    ctx.save();
+    if (from < 0) {
+      ctx.translate(2 * (w - 108), 0);
+      ctx.scale(-1, 1);
+    }
     ctx.strokeStyle = "#f2b33a";
     ctx.lineWidth = 13;
     ctx.lineCap = "round";
@@ -1103,5 +1119,6 @@ export function mergeSignTexF(dist: string) {
     ctx.lineTo(w - 40, 84);
     ctx.closePath();
     ctx.fill();
+    ctx.restore();
   });
 }

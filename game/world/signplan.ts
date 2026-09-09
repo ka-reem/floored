@@ -44,9 +44,15 @@ export type BoardFace =
   | { t: "merge"; dist: number }
   | { t: "warn"; l1: string; l2: string };
 
+/** Which builder hangs the board: the main deck's own run, the bypass
+    viaduct's, or the mountain exit's. They are emitted in three places because
+    the last two only exist when the route graph does. */
+export type BoardGroup = "main" | "bypass" | "mtn";
+
 export interface BoardSpec {
   /** stable id, used by the audit table and by nothing else */
   id: string;
+  group: BoardGroup;
   /** canonical corridor z of the mast */
   z: number;
   /** panel size */
@@ -103,7 +109,7 @@ export function boardPlan(): BoardSpec[] {
     /* Both town gores are on −lat (corridor.AUX_LANES), and the toll plaza
        spans every lane, so all of these are west posts. */
     out.push({
-      id: `${s.kind}@${Math.round(s.z)}`,
+      id: `${s.kind}@${Math.round(s.z)}`, group: "main",
       z: s.z, w: s.w, h: s.h, side: -1,
       serves: s.kind === "toll" ? 0 : -1,
       face,
@@ -113,7 +119,7 @@ export function boardPlan(): BoardSpec[] {
   /* ---- the bypass: a west diverge and an EAST merge ---- */
   for (const d of BYPASS_BOARD_D)
     out.push({
-      id: `bypass-count@${DIVERGE_Z - d}`,
+      id: `bypass-count@${DIVERGE_Z - d}`, group: "bypass",
       z: DIVERGE_Z - d, w: 9.4, h: GUIDE_H, side: -1, serves: -1,
       face: { t: "guide", exitNo: 3, jp: "湾岸", en: "Bypass", dist: d },
     });
@@ -122,7 +128,7 @@ export function boardPlan(): BoardSpec[] {
      face's 2.848 aspect instead of GUIDE_H. Same artwork, 79% of the size,
      nothing stretched. */
   out.push({
-    id: `bypass-gore@${DIVERGE_Z - 40}`,
+    id: `bypass-gore@${DIVERGE_Z - 40}`, group: "bypass",
     z: DIVERGE_Z - 40, w: 7.4, h: 7.4 / 2.848, side: -1, serves: -1,
     face: { t: "guide", exitNo: 3, jp: "湾岸", en: "Bypass", dist: 0, only: true },
   });
@@ -131,7 +137,7 @@ export function boardPlan(): BoardSpec[] {
      z = 1500 is what clears both. The bypass rejoins from the EAST, into the
      fast lane, so this is the lap's one east-post merge board. */
   out.push({
-    id: `bypass-merge@${MERGE_Z - 80}`,
+    id: `bypass-merge@${MERGE_Z - 80}`, group: "bypass",
     z: MERGE_Z - 80, w: 6.6, h: 2.5, side: 1, serves: 1,
     face: { t: "merge", dist: 80 },
   });
@@ -145,24 +151,24 @@ export function boardPlan(): BoardSpec[] {
   const MB_W = 7.4, MB_H = MB_W / 2.848;
   for (const [z, dist] of [[b400, 400], [b200, 200]] as const)
     out.push({
-      id: `mtn-count@${Math.round(z)}`,
+      id: `mtn-count@${Math.round(z)}`, group: "mtn",
       z, w: MB_W, h: MB_H, side: 1, serves: 1,
       face: { t: "guide", exitNo: 4, jp: "峠", en: "Tōge", dist },
     });
   out.push({
-    id: `mtn-gore@${Math.round(bGore)}`,
+    id: `mtn-gore@${Math.round(bGore)}`, group: "mtn",
     z: bGore, w: MB_W, h: MB_H, side: 1, serves: 1,
     face: { t: "guide", exitNo: 4, jp: "峠", en: "Tōge", dist: 0, only: true },
   });
   /* the pass is a single lane in one direction — say so before the gore, not
      after it, since the gore is the last place a driver can decline it */
   out.push({
-    id: `mtn-oneway@${Math.round(bOneWay)}`,
+    id: `mtn-oneway@${Math.round(bOneWay)}`, group: "mtn",
     z: bOneWay, w: 6.6, h: 2.5, side: 1, serves: 1,
     face: { t: "warn", l1: "一方通行 一車線", l2: "ONE WAY · SINGLE LANE" },
   });
   out.push({
-    id: `mtn-merge@${Math.round(bMerge)}`,
+    id: `mtn-merge@${Math.round(bMerge)}`, group: "mtn",
     z: bMerge, w: 6.6, h: 2.5, side: 1, serves: 1,
     face: { t: "warn", l1: "合流注意", l2: "MERGING TRAFFIC" },
   });

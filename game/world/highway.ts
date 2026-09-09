@@ -8,8 +8,9 @@ import {
 import { RAMP_W, CONNECT_Z, LOOP_LEN } from "./const";
 import { parapetGap } from "./ramps";
 import { BYPASS, DIVERGE_Z, MERGE_Z, MOUNTAIN_EDGE, type RouteGraph } from "./routegraph";
+import { boardPlan, mastLat, type BoardSpec, type Side } from "./signplan";
 import {
-  getCorridor, assertPitches, signPlan, roadSeed, PITCH, PHASE, SIGN, TUNNEL, TOLL,
+  getCorridor, assertPitches, roadSeed, PITCH, PHASE, SIGN, TUNNEL, TOLL,
   TOLL_PLAZA, BRIDGE, BRIDGES, OVERPASS, OVERPASSES, MTN, AUX_LANES, GUIDE_H,
   type SectionKind, type Station,
 } from "./corridor";
@@ -22,19 +23,31 @@ import { buildWheelTracks, buildDeckDressing } from "./deckdetail";
 
 const EXIT_NAMES = ["中野 Nakano", "本町 Honchō"];
 
-/** Advance-warning distances for the bypass diverge. Not 1000/500/200 like
-    the town exit: a board a kilometre back from z = 500 lands on the town
-    exit's own gore, so the run starts at 800 instead. Shared with the
-    mastGaps list above so the soundwall lattice steps around the same masts
-    the boards are actually built on. */
-const BYPASS_BOARD_D = [800, 400, 200];
-
 /** "1 km" / "500 m". A board that says 1000 m reads as a typo. */
 function distLabel(d: number) {
   return d >= 1000
     ? (d % 1000 === 0 ? String(d / 1000) : (d / 1000).toFixed(1)) + " km"
     : d + " m";
 }
+/** Draw one described board face and hang it off its own shoulder. Every
+    cantilever on the lap goes through here, so a board can never pick up the
+    default (west) post by omission — the side comes from the plan. */
+function hangBoard(
+  board: (z: number, w: number, h: number, t: THREE.Texture, side?: Side) => unknown,
+  b: BoardSpec
+) {
+  const f = b.face;
+  const tex =
+    f.t === "guide"
+      ? guideSignTexF(f.exitNo, f.jp, f.en, f.only ? "" : distLabel(f.dist),
+        f.only ? { only: true } : {})
+      : f.t === "merge"
+        // the glyph's hand is the side the stream really joins from
+        ? mergeSignTexF(distLabel(f.dist), b.serves === 0 ? 1 : b.serves)
+        : warnTexF(f.l1, f.l2);
+  board(b.z, b.w, b.h, tex, b.side);
+}
+
 const LAYER_NOREF = 1;
 
 /* One-way elevated expressway.
@@ -164,7 +177,12 @@ class Soup {
    glitchy". Every overhead sign is now a cantilever whose dimensions come from
    corridor.SIGN, planted at cor.signPostLat(z):
 
-   - the post stands *outboard* of the parapet, where a real gantry leg goes.
+   - the post stands *outboard* of the parapet, where a real gantry leg goes,
+     on the shoulder signplan.ts gives the board — WEST for everything the main
+     deck signs, EAST for the bypass merge and the mountain exit, which are the
+     lap's only left-hand features. A left exit signed from the west post hangs
+     its panel over the kerb lane, the one side of the road it does not
+     concern, which is the fault test/sign-audit.mjs exists to catch;
      Inboard of it the post is inside the band a car can still reach (the
      parapet clamp in collide.ts stops the car at hw + 0.06), so it would be
      something you drive straight through — a ghost post beside the lane reads
@@ -183,11 +201,15 @@ function signFactory(scene: THREE.Scene, cor: ReturnType<typeof getCorridor>) {
   });
   const backMat = new THREE.MeshStandardMaterial({ color: 0x555c68, roughness: 0.8 });
   const { CLEAR, POST_T, ARM_X, ARM_T, BACK_GAP } = SIGN;
-  return function board(z: number, w: number, h: number, tex: THREE.Texture) {
+  return function board(
+    z: number, w: number, h: number, tex: THREE.Texture, side: Side = -1
+  ) {
     // a mast this tall would spear the tunnel ceiling, so the tube gets its own
     // signage and never one of these
     if (cor.inTunnel(z)) return null;
-    const p = cor.worldOf(z, cor.signPostLat(z));
+    const p = cor.worldOf(z, mastLat(z, side));
+    /** the arm, and the panel under it, reach INBOARD from the post */
+    const inb = -side;
     const top = CLEAR + h; // panel top; the arm sits on it, the post above that
     const mastH = top + ARM_T + 0.12;
     const g = new THREE.Group();
@@ -196,15 +218,15 @@ function signFactory(scene: THREE.Scene, cor: ReturnType<typeof getCorridor>) {
     post.castShadow = true;
     g.add(post);
     const arm = new THREE.Mesh(new THREE.BoxGeometry(w + ARM_X + 0.3, ARM_T, ARM_T), postMat);
-    arm.position.set(w / 2 + ARM_X, top + ARM_T / 2, 0);
+    arm.position.set(inb * (w / 2 + ARM_X), top + ARM_T / 2, 0);
     g.add(arm);
     const panel = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
       new THREE.MeshBasicMaterial({ map: tex }));
-    panel.position.set(w / 2 + ARM_X, CLEAR + h / 2, -BACK_GAP / 2);
+    panel.position.set(inb * (w / 2 + ARM_X), CLEAR + h / 2, -BACK_GAP / 2);
     panel.rotation.y = Math.PI; // face oncoming traffic
     g.add(panel);
     const back = new THREE.Mesh(new THREE.PlaneGeometry(w, h), backMat);
-    back.position.set(w / 2 + ARM_X, CLEAR + h / 2, BACK_GAP / 2);
+    back.position.set(inb * (w / 2 + ARM_X), CLEAR + h / 2, BACK_GAP / 2);
     g.add(back);
     g.position.set(p.x, p.y, p.z);
     g.rotation.y = cor.pose(z).h;
@@ -327,17 +349,16 @@ export function buildHighway(
       A 5.65 m screen wall built straight through a gantry leg swallows it,
       and the leg is the thing that tells you the sign overhead is bolted to
       something — so the wall steps around them, the way a real one does.
-      side −1 is the town side (where every cantilever post stands), 0 both. */
+      side −1 is the town side, +1 the river side, 0 both. Every cantilever
+      post used to be a west post and this list said so; it now comes off
+      signplan.boardPlan(), which knows that the bypass merge and the mountain
+      exit stand on the EAST edge — a screen wall built through those masts is
+      the same swallowed leg, just on the other shoulder. */
   const mastGaps: { z0: number; z1: number; side: number }[] = [];
-  for (const s of signPlan()) mastGaps.push({ z0: s.z - 1.5, z1: s.z + 1.5, side: -1 });
-  // …and the bypass's own boards, which buildBypassViaduct hangs off the same
-  // corridor edge from its own gores
-  for (const z of [...BYPASS_BOARD_D.map((d) => DIVERGE_Z - d), DIVERGE_Z - 40, MERGE_Z - 80])
-    mastGaps.push({ z0: z - 1.5, z1: z + 1.5, side: -1 });
-  /* …and the mountain road's (buildMountainRoad). Its approach runs into the
-     seam, so the boards sit at wrapped z back inside the canonical band. */
-  for (const z of MTN_BOARD_Z())
-    mastGaps.push({ z0: z - 1.5, z1: z + 1.5, side: -1 });
+  /* every cantilever board on the lap — the main deck's, the bypass viaduct's
+     and the mountain exit's, whose approach runs into the seam and so sits at
+     wrapped z back inside the canonical band */
+  for (const b of boardPlan()) mastGaps.push({ z0: b.z - 1.5, z1: b.z + 1.5, side: b.side });
   for (const z of cor.lattice(PITCH.gantry)) mastGaps.push({ z0: z - 1.2, z1: z + 1.2, side: 0 });
   /** stations where a parapet must not be drawn (the ramp divergence zones) */
   const gapZ = terrain.ramps.map(parapetGap);
@@ -652,13 +673,26 @@ export function buildHighway(
   }
 
   /* ---- lane-drop tapers: solid diagonal + hatching + merge arrows ---- */
-  /* Merge arrow. It bends to the *driver's right*, which is the only direction
-     it is ever wanted: lanes stay centred on the alignment, so the lane that
-     runs out at a taper is always the outermost one on the left, and the exit
-     gore is always on the right too. Canvas +x is the driver's right once the
-     quad is laid down by flatQuad(). */
-  const arrowTex = makeTex(96, 192, (ctx, w, h) => {
+  /* Lane-guidance arrow, in BOTH hands.
+
+     Canvas +x is the driver's right once the quad is laid down by flatQuad(),
+     so the glyph as drawn bends RIGHT — which is what the deck wants nearly
+     everywhere: lanes stay centred on the alignment, so the lane that runs out
+     at a taper is always the outermost one on the left, and both town gores
+     and the bypass diverge are on the right.
+
+     "Nearly": the mountain exit is a LEFT exit off the fast lane, and it was
+     being guided by three right-bending arrows painted in that lane — an arrow
+     pointing at the far shoulder for a ramp leaving the near one. So the
+     texture is drawn once and mirrored for the left-hand hand, and the two
+     materials are handed round together; the pass's own running arrows use the
+     same canvas sense as the deck (see the mountain sweep). */
+  const arrowTexF = (dir: Side) => makeTex(96, 192, (ctx, w, h) => {
     ctx.clearRect(0, 0, w, h);
+    if (dir > 0) {
+      ctx.translate(w, 0); // mirror about the quad's own centreline
+      ctx.scale(-1, 1);
+    }
     ctx.strokeStyle = "rgba(235,240,248,.92)";
     ctx.lineWidth = 14;
     ctx.lineCap = "round";
@@ -674,11 +708,18 @@ export function buildHighway(
     ctx.closePath();
     ctx.fill();
   });
-  const arrowMat = new THREE.MeshBasicMaterial({
-    map: arrowTex, transparent: true, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-  });
-  mats.addBeam(arrowMat, { near: 18, far: 62, spread: 0.95 }); // same paint
+  const arrowMatF = (dir: Side) => {
+    const m = new THREE.MeshBasicMaterial({
+      map: arrowTexF(dir), transparent: true, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    });
+    mats.addBeam(m, { near: 18, far: 62, spread: 0.95 }); // same paint
+    return m;
+  };
+  /** bends toward the driver's right (−lat) */
+  const arrowMat = arrowMatF(-1);
+  /** …and its mirror, for a feature on the driver's left (+lat) */
+  const arrowMatL = arrowMatF(1);
   const decal = (z: number, lat: number, w: number, l: number, mat: THREE.Material) => {
     const p = cor.worldOf(z, lat);
     const m = new THREE.Mesh(flatQuad(w, l), mat);
@@ -1065,19 +1106,12 @@ export function buildHighway(
     scene.add(gb);
   });
 
-  /* Cantilever boards. The plan — which board, where, how big — lives in
-     corridor.signPlan() so the browser-free checks can assert the real
-     placement rather than a copy of it. */
-  for (const s of signPlan()) {
-    const [jp, en] = (EXIT_NAMES[s.gore] || "出口 Exit").split(" ");
-    const tex =
-      s.kind === "exit-count" ? guideSignTexF(s.gore + 1, jp, en || "", distLabel(s.dist))
-        : s.kind === "exit-gore"
-          ? guideSignTexF(s.gore + 1, jp, en || "", "", { only: true })
-          : s.kind === "merge" ? mergeSignTexF(distLabel(s.dist))
-            : warnTexF("料金所 " + s.dist + " m", "TOLL");
-    board(s.z, s.w, s.h, tex);
-  }
+  /* Cantilever boards. The plan — which board, where, how big, which shoulder
+     the mast stands on and which side the feature it announces is really on —
+     lives in signplan.boardPlan() so the browser-free audit can assert the
+     shipped placement rather than a copy of it. Here we only turn a described
+     face into a texture and hang it. */
+  for (const b of boardPlan()) if (b.group === "main") hangBoard(board, b);
 
   /* ---------------- the bypass viaduct (route graph, stage 2) --------------
      Swept from routegraph.ts's stations exactly the way the main deck is
@@ -1088,7 +1122,7 @@ export function buildHighway(
      retroreflective paint, piers with caps (and colliders), and the gore kit
      the ramps already use — chevrons, beacons, signs, kerb-lane arrows. */
   if (world.routes) buildBypassViaduct(scene, mats, world, terrain, {
-    add, board, decal, word, wordMat, arrowMat, goreMat,
+    add, board, decal, word, wordMat, arrowMat, arrowMatL, goreMat,
   });
 
   /* ---------------- the mountain road (route graph, EXIT 4) ----------------
@@ -1100,7 +1134,7 @@ export function buildHighway(
      lives inside the south splice window, so the overrun past Z1 must carry
      its copy (see corridor.MTN); colliders and the exit entry stay canonical. */
   if (world.routes && FX_MOUNTAIN) buildMountainRoad(scene, mats, world, terrain, {
-    add, board, decal, word, wordMat, arrowMat, goreMat,
+    add, board, decal, word, wordMat, arrowMat, arrowMatL, goreMat,
   });
 
   /* ---------------- deck dressing ---------------- */
@@ -3462,7 +3496,7 @@ function buildToll(
     }
   }
   // the approach boards are cantilevers like the exit ones, so they are placed
-  // with the rest of the signage from corridor.signPlan()
+  // with the rest of the signage from signplan.boardPlan()
 }
 
 /* ============================ ramp meshes =============================== */
@@ -3652,6 +3686,8 @@ function buildBypassViaduct(
     word: (z: number, lat: number, mat: THREE.Material, chars: number) => THREE.Mesh;
     wordMat: (word: string) => THREE.Material;
     arrowMat: THREE.Material;
+    /** the same glyph mirrored, for a feature on the driver's left */
+    arrowMatL: THREE.Material;
     goreMat: THREE.Material;
   }
 ) {
@@ -3659,7 +3695,7 @@ function buildBypassViaduct(
   const cor = getCorridor();
   const by = routes.bypass;
   const st = by.stations;
-  const { add, board, decal, word, wordMat, arrowMat, goreMat } = kit;
+  const { add, board, decal, word, wordMat, arrowMat, arrowMatL, goreMat } = kit;
   const WALL_H = 1.05, WALL_T = 0.34, WALL_EVERY_B = 2, TILE = 7;
   const FULL = BYPASS.half - 0.02;
 
@@ -3870,39 +3906,15 @@ function buildBypassViaduct(
     }
   }
 
-  /* cantilever boards: exit-count run for the diverge, and a merge warning
-     ahead of the gore. The doc suggested MERGE_Z − 150 ≈ 1430, but that mast
-     would stand under the toll canopy (and its 1240 fallback is still inside
-     the tunnel, z1 = 1260) — 80 m of notice from z = 1500 clears both. */
-  for (const d of BYPASS_BOARD_D)
-    board(DIVERGE_Z - d, 9.4, GUIDE_H, guideSignTexF(3, "湾岸", "Bypass", distLabel(d)));
-  /* The gore panel keeps its narrower 7.4 m board — it hangs over the diverge
-     wedge rather than the through lanes — so its height comes off the face's
-     2.848 aspect instead of GUIDE_H. Same artwork, 79% of the size, nothing
-     stretched. */
-  board(DIVERGE_Z - 40, 7.4, 7.4 / 2.848, guideSignTexF(3, "湾岸", "Bypass", "", { only: true }));
-  board(MERGE_Z - 80, 6.6, 2.5, mergeSignTexF("80 m"));
+  /* cantilever boards: the exit-count run for the diverge, the gore panel and
+     the merge warning — z, size and shoulder all off signplan.boardPlan(). The
+     merge board is the one east post on this road: the bypass rejoins from the
+     river side into the fast lane, so a west mast put the warning, and its
+     folding arrow, on the shoulder the joining traffic is furthest from. */
+  for (const b of boardPlan()) if (b.group === "bypass") hangBoard(board, b);
 }
 
 /* ============================ mountain road ============================= */
-
-/** The mountain exit's cantilever boards, at canonical (wrapped) z — the
-    approach to the diverge runs through the seam, so "400 m before the gore"
-    lands back at the top of the band. Shared with buildHighway's mastGaps so
-    the soundwall lattice steps around the masts. The 10 m nudges keep each
-    mast off the SOS-cabinet lattice (pitch 200, phase 30 ⇒ cabinets at 1630
-    and 1830, exactly where divergeZ − 400/200 would land). */
-function MTN_BOARD_Z(): number[] {
-  const L = LOOP_LEN;
-  const w = (z: number) => (z < -L / 2 ? z + L : z);
-  return [
-    w(MTN.divergeZ - 390), // "400 m" board
-    w(MTN.divergeZ - 190), // "200 m" board
-    w(MTN.divergeZ - 24), // gore board
-    w(MTN.divergeZ - 96), // "one way" warning for the exit
-    MTN.mergeZ - 90, // merge warning, mid-band already
-  ];
-}
 
 function buildMountainRoad(
   scene: THREE.Scene,
@@ -3916,6 +3928,8 @@ function buildMountainRoad(
     word: (z: number, lat: number, mat: THREE.Material, chars: number) => THREE.Mesh;
     wordMat: (word: string) => THREE.Material;
     arrowMat: THREE.Material;
+    /** the same glyph mirrored, for a feature on the driver's left */
+    arrowMatL: THREE.Material;
     goreMat: THREE.Material;
   }
 ) {
@@ -3923,7 +3937,7 @@ function buildMountainRoad(
   const cor = getCorridor();
   const mt = routes.mtn;
   const st = mt.stations;
-  const { add, board, decal, word, wordMat, arrowMat, goreMat } = kit;
+  const { add, board, decal, word, wordMat, arrowMat, arrowMatL, goreMat } = kit;
   const caps = worldTierCaps();
   const detail = caps.mtnDetail ?? 1;
   /* Forked rng stream, seeded from the road seed: the rock jitter must not
@@ -4205,10 +4219,14 @@ function buildMountainRoad(
         if (s > MTN.turnoutS0 - 8 && s < MTN.turnoutS1 + 8) continue;
         const p0 = mt.worldOf(s - AL / 2, -AW / 2), p1 = mt.worldOf(s + AL / 2, -AW / 2);
         const p2 = mt.worldOf(s + AL / 2, AW / 2), p3 = mt.worldOf(s - AL / 2, AW / 2);
+        /* u runs +lat → −lat so the mountain arrows share the deck's canvas
+           sense: flatQuad() puts canvas +x on the driver's RIGHT, and this
+           quad had it on the left, which drew the one glyph on the pass as
+           the mirror image of every other arrow in the world. */
         arw.quadUv(
           [p0.x, p0.y + Y, p0.z + dz], [p1.x, p1.y + Y, p1.z + dz],
           [p2.x, p2.y + Y, p2.z + dz], [p3.x, p3.y + Y, p3.z + dz],
-          [0, 0], [0, 1], [1, 1], [1, 0]
+          [1, 0], [1, 1], [0, 1], [0, 0]
         );
       }
     }
@@ -4457,35 +4475,33 @@ function buildMountainRoad(
   world.exits.push({ z: MTN.divergeZ, no: 4, name: "峠 Tōge" });
 
   // fast-lane guidance on the approach: this is the lap's one LEFT exit, so
-  // the arrows and the 分岐 text ride the fast lane, not the kerb lane
+  /* the arrows and the 分岐 text ride the fast lane, not the kerb lane — and
+     they bend LEFT. Every other lane arrow on the map bends right because
+     every other feature it guides into is on the right; this exit is not, and
+     three right-bending arrows painted in the fast lane were pointing at the
+     far shoulder for a ramp leaving the near one. arrowMatL is the same glyph
+     mirrored (see arrowTexF). */
   const wz = (z: number) => (z < cor.Z0 ? z + cor.LOOP : z);
   const latA = (z: number) =>
-    cor.laneOffset(Math.round(cor.laneCount(z)) - 1, z) - 0.5;
+    cor.laneOffset(Math.round(cor.laneCount(z)) - 1, z) + 0.5;
   for (let k = 0; k < 3; k++) {
     const z = wz(MTN.divergeZ - 34 - k * 26);
-    decal(z, latA(z), 1.6, 3.4, arrowMat);
+    decal(z, latA(z), 1.6, 3.4, arrowMatL);
   }
   {
     const z = wz(MTN.divergeZ - 122);
     word(z, latA(z), wordMat("分岐"), 2);
   }
 
-  const [b400, b200, bGore, bOneWay, bMerge] = MTN_BOARD_Z();
   /* EXIT 4 on the guide face, like every other exit on the lap. These hang
-     from the main deck's own masts on the approach (MTN_BOARD_Z is corridor
-     z, not mountain z), but they keep the narrower 7.4 m board they have
-     always had — the mountain exit is a LEFT exit off the fast lane and a
-     9.4 m panel reaching in from the west post would sit over the kerb lane,
-     the one side of the road this exit does NOT concern. Height off the face
-     aspect, as with the bypass gore. */
-  const MB_W = 7.4, MB_H = MB_W / 2.848;
-  board(b400, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "400 m"));
-  board(b200, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "200 m"));
-  board(bGore, MB_W, MB_H, guideSignTexF(4, "峠", "Tōge", "", { only: true }));
-  // the pass is a single lane in one direction — say so before the gore, not
-  // after it, since the gore is the last place a driver can decline it
-  board(bOneWay, 6.6, 2.5, warnTexF("一方通行 一車線", "ONE WAY · SINGLE LANE"));
-  board(bMerge, 6.6, 2.5, warnTexF("合流注意", "MERGING TRAFFIC"));
+     from the MAIN deck's own masts on the approach (the plan's z is corridor
+     z, not mountain z) — and from its EAST masts, which is the correction this
+     lane made: the mountain is the lap's only left exit, and a west post put
+     every one of its five boards on the far shoulder with the panel reaching
+     in over the kerb lane, the one side of the road this exit does not
+     concern. They keep the narrower 7.4 m board for the same reason, so the
+     panel stops at the centreline instead of crossing it. */
+  for (const b of boardPlan()) if (b.group === "mtn") hangBoard(board, b);
 }
 
 /** Exit HUD helper: the nearest exit ahead, measured along the one-way

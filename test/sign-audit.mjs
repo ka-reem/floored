@@ -49,23 +49,29 @@ const TITLE = arg("--title", REF ? `at ${REF}` : "working tree");
 const SRC = ["game/world/corridor.ts", "game/world/ramps.ts", "game/world/routegraph.ts",
   "game/world/const.ts", "game/world/signplan.ts", "game/util.ts"];
 const work = mkdtempSync(path.join(tmpdir(), "signaudit-"));
-let root = process.cwd();
-if (REF) {
-  root = path.join(work, "src");
-  for (const f of SRC) {
-    let txt = "";
+/* Always compile from a COPY in a temp dir, never in place: tsc refuses a file
+   list when a tsconfig.json is sitting next to it, and copying is also what
+   lets --git audit a revision that is not checked out. */
+const repo = process.cwd();
+const root = path.join(work, "src");
+for (const f of SRC) {
+  let txt = "";
+  if (REF) {
     try {
       txt = execFileSync("git", ["show", `${REF}:${f}`], { encoding: "utf8", maxBuffer: 1 << 26 });
     } catch {
       continue; // signplan.ts does not exist before this lane
     }
-    mkdirSync(path.join(root, path.dirname(f)), { recursive: true });
-    writeFileSync(path.join(root, f), txt);
+  } else {
+    if (!existsSync(path.join(repo, f))) continue;
+    txt = readFileSync(path.join(repo, f), "utf8");
   }
+  mkdirSync(path.join(root, path.dirname(f)), { recursive: true });
+  writeFileSync(path.join(root, f), txt);
 }
 const have = SRC.filter((f) => existsSync(path.join(root, f)));
 const js = path.join(work, "js");
-execFileSync("npx", ["tsc", "--ignoreConfig", ...have, "--outDir", js, "--rootDir", ".",
+execFileSync("npx", ["tsc", ...have, "--outDir", js, "--rootDir", ".",
   "--module", "esnext", "--target", "es2020", "--moduleResolution", "bundler",
   "--skipLibCheck"], { cwd: root, stdio: ["ignore", "ignore", "inherit"] });
 for (const f of have) {
@@ -250,16 +256,15 @@ for (const [wz, side] of [[1655, 1], [1748, -1], [1862, 1], [1956, -1],
 /* ---- the two arrow facts that are properties of the TEXTURES, read off
    textures.ts / highway.ts rather than recomputed here ---- */
 function readArrowFacts() {
-  const hw = readFileSync(path.join(root, "game/world/highway.ts"), "utf8");
-  const tx = readFileSync(path.join(root, "game/textures.ts"), "utf8");
+  const hw = readFileSync(path.join(repo, "game/world/highway.ts"), "utf8");
+  const tx = readFileSync(path.join(repo, "game/textures.ts"), "utf8");
   // mountain lane arrows: which material do they use?
   const mtnLeft = /arrowMatL|arrowLeft|mirrorArrow/.test(hw);
   // merge glyph: does mergeSignTexF take a side?
   const mergeSided = /export function mergeSignTexF\([^)]*from/.test(tx);
   /* the pass's running-direction arrows: their quad's u ran from −lat to +lat,
      mirroring every other arrow on the map. Fixed = u runs +lat → −lat. */
-  const mtnRunFlip = /AW \/ 2\);\s*\n\s*const p1 = mt\.worldOf\(s \+ AL \/ 2, AW \/ 2\)/.test(hw)
-    || /mountain arrows share the deck's canvas sense/.test(hw);
+  const mtnRunFlip = /share the deck's canvas/.test(hw);
   return { mtnLeft, mergeSided, mtnRunFlip };
 }
 const facts = REF ? { mtnLeft: false, mergeSided: false, mtnRunFlip: false }
