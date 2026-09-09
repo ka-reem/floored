@@ -1022,6 +1022,25 @@ export default function GameApp() {
                      syncRivalMode, and claims its pool slot on the toggle
                      rather than at construction — so it works whether or not
                      the traffic stage has run yet.
+     camera view     camUpdate() branches on game.camMode every frame and
+                     nothing is built from it — the warm pass links all the
+                     modes' programs regardless. Written through the engine's
+                     setCamMode() rather than by hand, because that is the one
+                     window where a raw assignment could be undone; see the
+                     method for why.
+     traffic         engine.ts passes settings.traffic into traffic.update()
+                     every frame as the live pool cap. The fleet is a fixed
+                     120 slots built by the traffic stage no matter what this
+                     says, so the row is honoured before and after it.
+     minimap         hudVisible() reads game.mmap every frame, and the canvas
+                     is shown by GameApp's own render once play starts.
+
+   THREE OF THESE ARE ENGINE MIRRORS, not plain settings fields: camMode,
+   mmap and grade are copied out of the profile in the constructor and are
+   the live values from then on, so a row that wrote only `settings` would
+   save the pick and not apply it. Those rows write both sides, exactly as
+   the in-game keys (C / X / V) do. Anything NOT mirrored — every field the
+   engine reads through `this.settings` — needs only the settings write.
 
    WHAT IT MAY NOT OFFER, and why this panel is short: GRAPHICS. The preset
    is consumed by the FIRST stage of the build (MIXING PAINT decides there
@@ -1033,18 +1052,31 @@ export default function GameApp() {
    is either not built yet or can be rebuilt around them.
 
    IT APPEARS ONLY IF THE LOAD IS SLOW. SHOW_AFTER_MS is the owner's "if its
-   loading for a while": on a warm DRIVE, or a fast desktop, the load is over
-   before this exists and the board is exactly what it was. And it is not a
-   dialog — no overlay, no close button, nothing to dismiss. It is more of
-   the same board, under the bar, and it leaves with the screen.
+   loading for a while": on a warm DRIVE the load is over before this exists
+   and the board is exactly what it was. And it is not a dialog — no overlay,
+   no close button, nothing to dismiss. It is more of the same board, under
+   the bar, and it leaves with the screen.
+
+   IT WAS 2500 ms AND ALMOST NOBODY SAW IT. The owner, watching real loads:
+   "during loading time i notice most ppll leave u need to ask more questions
+   during loading time i think, unless i didn't check but like ask for what
+   steering controls." Steering was already the first row here — it was just
+   behind a 2.5 s gate that a cold desktop load barely clears, so the panel
+   he asked for was one he had never been shown. At 800 ms it is up for
+   nearly all of every cold build (which is seconds, not milliseconds) and
+   still absent from an instant warm DRIVE, which is the only case the gate
+   was ever really protecting.
 
    ONE HONEST CAVEAT, stated here because it is a property of the loader and
    not of this panel: each build stage is a single synchronous block, so a
    tap that lands inside one is queued and answered at that stage's end
    rather than immediately (loading.ts yields to a paint between stages, and
-   only between them). SHOW_AFTER_MS is set past the two longest blocking
-   stages for that reason as much as for the owner's. */
-const SHOW_AFTER_MS = 2500;
+   only between them). At 800 ms the panel now appears DURING a blocking
+   stage rather than after the longest two, so an early tap can wait a beat
+   before the row repaints. It is still answered — nothing is dropped — and
+   a control that is late by one stage beats a control the player never
+   reaches. */
+const SHOW_AFTER_MS = 800;
 
 function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) {
   const [show, setShow] = useState(false);
@@ -1108,8 +1140,65 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             onChange={(v) => upd("units", (x) => (x.units = v as SpeedUnits))}
           />
         </SignSrow>
+        {/* live: camUpdate() branches on camMode every frame (engine.ts).
+            Four of the six — the console and backseat brackets stay on the C
+            key and the settings screen, because a six-way segmented control
+            does not fit a 390 px board, which is the phone this panel exists
+            for. */}
+        <SignSrow name="Camera">
+          <SignSeg
+            label="Camera"
+            value={String(game.camMode)}
+            options={[
+              { v: "3", t: "DASHCAM" },
+              { v: "0", t: "CHASE" },
+              { v: "1", t: "COCKPIT" },
+              { v: "2", t: "HOOD" },
+            ]}
+            onChange={(v) =>
+              upd("camMode", () => {
+                /* Not a GameSettings field — it lives on the profile, and
+                   persist() writes p.camMode = g.camMode, so onChange() below
+                   saves it like every other row here. */
+                game.setCamMode(Number(v));
+              })
+            }
+          />
+        </SignSrow>
+        {/* live: passed into traffic.update() every frame as the pool cap
+            (engine.ts). Three stops off the settings screen's 20..100 slider,
+            which stays the fine control; a load board gets one tap. */}
+        <SignSrow name="Traffic">
+          <SignSeg
+            label="Traffic"
+            value={s.traffic <= 0.5 ? "light" : s.traffic <= 0.85 ? "some" : "heavy"}
+            options={[
+              { v: "light", t: "LIGHT" },
+              { v: "some", t: "SOME" },
+              { v: "heavy", t: "HEAVY" },
+            ]}
+            onChange={(v) =>
+              upd("traffic", (x) => (x.traffic = v === "light" ? 0.4 : v === "some" ? 0.7 : 1))
+            }
+          />
+        </SignSrow>
         <SignSrow name="Rival car" aside="— chase the orange one">
           <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd("rival", (x) => (x.rival = v))} />
+        </SignSrow>
+        {/* live: hudVisible() reads game.mmap every frame; the canvas itself is
+            shown by this file's own render the moment play starts. Mirrored
+            field — settings alone would save it without applying it. */}
+        <SignSrow name="Minimap">
+          <SignToggle
+            label="Minimap"
+            checked={s.mmap}
+            onChange={(v) =>
+              upd("mmap", (x) => {
+                x.mmap = v;
+                game.mmap = v;
+              })
+            }
+          />
         </SignSrow>
         <SignSrow last stack name="Volume">
           <SignSlider

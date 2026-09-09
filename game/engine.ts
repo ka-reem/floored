@@ -1210,6 +1210,11 @@ export class Game {
   paintIx: number;
   seed: number;
   camMode: number;
+  /* The camera warmCameras() must land the player back on, or -1 when the
+     warm pass is not running. It exists so a camera picked WHILE the warm
+     stage is awaiting a frame is not thrown away by that pass's restore —
+     see setCamMode(). */
+  private camWarmHome = -1;
   started = false;
   running = false; // simulation advancing (menus closed)
   rain = false;
@@ -2728,9 +2733,25 @@ export class Game {
       across the subtree to force them through made the load crash the tab on
       this box. Actually putting the camera where the mode puts it is what
       works. */
+  /** Set the camera from OUTSIDE the frame loop — the loading board's camera
+      row is the only caller today.
+
+      Straight `game.camMode = i` is wrong during the WARMING THE ENGINE
+      stage: warmCameras() parks the camera on the mode it is linking programs
+      for and `await`s a real frame, so a tap that lands in that gap is undone
+      by its restore a moment later, and the control would have lied. While
+      that pass is up the pick is written to its restore target instead, and
+      the finally applies it. Everywhere else it is a plain assignment, read
+      live by camUpdate() on the next frame. */
+  setCamMode(i: number) {
+    const n = ((i % CAM_COUNT) + CAM_COUNT) % CAM_COUNT;
+    if (this.camWarmHome >= 0) this.camWarmHome = n;
+    else this.camMode = n;
+  }
+
   private async warmCameras(onStep?: (frac: number) => void): Promise<void> {
-    const home = this.camMode;
-    // the camera that draws the half `home` does not
+    this.camWarmHome = this.camMode;
+    // the camera that draws the half the player's own mode does not
     const other = this.inCar() ? CAM_CHASE : CAM_POV;
     try {
       /* 1, not 2: warmFrames(1) still renders exactly one full frame — the
@@ -2740,8 +2761,11 @@ export class Game {
       await this.warmFrames(1, (f) => onStep?.(f * 0.2));
     } finally {
       /* Whatever happens above — a throw, a dispose mid-warm — the player must
-         land in the camera their profile holds, not in the warmed one. */
-      this.camMode = home;
+         land in the camera their profile holds, not in the warmed one. Read
+         from the field rather than a local so a camera picked on the loading
+         board mid-warm wins (setCamMode). */
+      this.camMode = this.camWarmHome;
+      this.camWarmHome = -1;
     }
     await this.warmFrames(6, (f) => onStep?.(0.2 + f * 0.8));
   }
