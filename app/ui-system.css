@@ -4019,3 +4019,27 @@ body.touch .tc.pressed,
     padding-block: 5px;
   }
 }
+/* TWO COLUMNS (desktop, landscape phone). Above 720px wide the panel keeps
+   its two-column grid, and .sign-seg is flex-shrink:0 by design — so a
+   four-stop control took its natural width and ran past its half of the
+   board: at 1440x900 the CAMERA row's HOOD was clipped by the edge of the
+   sign, and at 844x390 it printed over the TRAFFIC label beside it. Inside
+   this panel the segment shares its row: it gives up padding first, and .sign-seg's own
+   overflow:hidden keeps anything left inside its border instead of over the
+   neighbour. */
+@media (min-width: 721px) {
+  .signLoad .loadSet .sign-srow .ctl {
+    min-width: 0;
+  }
+  .signLoad .loadSet .sign-seg {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .signLoad .loadSet .sign-seg > * {
+    min-width: 0;
+    flex-shrink: 1;
+    justify-content: center;
+    padding-inline: 6px;
+    letter-spacing: 0.04em;
+  }
+}
