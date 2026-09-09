@@ -822,30 +822,14 @@ export default function GameApp() {
                 <SignSep />
                 {/* The same setting the panel carries, surfaced here so the mode
                     is discoverable without going three screens deep. */}
-                <SignRow
-                  glyph="ne"
-                  jp="好敵手"
-                  en="RIVAL"
-                  badge={(g?.settings ?? profileRef.current?.settings)?.rival ? "ON" : "OFF"}
-                  badgeOn={!!(g?.settings ?? profileRef.current?.settings)?.rival}
-                  dist="1.2"
-                  aria-pressed={!!(g?.settings ?? profileRef.current?.settings)?.rival}
-                  onClick={() => {
-                    const p = profileRef.current;
-                    if (!p) return;
-                    const on = !p.settings.rival;
-                    p.settings.rival = on;
-                    if (g) {
-                      g.settings.rival = on;
-                      syncRivalMode(g.settings);
-                    } else syncRivalMode(p.settings);
-                    saveProfile(p);
-                    // same event the settings panel emits for this key — the
-                    // menu shortcut and the panel row are one setting
-                    track("settings_change", { setting: "rival", value: on });
-                    rerender();
-                  }}
-                />
+                {/* THE RIVAL SHORTCUT IS GONE for the beta (owner: "turn the
+                    rival car off for now"). This was the only control that
+                    wrote settings.rival without going through the settings
+                    panel's upd(), so removing it is also what stops a stale
+                    ON badge appearing over a setting the scrub has since
+                    cleared. Restoring it, the SETTINGS toggle and the loading
+                    board's row, and dropping the scrub in settings.ts, is the
+                    whole of unlocking the rival again. */}
                 <SignRow glyph="p" jp="車庫" en="GARAGE" dist="0.4" onClick={() => void openScreen("garage")} />
                 <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => void openScreen("settings")} />
                 <SignRow glyph="nw" jp="操作" en="CONTROLS" dist="3.1" onClick={() => setScreen("controls")} />
@@ -1018,10 +1002,12 @@ export default function GameApp() {
      volume          applied by setRunning(true) at the end of the load
                      (audio.setLevels(s.vol, 1)), which happens after every
                      one of these rows.
-     rival car       traffic.ts reads a module value, refreshed here through
-                     syncRivalMode, and claims its pool slot on the toggle
-                     rather than at construction — so it works whether or not
-                     the traffic stage has run yet.
+     rival car       WAS offered here on the same grounds — traffic.ts reads a
+                     module value refreshed through syncRivalMode, and claims
+                     its pool slot on the toggle rather than at construction.
+                     The row is gone because the rival is off for the beta, not
+                     because it could not be honoured; syncRivalMode still runs
+                     on every row below.
      camera view     camUpdate() branches on game.camMode every frame and
                      nothing is built from it — the warm pass links all the
                      modes' programs regardless. Written through the engine's
@@ -1051,41 +1037,31 @@ export default function GameApp() {
    is worse than no control, so those rows stay in SETTINGS, where the world
    is either not built yet or can be rebuilt around them.
 
-   IT APPEARS ONLY IF THE LOAD IS SLOW. SHOW_AFTER_MS is the owner's "if its
-   loading for a while": on a warm DRIVE the load is over before this exists
-   and the board is exactly what it was. And it is not a dialog — no overlay,
-   no close button, nothing to dismiss. It is more of the same board, under
-   the bar, and it leaves with the screen.
+   IT APPEARS THE MOMENT THE LOAD DOES. It is not a dialog — no overlay, no
+   close button, nothing to dismiss. It is more of the same board, under the
+   bar, and it leaves with the screen.
 
-   IT WAS 2500 ms AND ALMOST NOBODY SAW IT. The owner, watching real loads:
-   "during loading time i notice most ppll leave u need to ask more questions
-   during loading time i think, unless i didn't check but like ask for what
-   steering controls." Steering was already the first row here — it was just
-   behind a 2.5 s gate that a cold desktop load barely clears, so the panel
-   he asked for was one he had never been shown. At 800 ms it is up for
-   nearly all of every cold build (which is seconds, not milliseconds) and
-   still absent from an instant warm DRIVE, which is the only case the gate
-   was ever really protecting.
+   IT WAS GATED BEHIND A DELAY AND THAT IS GONE. First 2500 ms, then 800 —
+   both were guesses at "only show this if the load is slow enough to be
+   worth filling". The owner settled it after watching the 800 ms build:
+   "the settings need to show up right when the loading starts not like a few
+   seconds after which is happening now." So there is no gate: the rows are
+   in the first painted frame of the loading screen. A warm DRIVE is over
+   fast enough that the panel simply comes and goes with it, which costs
+   nothing and is far cheaper than the player who left during the gap.
 
    ONE HONEST CAVEAT, stated here because it is a property of the loader and
    not of this panel: each build stage is a single synchronous block, so a
    tap that lands inside one is queued and answered at that stage's end
    rather than immediately (loading.ts yields to a paint between stages, and
-   only between them). At 800 ms the panel now appears DURING a blocking
-   stage rather than after the longest two, so an early tap can wait a beat
-   before the row repaints. It is still answered — nothing is dropped — and
-   a control that is late by one stage beats a control the player never
-   reaches. */
-const SHOW_AFTER_MS = 800;
+   only between them). With no gate at all the panel is up before the first
+   blocking stage, so an early tap is the likeliest kind: it is queued and
+   answered at that stage's end rather than the instant it lands, so a row
+   can take a beat to repaint. Nothing is dropped — the pick always applies —
+   and a control that repaints late beats a control the player never sees. */
 
 function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) {
-  const [show, setShow] = useState(false);
   const [, force] = useState(0);
-  useEffect(() => {
-    const t = setTimeout(() => setShow(true), SHOW_AFTER_MS);
-    return () => clearTimeout(t);
-  }, []);
-  if (!show) return null;
   const s = game.settings;
   /* No applySettings() call. Every row above is live-read or applied at
      start(); calling it here would rebuild render targets and re-key shadow
@@ -1110,6 +1086,17 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
         <i>saved as you pick</i>
       </div>
       <div className="loadSetRows">
+        {/* TOUCH ONLY. The owner: "on desktop dont show the controls bcs the
+            controls are only for mobile." Every option here — BUTTONS, WHEEL,
+            SLIDER — is an on-screen touch control; a desktop player steers
+            with WASD/arrows and steerMode does nothing for them, so the row
+            was asking a question their answer could not change.
+
+            game.isTouch is the same predicate readInput uses to decide
+            whether to read the touch controls at all (and the same one
+            deviceType() reports), so this row is shown exactly when the
+            setting behind it is live. */}
+        {game.isTouch && (
         <SignSrow name="Steering">
           <SignSeg
             label="Steering"
@@ -1132,6 +1119,7 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             }
           />
         </SignSrow>
+        )}
         <SignSrow name="Speed units">
           <SignSeg
             label="Speed units"
@@ -1182,9 +1170,12 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             }
           />
         </SignSrow>
-        <SignSrow name="Rival car" aside="— chase the orange one">
-          <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd("rival", (x) => (x.rival = v))} />
-        </SignSrow>
+        {/* THE RIVAL IS OFF for the beta (owner: "turn the rival car off for
+            now"), so its row is gone from here as well as from the home board
+            and SETTINGS. The profile scrub in settings.ts is what makes that
+            true for players who already had it on. upd() still calls
+            syncRivalMode on every row, so the module flag keeps following the
+            profile and traffic.ts never claims the slot. */}
         {/* live: hudVisible() reads game.mmap every frame; the canvas itself is
             shown by this file's own render the moment play starts. Mirrored
             field — settings alone would save it without applying it. */}
@@ -2101,11 +2092,16 @@ function SettingsPanel({
                 <SignSrow name="Traction control" lit={L("tc")}>
                   <SignToggle label="Traction control" checked={s.tc} onChange={(v) => upd((x) => (x.tc = v))} />
                 </SignSrow>
-                {/* The rival pace car. A mode rather than a difficulty: it costs
-                    nothing at all while it is off (game/traffic.ts claims its pool
-                    slot on the toggle, not at construction). */}
-                <SignSrow name="Rival car" aside="— chase the orange one" lit={L("rival")}>
-                  <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd((x) => (x.rival = v))} />
+                {/* THE RIVAL IS LOCKED OFF for the beta, the same way rain is:
+                    the row keeps its place so the section still reads the same,
+                    but it is a static NOT ACTIVE caption instead of a switch.
+                    The car itself is untouched in game/traffic.ts — it claims
+                    its pool slot on the toggle rather than at construction, so
+                    off costs nothing. Unlocking is putting this SignToggle
+                    back, restoring the home-board shortcut and the loading
+                    board's row, and dropping the scrub in settings.ts. */}
+                <SignSrow name="Rival car">
+                  <span className="sign-cap faint">NOT ACTIVE</span>
                 </SignSrow>
                 {/* The clean-run readout: distance since the last real impact
                     (game/engine.ts's runUpdate). On by default. */}
@@ -2291,7 +2287,7 @@ function SettingsPanel({
                 <span className="sign-cap faint sign-adv-note">
                   {adv
                     ? "niche but real — nothing here changes what the game is"
-                    : "draw distance · fog · motion blur · rival indicators · first-run hints · new town · reset"}
+                    : "draw distance · fog · motion blur · first-run hints · new town · reset"}
                 </span>
               </button>
               {adv && (
@@ -2310,7 +2306,7 @@ function SettingsPanel({
                     </SignSrow>
                   </div>
                   <div>
-                    <SignSrow name="Fog / haze" lit={L("fog")}>
+                    <SignSrow last name="Fog / haze" lit={L("fog")}>
                       <SignSeg
                         label="Fog / haze"
                         value={s.fog}
@@ -2318,9 +2314,12 @@ function SettingsPanel({
                         onChange={(v) => upd((x) => (x.fog = v as GameSettings["fog"]))}
                       />
                     </SignSrow>
-                    <SignSrow last name="Rival indicators" aside="— the rival signals its lane changes" lit={L("rivalSignals")}>
-                      <SignToggle label="Rival uses its indicators" checked={s.rivalSignals} onChange={(v) => upd((x) => (x.rivalSignals = v))} />
-                    </SignSrow>
+                    {/* "Rival indicators" stood here. It is only ever read while
+                        a rival is running, so with the rival off for the beta it
+                        described a car that is not in the world — and ADVANCED
+                        is exactly where a control like that goes unnoticed.
+                        Fog above inherits its `last`. Restore this row when the
+                        rival comes back. */}
                   </div>
                   <div>
                     {/* Gates game/hints.ts wholesale. Which tips have already fired is

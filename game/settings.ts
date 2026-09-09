@@ -591,10 +591,33 @@ export interface Profile {
 }
 
 export const defaultSettings = (): GameSettings => ({
-  preset: "high",
-  reflections: true,
+  /* LOW is the default for every device, on the owner's call ("i think by
+     default we just need to run low graphics for everyone").
+
+     It is not the same lever as TIER_CAPS. The caps are a CEILING the device
+     cannot exceed — a phone was never getting reflections whatever this said.
+     This is the FLOOR everyone starts on, desktops included, and the reason is
+     the loading screen: the preset is consumed by the first build stage, so a
+     first-time player on an unknown machine pays the high-preset build before
+     anyone knows whether their machine can carry it, and the ones who cannot
+     leave during the load rather than after it. Starting low means the first
+     drive comes up fast on every machine, and SETTINGS > PICTURE raises it in
+     one tap for anyone who wants more.
+
+     applyPresetDefaults(s, "low") below is the authority on what low means
+     (shadows and reflections off, bloom and FXAA on); the fields under this
+     one are the shipped values for a fresh profile and must agree with it. */
+  preset: "low",
+  /* These four ARE applyPresetDefaults(s, "low"), written out. They used to
+     read reflections:true / shadows:true because the default preset was high;
+     leaving them that way would ship a profile whose preset says LOW while two
+     of the things LOW turns off are on, so the PICTURE panel would show LOW
+     selected over a picture nobody picked, and clicking LOW — the preset
+     already highlighted — would visibly change the render. Keep these in step
+     with applyPresetDefaults if either side moves. */
+  reflections: false,
   bloom: true,
-  shadows: true,
+  shadows: false,
   fxaa: true,
   tc: true,
   /* OFF by default: this is the chase-cam motion blur, and it was reported
@@ -885,6 +908,24 @@ export function loadProfile(): Profile {
        them — so unlocking is putting the SignToggle and the two QuickDrawer
        rows back in GameApp and dropping this line. */
     if (prof.settings?.rain) prof.settings.rain = base.settings.rain;
+    /* THE RIVAL PACE CAR IS OFF for the beta — the owner: "turn the rival car
+       off for now". Same shape as rain: the ways in are gone (the home-board
+       shortcut, the settings row and the loading board's row), the car itself
+       is untouched in traffic.ts.
+
+       This scrub is what makes the lock true rather than cosmetic. `rival` has
+       been a saved setting for weeks, so anyone who switched it on — the owner
+       and every tester on this build — carries `true` in their profile, and
+       without this line they would keep getting a rival with no control left
+       to turn it off. rivalSignals goes with it: it is only read while a rival
+       is running, and leaving it set would resurface in ADVANCED describing a
+       car that is not there.
+
+       Unlocking is putting the three controls back and dropping these two
+       lines. syncRivalMode still runs on every load, so the module flag
+       follows the scrubbed profile and traffic.ts never claims the slot. */
+    if (prof.settings?.rival) prof.settings.rival = base.settings.rival;
+    if (prof.settings?.rivalSignals) prof.settings.rivalSignals = base.settings.rivalSignals;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     if (
       typeof prof.cleanRunBest !== "number" || !Number.isFinite(prof.cleanRunBest) ||

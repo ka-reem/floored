@@ -1880,7 +1880,13 @@ export class Game {
   private statsSeed: LifetimeStats = defaultLifetimeStats();
   private raf = 0;
   private disposed = false;
-  private isTouch: boolean;
+  /** Public because the loading board's steering picker is touch-only (the
+      owner: "on desktop dont show the controls bcs the controls are only for
+      mobile"), and that row must be shown by exactly the predicate readInput
+      uses to decide whether to read the touch controls — not by a second,
+      drifting copy of it. Set once in the constructor and never written
+      again; deviceType() in lib/analytics.ts is deliberately the same test. */
+  readonly isTouch: boolean;
   /** HUD nodes live in React's tree, so they are looked up lazily and
      re-looked-up if a node is ever swapped out — but not once per frame,
      which is what the getElementById calls in hud()/frame() amounted to */
