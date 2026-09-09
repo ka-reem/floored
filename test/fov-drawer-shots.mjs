@@ -151,10 +151,20 @@ for (const [name, w, h] of [
   await dpage.evaluate(() => {
     const lab = [...document.querySelectorAll("#tcDrawer .qdRow")]
       .find((r) => r.textContent.includes("FIELD OF VIEW"))?.querySelector(".qdLabel");
-    if (lab) lab.innerHTML = "FOV <i>画角</i>";
+    if (!lab) return;
+    window.__labWas = lab.innerHTML;
+    lab.innerHTML = "FOV <i>画角</i>";
   });
   await advance(dpage, 400);
   await drawerCrop(dpage, `drawer-${name}-crop-altlabel`);
+  /* Put it back BY HAND. React will not: the change is invisible to its
+     virtual DOM, so no later render repairs it, and the swap would leak into
+     the next viewport's "before" shot (it did, the first time). */
+  await dpage.evaluate(() => {
+    const lab = [...document.querySelectorAll("#tcDrawer .qdRow .qdLabel")]
+      .find((l) => l.textContent.includes("FOV"));
+    if (lab && window.__labWas) lab.innerHTML = window.__labWas;
+  });
   // close it again so the next viewport starts from the same place
   await dpage.evaluate(() =>
     document.getElementById("tcMore")?.dispatchEvent(
@@ -177,15 +187,23 @@ for (const [camName, camIx] of [["dashcam", 3], ["chase", 0]]) {
   console.log(`FOV ladder, ${camName}`);
   await fpage.evaluate((ix) => window.__neonx.setCam(ix), camIx);
   // parked in lane on the expressway: identical camera position in all four
+  /* HANDBRAKE, not the brake pedal: br at a standstill selects reverse in this
+     car model, and the first pass caught the car rolling backwards at 5, 12,
+     19 and 25 mph — four different places, which is not a comparison. */
+  await fpage.evaluate(() => window.__neonx.setInput({ th: 0, br: 0, st: 0, hb: 1 }));
   await fpage.evaluate(() => window.__neonx.toCorridor(1200, 0, 0));
-  await fpage.evaluate(() => window.__neonx.setInput({ th: 0, br: 1, st: 0 }));
   await advance(fpage, 3000);
   for (const v of STOPS) {
+    // re-place before every stop so all four share one pose exactly
+    await fpage.evaluate(() => window.__neonx.toCorridor(1200, 0, 0));
     await fpage.evaluate((f) => { window.__neonx.game.settings.fovBase = f; }, v);
     await advance(fpage, 1500);
     await shot(fpage, `fov-${camName}-${v}`);
-    console.log(`   ${camName} ${v}:`, JSON.stringify(await fpage.evaluate(
-      () => ({ camFov: +window.__neonx.game.camera.fov.toFixed(2) }))));
+    console.log(`   ${camName} ${v}:`, JSON.stringify(await fpage.evaluate(() => ({
+      camFov: +window.__neonx.game.camera.fov.toFixed(2),
+      kmh: Math.round(window.__neonx.game.car.u * 3.6),
+      z: Math.round(window.__neonx.game.car.z),
+    }))));
   }
 }
 await fpage.close();
