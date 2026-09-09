@@ -29,7 +29,7 @@ const browser = await puppeteer.launch({
   args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader",
     "--no-sandbox", "--disable-dev-shm-usage", "--mute-audio"],
   defaultViewport: { width: VW, height: VH },
-  protocolTimeout: 600000,
+  protocolTimeout: 2400000,
 });
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("  pageerror:", String(e.message || e).slice(0, 200)));
