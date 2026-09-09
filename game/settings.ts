@@ -670,13 +670,27 @@ export const defaultProfile = (): Profile => ({
   carId: DEFAULT_CAR_ID,
   paintIx: 0,
   seed: 1987,
-  /* DASHCAM. The POV camera is the view this game is played in — AGENTS.md is
-     explicit that the other three exist for debugging — so a first-run profile
-     has to start there. It defaulted to chase, which meant every new visitor
-     landed in third person and never saw the interior at all unless they went
-     looking for the camera control. Only affects first run: an existing
-     profile keeps whatever camera it was last left on. */
-  camMode: 3,
+  /* COCKPIT (CAM_COCKPIT = 1 in engine.ts). The owner's call, asked and then
+     confirmed: "the camera view by default should always be the interior car
+     view inside the cockpit the reg one ... default view" / "cockpit main
+     view".
+
+     This was 3 (CAM_POV, the hard-mounted dashcam), and before that 0 (chase).
+     Both POV and COCKPIT are interior views, which is why this needed asking
+     rather than guessing: POV is a rigid bracket at the windscreen, COCKPIT is
+     a head — it has springs, it cranes to look back and it breathes under
+     braking (see the camera-mode block in engine.ts). The owner wants the head.
+
+     Only affects a FIRST RUN. An existing profile keeps whatever camera it was
+     last left on, so nobody who has already picked a view gets moved off it —
+     including the owner, whose own profile still holds his last choice.
+
+     Note AGENTS.md's older "the dashcam POV is the game" rule was already
+     retired by the owner in the 2026-08-28 update ("every camera ships now"),
+     and POV remains the FIRST FRAME TO JUDGE VISUAL CHANGES IN — that is a
+     separate rule from which camera a new player starts on, and this does not
+     change it. */
+  camMode: 1,
   cleanRunBest: 0,
   stats: defaultLifetimeStats(),
   ttt: { w: 0, l: 0, d: 0 },
