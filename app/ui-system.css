@@ -2868,6 +2868,39 @@ body.touch .tc.pressed,
 .qdRow.pressed .qdLabel i {
   color: #ffd280;
 }
+
+/* A quick-control that is present but held back for the beta (RAIN, WIPERS).
+   It keeps its place in the list so the player can see the game has the
+   feature, and reads NOT AVAILABLE instead of a state. Dimmed rather than
+   hidden, no border on the chip so it does not look like a pressable state,
+   and the label size is dropped a step because "NOT AVAILABLE" is three times
+   the width of "AUTO" and would otherwise push the row's label off a 390px
+   phone. It carries no pointer handler (see QuickDrawer), so :active never
+   applies to it and the two rules above cannot reach it. */
+.qdRow.locked {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* A destination row on the home board that is present but held back (RIVAL).
+   It is a real disabled <button>, so it stays in the tab order's shape and
+   keeps its name; this just stops it looking pressable. The note carries the
+   NOT AVAILABLE caption. */
+.sign-row.na,
+.sign-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sign-row:disabled:hover {
+  background: none;
+}
+.qdState.na {
+  border-color: transparent;
+  background: none;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
 /* Narrow phones (≤420): the HORN puck used to sit at right:168, which on a
    390px screen is x 166–222 — 12px over the right steer puck (x 104–178).
    Stack it above LTS instead: the CAM/LTS/HORN column under the right

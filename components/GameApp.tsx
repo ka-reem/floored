@@ -822,14 +822,29 @@ export default function GameApp() {
                 <SignSep />
                 {/* The same setting the panel carries, surfaced here so the mode
                     is discoverable without going three screens deep. */}
-                {/* THE RIVAL SHORTCUT IS GONE for the beta (owner: "turn the
-                    rival car off for now"). This was the only control that
-                    wrote settings.rival without going through the settings
-                    panel's upd(), so removing it is also what stops a stale
-                    ON badge appearing over a setting the scrub has since
-                    cleared. Restoring it, the SETTINGS toggle and the loading
-                    board's row, and dropping the scrub in settings.ts, is the
-                    whole of unlocking the rival again. */}
+                {/* THE RIVAL IS HELD BACK for the beta, but the row STAYS —
+                    the owner: "rival dont remove it just say not available or
+                    something". A disabled <button>, so it keeps its place and
+                    its name in the destination list and reads NOT AVAILABLE
+                    where the ON/OFF chip used to be.
+
+                    No onClick and no badge, deliberately: this was the only
+                    control that wrote settings.rival outside the settings
+                    panel's upd(), and the badge read from the profile — with
+                    the scrub in settings.ts clearing rival on load, a live
+                    badge here would always have said OFF, which reads as "you
+                    can switch it on" rather than "not yet". Unlocking is
+                    restoring the onClick and the badge, un-disabling it, and
+                    dropping the scrub. */}
+                <SignRow
+                  disabled
+                  className="na"
+                  glyph="ne"
+                  jp="好敵手"
+                  en="RIVAL"
+                  note="NOT AVAILABLE"
+                  dist="1.2"
+                />
                 <SignRow glyph="p" jp="車庫" en="GARAGE" dist="0.4" onClick={() => void openScreen("garage")} />
                 <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => void openScreen("settings")} />
                 <SignRow glyph="nw" jp="操作" en="CONTROLS" dist="3.1" onClick={() => setScreen("controls")} />
@@ -1170,12 +1185,15 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             }
           />
         </SignSrow>
-        {/* THE RIVAL IS OFF for the beta (owner: "turn the rival car off for
-            now"), so its row is gone from here as well as from the home board
-            and SETTINGS. The profile scrub in settings.ts is what makes that
-            true for players who already had it on. upd() still calls
-            syncRivalMode on every row, so the module flag keeps following the
-            profile and traffic.ts never claims the slot. */}
+        {/* Held back for the beta, but kept in the list — the owner: "rival
+            dont remove it just say not available or something". Static
+            caption, no toggle: the profile scrub in settings.ts is what makes
+            it true for players who already had it on, and upd() still calls
+            syncRivalMode on every other row so the module flag keeps following
+            the scrubbed profile and traffic.ts never claims the slot. */}
+        <SignSrow name="Rival car" aside="— chase the orange one">
+          <span className="sign-cap faint">NOT AVAILABLE</span>
+        </SignSrow>
         {/* live: hudVisible() reads game.mmap every frame; the canvas itself is
             shown by this file's own render the moment play starts. Mirrored
             field — settings alone would save it without applying it. */}
@@ -1596,19 +1614,26 @@ function QuickDrawer({
   };
   // playing implies loaded, but a guard against a not-yet-built car is free
   if (!game.car) return null;
-  const rows: { k: string; en: string; jp: string; state: string; on: boolean }[] = [
+  /* `lock: true` is a row that STAYS but cannot be tapped. The owner asked
+     for this shape explicitly — "rival dont remove it just say not available
+     or something same with the rain thing" — so a feature held back for the
+     beta keeps its place in the list and says so, rather than vanishing and
+     leaving the player wondering whether the game has it at all. */
+  const rows: { k: string; en: string; jp: string; state: string; on: boolean; lock?: boolean }[] = [
     { k: "l", en: "HEADLIGHTS", jp: "ライト", state: game.car.lightsMode.toUpperCase(),
       on: game.car.lightsMode === "on" },
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
     { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
-    /* RAIN AND WIPERS ARE LOCKED for the beta — both rows are gone from the
-       drawer, and wipers go with rain because a wiper control on dry glass is
-       a dead switch. Nothing underneath is removed: setRain, the rain FX, the
+    /* RAIN AND WIPERS ARE HELD BACK for the beta, shown but not tappable.
+       Wipers go with rain because a wiper control on dry glass is a dead
+       switch. Nothing underneath is removed: setRain, the rain FX, the
        wet-road materials and every wiper mode still run, and the R and U keys
-       still reach them through the same uiKeyTap route these rows used. Same
-       shape as the TILT lock — unlocking is putting these two rows back (and
-       the settings-panel toggle, and the profile scrub in settings.ts). */
+       still reach them through the same uiKeyTap route these rows used — so
+       unlocking is dropping the two `lock` flags here, the settings-panel
+       caption, and the profile scrub in settings.ts. */
+    { k: "r", en: "RAIN", jp: "雨", state: "NOT AVAILABLE", on: false, lock: true },
+    { k: "u", en: "WIPERS", jp: "ワイパー", state: "NOT AVAILABLE", on: false, lock: true },
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
     { k: "v", en: "DASHCAM FX", jp: "映像", state: game.grade ? "ON" : "OFF", on: game.grade },
   ];
@@ -1618,11 +1643,20 @@ function QuickDrawer({
         QUICK CONTROLS <span>クイック操作</span>
       </div>
       {rows.map((r) => (
-        <div key={r.k} className="qdRow" onPointerDown={(e) => { tapGlow(e); tap(r.k); }}>
+        /* A locked row gets no pointer handler at all rather than a disabled
+           one: uiKeyTap is the only way this drawer reaches the engine, so not
+           wiring it is what makes the lock real, and without the handler the
+           :active glow never fires either. */
+        <div
+          key={r.k}
+          className={"qdRow" + (r.lock ? " locked" : "")}
+          aria-disabled={r.lock || undefined}
+          onPointerDown={r.lock ? undefined : (e) => { tapGlow(e); tap(r.k); }}
+        >
           <span className="qdLabel">
             {r.en} <i>{r.jp}</i>
           </span>
-          <span className={"qdState" + (r.on ? " on" : "")}>{r.state}</span>
+          <span className={"qdState" + (r.on ? " on" : "") + (r.lock ? " na" : "")}>{r.state}</span>
         </div>
       ))}
       {/* One-shot, so it also closes the drawer: the whole point of a reset
@@ -2094,14 +2128,14 @@ function SettingsPanel({
                 </SignSrow>
                 {/* THE RIVAL IS LOCKED OFF for the beta, the same way rain is:
                     the row keeps its place so the section still reads the same,
-                    but it is a static NOT ACTIVE caption instead of a switch.
+                    but it is a static NOT AVAILABLE caption instead of a switch.
                     The car itself is untouched in game/traffic.ts — it claims
                     its pool slot on the toggle rather than at construction, so
                     off costs nothing. Unlocking is putting this SignToggle
                     back, restoring the home-board shortcut and the loading
                     board's row, and dropping the scrub in settings.ts. */}
                 <SignSrow name="Rival car">
-                  <span className="sign-cap faint">NOT ACTIVE</span>
+                  <span className="sign-cap faint">NOT AVAILABLE</span>
                 </SignSrow>
                 {/* The clean-run readout: distance since the last real impact
                     (game/engine.ts's runUpdate). On by default. */}
@@ -2163,12 +2197,12 @@ function SettingsPanel({
                 </SignSrow>
                 {/* RAIN IS LOCKED for the beta — see the migration note in
                     settings.ts. The row stays so WORLD still reads as weather,
-                    but it is a static NOT ACTIVE caption in the panel's own
+                    but it is a static NOT AVAILABLE caption in the panel's own
                     faint style instead of a switch. Putting this SignToggle
                     back (with the two QuickDrawer rows) is the whole of
                     unlocking it. */}
                 <SignSrow last name="Rain">
-                  <span className="sign-cap faint">NOT ACTIVE</span>
+                  <span className="sign-cap faint">NOT AVAILABLE</span>
                 </SignSrow>
                 <SignShead en="SOUND" jp="音" />
                 <SignSrow stack last name="Volume" lit={L("vol")}>
@@ -2287,7 +2321,7 @@ function SettingsPanel({
                 <span className="sign-cap faint sign-adv-note">
                   {adv
                     ? "niche but real — nothing here changes what the game is"
-                    : "draw distance · fog · motion blur · first-run hints · new town · reset"}
+                    : "draw distance · fog · motion blur · rival indicators · first-run hints · new town · reset"}
                 </span>
               </button>
               {adv && (
@@ -2306,7 +2340,7 @@ function SettingsPanel({
                     </SignSrow>
                   </div>
                   <div>
-                    <SignSrow last name="Fog / haze" lit={L("fog")}>
+                    <SignSrow name="Fog / haze" lit={L("fog")}>
                       <SignSeg
                         label="Fog / haze"
                         value={s.fog}
@@ -2314,12 +2348,13 @@ function SettingsPanel({
                         onChange={(v) => upd((x) => (x.fog = v as GameSettings["fog"]))}
                       />
                     </SignSrow>
-                    {/* "Rival indicators" stood here. It is only ever read while
-                        a rival is running, so with the rival off for the beta it
-                        described a car that is not in the world — and ADVANCED
-                        is exactly where a control like that goes unnoticed.
-                        Fog above inherits its `last`. Restore this row when the
-                        rival comes back. */}
+                    {/* Held back with the rival itself — it is only ever read
+                        while a rival is running. Kept rather than deleted, on
+                        the same instruction as the RIVAL row on the home board
+                        ("dont remove it just say not available"). */}
+                    <SignSrow last name="Rival indicators" aside="— the rival signals its lane changes">
+                      <span className="sign-cap faint">NOT AVAILABLE</span>
+                    </SignSrow>
                   </div>
                   <div>
                     {/* Gates game/hints.ts wholesale. Which tips have already fired is
