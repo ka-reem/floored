@@ -55,8 +55,8 @@ page.on("console", (m) => {
    the light and the framing are identical by construction — seeding the page
    would buy nothing, and an overridden Math.random stalled the world build. */
 
-await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 180000 });
-await page.waitForFunction(() => !!window.__neonx, { timeout: 180000 });
+await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 900000 });
+await page.waitForFunction(() => !!window.__neonx, { timeout: 900000 });
 await sleep(600);
 
 const jpg = async (name) => {
