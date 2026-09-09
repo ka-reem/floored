@@ -874,6 +874,17 @@ export function loadProfile(): Profile {
        steer quits without telling anyone why. The engine path is untouched,
        so unlocking is putting the option back in the two pickers. */
     if (prof.settings?.steerMode === "tilt") prof.settings.steerMode = base.settings.steerMode;
+    /* RAIN IS LOCKED for the beta too, so a profile that stored it on has to
+       be moved off it. Not cosmetic: the settings row now reads a static NOT
+       ACTIVE, and a stored `true` would have the world raining while the panel
+       says it is not — the one state the lock must not produce.
+
+       Why it is locked rather than shipped: the owner pulled the mode. The
+       engine path is entirely untouched — setRain, the rain FX, the wet-road
+       materials and all four wiper modes still run, and R and U still reach
+       them — so unlocking is putting the SignToggle and the two QuickDrawer
+       rows back in GameApp and dropping this line. */
+    if (prof.settings?.rain) prof.settings.rain = base.settings.rain;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     if (
       typeof prof.cleanRunBest !== "number" || !Number.isFinite(prof.cleanRunBest) ||

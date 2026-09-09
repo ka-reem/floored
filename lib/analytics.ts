@@ -199,6 +199,18 @@ function bootPostHog(ph: PostHog) {
   }
 }
 
+/** True while events have somewhere to go: init has been asked for and the
+    module is either in flight (calls buffer) or up (calls fire). False when
+    the owner opted out, under webdriver, before initAnalytics, and — the case
+    that matters — after a posthog-js that never arrived cleared `started`.
+
+    lib/telemetry.ts gates its whole sampler on this: with analytics off it
+    must not so much as accumulate. Exported rather than inferred so there is
+    one answer to "is anything being sent from this browser?". */
+export function analyticsLive(): boolean {
+  return started;
+}
+
 type Props = Record<string, string | number | boolean | null | undefined>;
 
 /** Capture one curated event. No-op until initAnalytics has run. */
