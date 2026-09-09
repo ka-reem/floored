@@ -3773,16 +3773,21 @@ export class Game {
     this.ui.toast("FOV " + next.name + " " + next.v + "°");
   }
 
-  /** What the drawer's FOV row shows: the stop's name with its degrees, and
-      whether the setting sits off its default (the row's lit state, the same
-      convention TIME-LAPSE's ×0 uses). A value the SETTINGS SLIDER left
-      between two stops reads as its own number with no name, which is honest —
-      it says the setting is live and where it is, and the next tap puts it
-      back on the ladder. */
+  /** What the drawer's FOV row shows: DEGREES, exactly as the settings
+      panel's slider reads them out (`${s.fovBase}°`), and whether the value
+      sits off its default (the row's lit state, the same convention
+      TIME-LAPSE's ×0 uses).
+
+      Degrees and not the stop's name, for two reasons. It is the same readout
+      the one other FOV control in the game already gives, so the two cannot
+      look like different settings; and a chip is 44px wide next to a label
+      that is already the longest in the sheet — "NARROW 58°" pushed the label
+      onto a second line on a 390px phone and truncated it in the landscape
+      grid. The NAME is not lost: cycleFov's toast says "FOV WIDE 80°" on
+      every tap, which is where a name is actually useful. */
   get fovRow(): { text: string; changed: boolean } {
     const v = this.settings.fovBase;
-    const hit = FOV_STOPS.find((s) => Math.abs(s.v - v) < 0.5);
-    return { text: hit ? hit.name + " " + hit.v + "°" : v + "°", changed: v !== FOV_SLIDER_REF };
+    return { text: v + "°", changed: v !== FOV_SLIDER_REF };
   }
 
   private padEdge: PadEdge = {

@@ -1624,6 +1624,21 @@ function QuickDrawer({
       on: game.car.lightsMode === "on" },
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
     { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
+    /* Field of view — the owner asked for it "from the 3 dots". A STEPPED row,
+       not a slider: every other row here is a tap that routes through
+       uiKeyTap, i.e. it literally is a keyboard key (K), and that is what
+       keeps a row and its key from ever drifting apart. The continuous
+       58..100 slider is still in SETTINGS for anyone who wants an exact
+       number; this cycles the four named stops in engine.ts's FOV_STOPS and
+       writes the SAME `settings.fovBase` the slider does — one FOV number in
+       the game, two ways to reach it.
+
+       Here rather than at the bottom of the list because the sheet SCROLLS on
+       a 390x664 phone (max-height: 100vh - 280px) — eleven rows do not fit —
+       and a control the owner asked to be able to reach should not be the one
+       below the fold. Beside MAP ZOOM is also where it belongs: both are "how
+       much of the world do I see". */
+    { k: "k", en: "FIELD OF VIEW", jp: "画角", state: game.fovRow.text, on: game.fovRow.changed },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
     /* RAIN AND WIPERS ARE HELD BACK for the beta, shown but not tappable.
        Wipers go with rain because a wiper control on dry glass is a dead
@@ -1635,15 +1650,6 @@ function QuickDrawer({
     { k: "r", en: "RAIN", jp: "雨", state: "NOT AVAILABLE", on: false, lock: true },
     { k: "u", en: "WIPERS", jp: "ワイパー", state: "NOT AVAILABLE", on: false, lock: true },
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
-    /* Field of view — the owner asked for it "from the 3 dots". A STEPPED row,
-       not a slider: every other row here is a tap that routes through
-       uiKeyTap, i.e. it literally is a keyboard key (K), and that is what
-       keeps a row and its key from ever drifting apart. The continuous
-       58..100 slider is still in SETTINGS for anyone who wants an exact
-       number; this cycles the four named stops in engine.ts's FOV_STOPS and
-       writes the SAME `settings.fovBase` the slider does — one FOV number in
-       the game, two ways to reach it. */
-    { k: "k", en: "FIELD OF VIEW", jp: "画角", state: game.fovRow.text, on: game.fovRow.changed },
     { k: "v", en: "DASHCAM FX", jp: "映像", state: game.grade ? "ON" : "OFF", on: game.grade },
   ];
   return (

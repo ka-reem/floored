@@ -20,6 +20,10 @@ import { debugUrl } from "./lib/debug-url.mjs";
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : d; };
 const URL = arg("--url", "http://localhost:3427");
 const OUT = arg("--out", "/tmp/fov-shots");
+/* --only lets the two halves be shot in separate processes: on a loaded box
+   a world build can take half an hour, and losing both halves to one crash
+   is worse than shooting them one at a time. */
+const ONLY = arg("--only", "all");
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /* SwiftShader only advances rAF while the compositor is producing frames, so
@@ -113,6 +117,7 @@ async function drawerCrop(page, name) {
    SwiftShader, and body.touch (which is what makes the drawer visible at all)
    is decided once in the Game constructor from hasTouch — so a resize is the
    only part that has to change between these three. */
+if (ONLY === "all" || ONLY === "drawer") {
 console.log("drawer session");
 const dpage = await session(390, 664);
 for (const [name, w, h] of [
@@ -121,6 +126,9 @@ for (const [name, w, h] of [
   ["desktop", 1440, 900],
 ]) {
   await dpage.setViewport({ width: w, height: h, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+  // every viewport starts from the shipped default, so the three "before" crops
+  // are the same state and the one tap always moves the same distance
+  await dpage.evaluate(() => { window.__neonx.game.settings.fovBase = 67; });
   await advance(dpage, 1500);
   await openDrawer(dpage);
   await shot(dpage, `drawer-${name}-full`);
@@ -136,6 +144,17 @@ for (const [name, w, h] of [
   await advance(dpage, 500);
   await drawerCrop(dpage, `drawer-${name}-crop-tapped`);
   console.log("   after one tap:", JSON.stringify(await dpage.evaluate(() => window.__neonx.game.fovRow)));
+  /* Label OPTION B for the owner to choose between: the SAME live drawer with
+     only the row's text replaced in the DOM. Same CSS, same grid, a real
+     reflow — the alternative wording, not a drawing of it. React restores the
+     real label on the next render (closing the sheet below is one). */
+  await dpage.evaluate(() => {
+    const lab = [...document.querySelectorAll("#tcDrawer .qdRow")]
+      .find((r) => r.textContent.includes("FIELD OF VIEW"))?.querySelector(".qdLabel");
+    if (lab) lab.innerHTML = "FOV <i>画角</i>";
+  });
+  await advance(dpage, 400);
+  await drawerCrop(dpage, `drawer-${name}-crop-altlabel`);
   // close it again so the next viewport starts from the same place
   await dpage.evaluate(() =>
     document.getElementById("tcMore")?.dispatchEvent(
@@ -143,9 +162,11 @@ for (const [name, w, h] of [
   await advance(dpage, 400);
 }
 await dpage.close();
+}
 
 /* ---- 2. the same parked frame at every stop ---- */
 const STOPS = [58, 67, 80, 100];
+if (ONLY === "all" || ONLY === "fov") {
 const fpage = await session(1440, 900, { touch: false });
 await fpage.evaluate(() => {
   const g = window.__neonx.game;
@@ -168,6 +189,7 @@ for (const [camName, camIx] of [["dashcam", 3], ["chase", 0]]) {
   }
 }
 await fpage.close();
+}
 
 await browser.close();
 if (errs.length) { console.error("page errors:"); for (const e of errs) console.error("  - " + e); process.exit(1); }
