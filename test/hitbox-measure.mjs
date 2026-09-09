@@ -258,7 +258,7 @@ for (const j of jobs) {
     bodyFront: m.bodyFront, bodyRear: m.bodyRear,
     fullFront: m.bb.z1, fullRear: m.bb.z0,
     colHalfW, colHalfL,
-    prof: SHOW_PROFILE ? m.prof : undefined,
+    prof: m.prof,
     procedural: !!m.procedural,
   });
 }
@@ -314,8 +314,11 @@ if (SHOW_PROFILE)
     }
   }
 
+/* The width profile goes into the JSON always, not only with --profile: it is
+   the top-down silhouette test/hitbox-plot.mjs draws the boxes over, and
+   re-deriving it means re-sampling every mesh. */
 const dump = () => JSON.stringify(
-  rows.map((r) => ({ ...r, prof: r.prof ? Object.fromEntries(r.prof) : undefined })), null, 1
+  rows.map((r) => ({ ...r, prof: r.prof ? Object.fromEntries(r.prof) : null })), null, 1
 );
 if (OUT) fs.writeFileSync(OUT, dump());
 if (AS_JSON)

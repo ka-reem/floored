@@ -73,43 +73,85 @@ export const FLEET_STYLES: string[] = [...FLEET_MIX.map(([s]) => s), "police"];
    whose bodywork can plausibly be any colour are recoloured in the shader
    from the albedo texel instead. See PAINT_TINT. */
 
-/* W is deliberately 1 cm UNDER the visible bodyshell, and must be kept in sync
-   with the per-style W in tools/build-orchids-models.mjs — that table is the
-   source of truth, because each GLB is non-uniformly fitted so its whole
-   bounding box (mirrors included) lands on exactly those numbers. Do not
-   "correct" these back up.
+/* W is the MESH FIT, and must be kept in sync with the per-style W in
+   tools/build-orchids-models.mjs — that table is the source of truth, because
+   each GLB is non-uniformly fitted so its whole bounding box lands on exactly
+   those numbers. Do not "correct" these. Everything that asks "how wide is
+   this vehicle" for TRAFFIC purposes — lane keeping, separation, the AI's own
+   wall clamps — reads W, and those all want the mesh's own footprint.
 
-   They used to run 8 cm OVER the visible width, which is what made traffic
-   feel like it sideswiped through thin air: player and NPC half-widths meet
-   in collidePlayer()'s OBB test, so a crash fired ~6 cm before the two bodies
-   touched on screen. Under-sizing by 1 cm is the other half of the same idea
-   as the player's own half-width in player.ts — a gap that looks clear IS
-   clear, with a hair of leeway rather than a phantom margin.
+   `cw` IS THE COLLISION HALF-WIDTH, and it is a different number.
 
-   L, wr, wz and mass are unrelated to this and are left alone. */
-const TYPE_DIM: Record<string, { L: number; W: number; wr: number; wz: number; mass: number }> = {
+   The two used to be the same, and that was the bug. Read the sentence above
+   again: the GLB is fitted so its WHOLE BOUNDING BOX lands on W — and a
+   bounding box includes the door mirrors. So the flank a player sees is
+   narrower than W by the mirror overhang, while collide.ts was testing at W.
+   Measured off the shipped meshes (test/hitbox-measure.mjs), every style in
+   the fleet was colliding between 6 and 27 cm per side before its bodywork
+   reached anything:
+
+     truck  1.045 -> 0.775   the whole cargo box is 1.56 m; only the cab
+                             mirrors ever reach 2.09
+     bus    1.125 -> 0.951
+     van    0.885 -> 0.735
+     hybrid 0.875 -> 0.736
+     osuv   0.945 -> 0.819
+     sedan  0.890 -> 0.769
+     ...    every style, see the table in that file
+
+   The owner found it twice in one session, once alongside a bus and once at
+   a Camry's front corner: "im scraping the bus like i hear it and im going
+   slow but in reality theres a gap", and "maybe dont include the side mirrors
+   since they stick out a lot". He was right about the mechanism.
+
+   HOW cw IS DERIVED, so it can be re-derived rather than trusted: it is the
+   widest half-width that at least 1.5% of the vehicle's flank area actually
+   reaches, less the same 1 cm of leeway this table always meant to apply — a
+   gap that looks clear IS clear. The area test is what separates a mirror
+   (one blob, ~0.03 m^2 on a car) from a fender bulge or a wheel fairing
+   (tenths of a square metre); a span-along-the-car test cannot, because a
+   bus's mirror covers 3% of its length and its front wheel fairing covers 5%.
+   These bakes are merged to one anonymous mesh per style, so there are no
+   node names to exclude mirrors by — see test/hitbox-measure.mjs.
+
+   Known and accepted: the bus's front wheel fairing reaches 0.990 and is 3.4
+   cm outside its cw. It is a short, low patch that falls under the area cut.
+   That is the FORGIVING direction (contact fires late, not early), which is
+   the direction this table has always chosen.
+
+   LENGTH is deliberately not given the same treatment. It was measured too
+   and it was already right: every style's L/2 is within 1.7 cm of its drawn
+   nose and tail, the one exception being the police car's tail at 5.1 cm, and
+   a symmetric box cannot take that back without shortening a nose that is
+   correct. So collide.ts still uses L / 2 lengthwise.
+
+   L, wr, wz and mass are unrelated to all of this and are left alone. */
+const TYPE_DIM: Record<
+  string,
+  { L: number; W: number; cw: number; wr: number; wz: number; mass: number }
+> = {
   /* o-prefixed styles are the original Orchids bodyshells riding alongside
      their modern replacements — the owner wants both generations in
      traffic. Same dims as their twins. */
-  osedan: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1380 },
-  ohybrid: { L: 4.54, W: 1.75, wr: 0.32, wz: 1.4, mass: 1400 },
-  ocompact: { L: 3.94, W: 1.70, wr: 0.30, wz: 1.24, mass: 1080 },
-  osuv: { L: 4.72, W: 1.89, wr: 0.36, wz: 1.46, mass: 1950 },
-  hybrid: { L: 4.54, W: 1.75, wr: 0.32, wz: 1.4, mass: 1400 },
+  osedan: { L: 4.44, W: 1.78, cw: 0.779, wr: 0.32, wz: 1.37, mass: 1380 },
+  ohybrid: { L: 4.54, W: 1.75, cw: 0.801, wr: 0.32, wz: 1.4, mass: 1400 },
+  ocompact: { L: 3.94, W: 1.70, cw: 0.763, wr: 0.30, wz: 1.24, mass: 1080 },
+  osuv: { L: 4.72, W: 1.89, cw: 0.819, wr: 0.36, wz: 1.46, mass: 1950 },
+  hybrid: { L: 4.54, W: 1.75, cw: 0.736, wr: 0.32, wz: 1.4, mass: 1400 },
   /* m-prefix = the Mint-generated generation, the same idea as the o-prefix
      above: a third hybrid-class shell in traffic beside the other two, not a
      replacement for either. Same car class, so the same numbers as `hybrid`
      — the mesh is fitted to 1.76 and the collider stays the 1 cm under that
      the block above explains. */
-  mhybrid: { L: 4.54, W: 1.75, wr: 0.32, wz: 1.4, mass: 1400 },
-  sedan: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1380 },
-  compact: { L: 3.94, W: 1.70, wr: 0.30, wz: 1.24, mass: 1080 },
-  suv: { L: 4.72, W: 1.89, wr: 0.36, wz: 1.46, mass: 1950 },
-  taxi: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1380 },
-  police: { L: 4.44, W: 1.78, wr: 0.32, wz: 1.37, mass: 1450 },
-  van: { L: 4.64, W: 1.77, wr: 0.31, wz: 1.5, mass: 1750 },
-  truck: { L: 6.3, W: 2.09, wr: 0.42, wz: 2.3, mass: 4200 },
-  bus: { L: 9.4, W: 2.25, wr: 0.44, wz: 3.4, mass: 9000 },
+  mhybrid: { L: 4.54, W: 1.75, cw: 0.797, wr: 0.32, wz: 1.4, mass: 1400 },
+  sedan: { L: 4.44, W: 1.78, cw: 0.769, wr: 0.32, wz: 1.37, mass: 1380 },
+  compact: { L: 3.94, W: 1.70, cw: 0.779, wr: 0.30, wz: 1.24, mass: 1080 },
+  suv: { L: 4.72, W: 1.89, cw: 0.848, wr: 0.36, wz: 1.46, mass: 1950 },
+  taxi: { L: 4.44, W: 1.78, cw: 0.822, wr: 0.32, wz: 1.37, mass: 1380 },
+  police: { L: 4.44, W: 1.78, cw: 0.874, wr: 0.32, wz: 1.37, mass: 1450 },
+  van: { L: 4.64, W: 1.77, cw: 0.735, wr: 0.31, wz: 1.5, mass: 1750 },
+  truck: { L: 6.3, W: 2.09, cw: 0.775, wr: 0.42, wz: 2.3, mass: 4200 },
+  bus: { L: 9.4, W: 2.25, cw: 0.951, wr: 0.44, wz: 3.4, mass: 9000 },
 };
 
 /* Town/side-street traffic is parked for now at the user's request: the whole
@@ -1329,6 +1371,10 @@ export interface Npc {
   /** baked paint colour, linear RGB */
   cr: number; cg: number; cb: number;
   L: number; W: number; wr: number; wz: number; mass: number;
+  /** COLLISION half-width — the drawn flank, not the mesh's bounding box,
+      which includes the door mirrors. See TYPE_DIM. collide.ts tests against
+      this; every traffic behaviour still reads W. */
+  cw: number;
   wheelOffs: [number, number][];
   hw: boolean;
   edge: REdge | null;
@@ -2248,7 +2294,7 @@ export class Traffic {
       this.npcs.push({
         id: i, active: false, type, style: this.styleOf[type],
         cr: C.r, cg: C.g, cb: C.b,
-        L: d.L, W: d.W, wr: d.wr, wz: d.wz, mass: d.mass,
+        L: d.L, W: d.W, cw: d.cw, wr: d.wr, wz: d.wz, mass: d.mass,
         wheelOffs: [[d.wz, hw2], [d.wz, -hw2], [-d.wz, hw2], [-d.wz, -hw2]],
         hw: true, edge: null, eDir: 1, segHint: { i: 0 }, nextEdgeId: -1,
         dir: 1, route: -1, wantBypass: 0,

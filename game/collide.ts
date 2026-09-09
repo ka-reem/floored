@@ -428,9 +428,14 @@ export function collidePlayer(
     const ddx = car.x - n.x, ddz = car.z - n.z;
     const reach = n.L / 2 + halfL + 1.6;
     if (ddx * ddx + ddz * ddz > reach * reach) continue;
+    /* n.cw, NOT n.W / 2: the NPC bakes are fitted so their whole bounding box
+       — door mirrors included — lands on W, so W is between 6 and 27 cm per
+       side wider than the flank a player sees and judges a gap against. cw is
+       the measured bodywork. Length keeps L / 2, which measured correct.
+       See TYPE_DIM in traffic.ts and test/hitbox-measure.mjs. */
     const res = obb2(
       car.x, car.z, fx, fz, halfW, halfL,
-      n.x, n.z, Math.sin(n.hVis), Math.cos(n.hVis), n.W / 2, n.L / 2
+      n.x, n.z, Math.sin(n.hVis), Math.cos(n.hVis), n.cw ?? n.W / 2, n.L / 2
     );
     if (res) {
       car.x += res.nx * res.pen * 0.55;

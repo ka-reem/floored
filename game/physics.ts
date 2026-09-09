@@ -384,6 +384,12 @@ try {
    afterwards anyway, so nothing legitimate is within reach of it. */
 export const SLOPE_PROBE = { guard: true, maxRise: 1.2 };
 
+try {
+  (window as unknown as { __slopeProbe?: unknown }).__slopeProbe = SLOPE_PROBE;
+} catch {
+  /* non-browser (SSR, tests) — the sim imports the object directly */
+}
+
 export interface CarState {
   x: number; y: number; z: number; h: number;
   u: number; v: number; r: number; delta: number;
