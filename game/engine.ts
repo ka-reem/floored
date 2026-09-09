@@ -2241,7 +2241,8 @@ export class Game {
           });
           this.loopSplice();
           const cr = collidePlayer(
-            this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL
+            this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL,
+            1 / 120
           );
           /* The CLEAN RUN is part of the car simulation, not of rendering:
              its reset is decided by collide.ts's normalImpact, which this
@@ -6360,7 +6361,9 @@ export class Game {
          by 0.965 on any hit, so at speed that term swamps the normal impulse
          and points backwards along travel instead of out of the wall. */
       const preCX = this.car.x, preCZ = this.car.z;
-      const res = collidePlayer(this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL);
+      const res = collidePlayer(
+        this.car, this.world, this.traffic.npcs, this.rig.halfW, this.rig.halfL, dt
+      );
       this.scrapeUpdate(dt, res.hit, this.car.x - preCX, this.car.z - preCZ);
       // Near-miss streak: a hit worth the crash sound is a hit that kills the
       // combo — same relSpeed/wallImpact thresholds as the audio/damage below,
