@@ -29,12 +29,21 @@ const browser = await puppeteer.launch({
   args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader",
     "--no-sandbox", "--disable-dev-shm-usage", "--mute-audio"],
   defaultViewport: { width: VW, height: VH },
+  timeout: 600000,
   protocolTimeout: 2400000,
 });
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("  pageerror:", String(e.message || e).slice(0, 200)));
 await page.goto(debugUrl(URL), { waitUntil: "domcontentloaded", timeout: 180000 });
-await page.waitForFunction(() => !!window.__neonx, { timeout: 180000 });
+/* evaluate-polled, not waitForFunction: waitForFunction polls through
+   requestAnimationFrame, which on a box running three SwiftShader browsers
+   can be starved for minutes at a time, and the wait then times out on a
+   page that is perfectly alive. */
+for (let k = 0; ; k++) {
+  if (await page.evaluate(() => !!window.__neonx)) break;
+  if (k > 90) throw new Error("__neonx never appeared");
+  await sleep(5000);
+}
 await page.evaluate(() => {
   const b = [...document.querySelectorAll("button")].find((x) => x.textContent.includes("DRIVE"));
   b?.click();
