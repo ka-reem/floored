@@ -599,6 +599,16 @@ body:not(.touch) #mmap {
   /* opaque, unlike the menu: there is nothing behind this worth showing, and
      a translucent layer over an unrendered canvas reads as a broken frame */
   background: var(--scrim-load);
+  /* MOBILE VIEWPORT. inset:0 on a fixed element resolves against the initial
+     containing block, which on iOS Safari/Chrome is the LARGE viewport — the
+     full 844px of an iPhone 14, URL bar and bottom toolbar included. The
+     visible viewport is ~640-680px, so the board was laid out 170-200px
+     taller than the screen and, being centred, spilled off BOTH ends: the C1
+     shield off the top, the Volume slider off the bottom. dvh is the visible
+     viewport; the vh line above it is the fallback for browsers without it
+     (which are the browsers where vh == the visible viewport anyway). */
+  height: 100vh;
+  height: 100dvh;
   /* The safe-area terms are live now — app/layout.tsx sets viewport-fit=cover
      for the home-screen install, so on a notched phone these carry the frame
      clear of the sensor housing. The 20px is what does the work everywhere
