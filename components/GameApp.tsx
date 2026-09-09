@@ -2,7 +2,8 @@
 
 import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import type { Game } from "@/game/engine";
-import { WIPER_MODE_NAMES, CAM_NAMES } from "@/game/camnames";
+// WIPER_MODE_NAMES went with the locked WIPERS drawer row — camnames.ts keeps it for the engine
+import { CAM_NAMES } from "@/game/camnames";
 import { track, trackDebounced, deviceType } from "@/lib/analytics";
 import { showGfxFail, webglAvailable } from "@/game/gfxfail";
 import { HINT_SHOW_MS, type HintMsg } from "@/game/hints";
@@ -1521,13 +1522,13 @@ function QuickDrawer({
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
     { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
-    { k: "r", en: "RAIN", jp: "雨", state: game.rain ? "ON" : "OFF", on: game.rain },
-    /* The touch way into the wiper modes — the stalk click zone is
-       desktop-mouse only (see engine.ts wiperStalkTarget). Same key the
-       keyboard uses (U), through the same uiKeyTap route. Below RAIN because
-       the two are one thought: rain auto-starts LO, this row is for
-       choosing INT/HI or going OFF to watch the glass bead up. */
-    { k: "u", en: "WIPERS", jp: "ワイパー", state: WIPER_MODE_NAMES[game.wiperMode], on: game.wiperMode > 0 },
+    /* RAIN AND WIPERS ARE LOCKED for the beta — both rows are gone from the
+       drawer, and wipers go with rain because a wiper control on dry glass is
+       a dead switch. Nothing underneath is removed: setRain, the rain FX, the
+       wet-road materials and every wiper mode still run, and the R and U keys
+       still reach them through the same uiKeyTap route these rows used. Same
+       shape as the TILT lock — unlocking is putting these two rows back (and
+       the settings-panel toggle, and the profile scrub in settings.ts). */
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
     { k: "v", en: "DASHCAM FX", jp: "映像", state: game.grade ? "ON" : "OFF", on: game.grade },
   ];
@@ -2075,16 +2076,14 @@ function SettingsPanel({
                 <SignSrow name="Day/night cycle" lit={L("autoTime")}>
                   <SignToggle label="Day/night cycle" checked={s.autoTime} onChange={(v) => upd((x) => (x.autoTime = v))} />
                 </SignSrow>
-                <SignSrow last name="Rain" lit={L("rain")}>
-                  <SignToggle
-                    label="Rain"
-                    checked={game.rain}
-                    onChange={(v) => {
-                      game.setRain(v);
-                      setLit("rain");
-                      force((n) => n + 1);
-                    }}
-                  />
+                {/* RAIN IS LOCKED for the beta — see the migration note in
+                    settings.ts. The row stays so WORLD still reads as weather,
+                    but it is a static NOT ACTIVE caption in the panel's own
+                    faint style instead of a switch. Putting this SignToggle
+                    back (with the two QuickDrawer rows) is the whole of
+                    unlocking it. */}
+                <SignSrow last name="Rain">
+                  <span className="sign-cap faint">NOT ACTIVE</span>
                 </SignSrow>
                 <SignShead en="SOUND" jp="音" />
                 <SignSrow stack last name="Volume" lit={L("vol")}>
