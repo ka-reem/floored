@@ -2336,28 +2336,20 @@ body .signRoot .paintDot::before {
 }
 
 /* ---------- pause ---------- */
-.sign-post {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(50% - 348 * var(--su));
-  width: calc(18 * var(--su));
-  background: linear-gradient(90deg, var(--steel-hi), var(--steel-dark));
-  pointer-events: none;
-}
-.sign-post-stub {
-  position: absolute;
-  left: 100%;
-  width: calc(30 * var(--su));
-  height: calc(12 * var(--su));
-  background: var(--steel-fixture);
-}
-.sign-post-stub.t {
-  top: calc(150 * var(--su));
-}
-.sign-post-stub.b {
-  top: calc(700 * var(--su));
-}
+/* The mounting post is GONE. `.sign-post` was a viewport-height 18su column of
+   steel gradient at `left: 50% - 348su` — 20su to the left of the 620su board,
+   running edge to edge, top to bottom. It only reads as a post if you already
+   know it is one: at the 1440x900 design frame it is 900px of pale line for a
+   620px board, and the taller the window the worse the ratio gets. In a
+   portrait window (1774x1800) it is 1800px of line beside a 619px board, and
+   what a player sees is a single thin blue-grey vertical line running the whole
+   height of the frozen frame, passing behind the PAUSED plate, with the
+   backdrop reading darker on its left than on its right. That is the "weird
+   blue line" on the paused page, reported more than once. Nothing draws it but
+   this rule, so this rule is what went.
+   Deleted rather than trimmed to the board: the two 30x12su stubs that were
+   supposed to sell it as a mount are 5px nubs hidden under the plate's own
+   edge, so the element never paid for the line it costs. */
 .sign-note {
   margin-left: auto;
   flex-shrink: 0;
@@ -3197,9 +3189,6 @@ body.touch .tc.pressed,
   .sign-note {
     display: none;
   }
-  .sign-post {
-    display: none;
-  }
   .sign-plate-btn {
     min-height: 40px;
     padding: 4px 10px;
@@ -3625,9 +3614,6 @@ body.touch .tc.pressed,
     margin: 0 -8px;
   }
   .sign-note {
-    display: none;
-  }
-  .sign-post {
     display: none;
   }
   .sign-credit {

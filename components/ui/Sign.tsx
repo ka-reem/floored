@@ -399,16 +399,6 @@ export function Gantry() {
   );
 }
 
-/** A single full-height post beside a post-mounted board (the pause screen). */
-export function SignPost() {
-  return (
-    <div className="sign-post" aria-hidden="true">
-      <div className="sign-post-stub t" />
-      <div className="sign-post-stub b" />
-    </div>
-  );
-}
-
 /** The kilometre post at the bottom right: a number and a unit on a stub. */
 export function SignKP({ value, unit = "KP" }: { value: string; unit?: string }) {
   return (
