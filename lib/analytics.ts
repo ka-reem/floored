@@ -142,29 +142,47 @@ function bootPostHog(ph: PostHog) {
          profile ever carries an email or a name. */
       person_profiles: "always",
       session_recording: {
-        /* Canvas replay, DESKTOP ONLY.
+        /* Canvas replay, NOW ON PHONES TOO — at a quarter of the desktop
+           sample rate, because the owner asked for the gameplay itself and
+           not just the menus around it.
 
            The whole game is one <canvas>, and session replay records the DOM,
-           so with this off a replay shows the menus and HUD correctly and a
-           BLACK RECTANGLE where the driving is. The owner watched one and
-           asked why. This turns it on — but not on phones, which was his own
-           call and the right one.
+           so with recordCanvas off a replay shows the menus and HUD correctly
+           and a BLACK RECTANGLE where the driving is.
 
-           What it actually costs, because "canvas capture is expensive" is
-           too vague to decide on: the recorder does not snapshot every frame.
-           It samples at canvasFps, capped at 12 and defaulting to 4, and
-           encodes each snapshot at canvasQuality (default 0.4). The encode is
-           minor. The part that matters for a WebGL game is that reading the
-           canvas back forces a pipeline sync — the GPU has to finish what it
-           is doing before the pixels can be handed over — and on a phone
-           already fighting for its frame budget, four of those a second is a
-           cost paid exactly where there is nothing spare. Desktops have the
-           headroom; phones do not.
+           What it costs, and why the phone number is lower. The recorder does
+           not snapshot every frame: it samples at canvasFps and encodes each
+           snapshot at canvasQuality (posthog-js defaults: 4 and 0.4; local
+           config wins over the project's remote setting). The encode is minor.
+           The part that matters for a WebGL game is that reading the canvas
+           back forces a pipeline sync — the GPU must finish what it is doing
+           before the pixels can be handed over — and on a phone already
+           fighting for its frame budget that is a cost paid exactly where
+           there is nothing spare. So phones get 2 fps rather than 4 (half the
+           syncs) and 0.25 quality rather than 0.4 (smaller encodes, smaller
+           uploads on a mobile connection). Desktop keeps the old behaviour
+           exactly.
+
+           CAVEAT, UNVERIFIED — READ BEFORE TRUSTING A PHONE REPLAY. The main
+           renderer (game/engine.ts) is constructed WITHOUT
+           preserveDrawingBuffer, and the WebGL spec clears the drawing buffer
+           after compositing. The recorder samples from its own timer, outside
+           the render task, so its readback may come back blank — engine.ts's
+           own screenshot paths say as much ("toBlob must read it in the same
+           task (no preserveDrawingBuffer)"). If replays still show a black
+           rectangle after this, that is the cause, and the fix is
+           preserveDrawingBuffer: true on the renderer — which carries its own
+           mobile cost and is a separate decision, not something to switch on
+           quietly here.
 
            deviceType() is the same predicate the engine uses for its own
-           mobile split (see the comment there), so this can never disagree
-           with what the game thinks it is running on. */
-        captureCanvas: { recordCanvas: deviceType() === "desktop" },
+           mobile split, so this can never disagree with what the game thinks
+           it is running on. */
+        captureCanvas: {
+          recordCanvas: true,
+          canvasFps: deviceType() === "desktop" ? 4 : 2,
+          canvasQuality: deviceType() === "desktop" ? "0.4" : "0.25",
+        },
         /* Client-side sampling: record every session. This takes precedence
            over the project's remote sample-rate setting (posthog-js
            SessionRecordingOptions.sampleRate).
