@@ -154,7 +154,29 @@ const TYRE_C = 0x0b0b0f;
    per-instance colour comes from the mask path and running the texel
    recolour on top double-painted the bodies into mush — the refLums here
    were measured on the ORCHIDS bakes and mean nothing on the new atlases. */
-const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
+/* `satMax` (optional): a tighter saturation ceiling for the neutral branch.
+   Zero — the default, and what every style that had a tint before this
+   carries — leaves the branch exactly as it was.
+
+   It exists for the `compact`, whose atlas is not a photograph like the rest
+   of the fleet but a FLAT PALETTE, and whose baked shading therefore lives in
+   COLOR_0 rather than in the texels. Area-weighted over the shipped bake:
+
+     0x111111  53%  underbody / interior / tyres   sat 0.000  mx 0.004
+     0xffffff  36%  THE BODYSHELL                  sat 0.000  mx 0.55..0.93
+     0xd1dbe5   9%  glass + headlight surround     sat 0.186  mx 0.69..0.78
+     0xe6e6e6   1%  lower body / sill inserts      sat 0.000  mx 0.40..0.72
+     0xe64f00   1%  lamp lenses (lamp-tagged)      sat 1.000
+
+   The default neutral test is "desaturated and above tyre black", and note
+   that BRIGHTNESS cannot separate this car's paint from its glass — the
+   vertex AO drags white panels down to 0.55 while the glass sits at 0.71, so
+   the two ranges overlap. Saturation separates them cleanly: the paint is
+   dead neutral (0.000) and the glass is tinted (0.186), and the default
+   ceiling passes anything under 0.16. Without a tighter one a red compact
+   drove around with red windows. 0.12 puts the knee halfway between the two
+   with room for the atlas's JPEG ringing at the island edge. */
+const PAINT_TINT: Record<string, { hue: number; refLum: number; satMax?: number }> = {
   van:      { hue: -1,    refLum: 0.697 },
   truck:    { hue: -1,    refLum: 0.668 },
   osedan:   { hue: -1,    refLum: 0.675 },
@@ -172,6 +194,20 @@ const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
      `hybrid` is deliberately absent: the ItsDiyor shell beside this one
      ships a real paintable mask and takes its colour that way. */
   mhybrid:  { hue: -1,    refLum: 0.482 },
+  /* The `compact` was the one style on the road that could not change colour:
+     its bake ships `paintable` zero like the Orchids fleet, so the mask path
+     does nothing for it, and it was never given a tint entry either — so it
+     fell through BOTH paths and every compact wagon in traffic, 11% of the
+     fleet, was the same white. It is also the fourth entry in RIVAL_TYPES, so
+     a rival that landed on a compact slot could not show its orange either.
+
+     refLum is the mean linear luminance of the paint region (texel x COLOR_0)
+     measured off the shipped bake: 0.756 at 512px. The HD bake reads 0.851 —
+     its gentler decimation keeps less of the vertex AO — but the 512 fleet is
+     what ships to everyone, so it sets the number and HD compacts run a hair
+     light rather than the other way round. See `satMax` above for the ceiling
+     this one style needs. */
+  compact:  { hue: -1,    refLum: 0.756, satMax: 0.12 },
 };
 
 /* The paint-region recolour, injected at `color_fragment` where `diffuseColor`
@@ -180,7 +216,9 @@ const PAINT_TINT: Record<string, { hue: number; refLum: number }> = {
    shares one compiled program — three keys its program cache on
    `onBeforeCompile.toString()`, so per-style GLSL would mean per-style
    programs (and a per-style compile hitch) for no gain. `uPaintRef.y` of zero
-   is a style that keeps its livery. */
+   is a style that keeps its livery, and `.z` is the optional saturation
+   ceiling PAINT_TINT documents. Still one vec3 written once per style at
+   load: no extra draw call, no extra program, no per-frame work. */
 /* `vLampKind < 0.5` keeps the recolour off lamp lenses. It has to: the
    neutral branch selects "desaturated and brighter than tyre black", which
    is a HEADLAMP lens exactly — clear glass over a chrome reflector — so a
@@ -199,6 +237,9 @@ const PAINT_TINT_GLSL = `
           if (uPaintRef.x < 0.0) {
             // neutral paint: desaturated, and brighter than tyres and shadow
             m = (1.0 - smoothstep(0.16, 0.30, sat)) * smoothstep(0.045, 0.10, mx);
+            // ...and, on a flat-palette bake, a tighter ceiling that keeps the
+            // paint apart from equally-bright tinted glass (uPaintRef.z)
+            if (uPaintRef.z > 0.0) m *= 1.0 - smoothstep(uPaintRef.z * 0.5, uPaintRef.z, sat);
           } else {
             // chromatic paint: hue-matched. Branchless RGB->hue, in turns.
             vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -361,7 +402,11 @@ export function setNpcDaylight(dayF: number, sunWorld: THREE.Vector3, camera: TH
 
 function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
   const tint = PAINT_TINT[style];
-  const paintRef = new THREE.Vector2(tint ? tint.hue : 0, tint ? tint.refLum : 0);
+  const paintRef = new THREE.Vector3(
+    tint ? tint.hue : 0,
+    tint ? tint.refLum : 0,
+    tint?.satMax ?? 0
+  );
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uPaintRef = { value: paintRef };
     shader.uniforms.uDayFill = dayUni.fill;
@@ -404,7 +449,7 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
         varying float vLampKind;
         varying vec2 vLampLvl;
         varying vec3 vWashCol;
-        uniform vec2 uPaintRef;
+        uniform vec3 uPaintRef;
         uniform vec3 uDayFill;
         uniform vec3 uDaySun;
         uniform vec3 uDayDir;`
