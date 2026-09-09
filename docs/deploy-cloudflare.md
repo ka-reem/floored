@@ -31,12 +31,24 @@ dash.cloudflare.com → **Workers & Pages** → **Create** → the **Workers** t
 
 ## 2. Build settings
 
+> **The first attempt at this failed because production was set to `main`.**
+> `main` has none of the Cloudflare setup — no `wrangler.jsonc`, no
+> `build:static` script, no `output: "export"`. It is 100+ commits behind.
+> Cloudflare checked out `main`, ran a build command that does not exist
+> there, and stopped. Point production at **`dev`** until `dev` has been
+> merged into `main`; after that, switch it to `main` and this table is right
+> as originally written.
+
 | Field | Value |
 | --- | --- |
-| Git branch (production) | `main` |
-| Build command | `npm run build:static` |
+| Git branch (production) | `dev` — **not `main`.** See the warning below. |
+| Build command | `npm run build:static` — **not** `npm run build` |
 | Deploy command | `npx wrangler deploy` |
 | Root directory | *(leave empty)* |
+
+`npm run build` is the VERCEL build: it produces a server bundle and no
+`out/` directory, so wrangler would find nothing to upload. `build:static`
+is the one that writes the plain file tree, and it exists only on `dev`.
 
 There is no "build output directory" field on Workers — that lives in the
 repo, as `assets.directory` in `wrangler.jsonc`, already set to `./out`.
