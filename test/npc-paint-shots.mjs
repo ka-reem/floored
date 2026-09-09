@@ -32,8 +32,16 @@ const browser = await puppeteer.launch({
     "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader",
     "--no-sandbox", "--disable-dev-shm-usage", "--mute-audio",
   ],
-  defaultViewport: { width: 1440, height: 900 },
-  protocolTimeout: 600000,
+  /* 960x600, not 1440x900. Every frame here is SwiftShader on a CPU shared
+     with three other lanes, and fill is the whole cost: the smaller frame is
+     ~2.2x less of it and still large enough to judge paint on a car two
+     lengths ahead. */
+  defaultViewport: { width: 960, height: 600 },
+  /* The world build blocks the renderer's main thread for MINUTES on a loaded
+     box (shader link, no KHR_parallel_shader_compile under SwiftShader), and
+     a blocked main thread means CDP cannot answer either -- the default 10
+     minutes expired mid-build twice and took the run with it. */
+  protocolTimeout: 2400000,
 });
 const page = await browser.newPage();
 page.on("pageerror", (e) => errors.push(String(e.message || e)));
@@ -62,7 +70,7 @@ const click = (text) =>
   }, text);
 
 await click("DRIVE");
-await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 900000 });
+await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 2400000 });
 await sleep(6000);
 
 /* Park at a fixed spot on the deck with a fixed traffic density, then let the
