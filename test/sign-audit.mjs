@@ -168,8 +168,9 @@ for (const b of BOARDS) {
 
 /* ---------------- 2. route gantries ---------------- */
 {
+  // same veto as highway.ts's own nearNewGore: absolute z, not wrapped
   const nearNewGore = (z, r) => [DIVERGE_Z, MERGE_Z, MTN.divergeZ, MTN.mergeZ]
-    .some((g) => Math.abs(cor.deltaZ(z, g)) < r);
+    .some((g) => Math.abs(z - g) < r);
   for (const z of cor.lattice(PITCH.gantry)) {
     if (cor.inTunnel(z) || (z > TOLL.z0 && z < TOLL.z1)) continue;
     if (CONNECT_Z.some((cz) => Math.abs(z - cz) < 220)) continue;
@@ -241,6 +242,44 @@ for (const T of tunnels()) {
       z: r.footZ, faceYaw: Math.PI / 2, trav: [0, 1], side: 0, serves: 0,
       span: [0, 0], built: true, arrow: 0, broadside: true,
       note: `frontage road, x=${r.footX.toFixed(0)} (road centre ${FRONT_X})` });
+  }
+}
+
+/* ---------------- 6b. the pass's own chevron boards ----------------
+   Three at the tightest corners (on the OUTSIDE of each, which is where a
+   chevron goes) and one over each gore-nose block. All are meshes yawed to
+   pose.h + PI, i.e. square to the single stream the pass carries. */
+{
+  const mt = (await import(path.join(W, "routegraph.js"))).getRouteGraph().mtn;
+  const st = mt.stations, N = st.length;
+  const cand = [];
+  for (let i = 6; i < N - 6; i += 3) {
+    const a = st[i - 3], b = st[i + 3];
+    let dh = Math.atan2(b.tx, b.tz) - Math.atan2(a.tx, a.tz);
+    while (dh > Math.PI) dh -= 2 * Math.PI;
+    while (dh < -Math.PI) dh += 2 * Math.PI;
+    cand.push({ s: st[i].s, k: Math.abs(dh / Math.max(0.01, b.s - a.s)), dh });
+  }
+  cand.sort((a, b) => b.k - a.k);
+  const corners = [];
+  for (const c of cand) {
+    if (corners.length >= 3) break;
+    if (c.s < 40 || c.s > mt.len - 45) continue;
+    if (corners.some((q) => Math.abs(q.s - c.s) < 60)) continue;
+    corners.push(c);
+  }
+  for (const c of corners) {
+    const p = mt.poseAt(c.s);
+    const out = c.dh > 0 ? -1 : 1; // outside of the bend
+    add({ group: "pass", id: `corner-chev@s${Math.round(c.s)}`, kind: "chevron board",
+      z: p.z, faceYaw: p.h + Math.PI, trav: [p.tx, p.tz], side: out, serves: out,
+      span: [0, 0], built: true, arrow: 0 });
+  }
+  for (const [nm, z] of [["mtn-diverge", MTN.divergeZ], ["mtn-merge", MTN.mergeZ]]) {
+    const p = cor.pose(z);
+    add({ group: "nose", id: `nose-${nm}@${Math.round(z)}`, kind: "chevron board", z,
+      faceYaw: p.h + Math.PI, trav: [p.tx, p.tz], side: 1, serves: 1,
+      span: [cor.halfWidth(z) - 0.2, cor.halfWidth(z) + 1.3], built: true, arrow: 0 });
   }
 }
 
@@ -385,46 +424,57 @@ console.log(txt);
 
 /* ---------------- top-down plan of the boards ---------------- */
 if (SVG) {
-  const Z0 = -2100, Z1 = 2100, SC = 0.36, PAD = 60;
-  const wpx = (Z1 - Z0) * SC / 4 + PAD * 2, hpx = 560;
-  const X = (z) => PAD + ((z - Z0) * SC) / 4;
-  const Y = (lat) => hpx / 2 - lat * 4.2;
+  const Z0 = -2100, Z1 = 2100;
+  const PADL = 96, PADR = 40, W = 1700, HDR = 62, FTR = 34;
+  const LATPX = 5.2;                       // px per metre of lateral offset
+  const HALF = 26 * LATPX;                 // ±26 m of road either side of centre
+  const hpx = HDR + HALF * 2 + 216 + FTR;  // room under the road for the labels
+  const MID = HDR + HALF + 40;
+  const X = (z) => PADL + ((z - Z0) / (Z1 - Z0)) * (W - PADL - PADR);
+  const Y = (lat) => MID - lat * LATPX;
   const e = [];
-  e.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${wpx}" height="${hpx}" viewBox="0 0 ${wpx} ${hpx}">`);
+  e.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${hpx}" viewBox="0 0 ${W} ${hpx}" font-family="sans-serif">`);
   e.push(`<rect width="100%" height="100%" fill="#12151b"/>`);
-  e.push(`<text x="${PAD}" y="26" fill="#e7edf5" font-family="sans-serif" font-size="17" font-weight="700">Sign placement — ${TITLE}</text>`);
-  e.push(`<text x="${PAD}" y="46" fill="#8b96a6" font-family="sans-serif" font-size="12">top-down · driver travels left→right (+z) · UP on this page is the driver's LEFT (+x, east)</text>`);
-  // pavement
-  let up = [], dn = [];
-  for (let z = Z0; z <= Z1; z += 10) {
-    up.push(`${X(z)},${Y(cor.edgeLat(z, 1))}`);
-    dn.unshift(`${X(z)},${Y(cor.edgeLat(z, -1))}`);
+  e.push(`<text x="${PADL}" y="26" fill="#e7edf5" font-size="18" font-weight="700">Sign placement, top-down — ${TITLE}</text>`);
+  e.push(`<text x="${PADL}" y="47" fill="#8b96a6" font-size="12.5">driver travels left → right (+z) · UP on this page is the driver's LEFT (+x, east) · DOWN is the driver's right (−x, west, the town side)</text>`);
+  // pavement band
+  const up = [], dn = [];
+  for (let z = Z0; z <= Z1; z += 8) {
+    up.push(`${X(z).toFixed(1)},${Y(cor.edgeLat(z, 1)).toFixed(1)}`);
+    dn.unshift(`${X(z).toFixed(1)},${Y(cor.edgeLat(z, -1)).toFixed(1)}`);
   }
-  e.push(`<polygon points="${up.concat(dn).join(" ")}" fill="#232833"/>`);
-  e.push(`<line x1="${PAD}" y1="${Y(0)}" x2="${wpx - PAD}" y2="${Y(0)}" stroke="#39414f" stroke-dasharray="7 7"/>`);
-  // features
-  const feat = [
+  e.push(`<polygon points="${up.concat(dn).join(" ")}" fill="#242a35"/>`);
+  e.push(`<line x1="${PADL}" y1="${Y(0)}" x2="${W - PADR}" y2="${Y(0)}" stroke="#3d4655" stroke-dasharray="8 8"/>`);
+  e.push(`<text x="${PADL - 8}" y="${Y(14)}" fill="#6f7b8c" font-size="11" text-anchor="end">LEFT</text>`);
+  e.push(`<text x="${PADL - 8}" y="${Y(-14)}" fill="#6f7b8c" font-size="11" text-anchor="end">RIGHT</text>`);
+  // the features the boards announce
+  for (const [z, s2, nm] of [
     [CONNECT_Z[0], -1, "EXIT 1"], [CONNECT_Z[1], -1, "entrance"],
     [DIVERGE_Z, -1, "bypass out"], [MERGE_Z, 1, "bypass in"],
     [MTN.divergeZ, 1, "EXIT 4"], [MTN.mergeZ, 1, "pass in"],
-    [(TOLL.plazaZ0 + TOLL.plazaZ1) / 2, 0, "toll"],
-  ];
-  for (const [z, s, nm] of feat) {
-    e.push(`<circle cx="${X(z)}" cy="${Y(s * (cor.halfWidth(z) + 3))}" r="4" fill="#ffb020"/>`);
-    e.push(`<text x="${X(z)}" y="${Y(s * (cor.halfWidth(z) + 3)) + (s >= 0 ? -10 : 18)}" fill="#ffb020" font-family="sans-serif" font-size="11" text-anchor="middle">${nm}</text>`);
+    [(TOLL.plazaZ0 + TOLL.plazaZ1) / 2, 1, "toll"],
+  ]) {
+    const y = Y(s2 * (cor.halfWidth(z) + 6));
+    e.push(`<circle cx="${X(z).toFixed(1)}" cy="${y.toFixed(1)}" r="4.5" fill="#ffb020"/>`);
+    e.push(`<text x="${X(z).toFixed(1)}" y="${(y - 10).toFixed(1)}" fill="#ffb020" font-size="12" font-weight="700" text-anchor="middle">${nm}</text>`);
   }
-  for (const r of built.filter((b) => b.group === "cantilever")) {
+  // the boards themselves, labels laddered below the road so they never collide
+  const cants = built.filter((b) => b.group === "cantilever").sort((a, b) => a.z - b.z);
+  cants.forEach((r, i) => {
     const bad = verdict(r);
     const col = bad.length ? "#ff5a5a" : "#59d98a";
-    const y0 = Y(r.span[0]), y1 = Y(r.span[1]);
-    e.push(`<line x1="${X(r.z)}" y1="${y0}" x2="${X(r.z)}" y2="${y1}" stroke="${col}" stroke-width="4"/>`);
+    const x = X(r.z), y0 = Y(r.span[0]), y1 = Y(r.span[1]);
+    e.push(`<line x1="${x.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${col}" stroke-width="5"/>`);
     const my = Y(mastLat(r.z, r.side));
-    e.push(`<circle cx="${X(r.z)}" cy="${my}" r="3.4" fill="${col}"/>`);
-    // facing tick: the face looks back down the road (−z), i.e. left on page
-    e.push(`<line x1="${X(r.z)}" y1="${(y0 + y1) / 2}" x2="${X(r.z) - 9}" y2="${(y0 + y1) / 2}" stroke="${col}" stroke-width="2"/>`);
-    e.push(`<text x="${X(r.z)}" y="${my + (r.side > 0 ? -8 : 14)}" fill="${col}" font-family="sans-serif" font-size="9" text-anchor="middle">${r.id.split("@")[0]}</text>`);
-  }
-  e.push(`<text x="${PAD}" y="${hpx - 16}" fill="#8b96a6" font-family="sans-serif" font-size="11">green = mast on the shoulder its feature is on · red = wrong shoulder · bar = the lateral band the panel covers · tick = face direction</text>`);
+    e.push(`<circle cx="${x.toFixed(1)}" cy="${my.toFixed(1)}" r="4" fill="${col}"/>`);
+    // a tick pointing back down the road: the direction the face looks
+    e.push(`<path d="M ${(x - 3).toFixed(1)} ${((y0 + y1) / 2).toFixed(1)} l -11 0 m 4 -4 l -4 4 l 4 4" stroke="${col}" stroke-width="1.8" fill="none"/>`);
+    // ladder line down to a label row
+    const ly = MID + HALF + 18 + (i % 7) * 24;
+    e.push(`<line x1="${x.toFixed(1)}" y1="${my.toFixed(1)}" x2="${x.toFixed(1)}" y2="${ly - 9}" stroke="${col}" stroke-width="0.8" opacity="0.45"/>`);
+    e.push(`<text x="${x.toFixed(1)}" y="${ly}" fill="${col}" font-size="11" text-anchor="middle">${r.id.split("@")[0]}${bad.length ? " ✕" : ""}</text>`);
+  });
+  e.push(`<text x="${PADL}" y="${hpx - 12}" fill="#8b96a6" font-size="12">green = mast stands on the shoulder its feature is on · red ✕ = wrong shoulder · thick bar = the lateral band the panel covers · arrow = which way the face looks</text>`);
   e.push("</svg>");
   writeFileSync(SVG, e.join("\n"));
   console.error(`wrote ${SVG}`);
