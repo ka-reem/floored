@@ -57,6 +57,8 @@ const browser = await puppeteer.launch({
      well past ten minutes under that load — 0 disables the per-call timeout so
      a slow load is slow rather than a crash */
   protocolTimeout: 0,
+  // chromium itself can take minutes to hand back its WS endpoint on a busy box
+  timeout: 180000,
 });
 const page = await browser.newPage();
 page.on("pageerror", (e) => errors.push(String(e.message || e)));
