@@ -2490,7 +2490,19 @@ a.sign-plate-btn {
   background: radial-gradient(80% 55% at 50% 66%, #101528 0%, #080b16 55%, var(--sign-bg) 100%);
   font-family: var(--font-sign);
   color: var(--sign-ink);
-  overflow: hidden;
+  /* was overflow:hidden. html/body are overflow:hidden and this is a fixed
+     inset:0 layer, so anything that did not fit was simply gone — no scroll
+     anywhere on the page to reach it. The board caps itself below and the
+     rows scroll inside it, so this is the last resort: a viewport too short
+     even for the header and the bar. `safe center` matters — a plain centred
+     flex column puts its overflow above the scroll origin, i.e. permanently
+     out of reach, which is exactly how the shield went missing. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  justify-content: center;
+  justify-content: safe center;
 }
 .loadRoot.signLoad::before {
   content: none;
@@ -2560,9 +2572,25 @@ a.sign-plate-btn {
   /* .loadRoot centres its column; the toll gantry above is absolute */
   margin: 0 auto;
   padding-bottom: 0;
+  /* the board is bounded by the screen, not by its own content: whatever the
+     WHILE YOU WAIT panel grows to, the stack stops at the visible viewport
+     (.loadRoot is 100dvh) and the overflow becomes a scroll inside .loadSet
+     rather than rows falling off the bottom edge */
+  max-height: 100%;
+  min-height: 0;
 }
+/* Header, rule, bar, status and caption are fixed furniture; .loadSet is the
+   only part allowed to give up height, so the thing that says "the game is
+   loading" is never what scrolls away. */
 .sign.loadboard {
   padding-bottom: calc(20 * var(--su));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+}
+.sign.loadboard > * {
+  flex: 0 0 auto;
 }
 /* the legacy .loadTitle/.loadJp rules (pink JP, wide tracking) lose to these */
 .sign.loadboard .sign-title-jp {
@@ -3774,6 +3802,19 @@ body.touch .tc.pressed,
   padding-top: calc(20 * var(--su));
   border-top: calc(3 * var(--su)) solid var(--sign-rule);
   text-align: left;
+  /* shrink-only (0 1), so on a tall screen the panel is exactly as tall as
+     its rows and nothing about the desktop board moves; on a phone it takes
+     whatever is left under the progress bar and scrolls the rest. The floor
+     keeps it from collapsing to a sliver on a landscape phone — past that
+     .loadRoot's own scroll takes over. */
+  flex: 0 1 auto;
+  min-height: 72px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  /* clear of the home indicator when the last row lands at the bottom */
+  padding-bottom: calc(6 * var(--su) + env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: calc(12 * var(--su));
   /* the board is already up when this appears — arrive, do not pop */
   animation: loadSetIn 320ms ease-out both;
 }
@@ -3879,5 +3920,102 @@ body.touch .tc.pressed,
   .signLoad .loadSet .sign-sval {
     width: 100%;
     min-width: 0;
+  }
+}
+
+/* SHORT BOARD. The visible viewport on a phone is the device height MINUS the
+   browser chrome — ~664px in Chrome on an iPhone 14, ~553px on an SE — and
+   WHILE YOU WAIT now carries six or seven rows from the first frame instead of
+   four after a delay. Rather than a second layout, this is the same
+   compression the width queries already do, applied on the axis that actually
+   ran out. Every row stays; what shrinks is the furniture around them, so on
+   the common phones nothing has to be scrolled to at all. */
+@media (max-height: 700px) {
+  .sign-stack.load {
+    margin-top: 0;
+  }
+  .sign.loadboard {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .sign.loadboard .sign-head {
+    gap: 10px;
+    padding-top: 0;
+  }
+  .sign.loadboard .sign-shield {
+    width: 44px;
+    height: 40px;
+    border-width: 3px;
+  }
+  .sign.loadboard .sign-shield-code {
+    font-size: 17px;
+  }
+  .sign.loadboard .sign-title-jp {
+    font-size: 12px;
+  }
+  .sign.loadboard .sign-head .sign-title {
+    font-size: 26px;
+    margin-top: 0;
+  }
+  .sign.loadboard .sign-rule {
+    margin-top: 10px;
+  }
+  .signLoad .loadBar {
+    height: 20px;
+    margin-top: 10px;
+  }
+  .signLoad .loadStatus {
+    margin-top: 8px;
+  }
+  .signLoad .loadCap {
+    margin-top: 8px;
+  }
+  .signLoad .loadSet {
+    margin-top: 10px;
+    padding-top: 10px;
+  }
+  .signLoad .loadSetHead {
+    margin-bottom: 4px;
+  }
+  .signLoad .loadSet .sign-srow {
+    gap: 3px;
+    padding: 4px 0;
+    min-height: 0;
+  }
+  .signLoad .loadSet .sign-srow .name {
+    font-size: 13px;
+  }
+  .signLoad .loadSet .sign-seg > * {
+    padding-block: 6px;
+  }
+  .signLoad .loadSet .sign-slider {
+    height: 34px;
+  }
+}
+/* Shorter still (iPhone SE, small Android): the caption under the bar is the
+   one thing on this board that is prose, so it is what goes. The header, the
+   bar and every settings row stay. */
+@media (max-height: 600px) {
+  .signLoad .loadCap {
+    display: none;
+  }
+  .sign.loadboard .sign-head .sign-title {
+    font-size: 22px;
+  }
+  .sign.loadboard .sign-shield {
+    width: 38px;
+    height: 34px;
+  }
+  .sign.loadboard .sign-shield-code {
+    font-size: 15px;
+  }
+  .signLoad .loadBar {
+    height: 18px;
+  }
+  .signLoad .loadSet .sign-srow {
+    padding: 3px 0;
+  }
+  .signLoad .loadSet .sign-seg > * {
+    padding-block: 5px;
   }
 }
