@@ -99,11 +99,13 @@ const A = await load(BEFORE, `BEFORE${BEFORE ? ` (${BEFORE.slice(0, 9)})` : ""}`
 const B = await load(AFTER, AFTER ? `AFTER (${AFTER.slice(0, 9)})` : "AFTER");
 
 /* ---- drawing ------------------------------------------------------------ */
-const PANEL_W = 1500, PANEL_H = 430, PAD_L = 78, PAD_R = 26, PAD_T = 46, PAD_B = 40;
+const PANEL_W = 1500, PANEL_H = 470, PAD_L = 78, PAD_R = 26, PAD_T = 46, PAD_B = 40;
 
+let panelSeq = 0;
 function panel(g, win, yOff, title) {
   const [z0, z1] = win;
-  const latLo = -26, latHi = 34;
+  const latLo = -26, latHi = 62;
+  const CLIP = `clip${panelSeq++}`;
   const px = (z) => PAD_L + ((z - z0) / (z1 - z0)) * (PANEL_W - PAD_L - PAD_R);
   const py = (lat) => yOff + PAD_T + ((latHi - lat) / (latHi - latLo)) * (PANEL_H - PAD_T - PAD_B);
   const seg = (rows, pick) => {
@@ -155,10 +157,12 @@ function panel(g, win, yOff, title) {
     flush();
   }
 
-  /* worst clearance in this window, over every west-side piece */
+  /* Worst clearance in this window over the SCENERY. The pavement is left
+     out on purpose: routegraph clips it to abut the deck exactly, so it
+     reads 0.00 on both sides of the fix and would always win the pick. */
   let worst = null;
   for (const r of g.rows) {
-    for (const [kind, v] of [["rock face", r.rock], ["parapet", r.wall], ["pavement", r.pav]]) {
+    for (const [kind, v] of [["rock face", r.rock], ["parapet", r.wall]]) {
       if (!v || v.zc < z0 || v.zc > z1) continue;
       const gap = v.lat - v.hw;
       if (!worst || gap < worst.gap) worst = { gap, kind, ...v };
@@ -171,26 +175,31 @@ function panel(g, win, yOff, title) {
    <line x1="${wx.toFixed(1)}" y1="${wy0.toFixed(1)}" x2="${wx.toFixed(1)}" y2="${wy1.toFixed(1)}" stroke="${col}" stroke-width="3"/>
    <circle cx="${wx.toFixed(1)}" cy="${wy0.toFixed(1)}" r="3.4" fill="${col}"/>
    <circle cx="${wx.toFixed(1)}" cy="${wy1.toFixed(1)}" r="3.4" fill="${col}"/>
-   <rect x="${(wx + 10).toFixed(1)}" y="${((wy0 + wy1) / 2 - 15).toFixed(1)}" width="${bad ? 250 : 236}" height="30" rx="5" fill="#12151b" stroke="${col}" stroke-width="1.4"/>
-   <text x="${(wx + 20).toFixed(1)}" y="${((wy0 + wy1) / 2 + 6).toFixed(1)}" fill="${col}" font-size="17" font-weight="700" font-family="ui-monospace,monospace">${worst.gap >= 0 ? "+" : ""}${worst.gap.toFixed(2)} m  ${bad ? "OVER THE DECK" : "clear"}</text>`;
+   <rect x="${(wx + 10).toFixed(1)}" y="${((wy0 + wy1) / 2 - 17).toFixed(1)}" width="360" height="34" rx="5" fill="#12151b" stroke="${col}" stroke-width="1.4"/>
+   <text x="${(wx + 20).toFixed(1)}" y="${((wy0 + wy1) / 2 + 6).toFixed(1)}" fill="${col}" font-size="17" font-weight="700" font-family="ui-monospace,monospace">${worst.kind}: ${worst.gap >= 0 ? "+" : ""}${worst.gap.toFixed(2)} m ${bad ? "OVER THE DECK" : "clear of the deck"}</text>`;
 
   /* axis: lateral ticks and a z scale bar */
   let axis = "";
-  for (let lat = -20; lat <= 30; lat += 10)
+  for (let lat = -20; lat <= 60; lat += 10)
     axis += `<line x1="${PAD_L}" y1="${py(lat).toFixed(1)}" x2="${(PANEL_W - PAD_R).toFixed(1)}" y2="${py(lat).toFixed(1)}" stroke="#2a2f38" stroke-width="1"/>` +
       `<text x="${PAD_L - 9}" y="${(py(lat) + 5).toFixed(1)}" fill="#68727f" font-size="12" text-anchor="end" font-family="ui-monospace,monospace">${lat} m</text>`;
   for (let z = Math.ceil(z0 / 20) * 20; z <= z1; z += 20)
     axis += `<line x1="${px(z).toFixed(1)}" y1="${(yOff + PANEL_H - PAD_B).toFixed(1)}" x2="${px(z).toFixed(1)}" y2="${(yOff + PANEL_H - PAD_B + 6).toFixed(1)}" stroke="#68727f" stroke-width="1"/>` +
       `<text x="${px(z).toFixed(1)}" y="${(yOff + PANEL_H - PAD_B + 22).toFixed(1)}" fill="#68727f" font-size="12" text-anchor="middle" font-family="ui-monospace,monospace">z ${z}</text>`;
 
+  /* every panel is clipped to its own band — without this the second panel's
+     polygons draw across the first one's axis */
   return `<g>
+   <clipPath id="${CLIP}"><rect x="0" y="${yOff.toFixed(1)}" width="${PANEL_W}" height="${(PANEL_H - 6).toFixed(1)}"/></clipPath>
    <text x="${PAD_L}" y="${(yOff + 28).toFixed(1)}" fill="#fff" font-size="20" font-weight="700" font-family="ui-sans-serif,system-ui">${title}</text>
+   <g clip-path="url(#${CLIP})">
    ${axis}
    ${deckBand}
    ${rockPoly.join("")}
    ${ribbon.join("")}
    ${pl(seg(g.rows, (r) => r.wall), "#ffd27a", 2.2)}
    ${ann}
+   </g>
   </g>`;
 }
 
