@@ -1,4 +1,4 @@
-import type { CarState } from "./physics";
+import { WALL, type CarState } from "./physics";
 import type { WorldData } from "./world/data";
 import { SURFACE_TOL } from "./world/const";
 import { parapetGap, type Ramp } from "./world/ramps";
@@ -71,6 +71,21 @@ const CLAMP_STEP = 0.35;
    the search radius. */
 const WALL_REACH = 1.2;
 
+/* Resolve one solid contact. `nx,nz` is the SEPARATION direction (out of the
+   obstacle, toward where the car should end up) and `close` the closing speed
+   along it, > 0. The inward component is killed and a rebound added on top:
+   the size of that rebound is physics.ts's WALL.rebound(), a function of the
+   closing speed with a hard zero below a graze. Every static contact site in
+   this file used to inline `* 1.07` here, i.e. a flat 7% off anything it
+   touched however gently — see the WALL block for why that is wrong at both
+   ends. The impulse is purely horizontal, so no contact can ever launch the
+   car off the deck. */
+function bounceOff(car: CarState, nx: number, nz: number, close: number) {
+  const dv = close + WALL.rebound(close);
+  car.wvx += nx * dv;
+  car.wvz += nz * dv;
+}
+
 /* CONTACT SEVERITY. Both static-geometry helpers return the CLOSING SPEED
    along the contact normal (m/s, >= 0), or NO_CONTACT when they did not
    touch — the thing every contact site here already computes as `vn` and
@@ -117,8 +132,7 @@ function collideAABB(car: CarState, px: number, pz: number, rr: number, bb: any)
   car.z += tmpN.z * pen;
   const vn = car.wvx * tmpN.x + car.wvz * tmpN.z;
   if (vn < 0) {
-    car.wvx -= tmpN.x * vn * 1.07;
-    car.wvz -= tmpN.z * vn * 1.07;
+    bounceOff(car, tmpN.x, tmpN.z, -vn);
     return -vn;
   }
   return 0;
@@ -160,8 +174,7 @@ function collideObb(car: CarState, px: number, pz: number, rr: number, o: any): 
   car.z += nz * pen;
   const vn = car.wvx * nx + car.wvz * nz;
   if (vn < 0) {
-    car.wvx -= nx * vn * 1.07;
-    car.wvz -= nz * vn * 1.07;
+    bounceOff(car, nx, nz, -vn);
     return -vn;
   }
   return 0;
@@ -205,7 +218,11 @@ export function collidePlayer(
   world: WorldData,
   npcs: any[],
   halfW: number,
-  halfL: number
+  halfL: number,
+  /** Frame time, so the per-contact scrub and yaw damping below are a rate
+      and not a per-frame lottery. Optional and defaulted to a 60 Hz frame so
+      the old two-argument call sites keep exactly the behaviour they had. */
+  dt = 1 / 60
 ): { hit: boolean; npcHits: NpcHit[]; wallImpact: number; normalImpact: number } {
   const fx = Math.sin(car.h), fz = Math.cos(car.h), rx = fz, rz = -fx;
   let hit = false;
@@ -304,8 +321,7 @@ export function collidePlayer(
       car.z -= nz * pen;
       const vn = car.wvx * nx + car.wvz * nz;
       if (vn > 0) {
-        car.wvx -= nx * vn * 1.07;
-        car.wvz -= nz * vn * 1.07;
+        bounceOff(car, -nx, -nz, vn);
         if (vn > normalImpact) normalImpact = vn;
       }
       hit = true;
@@ -375,8 +391,7 @@ export function collidePlayer(
           car.z -= nz * pen;
           const vn = car.wvx * nx + car.wvz * nz;
           if (vn > 0) {
-            car.wvx -= nx * vn * 1.07;
-            car.wvz -= nz * vn * 1.07;
+            bounceOff(car, -nx, -nz, vn);
             if (vn > normalImpact) normalImpact = vn;
           }
           hit = true;
@@ -438,11 +453,23 @@ export function collidePlayer(
   }
 
   if (hit) {
-    car.wvx *= 0.965;
-    car.wvz *= 0.965;
+    /* CONTACT DRAG. Both of these were flat per-frame constants (0.965 on the
+       whole velocity, 0.65 on the yaw rate) applied to any contact however
+       gentle, which is what glued a car to a barrier: a second of leaning on
+       a wall at 60 fps left 12% of the car's speed and 0% of its ability to
+       steer off. They are now functions of how hard the contact actually was
+       (WALL.scrub / WALL.yawKeep, physics.ts) and raised to the frame's share
+       of 1/60 s, so a 120 Hz display no longer scrubs twice as hard as a
+       60 Hz one. A resting contact costs 0.4%/frame; a real impact still
+       costs the same 6%/frame and still damps yaw hard, which is what keeps a
+       barrier strike at 150 km/h from becoming an unrecoverable spin. */
+    const fr = Math.max(dt, 1e-4) * 60;
+    const s = Math.pow(WALL.scrub(normalImpact), fr);
+    car.wvx *= s;
+    car.wvz *= s;
     car.u = car.wvx * fx + car.wvz * fz;
     car.v = car.wvx * rx + car.wvz * rz;
-    car.r *= 0.65;
+    car.r *= Math.pow(WALL.yawKeep(normalImpact), fr);
     const dvx = car.wvx - preVx, dvz = car.wvz - preVz;
     wallImpact = Math.hypot(dvx, dvz);
   }
