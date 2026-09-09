@@ -128,6 +128,53 @@ export const SKIN_KIND = 5;
    what the rest of the fleet is really missing, and baking one per style is
    the honest fix here — this is the part of it that can be had for free.) */
 const TEX_LENS = new Set(["taxi"]);
+
+/* ---- measured tail anchors ------------------------------------------------
+   The owner: "rav4 tail lights need to be higher so its on the acutal red
+   light lamps are. and the bus ltail ights are not bright enoguh theyre very
+   idm or inside the bus".
+
+   Both are the SAME defect, and neither is a brightness problem. A hi-fi
+   bake finds its lamp anchors from the donor's own lens triangles, but when
+   that finder comes up with fewer than four per side it falls back to a blind
+   guess — `[±W*0.34, H*0.45, -L*0.47]` (tools/build-hifi-models.mjs, `pair`).
+   The suv (Highlander shell — the owner's "rav4") and the bus are the only
+   two styles in the fleet running on that fallback, because their lens
+   artwork is smoked/unpainted (suv) or missed by the red-texel test (bus).
+   And these two are also the styles with no lit lens geometry at ALL, so the
+   glow sprite IS their taillight — an anchor in the wrong place is not a
+   cosmetic offset here, it is the whole lamp.
+
+   What the fallback gets wrong, measured off the shipped GLBs (rear-facing
+   triangles sampled densely; the lens found as the non-paintable cluster on
+   the suv, whose atlas paints no lens at all, and as the red texels on the
+   bus):
+
+     suv  lens y 0.94..1.14, |x| 0.55..0.79, skin z -2.21
+          fallback y 0.805 = H*0.45 on a 1.79 m body -> 0.24 m BELOW the
+          lamps, sitting on the bumper step under them. The rest of the
+          fleet's anchors measure 0.55..0.74 of H; only the suv and the bus
+          read 0.45, which is the fallback's signature.
+     bus  lens y 0.94..1.42, |x| ~0.82, skin z -4.50
+          fallback z -4.418 is 0.08 m IN FRONT of that skin, i.e. the glow
+          point is INSIDE the bodywork. The halo/sprite clouds are
+          depthWrite:false but still depth-TESTED (traffic.ts mkCloud), and a
+          Points sprite carries one depth for its whole quad, so the bus's own
+          rear panel discarded every fragment of it that landed on the bus —
+          which is exactly "very dim or inside the bus". Intensity could never
+          have fixed that, and per realistic-light it must not be asked to:
+          the lamp is occluded, so the anchor moves.
+
+   Values are [ |x|, y, z ], mirrored to the [-x, +x] pair the runtime wants.
+   z is set 3-4 cm PROUD of the rear skin at that x/y, so the additive glow
+   reads as light on the lens from behind and from the chase camera without
+   the panel ever clipping it. Applied at load rather than re-baked because
+   the bake's donor shells live in gitignored staging; if they are ever
+   re-baked, the finder should be taught these clusters instead. */
+const TAIL_FIX: Record<string, [number, number, number]> = {
+  suv: [0.676, 1.04, -2.25],
+  bus: [0.824, 1.18, -4.54],
+};
 /** how far forward of the rear-most vertex the lens artwork can reach, and how
     far off rearward a normal may point (the wrap onto the rear quarter). Both
     kept tight: past this the same red test starts finding body paint. */
@@ -250,6 +297,8 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
 
   const extras: any = (gltf.scene.userData as any) ?? {};
   const lamps = readLamps(extras.lamps);
+  const fix = TAIL_FIX[style];
+  if (fix && lamps.tail) lamps.tail = [[-fix[0], fix[1], fix[2]], [fix[0], fix[1], fix[2]]];
   if (!hasTailGeo && lamps.tail && TEX_LENS.has(style)) {
     /* No baked tail lenses, but this bake paints its own: flag the rear panel
        and let the shader light the lens texels (see TEX_LENS). Nothing is
