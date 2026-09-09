@@ -3958,6 +3958,41 @@ function buildMountainRoad(
   /** rock-face sampling step, stations (1 m apart on this edge) */
   const step = detail >= 0.95 ? 3 : detail >= 0.65 ? 4 : 6;
 
+  /* ---- how far west the hillside may reach, station by station ----------
+     THE MOUNTAIN-CLIPPING FIX (owner, 2026-09-09: "the mountain is clipping
+     with the road at the end of mountain exit and the beginning of the
+     mountain entrance").
+
+     The cut face and its back flank used to be swept at a FLAT 12 m west of
+     the pavement edge, and they started doing it at the first station that
+     stopped being deck-shared — which at both gores is about 5 m of road
+     before there is 12 m of ground to put them on. So a ~14 m tall rock
+     curtain, crest to flat bank, stood across the expressway up to 10.79 m
+     inside its east pavement edge, at BOTH junctions, for ~18 m of road each
+     (test/mountain-gap.mjs measures it; test/mtn-clip-shots.mjs photographs
+     it). Nothing was wrong with the ROAD: routegraph's shared-edge clip keeps
+     the two pavements exactly abutting. It was the hillside.
+
+     routegraph now measures the real room beside each station — against the
+     deck edge AND the runoff apron, by bisection, see RouteStation.westRoom —
+     and two things here read it instead of arclength:
+
+       wlim()   clamps every westward offset, so no facet can cross the line;
+       rockKi() fades the face's HEIGHT in with the room as well as with s,
+                so the massif grows out of the gore wedge rather than being
+                clamped flat against it and reading as a wall.
+
+     The pass keeps its full 11.00 m of pavement and its whole plan: nothing
+     here touches the road. */
+  const room = (i: number) => st[i].westRoom ?? 1e9;
+  /** a westward lateral offset, clamped to the room at station `i` */
+  const wlim = (i: number, lat: number) => Math.min(lat, room(i));
+  /** rock height envelope at station `i`: the arclength ramp, gated by room.
+      The +1.0 is the shoulder the face's own foot needs before it can start
+      to rise at all; 9 m is how much more room buys full height. */
+  const rockKi = (i: number) =>
+    rockK(st[i].s) * sstep((room(i) - (st[i].hwR + 1.0)) / 9);
+
   /* the three tightest corners, for chevron boards: local curvature maxima
      at least 60 m apart, tightest first */
   const corners: number[] = [];
@@ -4061,7 +4096,7 @@ function buildMountainRoad(
     for (let i = 0; i + step < N; i += step) {
       const a = st[i], e = st[i + step];
       const sh = mt.sharedSides((a.s + e.s) / 2);
-      const K = rockK(a.s), K2 = rockK(e.s);
+      const K = rockKi(i), K2 = rockKi(i + step);
       const j = (ix: number, k: number) => jag[(ix % N) * 4 + k];
       if (!sh.shR && K > 0.02) {
         /* west: the cut face the road hugs, rising to a crest, then the
@@ -4083,16 +4118,16 @@ function buildMountainRoad(
            upper-b, b), the same sense as the pavement quad, so their normals
            face the road. Checked numerically, not by eye: 0 of 282 bands
            faced the driver before, all of them do now. */
-        const f0a = mpt(i, -(a.hwR + 0.22), -0.35);
-        const f0b = mpt(i + step, -(e.hwR + 0.22), -0.35);
-        const f1a = mpt(i, -(a.hwR + 0.9 + j(i, 0) * 0.9), (1.7 + j(i, 1) * 0.8) * K);
-        const f1b = mpt(i + step, -(e.hwR + 0.9 + j(i + step, 0) * 0.9), (1.7 + j(i + step, 1) * 0.8) * K2);
-        const f2a = mpt(i, -(a.hwR + 2.4 + j(i, 2) * 1.4), (3.9 + j(i, 3) * 1.2) * K);
-        const f2b = mpt(i + step, -(e.hwR + 2.4 + j(i + step, 2) * 1.4), (3.9 + j(i + step, 3) * 1.2) * K2);
-        const c3a = mpt(i, -(a.hwR + 4.6 + j(i, 1) * 1.6), (5.0 + j(i, 0) * 1.4) * K);
-        const c3b = mpt(i + step, -(e.hwR + 4.6 + j(i + step, 1) * 1.6), (5.0 + j(i + step, 0) * 1.4) * K2);
-        const g4a = apt(i, -(a.hwR + 12), 0.02);
-        const g4b = apt(i + step, -(e.hwR + 12), 0.02);
+        const f0a = mpt(i, -wlim(i, a.hwR + 0.22), -0.35);
+        const f0b = mpt(i + step, -wlim(i + step, e.hwR + 0.22), -0.35);
+        const f1a = mpt(i, -wlim(i, a.hwR + 0.9 + j(i, 0) * 0.9), (1.7 + j(i, 1) * 0.8) * K);
+        const f1b = mpt(i + step, -wlim(i + step, e.hwR + 0.9 + j(i + step, 0) * 0.9), (1.7 + j(i + step, 1) * 0.8) * K2);
+        const f2a = mpt(i, -wlim(i, a.hwR + 2.4 + j(i, 2) * 1.4), (3.9 + j(i, 3) * 1.2) * K);
+        const f2b = mpt(i + step, -wlim(i + step, e.hwR + 2.4 + j(i + step, 2) * 1.4), (3.9 + j(i + step, 3) * 1.2) * K2);
+        const c3a = mpt(i, -wlim(i, a.hwR + 4.6 + j(i, 1) * 1.6), (5.0 + j(i, 0) * 1.4) * K);
+        const c3b = mpt(i + step, -wlim(i + step, e.hwR + 4.6 + j(i + step, 1) * 1.6), (5.0 + j(i + step, 0) * 1.4) * K2);
+        const g4a = apt(i, -wlim(i, a.hwR + 12), 0.02);
+        const g4b = apt(i + step, -wlim(i + step, e.hwR + 12), 0.02);
         rquad(f0a, f1a, f1b, f0b, 0.95 + j(i, 3) * 0.25);
         rquad(f1a, f2a, f2b, f1b, 0.8 + j(i, 2) * 0.3);
         rquad(f2a, c3a, c3b, f2b, 0.7 + j(i, 1) * 0.3);
@@ -4135,7 +4170,8 @@ function buildMountainRoad(
         wall.quad(dn(a1), dn(b1), up(b1), up(a1));
         wall.quad(up(a0), up(b0), up(b1), up(a1));
       }
-      if (!sh.shR && a.hwR >= 0.55 && e.hwR >= 0.55 && rockK((a.s + e.s) / 2) < 0.7) {
+      if (!sh.shR && a.hwR >= 0.55 && e.hwR >= 0.55 &&
+        Math.max(rockKi(i), rockKi(i + 2)) < 0.7) {
         const lo = -(a.hwR + WALL_T / 2 + 0.06), hi = -(e.hwR + WALL_T / 2 + 0.06);
         const a0 = mpt(i, lo + WALL_T / 2), a1 = mpt(i, lo - WALL_T / 2);
         const b0 = mpt(i + 2, hi + WALL_T / 2), b1 = mpt(i + 2, hi - WALL_T / 2);
@@ -4294,7 +4330,7 @@ function buildMountainRoad(
       while (dh < -Math.PI) dh += 2 * Math.PI;
       const out = dh > 0 ? -1 : 1; // turning toward +lat ⇒ outside is −lat
       const { hwL, hwR } = mt.halfWidths(cs);
-      const latB = out > 0 ? hwL + 1.1 : -(hwR + 0.95);
+      const latB = out > 0 ? hwL + 1.1 : -Math.min(hwR + 0.95, mt.westLimit(cs));
       const w = mt.worldOf(cs, latB);
       chevPosts.push({ x: w.x, y: w.y + 0.55, z: w.z + dz });
       chevBoards.push({
@@ -4318,8 +4354,16 @@ function buildMountainRoad(
     ];
     for (const ls of lampSs) {
       if (ls < 0 || ls > mt.len) continue;
-      const { hwR } = mt.halfWidths(ls);
-      const w = mt.worldOf(ls, -(hwR + 0.55));
+      const { hwL, hwR } = mt.halfWidths(ls);
+      /* Side. All four used to stand at −(hwR + 0.55), the rock side — which
+         at the two GORE MOUTHS is 0.55 m INSIDE the expressway's east
+         pavement edge, i.e. a 5.6 m pole in the outside lane, at both
+         junctions. There is no rock side at a mouth: the deck is there. So
+         the mouth lamps go on the river side, which is open ground, and the
+         two corner lamps keep the rock side they always had. Same four
+         waypoints, same heights. */
+      const west = hwR + 0.55 <= mt.westLimit(ls);
+      const w = mt.worldOf(ls, west ? -(hwR + 0.55) : hwL + 1.35);
       lamp(w.x, w.y + 5.6, w.z + dz, 0xffab55, 0.55);
       const p = mt.poseAt(ls);
       lampPoles.push({ x: w.x, y: w.y + 2.85, z: w.z + dz });
