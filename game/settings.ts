@@ -440,11 +440,21 @@ export function resolveRenderTier(
   } catch {
     /* ignore malformed URLs */
   }
-  /* The stored override is a developer row (lib/build.ts SHOW_DEV_SETTINGS):
-     when it is not on screen it does not apply either, so a public build
-     always gets the detected tier — as if the setting said "auto". The value
-     stays in the profile untouched. */
-  if (SHOW_DEV_SETTINGS && isRenderTier(s.tierOverride)) return s.tierOverride;
+  /* THE OVERRIDE IS A PLAYER SETTING NOW, so it applies in a public build.
+
+     It used to be gated on SHOW_DEV_SETTINGS at BOTH ends — the row was
+     developer-only AND this line ignored a stored value in production. That
+     pairing was coherent while it was a debug affordance, but it meant a
+     profile could carry an override that silently did nothing, which is the
+     one state a setting must never be in.
+
+     The owner's call: "ppl can adjust the setting for like laptop base mobile
+     base like before". Auto stays the default and stays right for almost
+     everyone — detectRenderTier already caps a phone hard. The override is for
+     the cases detection cannot see: a laptop throttling on battery, an old
+     tablet that reports like a desktop, or someone who simply wants more
+     frames than picture. */
+  if (isRenderTier(s.tierOverride)) return s.tierOverride;
   return detectRenderTier(isTouch, gl);
 }
 

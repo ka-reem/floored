@@ -970,6 +970,10 @@ export default function GameApp() {
             persist();
             backFrom(true);
           }}
+          onApplyReload={() => {
+            persist();
+            location.reload();
+          }}
           onReseed={() => {
             /* Write the new seed to the GAME, not to the profile. persist()
                below does `p.seed = g.seed` before saving, so setting p.seed
@@ -2064,11 +2068,14 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
    lane-edge rule, so the one warm thing on the board is the thing you just
    touched. */
 function SettingsPanel({
-  game, onBack, onReseed,
+  game, onBack, onReseed, onApplyReload,
 }: {
   game: Game;
   onBack: () => void;
   onReseed: () => void;
+  /** persist the profile, then reload — for a setting the engine can only
+      read at construction (device tier). */
+  onApplyReload: () => void;
 }) {
   const [, force] = useState(0);
   const [lit, setLit] = useState<string | null>(null);
@@ -2242,6 +2249,45 @@ function SettingsPanel({
                     onChange={(v) => upd((x) => applyPresetDefaults(x, v))}
                   />
                 </SignSrow>
+                {/* DEVICE TIER — the second quality axis, and the one detection
+                    gets wrong. Graphics quality above is what you WANT; this is
+                    what the machine is allowed to attempt (TIER_CAPS), and the
+                    preset is capped by it. Auto is right for almost everyone,
+                    so it leads and says what it detected.
+
+                    IT RELOADS, and the row says so, because renderTier is
+                    resolved once in the engine constructor and decides which
+                    donor assets are even fetched (donorAssetUrls) — there is no
+                    honest way to change it mid-drive. Same contract as NEW TOWN
+                    below: write the profile, then location.reload().
+
+                    Was developer-only behind SHOW_DEV_SETTINGS at both ends
+                    until the owner asked for it back: "ppl can adjust the
+                    setting for like laptop base mobile base like before". */}
+                <SignSrow stack name="Device tier" aside={s.tierOverride === "auto" ? `— detected "${game.renderTier}" \u00b7 reloads` : `— running "${game.renderTier}" \u00b7 reloads`} lit={L("tierOverride")}>
+                  <SignSelect
+                    aria-label="Device tier"
+                    value={s.tierOverride}
+                    onChange={(e) => {
+                      const v = e.target.value as GameSettings["tierOverride"];
+                      if (v === s.tierOverride) return;
+                      upd((x) => (x.tierOverride = v));
+                      /* THROUGH THE PARENT, because the panel's own upd() does
+                         NOT persist — the profile is written when the screen is
+                         left. Reloading straight from here would have thrown
+                         the choice away on the way out, which is the one thing
+                         a reloading setting must not do. onApplyReload does
+                         persist() then location.reload(), exactly like NEW
+                         TOWN. */
+                      onApplyReload();
+                    }}
+                  >
+                    <option value="auto">Auto &mdash; detect this device</option>
+                    <option value="mobile-base">Mobile base &mdash; fewest effects</option>
+                    <option value="mobile-high">Mobile high</option>
+                    <option value="desktop">Desktop &mdash; everything</option>
+                  </SignSelect>
+                </SignSrow>
                 <SignSrow stack name="Field of view" lit={L("fovBase")}>
                   <SignSlider
                     label="Field of view"
@@ -2274,18 +2320,9 @@ function SettingsPanel({
                 {SHOW_DEV_SETTINGS && (
                   <>
                     <SignShead en="DEVELOPER" jp="開発" />
-                    <SignSrow name="Device tier" aside={`— ${game.renderTier}`} lit={L("tierOverride")}>
-                      <SignSelect
-                        aria-label="Device tier"
-                        value={s.tierOverride}
-                        onChange={(e) => upd((x) => (x.tierOverride = e.target.value as any))}
-                      >
-                        <option value="auto">Auto</option>
-                        <option value="mobile-base">Mobile base</option>
-                        <option value="mobile-high">Mobile high</option>
-                        <option value="desktop">Desktop</option>
-                      </SignSelect>
-                    </SignSrow>
+                    {/* Device tier moved to PICTURE as a player row — it is a
+                        real setting now, not a debug affordance, and two copies
+                        of one control is how they drift apart. */}
                     <SignSrow last name="Imported cabin" aside={`— auto is "${cabinAutoLabel(game.renderTier)}"`} lit={L("cabin")}>
                       <SignSelect
                         aria-label="Imported cabin"
