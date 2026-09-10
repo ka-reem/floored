@@ -29,8 +29,12 @@ const arg = (k, d) => { const i = process.argv.indexOf("--" + k); return i > -1 
 const STORIES = arg("stories");
 const OUT = arg("out", "/tmp/claude-0/batch");
 const SCRATCH = "/tmp/claude-0/-home-user-racing-game/d557af8b-cf5b-5327-b452-a82bf20b5727/scratchpad";
+/* content/lib and content/vision exist only on the content-library branch —
+   the checked-in frame library the TikTok session works from. */
 const FRAME_DIRS = arg("frames", [
   "test/artifacts/hero",
+  "content/lib",
+  "content/vision",
   path.join(SCRATCH, "lib"),
   path.join(SCRATCH, "vision"),
 ].join(",")).split(",").filter(Boolean);
