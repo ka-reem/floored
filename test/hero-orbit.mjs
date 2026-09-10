@@ -35,16 +35,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* [name, z on the corridor, lane, hour, yaw (rad off heading), pitch, dist] */
 const SHOTS = [
-  ["low-front",    -300, 0, 21.5,  2.55, -0.04, 5.2],
-  ["side-profile", -300, 0, 21.5,  1.57,  0.10, 7.4],
-  ["high-rear",    -300, 0, 21.5,  0.30,  0.85, 8.6],
-  ["low-rear",      -700, 0, 23.0, 0.35, -0.05, 4.4],
-  ["toll-side",     1385, 1, 20.5, 1.20,  0.16, 8.0],
-  ["toll-low",      1385, 1, 20.5, 2.70, -0.03, 5.0],
-  ["tunnel-side",    700, 0, 22.0, 1.45,  0.12, 7.0],
-  ["mtn-low",      -1880, 0, 17.0, 2.30, -0.02, 5.6],
-  ["dawn-side",      200, -1, 5.2, 1.62,  0.14, 7.8],
-  ["city-hi",       -300, 0, 21.5, 2.10,  1.00, 11.0],
+  ["low-front",     -300, 0, 21.5,  2.55, -0.04,  5.2],
+  ["side-profile",  -300, 0, 21.5,  1.57,  0.10,  7.4],
+  ["high-rear",     -300, 0, 21.5,  0.30,  0.85,  8.6],
+  ["drone-top",     -300, 0, 21.5,  1.10,  1.18, 12.0],
+  ["drone-sweep",   -700, 0, 23.0,  2.05,  0.55, 10.5],
+  ["low-rear",      -700, 0, 23.0,  0.35, -0.05,  4.4],
+  ["toll-side",     1385, 1, 20.5,  1.20,  0.16,  8.0],
+  ["toll-drone",    1385, 1, 20.5,  0.80,  0.95, 11.5],
+  ["tunnel-side",    700, 0, 22.0,  1.45,  0.12,  7.0],
+  ["mtn-low",      -1880, 0, 17.0,  2.30, -0.02,  5.6],
+  ["mtn-drone",    -1880, 0, 17.0,  1.60,  1.05, 12.5],
+  ["dawn-side",      200, -1, 5.2,  1.62,  0.14,  7.8],
+  ["dawn-low",       200, -1, 5.2,  2.75, -0.05,  5.0],
+  ["city-hi",       -300, 0, 21.5,  2.10,  1.00, 11.0],
 ];
 
 const browser = await puppeteer.launch({
@@ -78,9 +82,21 @@ await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 240000
 await sleep(12000);
 
 for (const [name, z, lane, hour, yaw, pitch, dist] of SHOTS) {
-  /* leave photo mode before moving — the rig aims at where the car WAS */
-  await page.evaluate(() => { if (window.__neonx.state().photo) window.__neonx.uiKeyTap?.("o"); });
-  await sleep(400);
+  /* Leave photo mode before moving — the rig aims at where the car WAS.
+     Toggling blind is what produced five cockpit frames in the first run: if
+     the state was already off, the "exit" press ENTERED it, and the later
+     "enter" press left it. So every transition below asserts the state it
+     wanted and presses again only if it did not get it. */
+  const setPhoto = async (want) => {
+    for (let t = 0; t < 3; t++) {
+      const on = await page.evaluate(() => !!window.__neonx.state().photo);
+      if (on === want) return true;
+      await page.keyboard.press("o");
+      await sleep(900);
+    }
+    return (await page.evaluate(() => !!window.__neonx.state().photo)) === want;
+  };
+  await setPhoto(false);
   await page.evaluate((h) => window.__neonx.setTime(h), hour);
   await page.evaluate(({ z, lane }) => {
     const c = window.__neonx.game.terrain.corridor;
@@ -92,9 +108,11 @@ for (const [name, z, lane, hour, yaw, pitch, dist] of SHOTS) {
   }, { z, lane });
   await sleep(3000);
 
-  await page.keyboard.press("o");
-  await sleep(1200);
-  const ok = await page.evaluate(({ yaw, pitch, dist }) => {
+  const entered = await setPhoto(true);
+  await sleep(900);
+  /* the mode's own on-screen banner is chrome, not the game */
+  await page.addStyleTag({ content: `.photoHint, .photoBanner, [class*="photoHint"], [class*="photo-hint"] { opacity: 0 !important; }` });
+  const ok = entered && await page.evaluate(({ yaw, pitch, dist }) => {
     /* engine.ts photoEnter(): `this.photo` IS the live rig — {on, yaw, pitch,
        dist, auto}. yaw is ABSOLUTE (it opens at car.h + PHOTO.yaw0), so the
        offset in the table is added to the car's heading here. auto=false stops

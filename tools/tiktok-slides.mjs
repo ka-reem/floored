@@ -61,31 +61,56 @@ function wrap(text, size, face, maxW) {
   return lines;
 }
 
-/** One text block as an SVG layer: scrim rounded-rect behind, stroked white on top. */
-function textLayer({ text, size, face, y, align = "middle", scrim = 0.62, stroke = 8, color = "#ffffff", track = 0 }) {
+/** One text block as an SVG layer.
+
+    PER-LINE PILLS, not one slab. TikTok's own text tool draws a rounded box
+    behind EACH LINE, sized to that line — which is why native captions look
+    like they belong to the video and a single full-width rectangle looks like
+    a slide from a deck. Ragged pill edges also let the frame show through
+    between lines, so the image keeps working as an image.
+
+    `pill: false` falls back to stroke only, for a line sitting over ground
+    that is already dark enough to carry it. */
+function textLayer({ text, size, face, y, scrim = 0.62, stroke = 8, color = "#ffffff", track = 0, pill = true }) {
   const maxW = SAFE.w - 60;
   const lines = wrap(text, size, face, maxW);
-  const lh = Math.round(size * 1.14);
-  const blockH = lines.length * lh;
-  const widest = Math.max(...lines.map((l) => textW(l, size, face)));
-  const padX = Math.round(size * 0.42), padY = Math.round(size * 0.34);
-  const boxW = Math.min(SAFE.w, widest + padX * 2);
-  const boxX = align === "middle" ? Math.round(W / 2 - boxW / 2) : SAFE.x;
-  const cx = align === "middle" ? W / 2 : SAFE.x + padX;
-  const anchor = align === "middle" ? "middle" : "start";
+  const lh = Math.round(size * 1.2);
+  const padX = Math.round(size * 0.34), padY = Math.round(size * 0.16);
+  const rx = Math.round(size * 0.18);
 
-  const rows = lines.map((l, i) =>
-    `<text x="${cx}" y="${y + padY + lh * (i + 0.78)}" text-anchor="${anchor}"
+  const boxes = [], rows = [];
+  lines.forEach((l, i) => {
+    const w = Math.min(maxW, textW(l, size, face));
+    const top = y + lh * i;
+    const bx = Math.round(W / 2 - w / 2 - padX);
+    if (pill) boxes.push(`<rect x="${bx}" y="${top}" width="${Math.round(w + padX * 2)}" height="${lh + padY}" rx="${rx}" fill="#000" fill-opacity="${scrim}"/>`);
+    rows.push(`<text x="${W / 2}" y="${top + lh * 0.78}" text-anchor="middle"
        font-family="${face}" font-size="${size}" letter-spacing="${track}"
        fill="${color}" stroke="#000" stroke-width="${stroke}" stroke-linejoin="round"
-       paint-order="stroke fill">${esc(l)}</text>`).join("");
+       paint-order="stroke fill">${esc(l)}</text>`);
+  });
 
   const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-    ${scrim > 0 ? `<rect x="${boxX}" y="${y}" width="${boxW}" height="${blockH + padY * 2}"
-        rx="${Math.round(size * 0.22)}" fill="#000" fill-opacity="${scrim}"/>` : ""}
-    ${rows}
+    ${boxes.join("")}${rows.join("")}
   </svg>`;
-  return { svg: Buffer.from(svg), height: blockH + padY * 2 };
+  return { svg: Buffer.from(svg), height: lines.length * lh + padY };
+}
+
+/** A single enormous figure — the payoff slide. One number, no pill, a hard
+    stroke and a wide tracked caption under it. This is the only place a slide
+    is allowed to be mostly type: it works because the eye has nothing to do
+    but land on it. */
+function statLayer({ stat, under, y }) {
+  const s1 = 250, s2 = 44;
+  return Buffer.from(`<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    <text x="${W / 2}" y="${y + s1 * 0.78}" text-anchor="middle" font-family="Anton"
+      font-size="${s1}" fill="#ffffff" stroke="#000" stroke-width="16"
+      stroke-linejoin="round" paint-order="stroke fill">${esc(stat)}</text>
+    ${under ? `<text x="${W / 2}" y="${y + s1 + s2 * 1.3}" text-anchor="middle"
+      font-family="Archivo Black" font-size="${s2}" letter-spacing="7"
+      fill="#ffd280" stroke="#000" stroke-width="8" stroke-linejoin="round"
+      paint-order="stroke fill">${esc(under)}</text>` : ""}
+  </svg>`);
 }
 
 async function buildSlide(slide, i, total) {
@@ -173,7 +198,7 @@ async function buildSlide(slide, i, total) {
 
   if (slide.hook) {
     const size = slide.hookSize ?? 96;
-    const t = textLayer({ text: slide.hook, size, face: "Anton", y: slide.hookY ?? 250, scrim: 0.66, stroke: 10 });
+    const t = textLayer({ text: slide.hook, size, face: "Anton", y: slide.hookY ?? 250, scrim: slide.hookScrim ?? 0.66, stroke: 10, pill: slide.hookPill !== false });
     layers.push({ input: t.svg, top: 0, left: 0 });
   }
   if (slide.body) {
@@ -181,7 +206,7 @@ async function buildSlide(slide, i, total) {
     const lines = wrap(slide.body, size, "Anton", SAFE.w - 60).length;
     const blockH = lines * Math.round(size * 1.14) + Math.round(size * 0.68);
     const y = slide.bodyY ?? (SAFE.y + SAFE.h - blockH - 30);
-    const t = textLayer({ text: slide.body, size, face: "Anton", y, scrim: 0.62, stroke: 7 });
+    const t = textLayer({ text: slide.body, size, face: "Anton", y, scrim: slide.bodyScrim ?? 0.62, stroke: 7, pill: slide.bodyPill !== false });
     layers.push({ input: t.svg, top: 0, left: 0 });
   }
   if (slide.label) {
@@ -190,6 +215,10 @@ async function buildSlide(slide, i, total) {
       y: slide.labelY ?? 200, scrim: 0.55, stroke: 5, color: slide.labelColor ?? "#ffd280", track: 3,
     });
     layers.push({ input: t.svg, top: 0, left: 0 });
+  }
+
+  if (slide.stat) {
+    layers.push({ input: statLayer({ stat: slide.stat, under: slide.statUnder, y: slide.statY ?? 620 }), top: 0, left: 0 });
   }
 
   /* slide counter, inside the safe box on the LEFT — the top right is TikTok's
