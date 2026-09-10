@@ -27,7 +27,7 @@
    final 0.5 s into its opening 0.5 s.
 
    Usage:
-     node tools/tiktok-video.mjs --spec clip.json --out dir/ [--loop] [--reuse] [--keep-frames]
+     node tools/tiktok-video.mjs --spec clip.json --out dir/ [--loop] [--recapture] [--keep-frames] [--only name,name]
 
    Spec (one clip, or { "url", "clips": [ ...clips ] } for several per world load):
      {
@@ -50,8 +50,8 @@
        },
        "captions": [ { "t0": 0, "t1": 3, "text": "…", "style": "hook" | "body", "y"?: 300 } ]
      }
-   `--reuse` skips the browser when the clip's frame folder is already full —
-   re-captioning a 10-minute capture takes seconds. */
+   A clip whose frame folder is already full skips the browser — re-captioning
+   an hour's capture takes minutes — unless --recapture says otherwise. */
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -425,8 +425,13 @@ async function captureClip(page, clip, framesDir) {
       console.log(`  frame ${i + 1}/${N}  ${el.toFixed(0)}s  eta ${eta.toFixed(0)}s  ${st}`);
     }
   }
-  await page.evaluate(() => window.__neonx.setFixedDt(0));
-  await setPhoto(page, false);
+  /* teardown is best-effort: every frame is on disk by now, and a tab that
+     dies here must not read as a failed capture (it did once, and the retry
+     wiped 80 minutes of frames) */
+  try {
+    await page.evaluate(() => window.__neonx.setFixedDt(0));
+    await setPhoto(page, false);
+  } catch {}
   return { N, seconds, fps };
 }
 
@@ -452,7 +457,10 @@ for (const clip of todo) {
   const framesDir = path.join(OUT, `${clip.name}.frames`);
   const have = existsSync(framesDir) ? readdirSync(framesDir).filter((f) => f.endsWith(".jpg")).length : 0;
   console.log(`\n▶ ${clip.name}  ${seconds}s @ ${fps}fps${captureFps !== fps ? ` (captured @ ${captureFps})` : ""}  ${portrait}${clip.loop ? "  loop" : ""}`);
-  if (!(has("reuse") && have >= N)) {
+  /* A full frame folder is never re-captured unless --recapture says so: a
+     capture is the expensive half by two orders of magnitude, and the
+     encode can always be re-run on top of it. */
+  if (have < N || has("recapture")) {
     const car = clip.car || "volvo";
     for (let attempt = 0; ; attempt++) try {
     rmSync(framesDir, { recursive: true, force: true });
@@ -486,6 +494,8 @@ for (const clip of todo) {
       console.log(`  ✗ ${clip.name} attempt ${attempt + 1}: ${String(e.message || e).slice(0, 160)}`);
       try { await browser?.close(); } catch {}
       browser = null; page = null; curCar = null;
+      const got = existsSync(framesDir) ? readdirSync(framesDir).filter((f) => f.endsWith(".jpg")).length : 0;
+      if (got >= N) { console.log(`  frames complete (${got}) — keeping them`); break; }
       if (attempt >= 1) throw e;
     }
   } else console.log(`  reusing ${have} frames`);
