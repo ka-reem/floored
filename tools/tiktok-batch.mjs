@@ -66,7 +66,8 @@ function resolve(query, used) {
      a tie, so a set keeps its intended picture when nothing fresher fits. */
   const SOFT = new Set(["hero", "drone", "lib", "orbit", "plaza", "mouth"]);
   const hard = want.filter((w) => !SOFT.has(w));
-  const match = (fr, ws) => ws.every((w) => fr.tags.some((t) => t.includes(w)));
+  /* short words match a tag exactly — "on" is a substring of "drone" */
+  const match = (fr, ws) => ws.every((w) => fr.tags.some((t) => (w.length <= 3 ? t === w : t.includes(w))));
   const full = new Set(frames.filter((fr) => match(fr, want)).map((f) => f.file));
   const hits = frames.filter((fr) => full.has(fr.file) || (hard.length && match(fr, hard)));
   const pool = hits.filter((h) => !used.has(h.file));
