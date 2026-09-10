@@ -85,7 +85,7 @@ for (const st of stories) {
   try {
     spec = {
       caption: st.caption, hashtags: st.hashtags,
-      slides: st.slides.map((s) => {
+      slides: await Promise.all(st.slides.map(async (s) => {
         const image = resolve(s.img ?? s.image, used);
         /* DRIVER-VIEW FRAMES CROP FROM THE TOP. A dashcam/cockpit/hood frame is
            half dashboard: cover-cropping it from the centre keeps the wheel
@@ -95,8 +95,22 @@ for (const st of stories) {
            chase frames are centred on the car and stay centred. */
         const tags = path.basename(image).toLowerCase();
         const driverView = /dashcam|cockpit|console|hood|tunnel-in|toll-plaza|pov/.test(tags) && !/orbit|drone|chase/.test(tags);
-        return { ...s, image, ...(driverView && !s.framePos ? { framePos: "top" } : {}) };
-      }),
+        const driving = /^hero-/.test(tags) || driverView;
+        /* Cover-fitting a 16:9 source to 1080x1440 scales by HEIGHT, so the
+           whole height survives and only the sides are cropped — a vertical
+           anchor changes nothing. The crop has to happen in SOURCE pixels
+           first: driver views keep the windscreen band (7%..62% of the
+           height), every hero driving frame loses its top 7% where the HUD
+           clock leaks. Orbit/drone frames were already banner-cropped. */
+        let crop = s.crop;
+        if (!crop && driving) {
+          const m = await sharp(image).metadata();
+          const top = Math.round(m.height * 0.07);
+          const h = Math.round(m.height * (driverView ? 0.55 : 0.93));
+          crop = { left: 0, top, width: m.width, height: h };
+        }
+        return { ...s, image, ...(crop ? { crop } : {}) };
+      })),
     };
   } catch (e) { console.log(`  ✗ ${st.id}: ${e.message}`); failed++; continue; }
   const dir = path.join(OUT, st.id);
