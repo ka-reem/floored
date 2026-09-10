@@ -12,7 +12,7 @@ import { CARS, DEFAULT_CAR_ID, PAINTS, getCar } from "@/game/carspecs";
 import {
   Gantry, NightRoad, SignKP, SignPlate, SignRow, SignRule, SignSep, SignShield, SignTitle,
   SignHead, SignBody, SignFootbar, SignBtn, SignToggle, SignSeg, SignSelect, SignSlider,
-  SignShead, SignSrow, SignPost, SignArrow, SignP,
+  SignShead, SignSrow, SignArrow, SignP,
 } from "@/components/ui/Sign";
 import { BETA_JP, BETA_LABEL, BETA_NOTE, GAME_NAME, IS_BETA, NAME_VERSION, SHOW_DEV_SETTINGS, VERSION_LABEL } from "@/lib/build";
 import {
@@ -822,29 +822,28 @@ export default function GameApp() {
                 <SignSep />
                 {/* The same setting the panel carries, surfaced here so the mode
                     is discoverable without going three screens deep. */}
+                {/* THE RIVAL IS HELD BACK for the beta, but the row STAYS —
+                    the owner: "rival dont remove it just say not available or
+                    something". A disabled <button>, so it keeps its place and
+                    its name in the destination list and reads NOT AVAILABLE
+                    where the ON/OFF chip used to be.
+
+                    No onClick and no badge, deliberately: this was the only
+                    control that wrote settings.rival outside the settings
+                    panel's upd(), and the badge read from the profile — with
+                    the scrub in settings.ts clearing rival on load, a live
+                    badge here would always have said OFF, which reads as "you
+                    can switch it on" rather than "not yet". Unlocking is
+                    restoring the onClick and the badge, un-disabling it, and
+                    dropping the scrub. */}
                 <SignRow
+                  disabled
+                  className="na"
                   glyph="ne"
                   jp="好敵手"
                   en="RIVAL"
-                  badge={(g?.settings ?? profileRef.current?.settings)?.rival ? "ON" : "OFF"}
-                  badgeOn={!!(g?.settings ?? profileRef.current?.settings)?.rival}
+                  note="NOT AVAILABLE"
                   dist="1.2"
-                  aria-pressed={!!(g?.settings ?? profileRef.current?.settings)?.rival}
-                  onClick={() => {
-                    const p = profileRef.current;
-                    if (!p) return;
-                    const on = !p.settings.rival;
-                    p.settings.rival = on;
-                    if (g) {
-                      g.settings.rival = on;
-                      syncRivalMode(g.settings);
-                    } else syncRivalMode(p.settings);
-                    saveProfile(p);
-                    // same event the settings panel emits for this key — the
-                    // menu shortcut and the panel row are one setting
-                    track("settings_change", { setting: "rival", value: on });
-                    rerender();
-                  }}
                 />
                 <SignRow glyph="p" jp="車庫" en="GARAGE" dist="0.4" onClick={() => void openScreen("garage")} />
                 <SignRow glyph="nw" jp="設定" en="SETTINGS" dist="2.6" onClick={() => void openScreen("settings")} />
@@ -903,14 +902,13 @@ export default function GameApp() {
         />
       )}
 
-      {/* Pause: a post-mounted 620-wide board (Pause.dc.html) over the frozen
-          frame. The rows paint their JP from data-jp so each button's text is
+      {/* Pause: a 620-wide board (Pause.dc.html) over the frozen frame. The
+          design's mounting post is gone — see ui-system.css for why. The rows paint their JP from data-jp so each button's text is
           exactly its EN label — every harness finds the pause menu by a
           button that says "RESUME". In landscape the rows sit in two columns
           so the whole board fits without scrolling (ui-system.css). */}
       {screen === "paused" && (
         <div className="menuRoot signRoot sub paused">
-          <SignPost />
           <div className="sign-stack sub narrow">
             <SignPlate screen>
               {/* No build mark and no kilometre post: this is a four-second
@@ -1018,10 +1016,12 @@ export default function GameApp() {
      volume          applied by setRunning(true) at the end of the load
                      (audio.setLevels(s.vol, 1)), which happens after every
                      one of these rows.
-     rival car       traffic.ts reads a module value, refreshed here through
-                     syncRivalMode, and claims its pool slot on the toggle
-                     rather than at construction — so it works whether or not
-                     the traffic stage has run yet.
+     rival car       WAS offered here on the same grounds — traffic.ts reads a
+                     module value refreshed through syncRivalMode, and claims
+                     its pool slot on the toggle rather than at construction.
+                     The row is gone because the rival is off for the beta, not
+                     because it could not be honoured; syncRivalMode still runs
+                     on every row below.
      camera view     camUpdate() branches on game.camMode every frame and
                      nothing is built from it — the warm pass links all the
                      modes' programs regardless. Written through the engine's
@@ -1051,41 +1051,31 @@ export default function GameApp() {
    is worse than no control, so those rows stay in SETTINGS, where the world
    is either not built yet or can be rebuilt around them.
 
-   IT APPEARS ONLY IF THE LOAD IS SLOW. SHOW_AFTER_MS is the owner's "if its
-   loading for a while": on a warm DRIVE the load is over before this exists
-   and the board is exactly what it was. And it is not a dialog — no overlay,
-   no close button, nothing to dismiss. It is more of the same board, under
-   the bar, and it leaves with the screen.
+   IT APPEARS THE MOMENT THE LOAD DOES. It is not a dialog — no overlay, no
+   close button, nothing to dismiss. It is more of the same board, under the
+   bar, and it leaves with the screen.
 
-   IT WAS 2500 ms AND ALMOST NOBODY SAW IT. The owner, watching real loads:
-   "during loading time i notice most ppll leave u need to ask more questions
-   during loading time i think, unless i didn't check but like ask for what
-   steering controls." Steering was already the first row here — it was just
-   behind a 2.5 s gate that a cold desktop load barely clears, so the panel
-   he asked for was one he had never been shown. At 800 ms it is up for
-   nearly all of every cold build (which is seconds, not milliseconds) and
-   still absent from an instant warm DRIVE, which is the only case the gate
-   was ever really protecting.
+   IT WAS GATED BEHIND A DELAY AND THAT IS GONE. First 2500 ms, then 800 —
+   both were guesses at "only show this if the load is slow enough to be
+   worth filling". The owner settled it after watching the 800 ms build:
+   "the settings need to show up right when the loading starts not like a few
+   seconds after which is happening now." So there is no gate: the rows are
+   in the first painted frame of the loading screen. A warm DRIVE is over
+   fast enough that the panel simply comes and goes with it, which costs
+   nothing and is far cheaper than the player who left during the gap.
 
    ONE HONEST CAVEAT, stated here because it is a property of the loader and
    not of this panel: each build stage is a single synchronous block, so a
    tap that lands inside one is queued and answered at that stage's end
    rather than immediately (loading.ts yields to a paint between stages, and
-   only between them). At 800 ms the panel now appears DURING a blocking
-   stage rather than after the longest two, so an early tap can wait a beat
-   before the row repaints. It is still answered — nothing is dropped — and
-   a control that is late by one stage beats a control the player never
-   reaches. */
-const SHOW_AFTER_MS = 800;
+   only between them). With no gate at all the panel is up before the first
+   blocking stage, so an early tap is the likeliest kind: it is queued and
+   answered at that stage's end rather than the instant it lands, so a row
+   can take a beat to repaint. Nothing is dropped — the pick always applies —
+   and a control that repaints late beats a control the player never sees. */
 
 function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) {
-  const [show, setShow] = useState(false);
   const [, force] = useState(0);
-  useEffect(() => {
-    const t = setTimeout(() => setShow(true), SHOW_AFTER_MS);
-    return () => clearTimeout(t);
-  }, []);
-  if (!show) return null;
   const s = game.settings;
   /* No applySettings() call. Every row above is live-read or applied at
      start(); calling it here would rebuild render targets and re-key shadow
@@ -1110,6 +1100,17 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
         <i>saved as you pick</i>
       </div>
       <div className="loadSetRows">
+        {/* TOUCH ONLY. The owner: "on desktop dont show the controls bcs the
+            controls are only for mobile." Every option here — BUTTONS, WHEEL,
+            SLIDER — is an on-screen touch control; a desktop player steers
+            with WASD/arrows and steerMode does nothing for them, so the row
+            was asking a question their answer could not change.
+
+            game.isTouch is the same predicate readInput uses to decide
+            whether to read the touch controls at all (and the same one
+            deviceType() reports), so this row is shown exactly when the
+            setting behind it is live. */}
+        {game.isTouch && (
         <SignSrow name="Steering">
           <SignSeg
             label="Steering"
@@ -1132,6 +1133,7 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             }
           />
         </SignSrow>
+        )}
         <SignSrow name="Speed units">
           <SignSeg
             label="Speed units"
@@ -1182,8 +1184,14 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             }
           />
         </SignSrow>
+        {/* Held back for the beta, but kept in the list — the owner: "rival
+            dont remove it just say not available or something". Static
+            caption, no toggle: the profile scrub in settings.ts is what makes
+            it true for players who already had it on, and upd() still calls
+            syncRivalMode on every other row so the module flag keeps following
+            the scrubbed profile and traffic.ts never claims the slot. */}
         <SignSrow name="Rival car" aside="— chase the orange one">
-          <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd("rival", (x) => (x.rival = v))} />
+          <span className="sign-cap faint">NOT AVAILABLE</span>
         </SignSrow>
         {/* live: hudVisible() reads game.mmap every frame; the canvas itself is
             shown by this file's own render the moment play starts. Mirrored
@@ -1605,19 +1613,41 @@ function QuickDrawer({
   };
   // playing implies loaded, but a guard against a not-yet-built car is free
   if (!game.car) return null;
-  const rows: { k: string; en: string; jp: string; state: string; on: boolean }[] = [
+  /* `lock: true` is a row that STAYS but cannot be tapped. The owner asked
+     for this shape explicitly — "rival dont remove it just say not available
+     or something same with the rain thing" — so a feature held back for the
+     beta keeps its place in the list and says so, rather than vanishing and
+     leaving the player wondering whether the game has it at all. */
+  const rows: { k: string; en: string; jp: string; state: string; on: boolean; lock?: boolean }[] = [
     { k: "l", en: "HEADLIGHTS", jp: "ライト", state: game.car.lightsMode.toUpperCase(),
       on: game.car.lightsMode === "on" },
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
     { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
+    /* Field of view — the owner asked for it "from the 3 dots". A STEPPED row,
+       not a slider: every other row here is a tap that routes through
+       uiKeyTap, i.e. it literally is a keyboard key (K), and that is what
+       keeps a row and its key from ever drifting apart. The continuous
+       58..100 slider is still in SETTINGS for anyone who wants an exact
+       number; this cycles the four named stops in engine.ts's FOV_STOPS and
+       writes the SAME `settings.fovBase` the slider does — one FOV number in
+       the game, two ways to reach it.
+
+       Here rather than at the bottom of the list because the sheet SCROLLS on
+       a 390x664 phone (max-height: 100vh - 280px) — eleven rows do not fit —
+       and a control the owner asked to be able to reach should not be the one
+       below the fold. Beside MAP ZOOM is also where it belongs: both are "how
+       much of the world do I see". */
+    { k: "k", en: "FIELD OF VIEW", jp: "画角", state: game.fovRow.text, on: game.fovRow.changed },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
-    /* RAIN AND WIPERS ARE LOCKED for the beta — both rows are gone from the
-       drawer, and wipers go with rain because a wiper control on dry glass is
-       a dead switch. Nothing underneath is removed: setRain, the rain FX, the
+    /* RAIN AND WIPERS ARE HELD BACK for the beta, shown but not tappable.
+       Wipers go with rain because a wiper control on dry glass is a dead
+       switch. Nothing underneath is removed: setRain, the rain FX, the
        wet-road materials and every wiper mode still run, and the R and U keys
-       still reach them through the same uiKeyTap route these rows used. Same
-       shape as the TILT lock — unlocking is putting these two rows back (and
-       the settings-panel toggle, and the profile scrub in settings.ts). */
+       still reach them through the same uiKeyTap route these rows used — so
+       unlocking is dropping the two `lock` flags here, the settings-panel
+       caption, and the profile scrub in settings.ts. */
+    { k: "r", en: "RAIN", jp: "雨", state: "NOT AVAILABLE", on: false, lock: true },
+    { k: "u", en: "WIPERS", jp: "ワイパー", state: "NOT AVAILABLE", on: false, lock: true },
     { k: "t", en: "TIME-LAPSE", jp: "時間", state: "×" + game.timeSpeed, on: game.timeSpeed > 0 },
     { k: "v", en: "DASHCAM FX", jp: "映像", state: game.grade ? "ON" : "OFF", on: game.grade },
   ];
@@ -1627,11 +1657,20 @@ function QuickDrawer({
         QUICK CONTROLS <span>クイック操作</span>
       </div>
       {rows.map((r) => (
-        <div key={r.k} className="qdRow" onPointerDown={(e) => { tapGlow(e); tap(r.k); }}>
+        /* A locked row gets no pointer handler at all rather than a disabled
+           one: uiKeyTap is the only way this drawer reaches the engine, so not
+           wiring it is what makes the lock real, and without the handler the
+           :active glow never fires either. */
+        <div
+          key={r.k}
+          className={"qdRow" + (r.lock ? " locked" : "")}
+          aria-disabled={r.lock || undefined}
+          onPointerDown={r.lock ? undefined : (e) => { tapGlow(e); tap(r.k); }}
+        >
           <span className="qdLabel">
             {r.en} <i>{r.jp}</i>
           </span>
-          <span className={"qdState" + (r.on ? " on" : "")}>{r.state}</span>
+          <span className={"qdState" + (r.on ? " on" : "") + (r.lock ? " na" : "")}>{r.state}</span>
         </div>
       ))}
       {/* One-shot, so it also closes the drawer: the whole point of a reset
@@ -2101,11 +2140,16 @@ function SettingsPanel({
                 <SignSrow name="Traction control" lit={L("tc")}>
                   <SignToggle label="Traction control" checked={s.tc} onChange={(v) => upd((x) => (x.tc = v))} />
                 </SignSrow>
-                {/* The rival pace car. A mode rather than a difficulty: it costs
-                    nothing at all while it is off (game/traffic.ts claims its pool
-                    slot on the toggle, not at construction). */}
-                <SignSrow name="Rival car" aside="— chase the orange one" lit={L("rival")}>
-                  <SignToggle label="Rival car" checked={s.rival} onChange={(v) => upd((x) => (x.rival = v))} />
+                {/* THE RIVAL IS LOCKED OFF for the beta, the same way rain is:
+                    the row keeps its place so the section still reads the same,
+                    but it is a static NOT AVAILABLE caption instead of a switch.
+                    The car itself is untouched in game/traffic.ts — it claims
+                    its pool slot on the toggle rather than at construction, so
+                    off costs nothing. Unlocking is putting this SignToggle
+                    back, restoring the home-board shortcut and the loading
+                    board's row, and dropping the scrub in settings.ts. */}
+                <SignSrow name="Rival car">
+                  <span className="sign-cap faint">NOT AVAILABLE</span>
                 </SignSrow>
                 {/* The clean-run readout: distance since the last real impact
                     (game/engine.ts's runUpdate). On by default. */}
@@ -2167,12 +2211,12 @@ function SettingsPanel({
                 </SignSrow>
                 {/* RAIN IS LOCKED for the beta — see the migration note in
                     settings.ts. The row stays so WORLD still reads as weather,
-                    but it is a static NOT ACTIVE caption in the panel's own
+                    but it is a static NOT AVAILABLE caption in the panel's own
                     faint style instead of a switch. Putting this SignToggle
                     back (with the two QuickDrawer rows) is the whole of
                     unlocking it. */}
                 <SignSrow last name="Rain">
-                  <span className="sign-cap faint">NOT ACTIVE</span>
+                  <span className="sign-cap faint">NOT AVAILABLE</span>
                 </SignSrow>
                 <SignShead en="SOUND" jp="音" />
                 <SignSrow stack last name="Volume" lit={L("vol")}>
@@ -2318,8 +2362,12 @@ function SettingsPanel({
                         onChange={(v) => upd((x) => (x.fog = v as GameSettings["fog"]))}
                       />
                     </SignSrow>
-                    <SignSrow last name="Rival indicators" aside="— the rival signals its lane changes" lit={L("rivalSignals")}>
-                      <SignToggle label="Rival uses its indicators" checked={s.rivalSignals} onChange={(v) => upd((x) => (x.rivalSignals = v))} />
+                    {/* Held back with the rival itself — it is only ever read
+                        while a rival is running. Kept rather than deleted, on
+                        the same instruction as the RIVAL row on the home board
+                        ("dont remove it just say not available"). */}
+                    <SignSrow last name="Rival indicators" aside="— the rival signals its lane changes">
+                      <span className="sign-cap faint">NOT AVAILABLE</span>
                     </SignSrow>
                   </div>
                   <div>
@@ -2401,10 +2449,8 @@ const KEYS_A: [string, string][] = [
   ["U", "wipers: off / int / lo / hi (rain auto-starts lo; also clickable beside the head unit)"],
   ["T", "time-lapse: ×150 → ×1500 → off"],
   ["V", "dashcam grade (the DASHCAM view forces its own, harder)"],
+  ["K", "field of view: narrow 58° → normal 67° → wide 80° → ultra 100° (settings has the full slider)"],
 ];
-/* K (test mode) is not in this list: it is a developer control, gated with
-   its settings row on lib/build.ts's SHOW_DEV_SETTINGS, and pushed in below
-   only where it actually works. */
 const KEYS_B: [string, string][] = [
   ["X", "minimap"],
   ["Z", "map zoom: close-up ↔ whole loop (or click the map)"],
@@ -2415,16 +2461,13 @@ const KEYS_B: [string, string][] = [
   [", / .", "previous / next piece"],
   ["ESC", "pause menu (music pauses with it)"],
 ];
-if (SHOW_DEV_SETTINGS) {
-  KEYS_B.splice(3, 0, ["K", "test mode: extra grip, brakes & power (also in settings; persists)"]);
-}
 const KEYS_MOUSE: [string, string][] = [
   ["DASH SCREEN", "click to switch panes — map / music / trip (desktop)"],
   ["ROOF CONSOLE", "click the overhead panel — interior light"],
 ];
 const KEYS_TOUCH: [string, string][] = [
   ["PUCKS", "steer · pedals · CAM · LTS (high beams) · HORN"],
-  ["⋯", "quick controls drawer: lights, map, mirrors, rain, wipers, time-lapse, dashcam FX, reset, photo mode"],
+  ["⋯", "quick controls drawer: lights, map, mirrors, rain, wipers, time-lapse, field of view, dashcam FX, reset, photo mode"],
   ["TOP EDGE", "tap the middle — interior light"],
   ["STEERING", "buttons / touch wheel / swipe slider — pick in settings"],
 ];

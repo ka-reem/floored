@@ -2336,28 +2336,20 @@ body .signRoot .paintDot::before {
 }
 
 /* ---------- pause ---------- */
-.sign-post {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(50% - 348 * var(--su));
-  width: calc(18 * var(--su));
-  background: linear-gradient(90deg, var(--steel-hi), var(--steel-dark));
-  pointer-events: none;
-}
-.sign-post-stub {
-  position: absolute;
-  left: 100%;
-  width: calc(30 * var(--su));
-  height: calc(12 * var(--su));
-  background: var(--steel-fixture);
-}
-.sign-post-stub.t {
-  top: calc(150 * var(--su));
-}
-.sign-post-stub.b {
-  top: calc(700 * var(--su));
-}
+/* The mounting post is GONE. `.sign-post` was a viewport-height 18su column of
+   steel gradient at `left: 50% - 348su` — 20su to the left of the 620su board,
+   running edge to edge, top to bottom. It only reads as a post if you already
+   know it is one: at the 1440x900 design frame it is 900px of pale line for a
+   620px board, and the taller the window the worse the ratio gets. In a
+   portrait window (1774x1800) it is 1800px of line beside a 619px board, and
+   what a player sees is a single thin blue-grey vertical line running the whole
+   height of the frozen frame, passing behind the PAUSED plate, with the
+   backdrop reading darker on its left than on its right. That is the "weird
+   blue line" on the paused page, reported more than once. Nothing draws it but
+   this rule, so this rule is what went.
+   Deleted rather than trimmed to the board: the two 30x12su stubs that were
+   supposed to sell it as a mount are 5px nubs hidden under the plate's own
+   edge, so the element never paid for the line it costs. */
 .sign-note {
   margin-left: auto;
   flex-shrink: 0;
@@ -2490,7 +2482,19 @@ a.sign-plate-btn {
   background: radial-gradient(80% 55% at 50% 66%, #101528 0%, #080b16 55%, var(--sign-bg) 100%);
   font-family: var(--font-sign);
   color: var(--sign-ink);
-  overflow: hidden;
+  /* was overflow:hidden. html/body are overflow:hidden and this is a fixed
+     inset:0 layer, so anything that did not fit was simply gone — no scroll
+     anywhere on the page to reach it. The board caps itself below and the
+     rows scroll inside it, so this is the last resort: a viewport too short
+     even for the header and the bar. `safe center` matters — a plain centred
+     flex column puts its overflow above the scroll origin, i.e. permanently
+     out of reach, which is exactly how the shield went missing. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  justify-content: center;
+  justify-content: safe center;
 }
 .loadRoot.signLoad::before {
   content: none;
@@ -2560,9 +2564,25 @@ a.sign-plate-btn {
   /* .loadRoot centres its column; the toll gantry above is absolute */
   margin: 0 auto;
   padding-bottom: 0;
+  /* the board is bounded by the screen, not by its own content: whatever the
+     WHILE YOU WAIT panel grows to, the stack stops at the visible viewport
+     (.loadRoot is 100dvh) and the overflow becomes a scroll inside .loadSet
+     rather than rows falling off the bottom edge */
+  max-height: 100%;
+  min-height: 0;
 }
+/* Header, rule, bar, status and caption are fixed furniture; .loadSet is the
+   only part allowed to give up height, so the thing that says "the game is
+   loading" is never what scrolls away. */
 .sign.loadboard {
   padding-bottom: calc(20 * var(--su));
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+}
+.sign.loadboard > * {
+  flex: 0 0 auto;
 }
 /* the legacy .loadTitle/.loadJp rules (pink JP, wide tracking) lose to these */
 .sign.loadboard .sign-title-jp {
@@ -2868,6 +2888,39 @@ body.touch .tc.pressed,
 .qdRow.pressed .qdLabel i {
   color: #ffd280;
 }
+
+/* A quick-control that is present but held back for the beta (RAIN, WIPERS).
+   It keeps its place in the list so the player can see the game has the
+   feature, and reads NOT AVAILABLE instead of a state. Dimmed rather than
+   hidden, no border on the chip so it does not look like a pressable state,
+   and the label size is dropped a step because "NOT AVAILABLE" is three times
+   the width of "AUTO" and would otherwise push the row's label off a 390px
+   phone. It carries no pointer handler (see QuickDrawer), so :active never
+   applies to it and the two rules above cannot reach it. */
+.qdRow.locked {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* A destination row on the home board that is present but held back (RIVAL).
+   It is a real disabled <button>, so it stays in the tab order's shape and
+   keeps its name; this just stops it looking pressable. The note carries the
+   NOT AVAILABLE caption. */
+.sign-row.na,
+.sign-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.sign-row:disabled:hover {
+  background: none;
+}
+.qdState.na {
+  border-color: transparent;
+  background: none;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
 /* Narrow phones (≤420): the HORN puck used to sit at right:168, which on a
    390px screen is x 166–222 — 12px over the right steer puck (x 104–178).
    Stack it above LTS instead: the CAM/LTS/HORN column under the right
@@ -3134,9 +3187,6 @@ body.touch .tc.pressed,
     font-size: 11px;
   }
   .sign-note {
-    display: none;
-  }
-  .sign-post {
     display: none;
   }
   .sign-plate-btn {
@@ -3566,9 +3616,6 @@ body.touch .tc.pressed,
   .sign-note {
     display: none;
   }
-  .sign-post {
-    display: none;
-  }
   .sign-credit {
     grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
     gap: 2px 12px;
@@ -3741,6 +3788,19 @@ body.touch .tc.pressed,
   padding-top: calc(20 * var(--su));
   border-top: calc(3 * var(--su)) solid var(--sign-rule);
   text-align: left;
+  /* shrink-only (0 1), so on a tall screen the panel is exactly as tall as
+     its rows and nothing about the desktop board moves; on a phone it takes
+     whatever is left under the progress bar and scrolls the rest. The floor
+     keeps it from collapsing to a sliver on a landscape phone — past that
+     .loadRoot's own scroll takes over. */
+  flex: 0 1 auto;
+  min-height: 72px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  /* clear of the home indicator when the last row lands at the bottom */
+  padding-bottom: calc(6 * var(--su) + env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: calc(12 * var(--su));
   /* the board is already up when this appears — arrive, do not pop */
   animation: loadSetIn 320ms ease-out both;
 }
@@ -3846,5 +3906,126 @@ body.touch .tc.pressed,
   .signLoad .loadSet .sign-sval {
     width: 100%;
     min-width: 0;
+  }
+}
+
+/* SHORT BOARD. The visible viewport on a phone is the device height MINUS the
+   browser chrome — ~664px in Chrome on an iPhone 14, ~553px on an SE — and
+   WHILE YOU WAIT now carries six or seven rows from the first frame instead of
+   four after a delay. Rather than a second layout, this is the same
+   compression the width queries already do, applied on the axis that actually
+   ran out. Every row stays; what shrinks is the furniture around them, so on
+   the common phones nothing has to be scrolled to at all. */
+@media (max-height: 700px) {
+  .sign-stack.load {
+    margin-top: 0;
+  }
+  .sign.loadboard {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .sign.loadboard .sign-head {
+    gap: 10px;
+    padding-top: 0;
+  }
+  .sign.loadboard .sign-shield {
+    width: 44px;
+    height: 40px;
+    border-width: 3px;
+  }
+  .sign.loadboard .sign-shield-code {
+    font-size: 17px;
+  }
+  .sign.loadboard .sign-title-jp {
+    font-size: 12px;
+  }
+  .sign.loadboard .sign-head .sign-title {
+    font-size: 26px;
+    margin-top: 0;
+  }
+  .sign.loadboard .sign-rule {
+    margin-top: 10px;
+  }
+  .signLoad .loadBar {
+    height: 20px;
+    margin-top: 10px;
+  }
+  .signLoad .loadStatus {
+    margin-top: 8px;
+  }
+  .signLoad .loadCap {
+    margin-top: 8px;
+  }
+  .signLoad .loadSet {
+    margin-top: 10px;
+    padding-top: 10px;
+  }
+  .signLoad .loadSetHead {
+    margin-bottom: 4px;
+  }
+  .signLoad .loadSet .sign-srow {
+    gap: 3px;
+    padding: 4px 0;
+    min-height: 0;
+  }
+  .signLoad .loadSet .sign-srow .name {
+    font-size: 13px;
+  }
+  .signLoad .loadSet .sign-seg > * {
+    padding-block: 6px;
+  }
+  .signLoad .loadSet .sign-slider {
+    height: 34px;
+  }
+}
+/* Shorter still (iPhone SE, small Android): the caption under the bar is the
+   one thing on this board that is prose, so it is what goes. The header, the
+   bar and every settings row stay. */
+@media (max-height: 600px) {
+  .signLoad .loadCap {
+    display: none;
+  }
+  .sign.loadboard .sign-head .sign-title {
+    font-size: 22px;
+  }
+  .sign.loadboard .sign-shield {
+    width: 38px;
+    height: 34px;
+  }
+  .sign.loadboard .sign-shield-code {
+    font-size: 15px;
+  }
+  .signLoad .loadBar {
+    height: 18px;
+  }
+  .signLoad .loadSet .sign-srow {
+    padding: 3px 0;
+  }
+  .signLoad .loadSet .sign-seg > * {
+    padding-block: 5px;
+  }
+}
+/* TWO COLUMNS (desktop, landscape phone). Above 720px wide the panel keeps
+   its two-column grid, and .sign-seg is flex-shrink:0 by design — so a
+   four-stop control took its natural width and ran past its half of the
+   board: at 1440x900 the CAMERA row's HOOD was clipped by the edge of the
+   sign, and at 844x390 it printed over the TRAFFIC label beside it. Inside
+   this panel the segment shares its row: it gives up padding first, and .sign-seg's own
+   overflow:hidden keeps anything left inside its border instead of over the
+   neighbour. */
+@media (min-width: 721px) {
+  .signLoad .loadSet .sign-srow .ctl {
+    min-width: 0;
+  }
+  .signLoad .loadSet .sign-seg {
+    min-width: 0;
+    flex-shrink: 1;
+  }
+  .signLoad .loadSet .sign-seg > * {
+    min-width: 0;
+    flex-shrink: 1;
+    justify-content: center;
+    padding-inline: 6px;
+    letter-spacing: 0.04em;
   }
 }

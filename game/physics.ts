@@ -263,6 +263,133 @@ try {
   /* non-browser (SSR, tests) — the sim imports the object directly */
 }
 
+/* ---- BARRIER CONTACT --------------------------------------------------
+   How a contact with a solid — a parapet, a pier, a building — is resolved.
+   The numbers live here rather than in collide.ts because collide.ts cannot
+   be compiled on its own (it drags in the whole world build), and this is
+   the one part of a crash a bench has to be able to drive directly:
+   test/barrier-bounce-sim.mjs imports THIS object, so the table it prints
+   is the shipping curve and cannot go stale.
+
+   The three terms and why each one exists:
+
+   `bounce(vn)` — RESTITUTION, as a function of the CLOSING SPEED ALONG THE
+   WALL NORMAL. It used to be a flat 0.07 (collide.ts reflected with a
+   hardcoded `* 1.07` at every contact site), which is wrong at both ends: a
+   hard hit barely came off the wall, and every gentle kerb of a barrier got
+   the same 7% trampoline. So:
+
+     - below `dead` (1.1 m/s ≈ 4 km/h of closing speed) it is exactly ZERO.
+       That is the graze: the car scrubs along the wall and stays on it,
+       which is what a driver leaning on a barrier expects. This dead zone
+       is the most important number in the block — a restitution that is
+       merely *small* at low closing speed still makes a car hunting along a
+       wall chatter off it, and chatter reads as a bug.
+     - it rises on a smoothstep to `peak` (0.42) at `full` (7 m/s ≈ 25 km/h
+       of closing speed), which is the hit you feel.
+     - and past `soft` (13 m/s) it FALLS again, toward `high` (0.23) by
+       `crush` (30 m/s). Not a safety fudge: it is what a real structure
+       does. Past the point where sheet metal and a concrete parapet start
+       deforming, the energy goes into the crush and less of it comes back.
+       It also happens to be what stops a 150 km/h broadside firing the car
+       across the deck. The fall is sized so the REBOUND SPEED still rises
+       with the hit — it reaches `capOut` and stays there rather than dipping
+       back down, which would have made an 90 km/h hit come off the wall
+       softer than a 70 km/h one.
+
+   `capOut` is the belt to those braces: whatever the curve says, the car
+   never leaves a wall faster than 6 m/s along the normal. The deck is ~18 m
+   wide, so that is a bounce the driver has most of a second to catch, and it
+   can never carry the car into the opposite parapet in one hop.
+
+   `scrub(vn)` — how much of the car's WHOLE velocity a frame of contact
+   costs. This is the "car gets stuck on the barrier" term. It was a flat
+   0.965 on any contact, every frame, regardless of how gently the car was
+   touching: a 60 fps second of leaning on a wall left 12% of the car's
+   speed, and at 120 Hz, 1.4%. A car does not stop dead because it is
+   touching a wall; it scrubs paint. So the loss now scales with the same
+   closing speed the bounce does — 0.4%/frame for a car merely resting
+   against the barrier, up to 6%/frame for a real impact — and the caller
+   normalises it to a 60 Hz frame, so a 120 Hz display no longer scrubs
+   twice as hard as a 60 Hz one did.
+
+   `yawKeep(vn)` — the same story for yaw rate, which was a flat 0.65 a
+   frame. That is what stopped the player steering off the wall at all: two
+   frames of contact and the car had 42% of its yaw rate left, so it just
+   lay there. A hard hit still gets heavy yaw damping — that is what keeps a
+   barrier strike from becoming an unrecoverable spin at 150 km/h — while a
+   graze now keeps essentially all of it.
+
+   Live on the console as `window.__wallBounce`. */
+export const WALL = {
+  dead: 1.1,
+  full: 7.0,
+  peak: 0.42,
+  soft: 13.0,
+  crush: 30.0,
+  high: 0.23,
+  capOut: 6.0,
+  /** Restitution for a contact closing at `vn` m/s along the wall normal. */
+  bounce(vn: number) {
+    if (vn <= this.dead) return 0;
+    if (vn < this.full) {
+      const t = (vn - this.dead) / (this.full - this.dead);
+      return this.peak * t * t * (3 - 2 * t);
+    }
+    if (vn <= this.soft) return this.peak;
+    const t = clamp((vn - this.soft) / (this.crush - this.soft), 0, 1);
+    return lerp(this.peak, this.high, t * t * (3 - 2 * t));
+  },
+  /** Outward normal speed a contact at `vn` actually leaves with, capped. */
+  rebound(vn: number) {
+    return Math.min(vn * this.bounce(vn), this.capOut);
+  },
+  /** Per-60Hz-frame velocity retention while in contact. */
+  scrub(vn: number) {
+    return 1 - clamp(0.004 + 0.0072 * vn, 0, 0.06);
+  },
+  /** Per-60Hz-frame yaw-rate retention while in contact. */
+  yawKeep(vn: number) {
+    return lerp(0.985, 0.62, clamp(vn / 6, 0, 1));
+  },
+};
+
+try {
+  (window as unknown as { __wallBounce?: unknown }).__wallBounce = WALL;
+} catch {
+  /* non-browser (SSR, tests) — the sim imports the object directly */
+}
+
+/* ---- SLOPE PROBE ------------------------------------------------------
+   Body pitch is `-atan(car.slope)` (engine.ts, updateCarVisual) and the POV
+   camera hangs off that, so `slope` is not a physics detail — it is where
+   the horizon is.
+
+   It is measured by sampling the surface 2.2 m ahead of and behind the car
+   and dividing by the 4.4 m between them. The trap: terrain.heightAt() has
+   no concept of "off the road". corridor.heightAt() returns null more than a
+   metre outside the pavement, and terrain.heightAt() then falls back to the
+   town's ground plane — which, on the elevated deck, is TEN METRES DOWN. So
+   a car jammed against a parapet at a big yaw angle puts its forward probe
+   out past the barrier, reads hF ≈ 0 against hB ≈ 10, and pegs `slope` at
+   the -0.35 clamp: 19 degrees of nose-down lean on a car that is standing on
+   flat concrete. That is the "leans downward" the owner reported. It is a
+   pure reporting bug — nothing in the handling model moved.
+
+   The guard: a probe more than `maxRise` metres away from the ground under
+   the car is not a grade, it is a different surface, so it is discarded and
+   the car's own ground height stands in for it. 1.2 m over a 2.2 m reach is
+   a 55% grade; the steepest real thing in this world is a ramp at ~5%
+   (RAMP_RUN drops the deck's 10 m over 190 m) and `slope` is clamped to 0.35
+   afterwards anyway, so nothing legitimate is within reach of it. */
+export const SLOPE_PROBE = { guard: true, maxRise: 1.2 };
+
+try {
+  (window as unknown as { __slopeProbe?: unknown }).__slopeProbe = SLOPE_PROBE;
+} catch {
+  /* non-browser (SSR, tests) — the sim imports the object directly */
+}
+
 export interface CarState {
   x: number; y: number; z: number; h: number;
   u: number; v: number; r: number; delta: number;
@@ -1052,8 +1179,14 @@ export function stepPhysics(
 
   /* terrain height + slope */
   const hHere = opts.heightAt(car.x, car.z, car.y);
-  const hF = opts.heightAt(car.x + fx * 2.2, car.z + fz * 2.2, car.y);
-  const hB = opts.heightAt(car.x - fx * 2.2, car.z - fz * 2.2, car.y);
+  let hF = opts.heightAt(car.x + fx * 2.2, car.z + fz * 2.2, car.y);
+  let hB = opts.heightAt(car.x - fx * 2.2, car.z - fz * 2.2, car.y);
+  /* A probe that has walked off the pavement reads the ground ten metres
+     below the deck, not a grade — see SLOPE_PROBE. Discard it. */
+  if (SLOPE_PROBE.guard) {
+    if (Math.abs(hF - hHere) > SLOPE_PROBE.maxRise) hF = hHere;
+    if (Math.abs(hB - hHere) > SLOPE_PROBE.maxRise) hB = hHere;
+  }
   car.slope = clamp((hF - hB) / 4.4, -0.35, 0.35);
   car.y += clamp(hHere - car.y, -14 * dt, 14 * dt);
   if (Math.abs(hHere - car.y) > 3) car.y = hHere;
