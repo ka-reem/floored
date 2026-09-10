@@ -11,7 +11,8 @@
 */
 import { readdirSync } from "node:fs";
 import path from "node:path";
-import sharp from "./node_modules/sharp/lib/index.js";
+import { createRequire } from "node:module";
+const sharp = createRequire(import.meta.url)("./node_modules/sharp");
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => {
