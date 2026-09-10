@@ -43,6 +43,7 @@ import { drawMiniMap, type MiniMapOpts } from "./minimap";
 import { track, trackThrottled, registerSuper } from "../lib/analytics";
 import { telemetryTick, telemetryDebug } from "../lib/telemetry";
 import { DEBUG_HOOKS } from "./debug";
+import type { Vision, VisionFlags } from "./vision";
 import { SHOW_DEV_SETTINGS } from "@/lib/build";
 import { showGfxFail } from "./gfxfail";
 import { npcModelUrl } from "./npcmodels";
@@ -1821,6 +1822,11 @@ export class Game {
       whole restore-on-exit guarantee is that the gameplay camera is not
       touched while this one is on duty. */
   private photoCam: THREE.PerspectiveCamera | null = null;
+  /** "What the AI sees" debug overlay (game/vision.ts). Only ever assigned
+      through the __neonx.vision handle below, which exists only under
+      DEBUG_HOOKS — so on a player's tab this stays null for the life of the
+      engine and the module is never even fetched. */
+  private vision: Vision | null = null;
   private photoPtrs = new Map<number, { x: number; y: number }>();
   /** captures completed this session (toBlob landed) — read by the smoke test */
   photoShots = 0;
@@ -2085,6 +2091,15 @@ export class Game {
     // only (game/debug.ts); test/lib/debug-url.mjs adds the flag for the scripts
     if (DEBUG_HOOKS) (window as any).__neonx = {
       game: this,
+      /* Debug overlay — see game/vision.ts. Loaded on first use so the
+         player bundle never carries it; every call resolves to the flags. */
+      vision: {
+        set: async (f: Partial<VisionFlags>) => (await this.visionGet()).set(f),
+        all: async (on = true) => (await this.visionGet()).all(on),
+        off: async () => (await this.visionGet()).all(false),
+        flags: () => this.vision?.flags ?? null,
+        probe: () => this.vision?.probe ?? null,
+      },
       teleport: (x: number, z: number, y?: number, h?: number, u?: number) => {
         this.car.x = x;
         this.car.z = z;
@@ -2677,6 +2692,27 @@ export class Game {
     // real per-stage milliseconds, for retuning LOAD_WEIGHTS against a device
     const dbg = (window as any).__neonx;
     if (dbg) dbg.loadTimings = timings;
+  }
+
+  /** The debug overlay, built on first ask (DEBUG_HOOKS callers only). */
+  private async visionGet(): Promise<Vision> {
+    if (this.vision) return this.vision;
+    const m = await import("./vision");
+    if (this.vision) return this.vision;
+    this.vision = new m.Vision({
+      scene: this.scene,
+      car: this.car,
+      cor: this.cor,
+      npcs: () => this.traffic?.npcs ?? [],
+      terrain: () => this.terrain,
+      world: () => this.world,
+      rig: () => this.rig ?? null,
+      size: () => ({
+        w: this.post.sceneRT.width, h: this.post.sceneRT.height,
+        aspect: (this.photo.on && this.photoCam ? this.photoCam : this.camera).aspect,
+      }),
+    });
+    return this.vision;
   }
 
   /** Run the render loop, paused, until `n` frames have been drawn. */
@@ -4234,6 +4270,7 @@ export class Game {
        and smokeTex is the same object on all 70 sprites. */
     this.rainFX?.dispose(this.scene);
     this.smokeFX?.dispose(this.scene);
+    this.vision?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     delete (window as any).__neonx;
@@ -6704,6 +6741,8 @@ export class Game {
        Zero at night; this is the day pass's one hook into the fleet. */
     this.sunDirW.copy(this.sun.position).sub(this.sun.target.position).normalize();
     setNpcDaylight(this.dayFactor(), this.sunDirW, cam);
+    // debug overlay (null on every player tab — see `vision`)
+    this.vision?.update();
     this.renderer.setRenderTarget(this.post.sceneRT);
     /* No explicit clear: renderer.render() clears the bound target itself
        while autoClear is on (three's WebGLBackground.render does it before
