@@ -79,7 +79,8 @@ const FADE = 0.15;
 const esc = (s) => String(s)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;").replace(/'/g, "&apos;");
-const textW = (s, size, face) => s.length * size * (face === "Anton" ? 0.44 : 0.52);
+// Anton measured at 0.41 em/char off the first encodes (the slides use 0.44)
+const textW = (s, size, face) => s.length * size * (face === "Anton" ? 0.41 : 0.52);
 function wrap(text, size, face, maxW) {
   const words = String(text).split(/\s+/).filter(Boolean);
   const lines = [];
@@ -122,7 +123,7 @@ function textLayer({ text, size, face, y, scrim = 0.62, stroke = 8, color = "#ff
     safe box, body lines in its lower third; `y` overrides either. */
 async function captionPng(c, file) {
   const hook = (c.style || "body") === "hook";
-  const size = c.size ?? (hook ? 96 : 60);
+  const size = c.size ?? (hook ? 96 : 56);
   const face = c.face || "Anton";
   const lines = wrap(c.text, size, face, SAFE.w - 60).length;
   const blockH = lines * Math.round(size * 1.2) + Math.round(size * 0.16);
@@ -175,8 +176,9 @@ async function assemble({ name, dir, framesDir, fps, captureFps, dur, captions, 
     const x = 0.5;
     outDur = dur - x;
     chain.push(`[${cur}]split[la][lb]`);
-    chain.push(`[la]trim=start=${x},setpts=PTS-STARTPTS[la1]`);
-    chain.push(`[lb]trim=end=${x},setpts=PTS-STARTPTS[lb1]`);
+    // xfade insists on a constant frame rate, which a trim'd graph no longer declares
+    chain.push(`[la]trim=start=${x},setpts=PTS-STARTPTS,fps=${fps}[la1]`);
+    chain.push(`[lb]trim=end=${x},setpts=PTS-STARTPTS,fps=${fps}[lb1]`);
     chain.push(`[la1][lb1]xfade=transition=fade:duration=${x}:offset=${(dur - 2 * x).toFixed(3)}[lx]`);
     cur = "lx";
   }
@@ -191,7 +193,9 @@ async function assemble({ name, dir, framesDir, fps, captureFps, dur, captions, 
     args.push("-framerate", String(fps), "-loop", "1", "-t", String(outDur), "-i", png);
     const idx = args.filter((a) => a === "-i").length - 1;
     const fo = Math.max(t0, t1 - FADE);
-    chain.push(`[${idx}:v]format=rgba,fade=t=in:st=${t0}:d=${FADE}:alpha=1,fade=t=out:st=${fo.toFixed(3)}:d=${FADE}:alpha=1[c${i}]`);
+    // a caption that opens the clip is up on frame 0 — the poster is frame 0
+    const fin = t0 > 0 ? `fade=t=in:st=${t0}:d=${FADE}:alpha=1,` : "";
+    chain.push(`[${idx}:v]format=rgba,${fin}fade=t=out:st=${fo.toFixed(3)}:d=${FADE}:alpha=1[c${i}]`);
     chain.push(`[${cur}][c${i}]overlay=0:0:format=auto:enable='between(t,${t0},${t1})'[v${i}]`);
     cur = `v${i}`;
   }
