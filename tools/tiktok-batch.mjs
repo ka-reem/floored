@@ -17,7 +17,7 @@
    Output: <out>/<id>/slide-NN.png + caption.txt, one contact sheet per set,
    and INDEX.md listing every set with its hook — the thing he reads first.
 
-   Usage: node tools/tiktok-batch.mjs --stories stories.json --out dir/
+   Usage: node tools/tiktok-batch.mjs --stories stories.json[,more.json] --out dir/
             [--frames dirA,dirB] [--only id1,id2]
 */
 import { execFileSync } from "node:child_process";
@@ -50,14 +50,22 @@ for (const d of FRAME_DIRS) {
 }
 console.log(`frame index: ${frames.length} frames from ${FRAME_DIRS.length} dirs`);
 
+/* Global usage counter across the WHOLE run. The first 44 sets were built
+   with per-set no-repeat only, and a reuse audit found 27 distinct frames in
+   44 sets with hero-toll-plaza.png in 22 of them — every set different, the
+   feed identical. So a query now picks the matching frame used in the FEWEST
+   sets so far (per-set no-repeat still wins), which spreads a bigger library
+   evenly the moment it exists. */
+const gUse = new Map();
 function resolve(query, used) {
   if (!query.startsWith("@")) return query;
   const want = query.slice(1).toLowerCase().split(/\s+/).filter(Boolean);
   const hits = frames.filter((fr) => want.every((w) => fr.tags.some((t) => t.includes(w))));
-  const fresh = hits.filter((h) => !used.has(h.file));
-  const pick = (fresh.length ? fresh : hits)[0];
+  const pool = hits.filter((h) => !used.has(h.file));
+  const pick = (pool.length ? pool : hits).sort((a, b) => (gUse.get(a.file) ?? 0) - (gUse.get(b.file) ?? 0))[0];
   if (!pick) throw new Error(`no frame matches "${query}"`);
   used.add(pick.file);
+  gUse.set(pick.file, (gUse.get(pick.file) ?? 0) + 1);
   return pick.file;
 }
 
@@ -74,7 +82,9 @@ async function sheet(dir, files, out) {
 }
 
 /* ---------- run ---------- */
-const stories = JSON.parse(readFileSync(STORIES, "utf8"));
+/* --stories a.json,b.json — one run over every story file, so the global
+   usage counter sees the whole batch, not the last file */
+const stories = STORIES.split(",").flatMap((f) => JSON.parse(readFileSync(f, "utf8")));
 const only = ONLY ? new Set(ONLY.split(",")) : null;
 const index = ["# Overnight sets\n", "| set | angle | slides | hook |", "|---|---|---|---|"];
 let made = 0, failed = 0;
