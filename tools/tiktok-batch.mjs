@@ -85,7 +85,18 @@ for (const st of stories) {
   try {
     spec = {
       caption: st.caption, hashtags: st.hashtags,
-      slides: st.slides.map((s) => ({ ...s, image: resolve(s.img ?? s.image, used) })),
+      slides: st.slides.map((s) => {
+        const image = resolve(s.img ?? s.image, used);
+        /* DRIVER-VIEW FRAMES CROP FROM THE TOP. A dashcam/cockpit/hood frame is
+           half dashboard: cover-cropping it from the centre keeps the wheel
+           and the headlight bloom and throws away the windscreen — the one
+           part with a road in it. Anchoring at the top keeps the scene and
+           drops the speedo, which also removes the HUD leak. Orbit/drone/
+           chase frames are centred on the car and stay centred. */
+        const tags = path.basename(image).toLowerCase();
+        const driverView = /dashcam|cockpit|console|hood|tunnel-in|toll-plaza|pov/.test(tags) && !/orbit|drone|chase/.test(tags);
+        return { ...s, image, ...(driverView && !s.framePos ? { framePos: "top" } : {}) };
+      }),
     };
   } catch (e) { console.log(`  ✗ ${st.id}: ${e.message}`); failed++; continue; }
   const dir = path.join(OUT, st.id);
@@ -98,9 +109,16 @@ for (const st of stories) {
   const files = readdirSync(dir).filter((f) => /^slide-\d+\.png$/.test(f)).sort();
   await sheet(dir, files, path.join(dir, "sheet.png"));
   const hook = st.slides[0].hook ?? st.slides[0].body ?? "";
-  index.push(`| ${st.id} | ${st.angle ?? ""} | ${files.length} | ${hook} |`);
+  /* per-set meta, so INDEX.md can be rebuilt from every set on disk rather
+     than only the sets in THIS run — the batch is grown across several story
+     files overnight and an index that only knew the last file was useless */
+  writeFileSync(path.join(dir, "meta.json"), JSON.stringify({ id: st.id, angle: st.angle ?? "", hook, n: files.length }));
   console.log(`  ✓ ${st.id}  (${files.length})  ${hook.slice(0, 60)}`);
   made++;
+}
+for (const id of readdirSync(OUT).sort()) {
+  const m = path.join(OUT, id, "meta.json");
+  if (existsSync(m)) { const j = JSON.parse(readFileSync(m, "utf8")); index.push(`| ${j.id} | ${j.angle} | ${j.n} | ${j.hook} |`); }
 }
 writeFileSync(path.join(OUT, "INDEX.md"), index.join("\n") + "\n");
 console.log(`\n${made} sets made, ${failed} failed -> ${OUT}/INDEX.md`);
