@@ -47,33 +47,44 @@ const groups = {};
 for (const s of sets) (groups[s.angle.split(" ")[0] || "other"] ||= []).push(s);
 
 const html = `<title>Floored Content Night</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400&display=swap">
 <style>
-:root{--bg:#0b0d12;--ink:#e7ecf4;--mute:#8a94a8;--sod:#f0a94a;--edge:#232833}
-body{background:var(--bg);color:var(--ink);font-family:"Barlow","Helvetica Neue",Arial,sans-serif;margin:0;padding:24px 20px 80px}
-h1{font-family:"Barlow Condensed","Arial Narrow",sans-serif;font-size:44px;margin:0 0 4px;letter-spacing:.01em}
-.sub{color:var(--mute);font-family:ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:26px}
-h2{font-family:"Barlow Condensed",sans-serif;font-size:26px;text-transform:uppercase;letter-spacing:.04em;color:var(--sod);border-bottom:1px solid var(--edge);padding-bottom:6px;margin:44px 0 14px}
-.set{margin:0 0 30px}
-.set img{display:block;width:100%;max-width:1600px;border:1px solid var(--edge);background:#000}
-.meta{display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;margin:6px 0 8px}
-.id{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--mute)}
-.hook{font-family:"Barlow Condensed",sans-serif;font-size:24px;font-weight:600}
-.n{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--mute)}
-details{margin-top:6px}summary{cursor:pointer;color:var(--mute);font-size:13px}
-.cap{color:var(--mute);font-size:14px;max-width:70ch;line-height:1.5;margin:6px 0 0}
-.tags{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--sod)}
-.clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
-.clip img{width:100%;border:1px solid var(--edge)}
-.clip div{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--mute);margin-top:4px}
-.pick{display:inline-block;margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--mute)}
+:root{--bg:#f3f1ec;--panel:#ffffff;--ink:#17181c;--mute:#6b6f7a;--edge:#dcd8cf;--sod:#c8511f;--pill:#17181c;--pillink:#fff}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0b0d12;--panel:#12151c;--ink:#e9ecf2;--mute:#8a94a8;--edge:#242a36;--sod:#f0a94a;--pill:#e9ecf2;--pillink:#0b0d12}}
+:root[data-theme="dark"]{--bg:#0b0d12;--panel:#12151c;--ink:#e9ecf2;--mute:#8a94a8;--edge:#242a36;--sod:#f0a94a;--pill:#e9ecf2;--pillink:#0b0d12}
+body{background:var(--bg);color:var(--ink);font-family:"Archivo","Helvetica Neue",Arial,sans-serif;margin:0;padding-block:28px 90px;padding-inline:clamp(16px,3vw,40px)}
+h1{font-family:"Anton","Impact","Arial Narrow",sans-serif;font-weight:400;font-size:clamp(40px,7vw,72px);line-height:.95;margin:0;text-transform:uppercase;letter-spacing:.01em;text-wrap:balance}
+.sub{color:var(--mute);font-family:"JetBrains Mono",ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase;margin:12px 0 8px}
+.how{max-width:64ch;line-height:1.5;margin:0 0 28px;font-size:15px}
+.how b{color:var(--sod)}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 34px}
+nav a{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:12px;color:var(--ink);text-decoration:none;border:1px solid var(--edge);padding:6px 10px;border-radius:999px;background:var(--panel)}
+nav a:focus-visible,summary:focus-visible{outline:2px solid var(--sod);outline-offset:2px}
+h2{font-family:"Anton",sans-serif;font-weight:400;font-size:28px;text-transform:uppercase;letter-spacing:.02em;margin:44px 0 14px;display:flex;align-items:baseline;gap:12px}
+h2 .n{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--mute);letter-spacing:.06em}
+.clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
+.clip img{width:100%;aspect-ratio:9/16;object-fit:cover;display:block;border:1px solid var(--edge);background:#000}
+.clip div{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--mute);margin-top:6px}
+.set{margin:0 0 34px;padding:14px;background:var(--panel);border:1px solid var(--edge)}
+.set img{display:block;width:100%;max-width:1600px;background:#000}
+.meta{display:flex;gap:14px;align-items:baseline;flex-wrap:wrap;margin:0 0 10px}
+.id{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--pillink);background:var(--pill);padding:3px 8px}
+.hook{font-family:"Anton",sans-serif;font-size:22px;text-transform:uppercase;letter-spacing:.01em}
+.n{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--mute)}
+details{margin-top:10px}summary{cursor:pointer;color:var(--mute);font-size:13px}
+.cap{color:var(--ink);font-size:14px;max-width:70ch;line-height:1.55;margin:8px 0 0}
+.tags{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--sod);margin:6px 0 0}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 </style>
 <h1>Content night</h1>
-<div class="sub">${sets.length} slide sets · ${clips.length} clip posters · screenshot the slides you like, reply with the set ids</div>
-${clips.length ? `<h2>Videos (posters — the MP4s are in the scratchpad)</h2><div class="clips">${clips.map((c) => `<div class="clip"><img src="${c.img}" alt="${esc(c.name)}"><div>${esc(c.name)}</div></div>`).join("")}</div>` : ""}
-${Object.entries(groups).map(([g, list]) => `<h2>${esc(g)} <span class="n">· ${list.length}</span></h2>` + list.map((s) => `
+<div class="sub">${sets.length} slide sets · ${clips.length} clips · built ${new Date().toISOString().slice(0,16).replace("T"," ")}Z</div>
+<p class="how">Scroll, screenshot what you like, reply with the <b>set ids</b> (the black tags). Every set is 5–8 slides at 1080×1920; the captions and hashtags are under each strip. The clips are 7 s MP4s in the session scratchpad — the posters here are their first frame.</p>
+<nav>${clips.length ? '<a href="#clips">clips</a>' : ""}${Object.keys(groups).map((g) => `<a href="#g-${esc(g)}">${esc(g)}</a>`).join("")}</nav>
+${clips.length ? `<h2 id="clips">Clips <span class="n">· ${clips.length} · 7 s · 1080×1920</span></h2><div class="clips">${clips.map((c) => `<div class="clip"><img src="${c.img}" alt="${esc(c.name)}" loading="lazy"><div>${esc(c.name)}</div></div>`).join("")}</div>` : ""}
+${Object.entries(groups).map(([g, list]) => `<h2 id="g-${esc(g)}">${esc(g)} <span class="n">· ${list.length}</span></h2>` + list.map((s) => `
 <div class="set" id="${esc(s.id)}">
   <div class="meta"><span class="id">${esc(s.id)}</span><span class="hook">${esc(s.hook)}</span><span class="n">${s.n} slides · ${esc(s.angle)}</span></div>
-  <img src="${s.sheet}" alt="${esc(s.hook)}">
+  <img src="${s.sheet}" alt="${esc(s.hook)}" loading="lazy">
   <details><summary>caption + tags</summary><p class="cap">${esc(s.caption)}</p><p class="tags">${esc(s.tags)}</p></details>
 </div>`).join("")).join("")}
 `;
