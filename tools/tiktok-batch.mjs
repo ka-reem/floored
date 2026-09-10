@@ -109,7 +109,11 @@ for (const st of stories) {
           const h = Math.round(m.height * (driverView ? 0.55 : 0.93));
           crop = { left: 0, top, width: m.width, height: h };
         }
-        return { ...s, image, ...(crop ? { crop } : {}) };
+        /* a driver-view band is ~990px tall at source; stretching it to 1440
+           is a 1.45x upscale of an already-grainy dashcam grade. Cap it and
+           let the compositor's blurred fill carry the rest of the canvas. */
+        const frameH = s.frameH ?? (driverView ? 1100 : undefined);
+        return { ...s, image, ...(crop ? { crop } : {}), ...(frameH ? { frameH, frameY: s.frameY ?? 420 } : {}) };
       })),
     };
   } catch (e) { console.log(`  ✗ ${st.id}: ${e.message}`); failed++; continue; }
