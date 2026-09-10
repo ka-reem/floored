@@ -36,6 +36,8 @@ const URL = arg("url", "http://localhost:3530");
 const OUT = arg("out", path.join(process.cwd(), "test", "artifacts", "vision"));
 const ONLY = arg("only", "");
 const SETTLE = +arg("settle", 8000);
+/* 1.5 by default: 2x on this box under other lanes' browsers was ten minutes a frame */
+const DPR = +arg("dpr", 1.5);
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -52,13 +54,13 @@ const CITY = { kind: "lane", z: -300, lane: 0 }, DECK = { kind: "lane", z: -700,
 const TOLL = { kind: "lane", z: 1385, lane: 1 }, MTN = { kind: "lane", z: -1992, lane: -1 };
 const STATIONS = [
   /* ---- 1. hitboxes: city deck at night, every car boxed ---- */
-  { name: "city-hitboxes-chase", place: CITY, cam: 0, hour: 21.5, layers: L({ hitboxes: true }), pair: true,
+  { name: "city-hitboxes-chase", crowd: true, place: CITY, cam: 0, hour: 21.5, layers: L({ hitboxes: true }), pair: true,
     what: "Every car on the night deck wearing its real collision box (cyan). The faint magenta box is the old one that counted the door mirrors." },
-  { name: "city-hitboxes-cockpit", place: CITY, cam: 1, hour: 21.5, layers: L({ hitboxes: true }),
+  { name: "city-hitboxes-cockpit", crowd: true, place: CITY, cam: 1, hour: 21.5, layers: L({ hitboxes: true }),
     what: "Same boxes from the driver's seat — the traffic ahead framed in glowing wire." },
-  { name: "city-hitboxes-drone", place: CITY, orbit: { yaw: 1.1, pitch: 1.18, dist: 13 }, hour: 21.5, layers: L({ hitboxes: true }), pair: true,
+  { name: "city-hitboxes-drone", crowd: true, place: CITY, orbit: { yaw: 1.1, pitch: 1.18, dist: 13 }, hour: 21.5, layers: L({ hitboxes: true }), pair: true,
     what: "Straight down from above like a scanner: the boxes, the barrier walls in orange, the player in magenta." },
-  { name: "city-hitboxes-hood", place: CITY, cam: 2, hour: 21.5, layers: L({ hitboxes: true, labels: true }),
+  { name: "city-hitboxes-hood", crowd: true, extra: true, place: CITY, cam: 2, hour: 21.5, layers: L({ hitboxes: true, labels: true }),
     what: "Hood camera: each car's box carries its name and how many centimetres the mirrors used to add." },
 
   /* ---- 2. probes: the parapet lean, the 19.3-degree bug drawn ---- */
@@ -74,11 +76,11 @@ const STATIONS = [
     what: "BROKEN ON PURPOSE, from the side: the magenta line is the ground the car THINKS it is on. The deck is flat." },
 
   /* ---- 3. brain: the toll plaza, what every driver intends ---- */
-  { name: "toll-brain-dashcam", place: TOLL, cam: 3, hour: 20.5, layers: L({ brain: true }), pair: true,
+  { name: "toll-brain-dashcam", crowd: true, place: TOLL, cam: 3, hour: 20.5, layers: L({ brain: true }), pair: true,
     what: "Dashcam at the toll plaza: an arrow from each car showing where it means to go, the gap it is keeping, and the zone where it panics." },
-  { name: "toll-brain-chase", place: TOLL, cam: 0, hour: 20.5, layers: L({ brain: true }),
+  { name: "toll-brain-chase", crowd: true, extra: true, place: TOLL, cam: 0, hour: 20.5, layers: L({ brain: true }),
     what: "Same plaza from behind: labels read each driver's lane, speed and mood (CRUISE / BRAKE / CHANGING)." },
-  { name: "toll-brain-drone", place: TOLL, orbit: { yaw: 0.8, pitch: 1.0, dist: 14 }, hour: 20.5, layers: L({ brain: true }), pair: true,
+  { name: "toll-brain-drone", crowd: true, place: TOLL, orbit: { yaw: 0.8, pitch: 1.0, dist: 14 }, hour: 20.5, layers: L({ brain: true }), pair: true,
     what: "From above: the plaza as the AI drivers see it — intentions as arrows, danger zones as orange boxes." },
 
   /* ---- 4. lanes: the mountain diverge, the road graph ---- */
@@ -90,11 +92,11 @@ const STATIONS = [
     what: "The bypass diverge: main lanes in cyan, the viaduct leaving in magenta, the split point ringed." },
 
   /* ---- 5. lights: the headlight footprint ---- */
-  { name: "deck-lights-dashcam", place: DECK, cam: 3, hour: 23.0, layers: L({ lights: true }), pair: true,
+  { name: "deck-lights-dashcam", crowd: true, place: DECK, cam: 3, hour: 23.0, layers: L({ lights: true }), pair: true,
     what: "Dashcam at night: the outline of where the two headlight cones actually land on the road, and every other car's beam pool." },
-  { name: "deck-lights-chase", place: DECK, cam: 0, hour: 23.0, layers: L({ lights: true }),
+  { name: "deck-lights-chase", crowd: true, extra: true, place: DECK, cam: 0, hour: 23.0, layers: L({ lights: true }),
     what: "From behind: two orange footprints thrown 130 m up the deck, the axis of each beam in cyan." },
-  { name: "deck-lights-drone", place: DECK, orbit: { yaw: 2.6, pitch: 0.75, dist: 14 }, hour: 23.0, layers: L({ lights: true }),
+  { name: "deck-lights-drone", crowd: true, place: DECK, orbit: { yaw: 2.6, pitch: 0.75, dist: 14 }, hour: 23.0, layers: L({ lights: true }),
     what: "High front three-quarter: the cones' edges cut against the road like a lighting plan." },
 
   /* ---- 6. signs: the audit made visible ---- */
@@ -104,19 +106,19 @@ const STATIONS = [
     what: "The Exit 4 countdown boards on the approach, each one's face normal drawn and scored." },
 
   /* ---- 7. terrain: the height grid ---- */
-  { name: "city-terrain-chase", place: CITY, cam: 0, hour: 21.5, layers: L({ terrain: true }),
+  { name: "city-terrain-chase", extra: true, place: CITY, cam: 0, hour: 21.5, layers: L({ terrain: true }),
     what: "A grid of ground samples around the car: cyan where the deck is, blue where it drops to the town below." },
   { name: "city-terrain-drone", place: CITY, orbit: { yaw: 2.1, pitch: 0.95, dist: 18 }, hour: 21.5, layers: L({ terrain: true }), pair: true,
     what: "From above: the deck as a floating wireframe sheet over the streets — this is the only 'ground' the physics knows." },
 
   /* ---- 8. everything on ---- */
-  { name: "city-everything-chase", place: CITY, cam: 0, hour: 21.5, layers: ALL,
+  { name: "city-everything-chase", crowd: true, place: CITY, cam: 0, hour: 21.5, layers: ALL,
     what: "Every layer at once — all the machinery the game runs under one night frame." },
-  { name: "city-everything-cockpit", place: CITY, cam: 1, hour: 21.5, layers: ALL,
+  { name: "city-everything-cockpit", crowd: true, place: CITY, cam: 1, hour: 21.5, layers: ALL,
     what: "Everything on, from the driver's seat." },
-  { name: "toll-everything-dashcam", place: TOLL, cam: 3, hour: 20.5, layers: ALL,
+  { name: "toll-everything-dashcam", crowd: true, place: TOLL, cam: 3, hour: 20.5, layers: ALL,
     what: "Everything on, dashcam, toll plaza — full noise." },
-  { name: "mtn-everything-drone", place: MTN, orbit: { yaw: 1.6, pitch: 1.05, dist: 16 }, hour: 18.6, layers: ALL,
+  { name: "mtn-everything-drone", extra: true, place: MTN, orbit: { yaw: 1.6, pitch: 1.05, dist: 16 }, hour: 18.6, layers: ALL,
     what: "Everything on, from above the mountain fork." },
 
   /* ---- 9. the bus scrape: broken and fixed ---- */
@@ -131,14 +133,16 @@ const STATIONS = [
   { name: "bus-scrape-fixed-drone", place: { kind: "bus", mode: "new" }, orbit: { yaw: 1.2, pitch: 1.15, dist: 11 }, hour: 21.5, layers: L({ hitboxes: true }),
     what: "After the fix, from above: the car is against the bus's real box, and the old box is drawn as a ghost." },
 ];
-const list = ONLY ? STATIONS.filter((s) => ONLY.split(",").some((k) => s.name.includes(k))) : STATIONS;
+/* `extra` stations only run with --all — the core set is already 33 frames */
+const base = has("all") ? STATIONS : STATIONS.filter((s) => !s.extra);
+const list = ONLY ? STATIONS.filter((s) => ONLY.split(",").some((k) => s.name.includes(k))) : base;
 
 /* ---------------------------------------------------------------- browser */
 const errors = [];
 const browser = await puppeteer.launch({
   executablePath: "/opt/pw-browsers/chromium",
   args: ["--no-sandbox", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"],
-  defaultViewport: { width: 1600, height: 900, deviceScaleFactor: 2 },
+  defaultViewport: { width: 1600, height: 900, deviceScaleFactor: DPR },
   protocolTimeout: 0,
   timeout: 180000,
 });
@@ -177,6 +181,16 @@ if (!has("hud")) {
   });
 }
 if (!has("grade")) await page.evaluate(() => { try { window.__neonx.game.grade = false; } catch {} });
+if (!has("hud")) await page.evaluate(() => {
+  /* whatever the id list above missed (the N badge): every positioned
+     element that does not contain the canvas goes transparent */
+  const cv = document.querySelector("canvas");
+  for (const el of document.body.querySelectorAll("*")) {
+    if (el === cv || el.contains(cv)) continue;
+    const cs = getComputedStyle(el);
+    if (cs.position === "fixed" || cs.position === "absolute") el.style.setProperty("opacity", "0", "important");
+  }
+});
 
 /* the pre-fix knobs, and their restore — same shape as barrier-hitbox-shots */
 await page.evaluate(() => {
@@ -202,6 +216,37 @@ const setPhoto = async (want) => {
   }
   return (await page.evaluate(() => !!window.__neonx.state().photo)) === want;
 };
+
+/* After a teleport the fleet reseeds 110 m+ ahead (traffic.ts reseedAhead),
+   which at night is an empty road for the first ten seconds. Pull a handful
+   of live expressway cars into the frame instead — same lanes, same brains,
+   they just start closer. s/laneK/offCur are what traffic.ts derives x/z
+   from every frame, so writing those is enough. */
+const crowd = async () => page.evaluate(() => {
+  const nx = window.__neonx, g = nx.game, cor = g.cor, car = g.car;
+  const zc = cor.zAt(car.x, car.z);
+  const n = cor.lanes(zc);
+  const lat = cor.latAt(car.x, car.z);
+  let pk = 0, best = 1e9;
+  for (let k = 0; k < n; k++) { const d = Math.abs(cor.laneOffset(k, zc) - lat); if (d < best) { best = d; pk = k; } }
+  const slots = [[14, 0], [24, 1], [40, -1], [52, 1], [66, 0], [30, 2], [84, -1], [100, 1]];
+  const pool = g.traffic.npcs.filter((x) => x.hw && !x.rival && x.route === -1 && !x.wreck);
+  pool.sort((a, b) => Math.hypot(b.x - car.x, b.z - car.z) - Math.hypot(a.x - car.x, a.z - car.z)); // farthest first
+  let i = 0;
+  for (const [ds, dk] of slots) {
+    const m = pool[i++]; if (!m) break;
+    const k = Math.min(n - 1, Math.max(0, pk + dk));
+    if (k === pk && ds < 20) continue;
+    const sz = zc + ds;
+    m.active = true; m.fade = 1; m.wreck = null; m.spin = 0;
+    m.s = sz; m.laneK = k; m.pendK = -1; m.offCur = m.offT = cor.laneOffset(k, sz);
+    const p = cor.worldOf(sz, m.offCur);
+    m.x = p.x; m.z = p.z; m.y = p.y; m.hVis = cor.pose(sz).h;
+    m.v = Math.max(8, Math.abs(car.u) * (0.85 + 0.1 * (i % 3)));
+    m.v0 = m.v;
+  }
+  return i;
+});
 
 const place = async (p) => {
   if (p.kind === "lane") {
@@ -272,6 +317,7 @@ for (const s of list) {
     nx.setTime(hour);
   }, { cam: s.cam, hour: s.hour, legacy: s.legacy });
   await place(s.place);
+  if (s.crowd) await crowd();
   await sleep(s.settle ?? SETTLE);
 
   if (s.orbit) {
