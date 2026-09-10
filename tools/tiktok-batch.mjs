@@ -60,9 +60,18 @@ const gUse = new Map();
 function resolve(query, used) {
   if (!query.startsWith("@")) return query;
   const want = query.slice(1).toLowerCase().split(/\s+/).filter(Boolean);
-  const hits = frames.filter((fr) => want.every((w) => fr.tags.some((t) => t.includes(w))));
+  /* SOFT words name a source or a framing, not a subject: "@hero toll plaza"
+     wants the toll, and a library frame of the toll approach is a better
+     pick than the 28th use of hero-toll-plaza.png. Exact matches still win
+     a tie, so a set keeps its intended picture when nothing fresher fits. */
+  const SOFT = new Set(["hero", "drone", "lib", "orbit", "plaza", "mouth"]);
+  const hard = want.filter((w) => !SOFT.has(w));
+  const match = (fr, ws) => ws.every((w) => fr.tags.some((t) => t.includes(w)));
+  const full = new Set(frames.filter((fr) => match(fr, want)).map((f) => f.file));
+  const hits = frames.filter((fr) => full.has(fr.file) || (hard.length && match(fr, hard)));
   const pool = hits.filter((h) => !used.has(h.file));
-  const pick = (pool.length ? pool : hits).sort((a, b) => (gUse.get(a.file) ?? 0) - (gUse.get(b.file) ?? 0))[0];
+  const rank = (f) => (gUse.get(f.file) ?? 0) * 2 + (full.has(f.file) ? 0 : 1);
+  const pick = (pool.length ? pool : hits).sort((a, b) => rank(a) - rank(b))[0];
   if (!pick) throw new Error(`no frame matches "${query}"`);
   used.add(pick.file);
   gUse.set(pick.file, (gUse.get(pick.file) ?? 0) + 1);
