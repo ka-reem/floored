@@ -43,8 +43,19 @@ if (VIDEO && existsSync(VIDEO)) {
   }
 }
 
+/* Story angles are free text ("CG open loop", "AI voice funny"); the page
+   groups them into the handful of buckets the owner actually chooses between. */
+const BUCKET = [
+  [/vision|debug|bug|confession|mistake|for humans/i, "AI vision & confessions"],
+  [/AI|prompt|build story|series/i, "AI voice"],
+  [/proof|format|flex|number|NUM|stat|payoff|size/i, "Proof & numbers"],
+  [/this or that|CONT|choose|cars|paint|camera|soundtrack|hot take/i, "This or that"],
+  [/CHAL|challenge|loop|rate|tag|comments|open loop|milestone/i, "Comment bait"],
+  [/POV|vibe|mood|minimal|relatable|REL|meme|identity|drone|visual|location|city|time-of-day|traffic|tease/i, "Vibe & world"],
+];
+const bucket = (a) => (BUCKET.find(([re]) => re.test(a)) || [null, "Other"])[1];
 const groups = {};
-for (const s of sets) (groups[s.angle.split(" ")[0] || "other"] ||= []).push(s);
+for (const s of sets) (groups[bucket(s.angle)] ||= []).push(s);
 
 const html = `<title>Floored Content Night</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo:wght@400;600&family=JetBrains+Mono:wght@400&display=swap">
