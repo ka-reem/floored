@@ -33,6 +33,7 @@
      {
        "name": "city-chase", "url": "http://localhost:3510",
        "fps": 30, "portrait": "native" | "cover" | "letterbox", "loop": true,
+       "renderH": 1440,      browser height to render at (default 1920; smaller = faster, upscaled)
        "car": "volvo" | "kaze",
        "shot": {
          "route": "corridor" | "mountain" | "bypass",
@@ -256,6 +257,21 @@ async function openWorld(browser, url, car, viewport) {
   console.log("  world:", JSON.stringify(info));
   if (!info.hasStep) throw new Error("engine has no __neonx.step — is this build older than the hook?");
   await page.addStyleTag({ content: HIDE_CSS });
+  /* …and everything else that is not the WebGL canvas or one of its
+     ancestors: the gear badge, the pause line, whatever chrome a later build
+     adds. visibility, not opacity — an opacity-0 layer still rasterises. */
+  await page.evaluate(() => {
+    const cv = [...document.querySelectorAll("canvas")].sort((a, b) => b.width * b.height - a.width * a.height)[0];
+    if (!cv) return;
+    const keep = new Set();
+    for (let e = cv; e; e = e.parentElement) keep.add(e);
+    for (const e of document.body.querySelectorAll("*")) {
+      if (keep.has(e) || cv.contains(e)) continue;
+      // siblings on the canvas's ancestor chain are chrome; descendants of the
+      // container that are not the canvas are chrome too
+      e.style.setProperty("visibility", "hidden", "important");
+    }
+  });
   return { page, errors };
 }
 
@@ -348,7 +364,9 @@ async function captureClip(page, clip, framesDir) {
   await placeCar(page, shot);
   /* settle at a coarse step: chase spring, streetlight pools, aurora */
   const settleN = Math.round((shot.settle ?? 2) / 0.1);
+  const ts = Date.now();
   for (let i = 0; i < settleN; i++) await page.evaluate(() => window.__neonx.step());
+  if (settleN) console.log(`  settled ${settleN} steps, ${((Date.now() - ts) / settleN / 1000).toFixed(1)} s/step`);
 
   let yaw0 = 0, yaw1 = 0;
   if (orbit) {
@@ -413,7 +431,7 @@ const ONLY = arg("only", "");
 const todo = ONLY ? clips.filter((c) => ONLY.split(",").includes(c.name)) : clips;
 if (has("loop")) for (const c of todo) c.loop = true;
 
-let browser = null, page = null, curCar = null, errors = [];
+let browser = null, page = null, curCar = null, curH = 0, errors = [];
 const results = [];
 for (const clip of todo) {
   const fps = clip.fps || 30;
@@ -433,15 +451,20 @@ for (const clip of todo) {
         protocolTimeout: 0, timeout: 180000,
       });
     }
-    if (!page || car !== curCar) {
+    if (!page || car !== curCar || (clip.renderH || H) !== curH) {
       if (page) await page.close();
+      /* renderH < 1920 renders smaller and lets ffmpeg upscale (lanczos) —
+         SwiftShader time goes with pixels, and a 1.33x upscale is invisible
+         after TikTok's own re-encode. Cover/letterbox render 16:9. */
+      const rh = clip.renderH || H;
       const vp = portrait === "native"
-        ? { width: W, height: H, deviceScaleFactor: 1 }
-        : { width: 1600, height: 900, deviceScaleFactor: 1.2 };
+        ? { width: Math.round(rh * 9 / 16 / 2) * 2, height: rh, deviceScaleFactor: 1 }
+        : { width: Math.round(rh * 16 / 9 / 2) * 2, height: rh, deviceScaleFactor: 1 };
       const url = clip.url || "http://localhost:3510";
       console.log(`  loading world (car=${car}, ${vp.width}x${vp.height}@${vp.deviceScaleFactor}) …`);
       ({ page, errors } = await openWorld(browser, url, car, vp));
       curCar = car;
+      curH = clip.renderH || H;
     }
     await captureClip(page, clip, framesDir);
   } else console.log(`  reusing ${have} frames`);
