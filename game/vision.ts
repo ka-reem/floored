@@ -67,12 +67,15 @@ export interface VisionFlags {
   every: number;
   /** line width, pixels */
   px: number;
+  /** free text pinned above the car — for a harness to stamp the frame
+      ("LEGACY WIDTHS", "GUARD OFF") without cropping it in afterwards */
+  note: string;
 }
 
 export const VISION_DEFAULTS: VisionFlags = {
   hitboxes: false, probes: false, lanes: false, brain: false,
   lights: false, signs: false, terrain: false,
-  oldW: true, labels: true, every: 2, px: 2.5,
+  oldW: true, labels: true, every: 2, px: 4, note: "",
 };
 
 /** Everything the overlay reads, handed in by the engine so this file never
@@ -262,7 +265,7 @@ class LabelPool {
     }
     return e;
   }
-  label(text: string, x: number, y: number, z: number, c: RGB, camAspect: number, hFrac = 0.032) {
+  label(text: string, x: number, y: number, z: number, c: RGB, camAspect: number, hFrac = 0.05) {
     let s = this.pool[this.used];
     if (!s) {
       const mat = new THREE.SpriteMaterial({ transparent: true, depthTest: false, depthWrite: false, sizeAttenuation: false });
@@ -326,7 +329,7 @@ export class Vision {
   }
   get any() {
     const f = this.flags;
-    return f.hitboxes || f.probes || f.lanes || f.brain || f.lights || f.signs || f.terrain;
+    return f.hitboxes || f.probes || f.lanes || f.brain || f.lights || f.signs || f.terrain || !!f.note;
   }
 
   /** Called by the engine once per rendered frame, before the scene render. */
@@ -344,6 +347,10 @@ export class Vision {
     if (f.lights) this.drawLights(size.aspect);
     if (f.signs) this.drawSigns(size.aspect);
     if (f.terrain) this.drawTerrain();
+    if (f.note) {
+      const { car } = this.ctx;
+      this.labels.label(f.note, car.x, car.y + 2.9, car.z, SODIUM, size.aspect, 0.071);
+    }
     this.zones.end();
     this.labels.end();
     for (const k of Object.keys(this.L) as (keyof typeof this.L)[]) {
@@ -383,7 +390,7 @@ export class Vision {
       if (f.labels && d < 70) {
         const mirror = ((n.W / 2 - n.cw) * 100).toFixed(0);
         this.labels.label(`${n.type.toUpperCase()} #${n.id}  cw ${n.cw.toFixed(2)}m  (mirror +${mirror}cm)`,
-          n.x, n.y + h + 0.5, n.z, c, aspect, 0.026);
+          n.x, n.y + h + 0.5, n.z, c, aspect, 0.044);
       }
     }
     /* barrier / building colliders within reach: the walls the car scrapes */
@@ -399,15 +406,17 @@ export class Vision {
           const b = col.aabbs[i];
           if (Math.abs((b.y0 + b.y1) / 2 - car.y) > 12) continue;
           const cx = (b.x0 + b.x1) / 2, cz = (b.z0 + b.z1) / 2;
-          L.box(cx, b.y0, cz, (b.x1 - b.x0) / 2, (b.z1 - b.z0) / 2, b.y1 - b.y0, 0, SODIUM, 0.55);
+          if (Math.hypot(cx - car.x, cz - car.z) > 70) continue;
+          L.box(cx, b.y0, cz, (b.x1 - b.x0) / 2, (b.z1 - b.z0) / 2, b.y1 - b.y0, 0, SODIUM, 0.3);
         }
         for (const i of col.nearbyObbs(x, z)) {
           if (seenO.has(i)) continue;
           seenO.add(i);
           const o = col.obbs[i];
           if (Math.abs((o.y0 + o.y1) / 2 - car.y) > 12) continue;
+          if (Math.hypot(o.x - car.x, o.z - car.z) > 70) continue;
           const yaw = Math.atan2(o.sin, o.cos);
-          L.box(o.x, o.y0, o.z, o.hw, o.hd, o.y1 - o.y0, yaw, SODIUM, 0.55);
+          L.box(o.x, o.y0, o.z, o.hw, o.hd, o.y1 - o.y0, yaw, SODIUM, 0.3);
         }
       }
   }
@@ -447,7 +456,7 @@ export class Vision {
           : off
             ? `${tag} PROBE  ${dh.toFixed(1)} m  ACCEPTED — guard off (bug)`
             : `${tag} PROBE  ${dh > 0 ? "+" : ""}${dh.toFixed(2)} m  ok`;
-        this.labels.label(txt, px, y0 + 0.9, pz, c, aspect, 0.028);
+        this.labels.label(txt, px, y0 + 0.9, pz, c, aspect, 0.048);
       }
     };
     ray(nx, nz, hF, offF, rejF, "FRONT");
@@ -460,7 +469,7 @@ export class Vision {
     L.ring(car.x, hHere + 0.02, car.z, 2.2, dim(WHITE, 0.4), 1, 32);
     if (this.flags.labels)
       this.labels.label(`PITCH ${slopeDeg.toFixed(1)}°  ${Math.abs(slopeDeg) > 8 ? "ON FLAT CONCRETE" : "reported"}`,
-        car.x - fx * 0.5, car.y + 2.3, car.z - fz * 0.5, Math.abs(slopeDeg) > 8 ? RED : MAGENTA, aspect, 0.036);
+        car.x - fx * 0.5, car.y + 2.3, car.z - fz * 0.5, Math.abs(slopeDeg) > 8 ? RED : MAGENTA, aspect, 0.061);
   }
 
   /* ------------------------------------------------------------------ */
@@ -497,11 +506,11 @@ export class Vision {
       const zl = zc + 28, n = cor.lanes(zl);
       for (let k = 0; k < n; k++) {
         const p = pt(zl, cor.laneOffset(k, zl));
-        this.labels.label(`LANE ${k}${k === n - 1 ? " (fast)" : k === 0 ? " (kerb)" : ""}`, p.x, p.y + 0.6, p.z, CYAN, aspect, 0.024);
+        this.labels.label(`LANE ${k}${k === n - 1 ? " (fast)" : k === 0 ? " (kerb)" : ""}`, p.x, p.y + 0.6, p.z, CYAN, aspect, 0.041);
       }
       const hw = cor.halfWidth(zl);
       const e = pt(zl + 10, cor.edgeLat(zl + 10, 1));
-      this.labels.label(`halfWidth ${hw.toFixed(2)} m · ${n} lanes · pitch ${cor.lanePitch(zl).toFixed(2)}`, e.x, e.y + 1.2, e.z, SODIUM, aspect, 0.024);
+      this.labels.label(`halfWidth ${hw.toFixed(2)} m · ${n} lanes · pitch ${cor.lanePitch(zl).toFixed(2)}`, e.x, e.y + 1.2, e.z, SODIUM, aspect, 0.041);
     }
     /* the route graph: bypass + mountain edges and every node in reach */
     const routes = this.ctx.world().routes;
@@ -587,7 +596,7 @@ export class Vision {
         const rx = fz, rz = -fx;
         L.seg(bx - rx * 0.8, n.y + 0.9, bz - rz * 0.8, bx + rx * 0.8, n.y + 0.9, bz + rz * 0.8, WHITE, 0.8);
         if (this.flags.labels && d < 70)
-          this.labels.label(`gap ${g.toFixed(0)} m · lead ${(n.pLead.v * 3.6).toFixed(0)} km/h`, (ax + bx) / 2, n.y + 1.2, (az + bz) / 2, WHITE, aspect, 0.022);
+          this.labels.label(`gap ${g.toFixed(0)} m · lead ${(n.pLead.v * 3.6).toFixed(0)} km/h`, (ax + bx) / 2, n.y + 1.2, (az + bz) / 2, WHITE, aspect, 0.037);
       }
       /* the windows traffic.ts judges the PLAYER in, in this car's frame */
       if (d < 70) {
@@ -600,7 +609,7 @@ export class Vision {
       if (this.flags.labels && d < 80) {
         const lane = n.hw ? `L${n.laneK}${n.pendK >= 0 ? "→L" + n.pendK : ""}` : "town";
         this.labels.label(`${n.type.toUpperCase()} #${n.id} ${lane}  ${(n.v * 3.6).toFixed(0)} km/h  ${state}`,
-          n.x, n.y + roofOf(n.type) + 0.9, n.z, c, aspect, 0.026);
+          n.x, n.y + roofOf(n.type) + 0.9, n.z, c, aspect, 0.044);
       }
     }
   }
@@ -656,7 +665,7 @@ export class Vision {
         if (this.flags.labels && k === 1) {
           const hi = a > 0.4 || sp.distance > 200;
           this.labels.label(`${hi ? "HIGH" : "LOW"} BEAM  cone ${(a * 2 * 180 / Math.PI).toFixed(0)}°  throw ${throwM.toFixed(0)} m  clip ${sp.distance} m  I ${sp.intensity.toFixed(0)}`,
-            ax.x, ax.y + 1.2, ax.z, SODIUM, aspect, 0.028);
+            ax.x, ax.y + 1.2, ax.z, SODIUM, aspect, 0.048);
         }
         k++;
       }
@@ -722,7 +731,7 @@ export class Vision {
       if (this.flags.labels && d < 200) {
         const face = b.face.t === "guide" ? `EXIT ${b.face.exitNo} ${b.face.en} ${b.face.dist ? b.face.dist + " m" : "gore"}` : b.face.t === "merge" ? `MERGE ${b.face.dist} m` : `WARN ${b.face.l2}`;
         this.labels.label(`${face}  ·  face·travel ${dot.toFixed(2)} ${ok ? "✓ faces driver" : "✗ WRONG WAY"}  ·  ${b.side < 0 ? "west" : "east"} post`,
-          cx, y1 + 0.9, cz, c, aspect, 0.026);
+          cx, y1 + 0.9, cz, c, aspect, 0.044);
       }
     }
   }
