@@ -143,6 +143,8 @@ await page.evaluate(({ car, paint, traffic }) => {
   Object.assign(p.settings, {
     preset: "high", tierOverride: "desktop",
     reflections: true, shadows: true, bloom: true, fxaa: true, traffic,
+    /* the clock must not drift between setTime and the shot */
+    autoTime: false,
   });
   p.carId = car;
   p.paintIx = paint;
