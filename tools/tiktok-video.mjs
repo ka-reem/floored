@@ -34,6 +34,7 @@
        "name": "city-chase", "url": "http://localhost:3510",
        "fps": 30, "portrait": "native" | "cover" | "letterbox", "loop": true,
        "renderH": 1440,      browser height to render at (default 1920; smaller = faster, upscaled)
+       "captureFps": 15,     step the sim at this rate and motion-interpolate up to fps (halves capture time)
        "car": "volvo" | "kaze",
        "shot": {
          "route": "corridor" | "mountain" | "bypass",
@@ -145,23 +146,27 @@ function run(cmd, args, label) {
 }
 
 /** Base filter: the captured frames → a 1080x1920 yuv420p stream. */
-function baseFilter(mode) {
-  if (mode === "cover") return `[0:v]scale=-2:${H}:flags=lanczos,crop=${W}:${H},format=yuv420p[base]`;
+function baseFilter(mode, pre) {
+  if (mode === "cover") return `[0:v]${pre}scale=-2:${H}:flags=lanczos,crop=${W}:${H},format=yuv420p[base]`;
   if (mode === "letterbox") return [
-    `[0:v]split[fa][fb]`,
+    `[0:v]${pre}split[fa][fb]`,
     `[fa]scale=${W}:-2:flags=lanczos[fg]`,
     `[fb]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=40:4,eq=brightness=-0.22:saturation=1.15[bg]`,
     `[bg][fg]overlay=(W-w)/2:(H-h)/2-160,format=yuv420p[base]`,
   ].join(";");
-  return `[0:v]scale=${W}:${H}:flags=lanczos,format=yuv420p[base]`;
+  return `[0:v]${pre}scale=${W}:${H}:flags=lanczos,format=yuv420p[base]`;
 }
 
-async function assemble({ name, dir, framesDir, fps, dur, captions, portrait, loopXfade }) {
+async function assemble({ name, dir, framesDir, fps, captureFps, dur, captions, portrait, loopXfade }) {
   const out = path.join(dir, `${name}.mp4`);
   const capDir = path.join(dir, `${name}.captions`);
   mkdirSync(capDir, { recursive: true });
-  const args = ["-y", "-hide_banner", "-loglevel", "error", "-framerate", String(fps), "-i", path.join(framesDir, "f%05d.jpg")];
-  const chain = [baseFilter(portrait)];
+  const cfps = captureFps || fps;
+  const args = ["-y", "-hide_banner", "-loglevel", "error", "-framerate", String(cfps), "-i", path.join(framesDir, "f%05d.jpg")];
+  /* captured below the output rate: motion-compensated interpolation up to
+     it, on the small frames (before the upscale) where it is cheapest */
+  const pre = cfps < fps ? `minterpolate=fps=${fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,` : "";
+  const chain = [baseFilter(portrait, pre)];
   let cur = "base";
   let outDur = dur;
   if (loopXfade) {
@@ -352,7 +357,7 @@ const AUTO_STEER = `(() => {
 
 async function captureClip(page, clip, framesDir) {
   const shot = clip.shot || {};
-  const fps = clip.fps || 30;
+  const fps = clip.captureFps || clip.fps || 30;
   const seconds = Math.min(15, Math.max(1, shot.seconds ?? 10));
   const N = Math.round(seconds * fps);
   const orbit = shot.photoOrbit || null;
@@ -425,6 +430,7 @@ async function captureClip(page, clip, framesDir) {
 const specRaw = JSON.parse(readFileSync(SPEC, "utf8"));
 const clips = (specRaw.clips || [specRaw]).map((c, i) => ({
   url: specRaw.url, fps: specRaw.fps, portrait: specRaw.portrait, car: specRaw.car, loop: specRaw.loop,
+  renderH: specRaw.renderH, captureFps: specRaw.captureFps,
   ...c, name: c.name || `clip${i + 1}`,
 }));
 const ONLY = arg("only", "");
@@ -435,15 +441,17 @@ let browser = null, page = null, curCar = null, curH = 0, errors = [];
 const results = [];
 for (const clip of todo) {
   const fps = clip.fps || 30;
+  const captureFps = clip.captureFps || fps;
   const portrait = clip.portrait || "native";
   const seconds = Math.min(15, Math.max(1, clip.shot?.seconds ?? 10));
-  const N = Math.round(seconds * fps);
+  const N = Math.round(seconds * captureFps);
   const framesDir = path.join(OUT, `${clip.name}.frames`);
   const have = existsSync(framesDir) ? readdirSync(framesDir).filter((f) => f.endsWith(".jpg")).length : 0;
-  console.log(`\n▶ ${clip.name}  ${seconds}s @ ${fps}fps  ${portrait}${clip.loop ? "  loop" : ""}`);
+  console.log(`\n▶ ${clip.name}  ${seconds}s @ ${fps}fps${captureFps !== fps ? ` (captured @ ${captureFps})` : ""}  ${portrait}${clip.loop ? "  loop" : ""}`);
   if (!(has("reuse") && have >= N)) {
-    rmSync(framesDir, { recursive: true, force: true });
     const car = clip.car || "volvo";
+    for (let attempt = 0; ; attempt++) try {
+    rmSync(framesDir, { recursive: true, force: true });
     if (!browser) {
       browser = await puppeteer.launch({
         executablePath: "/opt/pw-browsers/chromium",
@@ -467,9 +475,18 @@ for (const clip of todo) {
       curH = clip.renderH || H;
     }
     await captureClip(page, clip, framesDir);
+    break;
+    } catch (e) {
+      /* a tab that dies under memory pressure mid-load shows up as a detached
+         frame or a closed target; one relaunch is worth more than a report */
+      console.log(`  ✗ ${clip.name} attempt ${attempt + 1}: ${String(e.message || e).slice(0, 160)}`);
+      try { await browser?.close(); } catch {}
+      browser = null; page = null; curCar = null;
+      if (attempt >= 1) throw e;
+    }
   } else console.log(`  reusing ${have} frames`);
   const out = await assemble({
-    name: clip.name, dir: OUT, framesDir, fps, dur: seconds,
+    name: clip.name, dir: OUT, framesDir, fps, captureFps, dur: seconds,
     captions: clip.captions || [], portrait, loopXfade: !!clip.loop && !clip.shot?.photoOrbit,
   });
   if (!has("keep-frames")) rmSync(framesDir, { recursive: true, force: true });
