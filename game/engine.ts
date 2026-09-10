@@ -1977,6 +1977,12 @@ export class Game {
     override: null as Partial<DriverInput> | null,
     errors: [] as string[],
     frames: 0,
+    /** Frame-stepped capture (debug builds only — the setter lives on
+        __neonx). >0 makes loop() advance a VIRTUAL clock by exactly this much
+        per call and stop scheduling itself; __neonx.step() then runs one
+        frame at a time, so a box that takes seconds per frame can still
+        assemble a real-time 30 fps clip. 0 = the wall clock, as always. */
+    fixedDt: 0,
   };
 
   constructor(container: HTMLElement, profile: Profile, ui: UiBridge) {
@@ -2106,6 +2112,29 @@ export class Game {
         this.chaseRefOk = false;
       },
       setCam: (i: number) => (this.camMode = i % CAM_COUNT),
+      /* Frame-stepped capture — tools/tiktok-video.mjs. setFixedDt(1/30)
+         freezes the wall clock out of the loop; step() then advances and
+         draws exactly one frame per call. setFixedDt(0) re-arms the normal
+         rAF loop. setPerfMode(false) undoes the automatic PERFORMANCE MODE
+         drop, which a software renderer trips within seconds of loading and
+         which halves the resolution of everything captured after it. */
+      setFixedDt: (dt: number) => {
+        const was = this.debug.fixedDt;
+        this.debug.fixedDt = dt > 0 ? dt : 0;
+        if (was > 0 && !(dt > 0) && this.started) {
+          cancelAnimationFrame(this.raf);
+          this.last = performance.now() / 1000;
+          this.loop();
+        }
+      },
+      step: () => {
+        cancelAnimationFrame(this.raf);
+        this.loop();
+      },
+      setPerfMode: (on: boolean) => {
+        this.perfMode = !!on;
+        this.applySettings(this.settings);
+      },
       /* Both AudioContext states plus whether the gesture fallback is waiting —
          what test/audio-resume-check.mjs reads across a hide/show cycle. */
       audioState: () => ({
@@ -6520,9 +6549,13 @@ export class Game {
   /* ---------------- main loop ---------------- */
   private loop = () => {
     if (this.disposed) return;
-    this.raf = requestAnimationFrame(this.loop);
-    const t0 = performance.now(), now = t0 / 1000;
-    let dt = Math.min(now - this.last, 0.1);
+    /* debug.fixedDt (see its note): stepped, the loop does not re-arm and
+       `now` is a virtual clock, so every phase that reads it — blinkers,
+       aurora, traffic, the time of day — moves exactly one frame per call. */
+    const fixed = DEBUG_HOOKS && this.debug.fixedDt > 0 ? this.debug.fixedDt : 0;
+    if (!fixed) this.raf = requestAnimationFrame(this.loop);
+    const t0 = performance.now(), now = fixed ? this.last + fixed : t0 / 1000;
+    let dt = fixed ? fixed : Math.min(now - this.last, 0.1);
     this.last = now;
     this.debug.frames++;
     this.readInput(dt);
@@ -6767,6 +6800,7 @@ export class Game {
       this.photo.shot = false;
       this.captureShot();
     }
-    this.perfCheck(performance.now() - t0, dt);
+    // a stepped frame is slow by construction — it must not trip perf mode
+    if (!fixed) this.perfCheck(performance.now() - t0, dt);
   };
 }
