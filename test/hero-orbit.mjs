@@ -111,7 +111,7 @@ for (const [name, z, lane, hour, yaw, pitch, dist] of SHOTS) {
   const entered = await setPhoto(true);
   await sleep(900);
   /* the mode's own on-screen banner is chrome, not the game */
-  await page.addStyleTag({ content: `.photoHint, .photoBanner, [class*="photoHint"], [class*="photo-hint"] { opacity: 0 !important; }` });
+  await page.addStyleTag({ content: `#photoHint { opacity: 0 !important; }` });
   const ok = entered && await page.evaluate(({ yaw, pitch, dist }) => {
     /* engine.ts photoEnter(): `this.photo` IS the live rig — {on, yaw, pitch,
        dist, auto}. yaw is ABSOLUTE (it opens at car.h + PHOTO.yaw0), so the
