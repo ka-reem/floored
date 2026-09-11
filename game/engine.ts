@@ -120,6 +120,51 @@ const CLEAN_RUN = {
   flash: 1.4,
 };
 
+/** ENDLESS MODE — "you basically drive until you crash. Once you crash, your
+    points get reset to zero ... it's just gonna be based by distance. There
+    won't be any multipliers ... And then that's how you collect money as
+    well." (owner, 2026-09-11)
+
+    Three numbers and no more, because the mode deliberately has no other
+    rules yet — no multipliers, no combo, no risk bonus. Everything else it
+    needs already exists:
+
+    THE SCORE is `run.dist` — metres driven since the last real impact,
+    integrated once in statsUpdate off the same |u| and the same standing-
+    still floor the lifetime odometer uses. The endless panel shows it in
+    METRES (the owner's own unit for this: "based by distance", and a score
+    wants a number that moves), unlike the clean-run readout next to it,
+    which stays in the player's mi/km. Same metres, two formats, one source.
+
+    THE CRASH is CLEAN_RUN.impact — 5.0 m/s of closing speed along the contact
+    normal, walls, buildings and NPCs alike. It is NOT re-picked here on
+    purpose: that threshold is the one measured number in the game (see the
+    CLEAN_RUN block above — every scrape measured came in under 3.3, every
+    genuine impact over 7.7, and 5.0 sits in the empty gap between), and a
+    second crash rule would mean the readout and the score could disagree
+    about whether the player just crashed. One rule, one constant, one reset.
+
+    THE MONEY is the only new quantity, and it is deliberately NOT a score:
+    it accrues from metres driven and a crash never takes any of it away
+    ("anytime you crash your score resets" — the SCORE, not the bank). It is
+    also banked continuously rather than at the end of a run, so a closed tab
+    or a container restart mid-drive cannot cost a player what they drove for
+    (GameApp persists on pause, on exit, on tab-hide and on a slow timer). */
+const ENDLESS = {
+  /** currency per metre driven. ¥1 per 10 m: a 10 km drive pays ¥1,000 and a
+      good run is worth a four-figure number, which is the arcade shape the
+      owner asked for without needing decimals or a separate multiplier. Money
+      accrues whether or not the mode is switched on — free-roam metres are
+      still metres driven, and the owner drives free-roam too — so switching
+      ENDLESS on adds the score and the reset, never the earning. */
+  perMetre: 0.1,
+  /** seconds the endless panel wears .ez-reset after a crash. Longer than
+      CLEAN_RUN.flash: this readout is the mode's whole point, so the reset is
+      allowed to be an EVENT (the figure knocks out and settles back to 0)
+      rather than the corner readout's quiet dim. Still no banner, no toast. */
+  flash: 1.8,
+};
+
 /** WHICH HUD TREATMENT the clean-run readout wears. One line to swap; the
     three are rendered side by side in
     docs/handoff/reports/clean-distance.md.
@@ -135,6 +180,14 @@ const CLEAN_RUN = {
     the engine writes the same text and the same .run-reset / .run-blip
     classes whichever is on. */
 const RUN_HUD: "corner" | "speed" | "ghost" = "corner";
+
+/** Thousands-grouped integer, for the endless panel's three figures. Called
+    at HUD cadence (hudT, ~10 Hz) and only ever on a value that changed, so
+    the regex is nowhere near a per-frame path. */
+const group = (n: number) => {
+  const t = String(Math.max(0, Math.floor(n)));
+  return t.length > 3 ? t.replace(/\B(?=(\d{3})+(?!\d))/g, ",") : t;
+};
 
 /** What is left of the No Hesi loop: the near-miss STREAK, kept because two
     lifetime statistics are built on it (stats.nearMisses, stats.bestCombo)
@@ -1282,6 +1335,14 @@ export class Game {
       carId/seed/camMode. */
   get cleanRunDist() { return this.run.dist; }
   get cleanRunBest() { return this.run.best; }
+  /** ENDLESS MODE, same contract: the bank and the record as they stand right
+      now, for persist() to copy into the profile. `money` already includes
+      the total the profile was constructed with, so writing it back is
+      idempotent at any cadence. */
+  get money() { return this.ez.money; }
+  get bestDistance() { return this.ez.best; }
+  /** currency earned in THIS session only — the STATS board's session column */
+  get moneyEarned() { return this.ez.earned; }
   get tttTally() { return gameTally(); }
 
   /** This session's drive statistics, live — the STATS panel reads fields
@@ -1873,6 +1934,14 @@ export class Game {
       (the contact-normal closing speed that ended the last run) are what the
       headless checks read to prove the crash rule. */
   private run = { dist: 0, best: 0, flash: 0, resets: 0, lastImpact: 0 };
+  /** ENDLESS MODE state (see the ENDLESS block). `money` is the running bank
+      — the profile's stored total plus everything earned this session, so the
+      getter can be read back out at any cadence without double counting the
+      way lifetimeStats() can't. `best` is the furthest single run in metres,
+      seeded from the profile and only ever growing. `flash` is the post-crash
+      settle clock the panel reads, `earned` is this session's share of the
+      bank (the STATS board's SESSION column). */
+  private ez = { money: 0, best: 0, flash: 0, earned: 0 };
   /** Debug builds only: contact-normal closing speeds recorded inside
       simStep, so the crash threshold can be measured rather than guessed
       (see __neonx.state().impacts / clearImpacts). Bounded ring. */
@@ -2012,6 +2081,11 @@ export class Game {
     this.seed = profile.seed;
     this.camMode = profile.camMode;
     this.run.best = Number.isFinite(profile.cleanRunBest) ? profile.cleanRunBest : 0;
+    /* ENDLESS: loadProfile already scrubbed both to non-negative finite
+       numbers (and seeded bestDistance from cleanRunBest for a profile that
+       predates the mode), so these are straight copies. */
+    this.ez.money = profile.money;
+    this.ez.best = profile.bestDistance;
     // loadProfile scrubbed every field; the copy is what makes lifetimeStats()
     // idempotent (see statsSeed)
     this.statsSeed = { ...defaultLifetimeStats(), ...profile.stats };
@@ -2255,6 +2329,10 @@ export class Game {
            measurements: metres this run, the profile best, the settle clock
            and how many resets this session. */
         run: { ...this.run },
+        /* ENDLESS: the bank, the record, this session's earnings and the
+           post-crash settle clock — what a headless check reads to prove that
+           a crash zeroed run.dist and left ez.money alone. */
+        ez: { ...this.ez },
         /* Contact-normal closing speeds seen inside simStep since the last
            clearImpacts(): the hardest one, and the newest few hundred (the
            ring is bounded, so read impactMax for the peak). The raw material
@@ -6406,6 +6484,7 @@ export class Game {
   private runUpdate(dt: number, impact: number) {
     const r = this.run;
     r.flash = Math.max(0, r.flash - dt);
+    this.ez.flash = Math.max(0, this.ez.flash - dt);
     if (impact < CLEAN_RUN.impact) return;
     /* Already flashing = still the same wreck: a car folded into a barrier
        goes on generating contacts for a second or more, and re-arming the
@@ -6416,6 +6495,10 @@ export class Game {
     r.flash = CLEAN_RUN.flash;
     r.resets++;
     r.lastImpact = impact;
+    /* ENDLESS: the same reset, its own settle clock. NOTHING here touches
+       ez.money or ez.best — the run score is what a crash costs, and the bank
+       and the record are what the player keeps. */
+    this.ez.flash = ENDLESS.flash;
   }
 
   /** Drive statistics — see the STATS block. One in-place accumulator fed
@@ -6436,6 +6519,15 @@ export class Game {
          standing-still floor — see runUpdate, which owns only the reset. */
       this.run.dist += sp * dt;
       if (this.run.dist > this.run.best) this.run.best = this.run.dist;
+      /* ENDLESS rides the same integration a third time: the record is the
+         same metres the clean-run best counts, and the money is those metres
+         priced (ENDLESS.perMetre). Both are banked HERE, per frame, rather
+         than at the end of a run — a crash must never be able to cost money
+         that was already driven for. */
+      if (this.run.dist > this.ez.best) this.ez.best = this.run.dist;
+      const pay = sp * dt * ENDLESS.perMetre;
+      this.ez.money += pay;
+      this.ez.earned += pay;
     }
     if (this.combo.combo > st.bestCombo) st.bestCombo = this.combo.combo;
 
@@ -6525,6 +6617,44 @@ export class Game {
         } else if (enh.textContent !== "") {
           enh.textContent = "";
           enh.classList.remove("run-reset", "run-blip");
+        }
+      }
+      /* ENDLESS MODE panel — run score, personal best, bank. See the ENDLESS
+         block. The engine owns whether it is on screen (data-on, the same
+         contract the clean-run readout has with its setting) so the mode can
+         be switched from the home board, the settings panel or the loading
+         board without any of them having to know about this element; GameApp
+         only mounts it while playing.
+
+         Text is written only when it changes. The score turns over ~10x a
+         second at speed, the other two barely move. */
+      const eez = this.dom("ezHud");
+      if (eez) {
+        const on = this.settings.endless ? "1" : "0";
+        if (eez.dataset.on !== on) eez.dataset.on = on;
+        if (on === "1") {
+          const ezRun = this.dom("ezRun");
+          if (ezRun) {
+            const txt = group(this.run.dist);
+            if (ezRun.textContent !== txt) ezRun.textContent = txt;
+          }
+          const ezBest = this.dom("ezBest");
+          if (ezBest) {
+            const txt = group(this.ez.best);
+            if (ezBest.textContent !== txt) ezBest.textContent = txt;
+          }
+          const ezMoney = this.dom("ezMoney");
+          if (ezMoney) {
+            const txt = group(this.ez.money);
+            if (ezMoney.textContent !== txt) ezMoney.textContent = txt;
+          }
+          /* THE CRASH, and the one loud moment the mode has: the panel wears
+             .ez-reset for ENDLESS.flash seconds and the CSS knocks the score
+             out and lets it settle back from 0. Toggled rather than re-armed
+             so a car still grinding along a barrier cannot stutter it. */
+          const flashing = this.ez.flash > 0;
+          if (eez.classList.contains("ez-reset") !== flashing)
+            eez.classList.toggle("ez-reset", flashing);
         }
       }
       /* exit navigation hint */
