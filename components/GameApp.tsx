@@ -155,6 +155,11 @@ if (typeof window !== "undefined") void loadEngine();
     page that never goes idle — and a plain timer on Safari, which has no
     requestIdleCallback at all. */
 const IDLE_TIMEOUT_MS = 1200;
+
+/** How often the profile is written to localStorage WHILE DRIVING — the
+    endless bank's safety net (see the effect that uses it). The most a player
+    can lose to a closed tab, in milliseconds. */
+const BANK_SAVE_MS = 20000;
 function whenIdle(fn: () => void) {
   const ric = (window as unknown as {
     requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void;
@@ -429,6 +434,14 @@ export default function GameApp() {
     p.seed = g.seed;
     p.camMode = g.camMode;
     p.cleanRunBest = g.cleanRunBest;
+    /* ENDLESS: the bank and the record. Both getters already fold in what the
+       profile was constructed with, so this is idempotent however often it
+       runs — which matters, because unlike everything else here these are
+       also written on a timer while the player drives (see the effect below):
+       money that was driven for must survive a closed tab, not just a clean
+       exit through the menu. */
+    p.money = g.money;
+    p.bestDistance = g.bestDistance;
     /* Lifetime totals: construction-time seed + this session, recomputed on
        every call (see Game.lifetimeStats) — writing it repeatedly is safe. */
     p.stats = g.lifetimeStats();
@@ -541,6 +554,26 @@ export default function GameApp() {
     markRun();
     persist();
   }, [persist, markRun, ensureGame]);
+  /* ENDLESS on/off from the home board. Writes through the Game when there is
+     one (applySettings is what the engine's own HUD reads) and through the
+     restored profile when the engine chunk is still in the air, so the row
+     works on the very first paint — the same fallback the board's car/paint
+     line already makes. */
+  const endlessOn = !!(gameRef.current
+    ? gameRef.current.settings.endless
+    : profileRef.current?.settings.endless);
+  const toggleEndless = () => {
+    const game = gameRef.current, prof = profileRef.current;
+    if (game) {
+      game.settings.endless = !game.settings.endless;
+      game.applySettings(game.settings);
+      persist();
+    } else if (prof) {
+      prof.settings.endless = !prof.settings.endless;
+      saveProfile(prof);
+    }
+    rerender();
+  };
   const resume = () => {
     gameRef.current?.setRunning(true);
     setScreen("playing");
@@ -587,6 +620,35 @@ export default function GameApp() {
   useEffect(() => {
     if (screen !== "playing") track("screen_view", { screen });
   }, [screen]);
+
+  /* BANK THE DRIVE WHILE IT IS HAPPENING. Everything persist() writes used to
+     be saved only at the edges of a drive — DRIVE, RESUME, MAIN MENU — which
+     is fine for a setting and wrong for a currency: a tab closed or a phone
+     that discards the page mid-run would cost the player every metre of money
+     they had just earned (and their session's stats and clean-run record with
+     it). So while the wheels are turning, save on a slow timer and on the way
+     out of the page.
+
+     BANK_SAVE_MS is 20s: one JSON.stringify of a small object per 20 seconds
+     is nothing next to a frame, and 20s is the most a player can lose.
+     pagehide covers the iOS case visibilitychange misses, and both are cheap
+     no-ops when there is no Game. */
+  useEffect(() => {
+    if (screen !== "playing") return;
+    const t = setInterval(persist, BANK_SAVE_MS);
+    const onHide = () => persist();
+    const onVis = () => {
+      if (document.visibilityState === "hidden") persist();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onHide);
+      persist();
+    };
+  }, [screen, persist]);
 
   const g = gameRef.current;
   const playing = screen === "playing";
@@ -696,6 +758,29 @@ export default function GameApp() {
             attribute the engine stamps on #hud — see RUN_HUD in engine.ts and
             the #hud .runDist rules in globals.css. */}
         <div className="runDist" id="runDist" />
+      </div>
+      {/* ENDLESS MODE panel — run score (metres), personal best, bank. The
+          engine writes all three figures and owns whether the panel is on
+          screen at all (data-on, from settings.endless), the same contract
+          the clean-run readout has; this style only ever hides it when the
+          player is not driving. Top left — the one free corner of the frame;
+          see the #ezHud block in globals.css. */}
+      <div id="ezHud" data-on="0" style={playing ? undefined : { display: "none" }}>
+        <div className="ez-cap">
+          <i lang="ja">無限</i>ENDLESS
+        </div>
+        <div className="ez-run">
+          <span id="ezRun">0</span>
+          <small>m</small>
+        </div>
+        <div className="ez-line">
+          <b>BEST</b>
+          <span id="ezBest">0</span> m
+        </div>
+        <div className="ez-line ez-bank">
+          <b>¥</b>
+          <span id="ezMoney">0</span>
+        </div>
       </div>
       <div id="toast" style={{ opacity: toast ? 1 : 0 }}>{toast}</div>
       <div id="exitHint" style={{ opacity: exitHint && playing ? 1 : 0 }}>{exitHint}</div>
@@ -820,6 +905,23 @@ export default function GameApp() {
               <nav className="sign-rows" aria-label="Main menu">
                 <SignRow selected glyph="up" jp="本線" en="DRIVE" dist="0.0" onClick={drive} />
                 <SignSep />
+                {/* ENDLESS — the one way into the mode that does not need a
+                    menu dive, and the shape the board already had for a mode
+                    (it is the RIVAL row's, badge and all, from before the
+                    rival was held back). A row, not a second DRIVE button:
+                    the mode changes the HUD and the scoring, not how a drive
+                    is started, so it stays a setting that happens to be
+                    reachable from here. The same boolean lives in
+                    SETTINGS > GAMEPLAY. */}
+                <SignRow
+                  glyph="ne"
+                  jp="無限"
+                  en="ENDLESS"
+                  note="DRIVE UNTIL YOU CRASH"
+                  badge={endlessOn ? "ON" : "OFF"}
+                  badgeOn={endlessOn}
+                  onClick={toggleEndless}
+                />
                 {/* The same setting the panel carries, surfaced here so the mode
                     is discoverable without going three screens deep. */}
                 {/* THE RIVAL IS HELD BACK for the beta, but the row STAYS —

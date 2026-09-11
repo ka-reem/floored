@@ -295,6 +295,112 @@ html.cursor-idle * {
   55% { opacity: 0.05; }
   100% { opacity: 0.5; }
 }
+/* ---------- ENDLESS MODE panel ----------
+
+   The drive-until-you-crash readout: run score in metres, the profile best,
+   and the bank (see the ENDLESS block in game/engine.ts). Top LEFT, which is
+   the one corner of the playing frame nothing else claims — #topbar is
+   centred, the gear and the ⋯ chip are top right, the speed/gear stack is
+   bottom left and the map is bottom right — so on a 400px phone the panel
+   (~96px wide at its widest figure) ends well clear of the clock, and every
+   offset carries its --sa-* term like the rest of the HUD.
+
+   Same vocabulary as the corner stack next to it and nothing new: display
+   face, tabular numerals, the HUD's shared text-shadow, --ink for the figure
+   the player reads and --ink-dim for the two it only glances at. The run
+   score is the one number here allowed to be large.
+
+   Visibility is the ENGINE's (data-on, written by hud() from
+   settings.endless) — GameApp only ever inline-hides it when not playing,
+   exactly the contract the clean-run readout has with its own setting. */
+#ezHud {
+  position: fixed;
+  top: calc(12px + var(--sa-top));
+  left: calc(18px + var(--sa-left));
+  z-index: var(--z-hud);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  text-shadow: 0 1px 8px rgba(0, 20, 60, 0.8);
+}
+/* the mode is off: the panel is not on screen at all */
+#ezHud[data-on="0"] {
+  display: none;
+}
+/* phones line the HUD up on the pucks' 16px gutter (see body.touch #hud) */
+body.touch #ezHud {
+  left: calc(16px + var(--sa-left));
+}
+#ezHud .ez-cap {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: var(--ink-dim);
+  opacity: 0.5;
+}
+#ezHud .ez-cap i {
+  font-style: normal;
+  color: var(--jp);
+  opacity: 0.55;
+  margin-right: 5px;
+}
+#ezHud .ez-run {
+  font-size: 28px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+#ezHud .ez-run small {
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.6;
+  margin-left: 3px;
+}
+/* BEST and the bank: one dim line each, at the clean-run readout's own size
+   and roughly its opacity — they are reference, not the score. */
+#ezHud .ez-line {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--ink-dim);
+  opacity: 0.62;
+  letter-spacing: 0.08em;
+}
+#ezHud .ez-line b {
+  font-weight: 400;
+  opacity: 0.62;
+  margin-right: 5px;
+}
+#ezHud .ez-line.ez-bank {
+  color: var(--ok);
+  opacity: 0.72;
+}
+
+/* THE CRASH. The mode's one loud moment, and still no banner: the score is
+   knocked out to almost nothing, comes back in --danger and settles to --ink
+   over ENDLESS.flash seconds, reading as a number that was just taken away.
+   The bank line is deliberately untouched — a crash costs the run, never the
+   money. Motion only, no layout, so it cannot shift anything beside it. */
+#ezHud.ez-reset .ez-run {
+  animation: ezReset 1.8s var(--ease);
+}
+@keyframes ezReset {
+  0% { opacity: 1; transform: none; }
+  7% { opacity: 0.08; transform: translateY(3px); }
+  20% { opacity: 1; color: var(--danger); transform: none; }
+  55% { opacity: 0.9; color: var(--danger); }
+  100% { opacity: 1; color: var(--ink); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #ezHud.ez-reset .ez-run {
+    animation: none;
+    color: var(--danger);
+  }
+}
+
 #topbar {
   position: fixed;
   top: calc(14px + var(--sa-top));
