@@ -2362,11 +2362,27 @@ export class Game {
       setCleanRun: (m: number) => {
         this.run.dist = m;
         if (m > this.run.best) this.run.best = m;
+        /* the endless record is the same metres (see ENDLESS), so a staged
+           run moves it too — otherwise a shot shows a run past a best it
+           already beat */
+        if (m > this.ez.best) this.ez.best = m;
+      },
+      /** ENDLESS: stage the bank for a shot or a check. Nothing in the game
+          writes money except statsUpdate. */
+      setMoney: (v: number) => {
+        this.ez.money = Math.max(0, v);
+      },
+      /** ENDLESS: stage the mode itself, so a capture does not have to walk
+          the home board to turn it on. */
+      setEndless: (on: boolean) => {
+        this.settings.endless = on;
       },
       runReset: () => {
         this.run.dist = 0;
         this.run.flash = CLEAN_RUN.flash;
         this.run.resets++;
+        /* the same reset the real one fires, money deliberately untouched */
+        this.ez.flash = ENDLESS.flash;
       },
       crashTest: () => {
         this.traffic.spawnObstacleAhead(this.car);

@@ -1043,7 +1043,19 @@ export default function GameApp() {
                   <SignRow jpAttr glyph={<>↩</>} jp="出口" en="MAIN MENU" note="ENDS THE DRIVE" onClick={backToMenu} />
                 </nav>
               </SignBody>
-              <SignFootbar keep caption={<>{GAME_NAME} <span className="sign-ver">{VERSION_LABEL}</span></>}>
+              {/* One line, because a pause screen is a four-second
+                  interruption: the endless record, in the mode's own metres.
+                  Only while the mode is on — with it off this is the clean-run
+                  readout's number and the STATS board is where it belongs. */}
+              <SignFootbar
+                keep
+                caption={
+                  <>
+                    {GAME_NAME} <span className="sign-ver">{VERSION_LABEL}</span>
+                    {g?.settings.endless && <> · BEST {Math.floor(g.bestDistance).toLocaleString("en-US")} m</>}
+                  </>
+                }
+              >
                 <a className="sign-btn ghost sm" href={BUG_MAILTO}>REPORT A BUG</a>
               </SignFootbar>
             </SignPlate>
@@ -1909,6 +1921,15 @@ function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
       sv: "×" + s.bestCombo.toFixed(1), lv: "×" + l.bestCombo.toFixed(1),
       rec: s.bestCombo > 1 && s.bestCombo >= l.bestCombo,
     },
+    {
+      /* ENDLESS MODE's two persisted numbers. The bank is a LIFETIME figure
+         by nature — a crash never takes any of it — so the session column is
+         what this drive has earned and the lifetime column is the total.
+         Never lit: it is not a record to beat, it only grows. */
+      en: "MONEY", jp: "所持金",
+      sv: "¥" + Math.floor(game.moneyEarned).toLocaleString("en-US"),
+      lv: "¥" + Math.floor(game.money).toLocaleString("en-US"),
+    },
     { en: "CRASHES", jp: "クラッシュ", sv: String(s.crashes), lv: String(l.crashes) },
     { en: "LAPS", jp: "周回", sv: String(s.laps), lv: String(l.laps) },
     { en: "TOUGE RUNS", jp: "峠走破", sv: String(s.mtnRuns), lv: String(l.mtnRuns) },
@@ -2259,6 +2280,14 @@ function SettingsPanel({
                     board's row, and dropping the scrub in settings.ts. */}
                 <SignSrow name="Rival car">
                   <span className="sign-cap faint">NOT AVAILABLE</span>
+                </SignSrow>
+                {/* ENDLESS MODE — the same boolean the home board's ENDLESS
+                    row writes, here because that is where a player looks for
+                    a mode they have already met once. Off by default; it adds
+                    the score panel and the visible reset and changes nothing
+                    about the car. */}
+                <SignSrow name="Endless mode" aside="— drive until you crash, score resets" lit={L("endless")}>
+                  <SignToggle label="Endless mode" checked={s.endless} onChange={(v) => upd((x) => (x.endless = v))} />
                 </SignSrow>
                 {/* The clean-run readout: distance since the last real impact
                     (game/engine.ts's runUpdate). On by default. */}
