@@ -315,7 +315,14 @@ html.cursor-idle * {
    exactly the contract the clean-run readout has with its own setting. */
 #ezHud {
   position: fixed;
-  top: calc(12px + var(--sa-top));
+  /* 7.5vh, not a round number of pixels: the dashcam's burnt-in DVR strip
+     (the blinking REC dot and the wall clock) is composited by the POV chain
+     in post.ts at uOverPos.y 0.925 with uOverSize.y 0.03 — UV, so its bottom
+     edge lands 7.5% of the FRAME HEIGHT down from the top, at any viewport.
+     Anchoring to vh clears it by the same 10px gap on a 900px desktop frame
+     and on a 390px landscape phone alike; a fixed px offset would collide on
+     one of them. Measured colliding before this: test/endless-shots.mjs. */
+  top: calc(7.5vh + 10px + var(--sa-top));
   left: calc(18px + var(--sa-left));
   z-index: var(--z-hud);
   pointer-events: none;
