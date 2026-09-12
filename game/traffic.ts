@@ -6190,21 +6190,27 @@ export class Traffic {
       wa[i * 3 + 2] = wshB;
       /* Emissive lamp levels. A wreck's lights are dead; otherwise the tails
          glow at a running level and jump on the brakes. These are radiance
-         multipliers on lamp-flagged vertices (lampKind), and since 2026-08
-         EVERY style has tail lens geometry: the hi-fi bakes tag their real
-         lens pixels in `_LAMP`, and npcmodels.ts authors lens quads at load
-         time for any bake that arrives without tags (the Orchids fleet, and
-         the suv/bus bakes whose tail artwork the tagger missed). So the rear
-         level below is the live brightness of every taillight in the game.
+         multipliers on lamp-flagged vertices (lampKind), and they only reach
+         a style that HAS a lit lens. Measured 2026-09-11 across all fourteen
+         fleet styles: four (sedan, hybrid, compact, mhybrid) carry real lens
+         geometry tagged `_LAMP` in the bake, the taxi has its lens found
+         per-texel in its own texture, and the other NINE have no lit lens at
+         all — their taillight is the glow sprite alone (see HALO below and
+         seatTailAnchors in npcmodels.ts, which seats those sprites on the
+         car's own rear skin). The claim that used to stand here — that every
+         style has lens geometry because npcmodels authors lens quads at load
+         time — went stale when those quads were removed.
 
          Level arithmetic (kept from the original sizing pass): emissive is
          `diffuseColor.rgb * lvl`, albedo-proportional. A tagged red lens
          texel is roughly (0.62, 0.055, 0.06) and the authored albedo of the
          runtime lenses is (0.55, 0.035, 0.045) — see npcShader — so the two
          paths land within ~12% of each other. The bloom bright-pass floor is
-         0.40 post-exposure (uExp 0.98 at night): running 3.1 puts the lens
-         at luma ~0.55 (blooms, reads as a lit lamp), brake 4.4 at ~0.75 — a
-         clear step up, matching the sprite targets (tail 0.68, brake 0.95). */
+         0.40 post-exposure (uExp 0.98 at night). NB the 3.1/4.4 in that
+         sizing pass are NOT what ships: `LAMP` above is {run: 1.7, brake: 3.0},
+         a 1.76x step rather than 1.42x. The conclusion still holds — brake is
+         a clear step up and both clear the bloom floor — but take the levels
+         from LAMP, not from these two numbers. */
       const la = lod.lamp.array as Float32Array;
       const lit = night && !n.wreck;
       la[i * 2] = lit ? 2.2 : 0;
