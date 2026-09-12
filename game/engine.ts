@@ -6571,6 +6571,10 @@ export class Game {
       if (this.slowT > 4) {
         this.perfMode = true;
         this.renderer.setPixelRatio(1);
+        // keep applySettings' cache in step with the ratio we just forced —
+        // without this the next settings tick sees pr(1) !== lastPR(cap) and
+        // rebuilds all 16 screen-sized targets for no change
+        this.lastPR = 1;
         this.post.makeTargets(true);
         this.mats.setReflectionTexture(this.post.reflectRT.texture);
         this.mats.setReflectionScreen(
