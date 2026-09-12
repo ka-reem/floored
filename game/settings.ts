@@ -539,6 +539,13 @@ export interface GameSettings {
       default: it costs nothing while driving clean and it is now a quiet
       corner figure rather than a running arcade total. */
   cleanRunScore: boolean;
+  /** ENDLESS MODE — the drive-until-you-crash scoring mode (see the ENDLESS
+      block in game/engine.ts). Opt-in, off for a fresh profile: it changes
+      nothing about how the car drives, it only puts the run/best/money panel
+      on screen and makes the reset an event you can see. The distance and the
+      crash rule underneath it are the clean run's, already running for every
+      player whether this is on or not. */
+  endless: boolean;
   /** first-run discovery hints (game/hints.ts): one-shot in-context tips.
       This toggle gates the whole system; WHICH tips have already fired is
       not a setting and lives separately (hintSeen below), so "Reset all
@@ -594,6 +601,23 @@ export interface Profile {
   /** lifetime drive statistics — see the DRIVE STATS block in engine.ts.
       Written by GameApp.tsx's persist() the same way cleanRunBest is. */
   stats: LifetimeStats;
+  /** ENDLESS MODE persistence — device-only, the owner's explicit call: no
+      server, no sync, no account. Both are plain non-negative metres/currency
+      so the scrub in loadProfile can treat them like cleanRunBest.
+
+      `money` is the bank: it accrues from distance driven (ENDLESS.perMetre in
+      engine.ts) and a crash NEVER takes any of it away — only the run score
+      resets. `bestDistance` is the furthest single run, in metres.
+
+      bestDistance measures exactly what cleanRunBest measures (metres between
+      two real impacts, the same CLEAN_RUN.impact rule), so a profile that
+      predates this mode is SEEDED from cleanRunBest rather than starting the
+      player's record over — see loadProfile. They are kept as two keys because
+      cleanRunBest belongs to the clean-run readout, which ships whether or not
+      the mode is on, and a future endless rule change must not silently
+      rewrite the readout's record. */
+  money: number;
+  bestDistance: number;
   /** head-unit tic-tac-toe record, the player's side (game/consolegame.ts).
       Bound into the pane at engine construction and mutated in place there,
       so persist() saving the profile carries it with no extra plumbing. */
@@ -672,6 +696,12 @@ export const defaultSettings = (): GameSettings => ({
   rival: false,
   rivalSignals: false,
   cleanRunScore: true,
+  /* OFF for a fresh profile. The owner drives free-roam as much as he plays a
+     mode, and a score panel plus a visible reset on a drive nobody asked to be
+     scored is the mode imposing itself — so it is one tap on the home board
+     (ENDLESS) or one row in SETTINGS > GAMEPLAY, and free-roam is unchanged
+     until then. Money still accrues either way; see ENDLESS in engine.ts. */
+  endless: false,
   hints: true,
 });
 
@@ -702,6 +732,8 @@ export const defaultProfile = (): Profile => ({
      change it. */
   camMode: 1,
   cleanRunBest: 0,
+  money: 0,
+  bestDistance: 0,
   stats: defaultLifetimeStats(),
   ttt: { w: 0, l: 0, d: 0 },
 });
@@ -753,7 +785,7 @@ const NUM_KEYS = ["drawDist", "traffic", "fovBase", "vol", "time"] as const;
 const BOOL_KEYS = [
   "reflections", "bloom", "shadows", "fxaa", "tc", "mblur", "dashcam",
   "autoTime", "rain", "mmap", "mmapZoom", "rival", "rivalSignals",
-  "cleanRunScore", "hints",
+  "cleanRunScore", "endless", "hints",
 ] as const;
 
 /** Lifetime-stats fields, all "non-negative finite number or the default" —
@@ -956,6 +988,17 @@ export function loadProfile(): Profile {
       prof.cleanRunBest < 0
     )
       prof.cleanRunBest = base.cleanRunBest;
+    /* ENDLESS MODE bank + record. Same guard as cleanRunBest above, and the
+       one migration this mode needs: a profile stored before the mode existed
+       has no `bestDistance`, so it inherits the clean-run record it already
+       holds — the two count the same metres under the same crash rule, so
+       carrying it across is a rename, not an invention. `money` has no
+       ancestor and honestly starts at 0. */
+    const nonNegNum = (v: unknown) =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0;
+    if (!nonNegNum(prof.money)) prof.money = base.money;
+    if (!nonNegNum(prof.bestDistance))
+      prof.bestDistance = Math.max(base.bestDistance, prof.cleanRunBest);
     /* The retired No Hesi points best. NOT migrated: it counted
        speed x combo x seconds, and the record that replaced it counts
        metres — any mapping between the two would be invented, and inventing
