@@ -918,6 +918,17 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
     this.makeTargets(false);
   }
 
+  /* Every screen-sized target below is allocated in DEVICE pixels —
+     innerWidth/innerHeight are CSS pixels, so the getPixelRatio() factor is
+     load-bearing, and it matches what setSize() gave the canvas exactly
+     (three floors the same product). If a fill profile (test/perf-mobile.mjs
+     buckets render() calls by target size) ever shows a bucket at the plain
+     CSS size — 390x844 on an iPhone-class viewport rather than 526x1139 at
+     dprCap 1.35 — that is NOT a buffer sized off innerWidth: it is
+     pixelRatio being 1, i.e. PERFORMANCE MODE (engine.ts perfCheck drops the
+     DPR to 1 after 4s over 37ms, which on a swiftshader test box trips
+     mid-run and leaves a profile with both bucket families in it). Checked
+     2026-09-12; nothing here sizes off CSS pixels. */
   makeTargets(perfMode: boolean) {
     const r = this.renderer;
     const w = Math.floor(innerWidth * r.getPixelRatio());
