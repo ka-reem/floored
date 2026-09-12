@@ -2057,7 +2057,25 @@ export class Game {
     this.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight(0x9db4ff, 0.16);
     this.scene.add(this.sun);
-    this.sun.shadow.mapSize.set(2048, 2048);
+    /* SHADOW MAP SIZE, which until now was 2048² on every device that drew a
+       shadow at all — the one large per-frame cost the tier system never
+       priced.
+
+       2048² is 4.19 Mpx rendered every frame. Measured against it, the whole
+       of the app tier's scene and post chain together fill 1.94 Mpx, and the
+       frame the player actually sees on a phone is 526×1139 = 0.60 Mpx. So the
+       shadow map was SEVEN TIMES the visible frame and more than twice
+       everything else put together, and it re-submits every casting object as
+       a second set of draw calls on top of that. It is invisible to the
+       engine's own instrumentation because three renders it inside
+       `renderer.render()`, which is why it survived this long.
+
+       1024² on the phone tiers quarters that to 1.05 Mpx. Desktop keeps 2048²
+       — it has the fill rate, and it is the tier that sees shadow edges at
+       size. This is a VISIBLE change on phones (a softer, coarser shadow edge
+       at the 340 m ortho extent set below), taken on the owner's explicit
+       "optimize it, make it less laggy"; one value here reverts it. */
+    this.sun.shadow.mapSize.setScalar(this.renderTier === "desktop" ? 2048 : 1024);
     this.sun.shadow.camera.left = -170;
     this.sun.shadow.camera.right = 170;
     this.sun.shadow.camera.top = 170;
