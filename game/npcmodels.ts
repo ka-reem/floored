@@ -55,6 +55,14 @@ export interface NpcModel {
       bake can find headlight pixels yet miss smoked tail lenses (the
       Fortuner did exactly that and drove around with no tail lights): a
       kind with no tagged pixels must keep its glow sprite at every range */
+  /* NOTHING OUTSIDE THIS MODULE READS EITHER OF THESE (checked 2026-09-11).
+     The safety net the note above describes — a kind with no tagged pixels
+     keeping its glow sprite at every range — is not implemented through them;
+     traffic.ts hands every style the sprite handover regardless. The local
+     `hasTailGeo` inside buildNpcModel IS load-bearing (it gates the per-texel
+     lens tagger and seatTailAnchors); it is only the two exported FIELDS that
+     are dead. Left in place rather than deleted at a session's hard stop,
+     because removing a field is a change and this is a note. */
   hasHeadGeo: boolean;
   hasTailGeo: boolean;
 }
