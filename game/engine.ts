@@ -40,7 +40,7 @@ import { bindGameTally, gameClick, gameTally } from "./consolegame";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap, type MiniMapOpts } from "./minimap";
-import { track, trackThrottled, registerSuper } from "../lib/analytics";
+import { track, trackThrottled, registerSuper, deviceType } from "../lib/analytics";
 import { telemetryTick, telemetryDebug } from "../lib/telemetry";
 import { DEBUG_HOOKS } from "./debug";
 import type { Vision, VisionFlags } from "./vision";
@@ -1896,6 +1896,9 @@ export class Game {
   private last = 0;
   private acc = 0;
   private frameN = 0;
+  /* When this engine was constructed. Only consumer is the context-lost
+     report, where "died at 4 s" and "died at 40 min" are different bugs. */
+  private readonly bootMs = performance.now();
   private emaMs = 16;
   private slowT = 0;
   private gaugeT = 0;
@@ -2994,6 +2997,44 @@ export class Game {
 
   private onContextLost = (e: Event) => {
     e.preventDefault();
+    /* REPORT IT. Until now this was the one failure the game could see happen
+       and told nobody about: the panel goes up, the player reloads or leaves,
+       and the owner learns about it only if that player happens to say so.
+       There is no way to reproduce a crash you cannot see, and "GPU context
+       lost" is exactly the kind that depends on the device rather than on
+       anything the game does differently.
+
+       So capture what would actually narrow it down, and capture it FIRST —
+       the context is already gone, the page may be seconds from being closed,
+       and showGfxFail() below can throw on a detached host.
+
+       `renderer` is the unmasked GPU string where the browser will give it
+       (it is the single most useful field, and Safari usually masks it);
+       `secs` separates "died on the loading screen" — an allocation the
+       device could never satisfy — from "died after twenty minutes", which is
+       pressure or a leak, and those have nothing to do with each other. */
+    try {
+      const gl = this.renderer.getContext();
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      const nav = navigator as Navigator & { deviceMemory?: number };
+      track("webgl_context_lost", {
+        renderer: dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : "masked",
+        vendor: dbg ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)) : "masked",
+        tier: this.renderTier,
+        preset: this.settings.preset,
+        cabin: this.settings.cabin,
+        loaded: this.loaded,
+        secs: Math.round((performance.now() - this.bootMs) / 1000),
+        px: `${Math.round(innerWidth)}x${Math.round(innerHeight)}@${devicePixelRatio}`,
+        pixelRatio: this.renderer.getPixelRatio(),
+        maxTex: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+        deviceMemoryGb: nav.deviceMemory ?? null,
+        cores: navigator.hardwareConcurrency ?? null,
+        device: deviceType(),
+      });
+    } catch {
+      /* never let reporting be the reason the panel does not appear */
+    }
     showGfxFail(this.renderer.domElement.parentElement ?? document.body, "lost");
   };
 
