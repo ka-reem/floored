@@ -196,11 +196,6 @@ const run = async () => {
     /* ---- 5. two unfinished boots latch on their own -------------------- */
     console.log("\n[5] second unfinished boot latches without the button");
     await seed(page, { fails: 1, on: false });
-    const before = await rigState(page).catch(() => null);
-    ok(
-      before === null || before.tier !== "mobile-base" || true,
-      "one strike alone has not degraded anything yet"
-    );
     const oneStrike = await latch(page, KEY);
     ok(oneStrike?.on === false, `one strike is not enough to latch (${JSON.stringify(oneStrike)})`);
 

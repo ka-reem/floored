@@ -107,7 +107,13 @@ export function markBootStart(): void {
  *  (clearSafeMode). */
 export function markBootOk(): void {
   const s = load();
-  if (s.fails === 0) return;
+  /* Unconditional, and it has to be: `snap` is the count as it stood BEFORE
+     this boot — markBootStart deliberately leaves it alone — so a first crash
+     followed by a clean boot reads snap.fails === 0 here while STORAGE still
+     carries the 1 that markBootStart wrote. Skipping the write on
+     `snap.fails === 0` therefore left the strike on disk forever, and the
+     player's next single crash latched safe mode off a stale strike from a
+     session that had since succeeded. Caught by test/safemode-check.mjs. */
   write({ fails: 0, on: s.on });
   snap = { fails: 0, on: s.on };
 }
