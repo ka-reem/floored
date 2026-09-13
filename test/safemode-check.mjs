@@ -109,8 +109,15 @@ const rigState = (page) =>
   }));
 
 const run = async () => {
-  const dev = await startDev();
-  const browser = await puppeteer.launch({
+  /* Both of these are started BEFORE the try that owns their cleanup, which
+     leaked a next dev on this port the first time the browser launch threw —
+     and a held port reads as "the test is broken" on every run after. Declared
+     out here, assigned inside, so the finally can close whatever exists. */
+  let dev = null;
+  let browser = null;
+  try {
+    dev = await startDev();
+    browser = await puppeteer.launch({
     headless: "new",
     /* Honour a browser the environment already has. Sandboxes that skip
        puppeteer's own download (PUPPETEER_SKIP_DOWNLOAD, as app builds set)
@@ -118,8 +125,8 @@ const run = async () => {
        broken test rather than a missing binary. Unset = puppeteer's own. */
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: ["--no-sandbox", "--use-gl=swiftshader", "--enable-unsafe-swiftshader"],
-  });
-  try {
+    });
+
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
     page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
@@ -212,7 +219,7 @@ const run = async () => {
       `the second unfinished boot latches by itself (${JSON.stringify(tripped)})`
     );
   } finally {
-    await browser.close();
+    await browser?.close().catch(() => {});
     dev?.kill("SIGTERM");
   }
 
