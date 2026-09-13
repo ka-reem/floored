@@ -45,6 +45,7 @@ import { telemetryTick, telemetryDebug } from "../lib/telemetry";
 import { DEBUG_HOOKS } from "./debug";
 import type { Vision, VisionFlags } from "./vision";
 import { SHOW_DEV_SETTINGS } from "@/lib/build";
+import { markBootStart, markBootOk, safeMode } from "./safemode";
 import { showGfxFail } from "./gfxfail";
 import { npcModelUrl } from "./npcmodels";
 import { prefetchAssets } from "./prefetch";
@@ -2824,6 +2825,12 @@ export class Game {
   }
 
   private async runLoad(onProgress: (r: LoadReport) => void): Promise<void> {
+    /* The two ends of the safe-mode bracket (game/safemode.ts). Everything
+       that can take a phone's memory out from under it — the donor cabin's
+       21-image decode above all — happens between these two lines, and a
+       context lost in there never runs code again, so the ONLY way to notice
+       it is to have written the attempt down before it started. */
+    markBootStart();
     let timings: Record<string, number>;
     try {
       timings = await runStages(this.buildStages(), onProgress, () => this.disposed);
@@ -2833,6 +2840,7 @@ export class Game {
     }
     if (this.disposed) return;
     this.loaded = true;
+    markBootOk();
     // real per-stage milliseconds, for retuning LOAD_WEIGHTS against a device
     const dbg = (window as any).__neonx;
     if (dbg) dbg.loadTimings = timings;
@@ -3024,6 +3032,10 @@ export class Game {
         preset: this.settings.preset,
         cabin: this.settings.cabin,
         loaded: this.loaded,
+        /* was the game already holding itself back when it died? a loss WITH
+           this true means safe mode's cut is not deep enough, which is the
+           one thing the panel cannot work out on its own */
+        safe: safeMode(),
         secs: Math.round((performance.now() - this.bootMs) / 1000),
         px: `${Math.round(innerWidth)}x${Math.round(innerHeight)}@${devicePixelRatio}`,
         pixelRatio: this.renderer.getPixelRatio(),

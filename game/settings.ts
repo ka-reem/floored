@@ -1,5 +1,6 @@
 import { DEFAULT_CAR_ID, isPlayableCar } from "./carspecs";
 import { SHOW_DEV_SETTINGS } from "@/lib/build";
+import { safeMode } from "./safemode";
 
 export type SpeedUnits = "mph" | "kmh";
 export type FogLevel = "off" | "light" | "medium" | "heavy";
@@ -417,12 +418,21 @@ export function syncCabinMode(s: GameSettings) {
 export function donorCabinAllowed(tier: RenderTier): boolean {
   if (cabinLive.mode === "procedural") return false;
   if (cabinLive.mode === "donor") return true;
+  /* A device that has already died twice on the loading screen does not get
+     asked a third time. Checked AFTER the two explicit modes above, so a
+     player who went and chose "donor" still gets it — safe mode is a ceiling
+     on what we hand out unasked, not a veto over what was asked for.
+
+     This is the branch that actually catches the masked iPhone: it lands on
+     mobile-high, where the affordability floor below is never consulted, so
+     the floor cannot help it and only the crash record can. */
+  if (safeMode()) return false;
   return tier !== "mobile-base" || donorCabinAffordable();
 }
 
 /** What "auto" resolves to right now, for the settings row to show. */
 export const cabinAutoLabel = (tier: RenderTier) =>
-  tier !== "mobile-base" || donorCabinAffordable() ? "real" : "procedural";
+  !safeMode() && (tier !== "mobile-base" || donorCabinAffordable()) ? "real" : "procedural";
 
 /** Effective tier: `?tier=` URL param (testing) > persisted manual override >
  *  detection. The URL param is read-only and never persisted, so a test link
@@ -455,6 +465,14 @@ export function resolveRenderTier(
      tablet that reports like a desktop, or someone who simply wants more
      frames than picture. */
   if (isRenderTier(s.tierOverride)) return s.tierOverride;
+  /* Same ceiling, same ordering rule as donorCabinAllowed: below the player's
+     own override, above detection. Detection is exactly what is suspect on a
+     device that keeps dying — the masked-GPU phone is called mobile-high on
+     nothing better than a 3x screen — so a boot record that contradicts it
+     wins. mobile-base is the tier every unknown device was always meant to
+     land on, so this is a return to the conservative answer rather than a new
+     one: deckTexPx 256, no road decals, no prop models, cabinPbrMaps off. */
+  if (safeMode()) return "mobile-base";
   return detectRenderTier(isTouch, gl);
 }
 
