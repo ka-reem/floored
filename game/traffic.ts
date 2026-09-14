@@ -2378,15 +2378,19 @@ export class Traffic {
       () => { this.fleetReady = true; }
     );
 
-    /* The far tier (public/models/cars-far, ~39% of the triangles per car),
-       chained off the near fleet so these fetches never compete with the
-       bodies the first frames actually need. Same loader, same extract path,
-       same "never throws" contract: a style whose far body is missing or
-       malformed keeps `far: null` and draws all of its cars at full detail.
-       1.2 MB for the fourteen, geometry only — no second copy of the atlas. */
-    this.fleetLoaded.then(() => {
-      loadNpcModels(Object.keys(this.styleOf), (m) => this.applyFarModel(m), FAR_BASE);
-    });
+    /* The far tier (public/models/cars-far, ~39% of the triangles per car,
+       1.2 MB for the fourteen — geometry only, no second copy of the atlas).
+
+       ARMED here, FIRED from update(), exactly like the HD stream below and
+       for the same reason: `fleetLoaded` resolves while the world build is
+       still running, so fetching and parsing fourteen more GLBs off that
+       promise puts them in competition with the first frames — the contention
+       the HD note documents. Counting seconds of DRIVING instead waits for a
+       drivable frame however slow the device was getting there. Nothing is
+       lost by waiting: until a style's far body lands it has `far: null` and
+       draws every one of its cars at full detail, which is what shipped
+       before this existed. */
+    this.fleetLoaded.then(() => { this.farArmed = true; });
 
     /* Desktop upgrade: stream the HD bodyshells (1024px atlas, ~3x the
        triangles) well after the opening seconds and hot-swap them through
@@ -2404,6 +2408,34 @@ export class Traffic {
        shader compiles + 1024² texture uploads spread across frames instead
        of stacking into one. */
     if (worldTierCaps().hdFleet) this.fleetLoaded.then(() => { this.hdArmed = true; });
+  }
+
+  /** Far-tier streaming state — see the far-tier block in the constructor.
+      Short delay (the payload is a tenth of the HD fleet's and the saving is
+      wanted early), and models are applied one per cooldown tick so the
+      fourteen geometry uploads spread across frames instead of stacking into
+      one. */
+  private farArmed = false;
+  private farDelay = 2.5; // seconds of driving before the fetch starts
+  private farQueue: NpcModel[] = [];
+  private farCd = 0;
+
+  /** Counted down by update(): fetch once, then drain one model per tick. */
+  private farUpdate(dt: number) {
+    if (this.farArmed) {
+      this.farDelay -= dt;
+      if (this.farDelay <= 0) {
+        this.farArmed = false;
+        loadNpcModels(Object.keys(this.styleOf), (m) => this.farQueue.push(m), FAR_BASE);
+      }
+    }
+    if (this.farQueue.length) {
+      this.farCd -= dt;
+      if (this.farCd <= 0) {
+        this.farCd = 0.25;
+        this.applyFarModel(this.farQueue.shift()!);
+      }
+    }
   }
 
   /** HD-fleet streaming state — see the hdFleet block in the constructor. */
@@ -4470,6 +4502,7 @@ export class Traffic {
     flashed = false
   ) {
     this.hdUpdate(dt);
+    this.farUpdate(dt);
     /* "on the expressway" has to come from the corridor now — the deck rises
        and falls by several metres, so a fixed height threshold would misread
        it near the low points. */
