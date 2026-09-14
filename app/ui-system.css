@@ -1617,6 +1617,23 @@ a.sign-btn {
   background: transparent;
   transition: background 0.15s var(--ease), border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
 }
+/* The knob is positioned against the TRACK'S OWN BOX, never against the
+   design-pixel arithmetic that sizes it.
+
+   Both the track and the knob carry min-width/min-height floors for the touch
+   target, and on a phone those floors WIN: --su clamps to its own 0.5px floor
+   at 390x844, so the track wants 64*0.5 = 32px and renders at its 48px
+   minimum, and the knob wants 10px and renders at its 14px minimum. The old
+   ON transform was written from the unclamped numbers
+   (64*su - 20*su - 12px), which is 10px of travel where the real geometry
+   needs 22 — so the knob stopped a third of the way across the pill and just
+   sat there, mid-slide, which is exactly what the owner photographed. The
+   vertical centring had the same fault: margin-top: -10*su is -5px against a
+   knob that is really 14px tall, leaving it 2px high in the track.
+
+   percentages and translate(-100%, -50%) resolve against whatever the box
+   ACTUALLY is, so this is correct at every scale and cannot drift out of step
+   with a min-* floor again. */
 .sign-toggle i::after {
   content: "";
   position: absolute;
@@ -1626,17 +1643,21 @@ a.sign-btn {
   height: calc(20 * var(--su));
   min-width: 14px;
   min-height: 14px;
-  margin-top: calc(-10 * var(--su));
   border-radius: 50%;
   background: var(--sign-ink);
-  transition: transform 0.15s var(--ease), background 0.15s var(--ease);
+  transform: translateY(-50%);
+  transition: left 0.15s var(--ease), transform 0.15s var(--ease),
+    background 0.15s var(--ease);
 }
 .sign-toggle.on i {
   border-color: var(--sign-sodium);
   background: var(--sign-sodium-tint);
 }
 .sign-toggle.on i::after {
-  transform: translateX(calc(64 * var(--su) - 20 * var(--su) - 12px));
+  /* right edge 3px inside the track's padding box, mirroring the 3px the OFF
+     state sits from the left — whatever width either of them ended up. */
+  left: calc(100% - 3px);
+  transform: translate(-100%, -50%);
   background: var(--sign-sodium);
 }
 .sign-toggle:has(input:focus-visible) i {
@@ -3451,13 +3472,16 @@ body.touch .tc.pressed,
     width: 48px;
     height: 24px;
   }
+  /* Sizes only. The knob's PLACEMENT is the base rule's job now — it derives
+     both axes from the track's real box, so it is already correct here and a
+     second hardcoded copy could only drift out of step again. This block used
+     to carry the whole fix (margin-top: -7px, translateX(22px)) and was the
+     reason the switches looked right in landscape while portrait, which has
+     no toggle rules of its own at max-width:700px, fell through to the
+     unclamped arithmetic and rendered the knob stalled mid-track. */
   .sign-toggle i::after {
     width: 14px;
     height: 14px;
-    margin-top: -7px;
-  }
-  .sign-toggle.on i::after {
-    transform: translateX(22px);
   }
   .sign-seg > * {
     min-height: 32px;
