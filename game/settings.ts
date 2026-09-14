@@ -1000,6 +1000,25 @@ export function loadProfile(): Profile {
        follows the scrubbed profile and traffic.ts never claims the slot. */
     if (prof.settings?.rival) prof.settings.rival = base.settings.rival;
     if (prof.settings?.rivalSignals) prof.settings.rivalSignals = base.settings.rivalSignals;
+    /* THE DASHCAM FILTER IS OFF for the beta — the owner: "turn off dash cam
+       filter put not available or something". Same shape as rain and the
+       rival above, and it needs the scrub for the same reason they do: the
+       default has been `dashcam: false` all along, but the filter has been
+       reachable from the settings row and the V key for weeks, so anyone who
+       switched it on carries `true` in their profile. Without this line they
+       would keep the heavy degrade with no control left to turn it off — the
+       one state a lock must never produce.
+
+       Note this is the SETTING, not the POV look. TIER_CAPS.dashcam stays
+       true on every tier and the evidence-footage chain the dashcam camera
+       composites is untouched; what goes is the separate full-screen degrade
+       the row and the V key toggle.
+
+       The engine path is entirely untouched — game.grade, post's grade pass
+       and the V key all still work, exactly as R still reaches rain — so
+       unlocking is putting the SignToggle back in GameApp and dropping this
+       line. */
+    if (prof.settings?.dashcam) prof.settings.dashcam = base.settings.dashcam;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     if (
       typeof prof.cleanRunBest !== "number" || !Number.isFinite(prof.cleanRunBest) ||

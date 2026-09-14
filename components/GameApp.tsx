@@ -2427,18 +2427,16 @@ function SettingsPanel({
                     onChange={(v) => upd((x) => (x.fovBase = v))}
                   />
                 </SignSrow>
-                {/* game.grade is the live truth — the in-game V key flips it too */}
-                <SignSrow last name="Dashcam filter" aside="(V)" lit={L("dashcam")}>
-                  <SignToggle
-                    label="Dashcam filter"
-                    checked={game.grade}
-                    onChange={(v) =>
-                      upd((x) => {
-                        x.dashcam = v;
-                        game.grade = v;
-                      })
-                    }
-                  />
+                {/* THE DASHCAM FILTER IS LOCKED OFF for the beta, the same way
+                    rain and the rival are: the row keeps its place so the
+                    section still reads the same, but it is a static NOT
+                    AVAILABLE caption instead of a switch. game.grade, the
+                    grade pass in post and the V key are all untouched, and
+                    game/settings.ts scrubs a stored `true` so nobody is left
+                    wearing the filter with no control to remove it. Unlocking
+                    is putting this SignToggle back and dropping that line. */}
+                <SignSrow last name="Dashcam filter">
+                  <span className="sign-cap faint">NOT AVAILABLE</span>
                 </SignSrow>
                 {/* DEVELOPER — not in a public build (lib/build.ts). Both rows
                     here are testing levers, and each one RESOLVES to its auto
