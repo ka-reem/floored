@@ -674,6 +674,19 @@ console.log(`  decimated : ${selected.tris.toLocaleString()} -> ${simplified.tri
 console.log(`  triangles : ${after.tris.toLocaleString()} drawn, ${Math.round(unique()).toLocaleString()} distinct`);
 console.log(`  draw calls: ${after.calls}  (donor: ${donor.calls}),  ${root.listMaterials().length} materials`);
 console.log(`  textures  : ${donor.img} -> ${root.listTextures().length}${TEX ? (CHASE_BIAS && TEX_HI > TEX ? ` @ ${TEX}px webp (${TEX_HI}px on the chase-visible maps)` : REAR_BIAS ? ` @ ${TEX}px webp (${TEX_REAR}px for rear-lamp maps)` : ` @ ${TEX}px webp`) : " (source resolution)"}`);
+/* The per-texture size histogram, printed rather than assumed. The --tex-hi
+   regression this catches shipped for days behind a log line that only ever
+   reported what the FIRST resize pass intended, never what came out. */
+const texHist = async () => {
+  const c = new Map();
+  for (const t of root.listTextures()) {
+    const img = t.getImage(); if (!img) continue;
+    const { width = 0, height = 0 } = await sharp(Buffer.from(img)).metadata();
+    const k = `${width}x${height}`; c.set(k, (c.get(k) ?? 0) + 1);
+  }
+  return [...c].sort((a, b) => parseInt(b[0]) - parseInt(a[0])).map(([k, n]) => `${n}x${k}`).join("  ") || "none";
+};
+console.log(`  tex sizes : ${await texHist()}`);
 console.log(`  VRAM      : ${(vramBytes / 1e6).toFixed(1)} MB decoded RGBA8 + mips  (donor: 3,500 MB)`);
 console.log(`  compress  : ${COMPRESS}${TANGENTS ? " +tangents" : ""}`);
 
