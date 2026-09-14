@@ -54,8 +54,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { NodeIO } from "@gltf-transform/core";
-import { ALL_EXTENSIONS } from "@gltf-transform/extensions";
-import { prune, dedup, weld, simplifyPrimitive, join, quantize, textureCompress, draco, meshopt } from "@gltf-transform/functions";
+import { ALL_EXTENSIONS, EXTTextureWebP } from "@gltf-transform/extensions";
+import { prune, dedup, weld, simplifyPrimitive, join, quantize, compressTexture, draco, meshopt } from "@gltf-transform/functions";
 import { MeshoptSimplifier, MeshoptEncoder, MeshoptDecoder } from "meshoptimizer";
 import draco3d from "draco3dgltf";
 import sharp from "sharp";
@@ -424,10 +424,18 @@ if (CHASE_BIAS) {
    here, while the meshes still exist un-joined, and consumed by the texture
    pass far below. */
 const matVis = new Map();
-/** Texture ids (URI, or name for a packed donor) that earn TEX_HI. Resolved to
-    strings HERE and not at texture time, because join()/dedup() in between may
-    have merged the material object this hung off. */
-const hiTexIds = new Set();
+/** Every map a material wears, in one place. */
+const matTextures = (mat) => [mat.getBaseColorTexture(), mat.getNormalTexture(), mat.getMetallicRoughnessTexture(),
+                              mat.getEmissiveTexture(), mat.getOcclusionTexture()].filter(Boolean);
+/** Which maps earn TEX_HI. Recorded TWO ways, because neither survives
+    join()/dedup() alone: the material NAMES (the material objects matVis is
+    keyed on may be merged away, but a survivor keeps its name) and the Texture
+    objects themselves (a texture shared with a low-scoring material would not
+    be found by name). The texture pass unions them. NOT resolved to URI/name
+    STRINGS — a packed donor has neither, and compressTexture() rewrites the
+    URI's extension, so a string id stops matching its own texture. */
+const hiMatNames = new Set();
+const hiTextures = new Set();
 if (CHASE_BIAS) {
   let peak = 0;
   for (const [, info] of meshInfo) peak = Math.max(peak, info.vis ?? 0);
@@ -439,9 +447,8 @@ if (CHASE_BIAS) {
     }
   for (const [mat, v] of matVis) {
     if (v < TEX_HI_AT) continue;
-    for (const t of [mat.getBaseColorTexture(), mat.getNormalTexture(), mat.getMetallicRoughnessTexture(),
-                     mat.getEmissiveTexture(), mat.getOcclusionTexture()])
-      if (t) hiTexIds.add(t.getURI() || t.getName());
+    if (mat.getName()) hiMatNames.add(mat.getName());
+    for (const t of matTextures(mat)) hiTextures.add(t);
   }
 }
 
@@ -616,41 +623,54 @@ if (JOIN) { bakeTransforms(); await doc.transform(join({ keepNamed: false }), pr
    works off the untouched source texture, not an already-downsized one —
    and the general pass then excludes anything it already sized. */
 const REAR_TEX = /Taillight|TrunkTaillight|ReverseLight|Bumper[ _]?Rear|^Trunk|Quarter|Lettering[ _]?Rear/i;
-const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/* ONE pass, sized per texture — NOT two pattern-matched passes.
+
+   textureCompress()'s `pattern` skips a texture only when the regex fails
+   against BOTH getName() AND getURI(). Every texture here has one of those
+   empty: a packed GLB donor has neither, a .gltf donor has a URI but no name,
+   and compressTexture() rewrites that URI's extension to .webp on the way
+   past. An empty string satisfies any `^(?!...)$.*$` lookahead, so the old
+   second pass could not EXCLUDE the maps the first pass had just enlarged —
+   it resized every one of them straight back down to TEX, silently, while the
+   log still reported the first pass's intent. That is how the shipped exterior
+   came out 9x512 under a "1024px on the chase-visible maps" banner.
+
+   Resolving each texture to its own target size and calling compressTexture()
+   directly leaves no pattern to defeat and no pass ordering to get wrong. */
+const texPx = new Map();
+const wantPx = (t, px) => { if (t && px > (texPx.get(t) ?? 0)) texPx.set(t, px); };
+
 if (TEX && CHASE_BIAS && TEX_HI > TEX) {
-  /* The chase-visible half of the atlas at TEX_HI, everything else at TEX.
-     Which textures those are is not a guess either: it is matVis, the same
-     per-surface score the triangle budget was solved with, carried through the
-     material each map hangs off. Big-map first, off the untouched source. */
-  const ids = [...hiTexIds].filter(Boolean).map(esc);
-  console.log(`  tex-hi    : ${ids.length} maps at ${TEX_HI}px (materials scoring >= ${TEX_HI_AT} of peak chase visibility)`);
-  if (ids.length) {
-    const hiRe = new RegExp(`^(?:${ids.join("|")})$`, "i");
-    await doc.transform(textureCompress({
-      encoder: sharp, targetFormat: "webp", resize: [TEX_HI, TEX_HI], resizeFilter: "lanczos3", pattern: hiRe,
-    }));
-    await doc.transform(textureCompress({
-      encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
-      pattern: new RegExp(`^(?!(?:${ids.join("|")})$).*$`, "i"),
-    }));
-  } else {
-    await doc.transform(textureCompress({
-      encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
-    }));
-  }
+  /* Which maps those are is not a guess: it is matVis, the same per-surface
+     score the triangle budget was solved with, carried through the material
+     each map hangs off — by name and by object, so dedup() cannot lose it. */
+  for (const mat of root.listMaterials())
+    if (mat.getName() && hiMatNames.has(mat.getName())) for (const t of matTextures(mat)) wantPx(t, TEX_HI);
+  for (const t of hiTextures) if (!t.isDisposed()) wantPx(t, TEX_HI);
+  const hiNames = [...texPx.keys()].map((t) => (t.getURI() || t.getName() || "?").replace(/^.*\//, ""));
+  console.log(`  tex-hi    : ${texPx.size} maps at ${TEX_HI}px (materials scoring >= ${TEX_HI_AT} of peak chase visibility)`);
+  console.log(`              ${hiNames.join(", ") || "(none)"}   [${[...hiMatNames].join(", ")}]`);
 } else if (TEX && REAR_BIAS) {
-  await doc.transform(textureCompress({
-    encoder: sharp, targetFormat: "webp", resize: [TEX_REAR, TEX_REAR], resizeFilter: "lanczos3", pattern: REAR_TEX,
-  }));
-  await doc.transform(textureCompress({
-    encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
-    pattern: new RegExp(`^(?!.*(?:${REAR_TEX.source})).*$`, "i"),
-  }));
-} else if (TEX) {
-  await doc.transform(textureCompress({
-    encoder: sharp, targetFormat: "webp", resize: [TEX, TEX], resizeFilter: "lanczos3",
-  }));
+  for (const mat of root.listMaterials()) {
+    const maps = matTextures(mat);
+    if (REAR_TEX.test(mat.getName() || "") ||
+        maps.some((t) => REAR_TEX.test(t.getName() || "") || REAR_TEX.test(t.getURI() || "")))
+      for (const t of maps) wantPx(t, TEX_REAR);
+  }
+  console.log(`  tex-rear  : ${texPx.size} maps at ${TEX_REAR}px`);
 }
+
+if (TEX)
+  for (const t of root.listTextures()) {
+    const px = texPx.get(t) ?? TEX;
+    await compressTexture(t, { encoder: sharp, targetFormat: "webp", resize: [px, px], resizeFilter: "lanczos3" });
+  }
+/* compressTexture() writes image/webp but, unlike textureCompress(), does not
+   declare the extension that makes it legal. Without this the GLB loads as an
+   untextured shell. */
+if (TEX && root.listTextures().some((t) => t.getMimeType() === "image/webp"))
+  doc.createExtension(EXTTextureWebP).setRequired(true);
 
 const vramBytes = await vram();
 
