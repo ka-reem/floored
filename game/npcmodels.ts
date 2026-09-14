@@ -445,6 +445,16 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
 export const HD_STYLES = ["sedan", "hybrid", "compact", "suv", "mhybrid"];
 export const HD_BASE = "/models/cars-hd/";
 
+/** The FAR tier: the same fourteen bodyshells, edge-collapse decimated to
+    ~39% of their triangles (tools/build-fleet-lod.mjs), for the cars that are
+    a few dozen pixels of road. GEOMETRY ONLY — the bake strips materials and
+    textures, because traffic.ts draws a style's far mesh through that style's
+    OWN near material, so a far car samples the same atlas, carries the same
+    paint tint and runs the same lamp shader as the near one. Everything
+    `extract` above needs is still in the file (colour, `_PAINTABLE`, `_LAMP`,
+    uv), so these load through exactly the same path. */
+export const FAR_BASE = "/models/cars-far/";
+
 /** Load a bodyshell per style, calling `onModel` as each one lands. Never
     rejects and never throws: a style whose file is missing or malformed is
     simply skipped, and its caller keeps the procedural shell it started with.
