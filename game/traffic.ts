@@ -2410,32 +2410,25 @@ export class Traffic {
     if (worldTierCaps().hdFleet) this.fleetLoaded.then(() => { this.hdArmed = true; });
   }
 
-  /** Far-tier streaming state — see the far-tier block in the constructor.
-      Short delay (the payload is a tenth of the HD fleet's and the saving is
-      wanted early), and models are applied one per cooldown tick so the
-      fourteen geometry uploads spread across frames instead of stacking into
-      one. */
+  /** Far-tier streaming state — see the far-tier block in the constructor. */
   private farArmed = false;
   private farDelay = 2.5; // seconds of driving before the fetch starts
-  private farQueue: NpcModel[] = [];
-  private farCd = 0;
 
-  /** Counted down by update(): fetch once, then drain one model per tick. */
+  /** Counted down by update(); fetches once, and each body is installed the
+      moment it lands. Deliberately NOT queued one-per-tick the way the HD
+      stream is: that stagger exists because each HD model costs a shader
+      compile and a 1024² texture upload, and a far model costs neither — it
+      brings no material and no texture, and hangs its geometry on a mesh
+      whose program is already linked. Metering it only delayed the saving
+      (measured: on a software renderer, where sim time crawls against the
+      wall clock, a 0.25 s-per-model drip still had six of the fourteen
+      unlanded half a minute into the drive). */
   private farUpdate(dt: number) {
-    if (this.farArmed) {
-      this.farDelay -= dt;
-      if (this.farDelay <= 0) {
-        this.farArmed = false;
-        loadNpcModels(Object.keys(this.styleOf), (m) => this.farQueue.push(m), FAR_BASE);
-      }
-    }
-    if (this.farQueue.length) {
-      this.farCd -= dt;
-      if (this.farCd <= 0) {
-        this.farCd = 0.25;
-        this.applyFarModel(this.farQueue.shift()!);
-      }
-    }
+    if (!this.farArmed) return;
+    this.farDelay -= dt;
+    if (this.farDelay > 0) return;
+    this.farArmed = false;
+    loadNpcModels(Object.keys(this.styleOf), (m) => this.applyFarModel(m), FAR_BASE);
   }
 
   /** HD-fleet streaming state — see the hdFleet block in the constructor. */
