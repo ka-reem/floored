@@ -83,6 +83,13 @@ await page.evaluate((dt) => window.__neonx.setFixedDt(dt), 1 / FPS);
 for (let i = 0; i < SETTLE_STEPS; i++) await page.evaluate(() => window.__neonx.step());
 
 const setLod = (m) => page.evaluate((m) => { window.__npcLod = m === null ? undefined : { far: m }; }, m);
+/* A/B pairs are shot with the clock all but stopped rather than one frame
+   apart: step() always renders a fresh frame (a screenshot of a canvas with
+   no preserveDrawingBuffer needs one), but at 1 microsecond a step the world
+   does not move between the two, so the ONLY thing that differs between the
+   near-only frame and the far-tier frame is the tier. A whole frame apart at
+   92 km/h is 0.85 m of travel, which would swamp what is being measured. */
+const freeze = (on) => page.evaluate((dt) => window.__neonx.setFixedDt(dt), on ? 1e-6 : 1 / FPS);
 const step = () => page.evaluate(() => window.__neonx.step());
 const shot = async (name) => {
   await step();
@@ -157,14 +164,22 @@ if (AB) {
   for (const [ci, name] of CAMS) {
     await setCam(ci);
     await step();
+    await freeze(true);
+    await step();               // settle the camera springs at the frozen pose
     await setLod(1e9);          // every car on its near body: the old build
     await shot(`${TAG}-${name}-nearonly.png`);
     await setLod(null);         // shipping swap distance
     await shot(`${TAG}-${name}-lod.png`);
+    await setLod(1e9);
+    await shot(`${TAG}-${name}-nearonly2.png`); // repeat: the capture's own floor
+    await setLod(null);
+    await freeze(false);
   }
 
   /* ---- a car crossing the swap distance ------------------------------- */
   await setCam(0);
+  await step();
+  await freeze(true);
   await step();
   const target = await page.evaluate(() => {
     const g = window.__neonx.game, t = g.traffic, cam = g.camera, c = g.car;
@@ -208,6 +223,7 @@ if (AB) {
     }
     await setLod(null);
   }
+  await freeze(false);
 }
 
 await page.evaluate(() => window.__neonx.setFixedDt(0)).catch(() => {});
