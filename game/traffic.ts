@@ -6168,13 +6168,15 @@ export class Traffic {
     let wk = 0;
     const WHEEL2 = 150 * 150;
     /* Where a car swaps to its decimated body. 120 m, because that is well
-       past the range at which the decimation has anything to take away: the
-       camera renders 68° vertical (~110° horizontal on this aspect), so a
-       1.79 m-wide sedan at 120 m is about 4 px across on a 390 px phone
-       screen and ~13 px along at a three-quarter angle. What the far bake
-       drops is interior panel density — it is an edge collapse that keeps the
-       silhouette (tools/build-fleet-lod.mjs) — so at that size there is
-       nothing on screen to lose. It sits INSIDE the wheel cutoff on purpose:
+       past the range at which the decimation has anything left to take away.
+       A phone frame is 390 CSS px wide in portrait, and the camera's fov is
+       VERTICAL (68° at the constructor, 58-100 across the fov slider), so at
+       aspect 0.46 the horizontal fov is only ~35°: the frame is ~75 m wide at
+       120 m, and a 1.79 m car in it is about 9 px across — call it 20 px
+       along, seen at a three-quarter angle. What the far bake drops is
+       interior panel density; it is an edge collapse that locks the outline
+       (tools/build-fleet-lod.mjs), so at that size there is nothing on screen
+       left to lose. It sits INSIDE the wheel cutoff on purpose:
        cars between 120 and 150 m keep their wheels (those come from the
        shared wheel mesh, which this does not touch) so the swap changes the
        body alone. Tunable live through `window.__npcLod.far` (metres) the
