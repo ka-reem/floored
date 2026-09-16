@@ -623,6 +623,18 @@ export const defaultLifetimeStats = (): LifetimeStats => ({
 });
 
 export interface Profile {
+  /** Profile schema version, for migrations that have to run ONCE.
+
+      Everything else loadProfile does to a stored profile is a SCRUB — it
+      re-asserts a value that is locked (rain, the rival, the dashcam filter)
+      and is correct to run on every load, because the lock is still in force
+      the next time too. A migration is different: it rewrites a value the
+      player is then free to change back, so running it twice would undo their
+      change. The traffic remap under PROFILE_VERSION is the first of those.
+
+      Absent on a profile saved before this existed, which reads as 0. */
+  pv?: number;
+
   settings: GameSettings;
   carId: string;
   paintIx: number;
@@ -660,6 +672,11 @@ export interface Profile {
       so persist() saving the profile carries it with no extra plumbing. */
   ttt: { w: number; l: number; d: number };
 }
+
+/** Bump when a stored profile needs a one-time rewrite, and handle the step
+    in loadProfile. 1: the traffic slider's top end changed meaning when the
+    jam ceiling landed. */
+export const PROFILE_VERSION = 1;
 
 export const defaultSettings = (): GameSettings => ({
   /* LOW is the default for every device, on the owner's call ("i think by
@@ -711,7 +728,21 @@ export const defaultSettings = (): GameSettings => ({
   drawDist: 700,
   units: "mph",
   steerMode: "buttons",
-  traffic: 1,
+  /* 0.75, not 1, and it did not move — the top of the scale did.
+
+     The slider used to run 0.2..1 over one linear term against a fleet of 120,
+     so 1 meant 90 cars on the deck and that is what has shipped as the default
+     all along. The jam ceiling (see FLEET_BASE and TierCaps.fleetMax) adds a
+     second term above 0.75 that climbs to 240 on a desktop, because the owner
+     asked for a 100% that is genuinely bumper to bumper.
+
+     Leaving the default at 1 would have handed every existing player TWICE
+     the traffic they have been driving, without asking, on the same day
+     someone reported the game lagging. 0.75 is the setting that reproduces
+     today's default exactly on every tier; 100% is now something a player
+     opts into. loadProfile remaps a saved 1 to 0.75 for the same reason —
+     see the note there. */
+  traffic: 0.75,
   fovBase: 67,
   vol: 1,
   autoTime: true,
@@ -743,6 +774,8 @@ export const defaultSettings = (): GameSettings => ({
 });
 
 export const defaultProfile = (): Profile => ({
+  // a fresh profile is already current, so no migration should ever run on it
+  pv: PROFILE_VERSION,
   settings: defaultSettings(),
   carId: DEFAULT_CAR_ID,
   paintIx: 0,
@@ -1038,6 +1071,21 @@ export function loadProfile(): Profile {
        unlocking is putting the SignToggle back in GameApp and dropping this
        line. */
     if (prof.settings?.dashcam) prof.settings.dashcam = base.settings.dashcam;
+    /* MIGRATIONS — one-time rewrites, guarded by pv so they cannot undo a
+       change the player makes afterwards. Unlike the scrubs above, which
+       re-assert a lock that is still in force and are correct every load.
+
+       v1: the traffic slider's top end changed meaning. A saved 1 was "90
+       cars, the busiest the game offers"; with the jam ceiling in, 1 is 240
+       on a desktop. Anyone carrying the old default would silently get a road
+       twice as busy as the one they chose. Only an exact 1 is remapped — the
+       value nobody had to move a slider to get; someone who deliberately
+       dragged it to 0.9 kept a number that still means what it meant. And
+       because pv is stamped below, a player who then chooses 100% for the jam
+       keeps it through every later load. */
+    const pv = typeof prof.pv === "number" ? prof.pv : 0;
+    if (pv < 1 && prof.settings?.traffic === 1) prof.settings.traffic = 0.75;
+    prof.pv = PROFILE_VERSION;
     if (typeof prof.seed !== "number" || !Number.isFinite(prof.seed)) prof.seed = base.seed;
     if (
       typeof prof.cleanRunBest !== "number" || !Number.isFinite(prof.cleanRunBest) ||
