@@ -12,7 +12,7 @@
 
 Night driving through a **procedurally generated Japanese town** and the
 elevated expressway looping above it — a browser take on the "No Hesi" vibe.
-Sim-grade tire physics, 120 cars of AI traffic that yield, crash and wreck, an
+Sim-grade tire physics, up to 240 cars of AI traffic that yield, crash and wreck, an
 optional rival that carves through the stream, a No Hesi score that builds on
 speed and near misses, rain, neon, fog, and a garage of two cars (three more
 teasing from behind COMING SOON badges).
@@ -56,7 +56,7 @@ npm run engine-rpm # asserts the engine flywheel model across the roster
 node test/size-budget.mjs   # committed assets vs the 15/30 MB budgets
 ```
 
-Those are the wired-up entry points; `test/` holds ~47 scripts in total
+Those are the wired-up entry points; `test/` holds 134 scripts in total
 (standalone sims, browser assertion checks, and investigation instruments),
 run by hand as needed.
 
