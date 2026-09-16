@@ -6265,8 +6265,12 @@ export class Traffic {
        round thing rather than a dark smudge under a sill, and it sits inside
        the body swap below on purpose: a car loses its wheels first and its
        interior panel density second, so neither change lands on the same
-       frame as the other and a car never visibly "pops" twice at once. */
-    const WHEEL2 = 75 * 75;
+       frame as the other and a car never visibly "pops" twice at once.
+
+       On the same live knob as the body swap (`window.__npcLod.wheel`, in
+       metres) so a before/after can be shot from one frozen frame with only
+       the cutoff moved — see test/lod-aggressive-shots.mjs. */
+    const WHEEL2 = (((window as any).__npcLod?.wheel as number | undefined) ?? 75) ** 2;
     /* Where a car swaps to its decimated body. 120 m -> 65 m.
 
        The owner's read of the first far tier was that it "made zero effect —
