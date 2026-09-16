@@ -154,6 +154,32 @@ if (typeof window !== "undefined") void loadEngine();
 /** Run `fn` when the main thread is next idle, with a timeout backstop for a
     page that never goes idle — and a plain timer on Safari, which has no
     requestIdleCallback at all. */
+/* Traffic density every SURVIVAL run is driven at, whatever the player's own
+   slider says.
+
+   The owner asked for a fixed number ("find a good percentage for the survival
+   mode for traffic, and then it should be unchangeable") and the reason it has
+   to be fixed is the score: survival's number is a distance, kept as a
+   personal best, and a best set on an empty road is not the same achievement
+   as one set in traffic. A live slider would make the record meaningless.
+
+   0.75, and the value is NOT a taste call — it is the highest density that
+   means the same thing on every device.
+
+   traffic.ts reads the slider in two pieces: a linear term against FLEET_BASE
+   (120) that every tier shares, plus a jam term that only has any value above
+   0.75 and that scales with TierCaps.fleetMax — 240 on desktop, 150 and 120 on
+   the two phone tiers. So 0.85 is 144 cars on a desktop and 102 on a phone,
+   and two players comparing bests would not have driven the same road. At 0.75
+   the jam term is zero everywhere and the answer is 90 cars on every machine
+   there is.
+
+   90 is also, not by accident, exactly what the slider's 100% used to mean
+   before the jam ceiling — i.e. the busiest road the game has ever actually
+   shipped. Raising it is one constant here, but it costs cross-device
+   comparability to do it. */
+const SURVIVAL_TRAFFIC = 0.75;
+
 const IDLE_TIMEOUT_MS = 1200;
 
 /** How often the profile is written to localStorage WHILE DRIVING — the
@@ -434,7 +460,7 @@ export default function GameApp() {
     p.seed = g.seed;
     p.camMode = g.camMode;
     p.cleanRunBest = g.cleanRunBest;
-    /* ENDLESS: the bank and the record. Both getters already fold in what the
+    /* SURVIVAL: the bank and the record. Both getters already fold in what the
        profile was constructed with, so this is idempotent however often it
        runs — which matters, because unlike everything else here these are
        also written on a timer while the player drives (see the effect below):
@@ -486,7 +512,7 @@ export default function GameApp() {
      only sets up a canvas and the settings the menus read (see Game.load) —
      so the first press pays for the whole build behind the loading screen.
      A second press (after MAIN MENU from the pause screen) is instant. */
-  const drive = useCallback(async () => {
+  const drive = useCallback(async (survival = false) => {
     /* Almost always already there — the engine chunk is fetched from module
        scope, so it has had the whole time the player spent reading the board.
        `waited` is true only for a press that beat the download on a cold,
@@ -494,6 +520,35 @@ export default function GameApp() {
     const waited = !gameRef.current;
     const g = await ensureGame();
     if (!g) return;
+    /* WHICH MODE THIS PRESS STARTS, decided here and written before the world
+       build rather than carried in a toggle the player set earlier.
+
+       The owner's call: "it should be like free drive instead of drive and
+       then [survival] should be like another game mode no on and off just
+       click it". So the board has two ways in, not one way in plus a switch,
+       and `endless` stops being a preference the player leaves lying around —
+       every press states it. Free drive presses clear it; survival presses
+       set it. A player who last drove survival and then taps FREE DRIVE gets
+       free drive, which a toggle could not promise.
+
+       SURVIVAL ALSO PINS THE TRAFFIC. The density slider is the player's
+       everywhere else, but a distance score is only comparable against other
+       runs at the same density — a personal best set at 15% traffic is not
+       the same achievement as one set in a jam, and leaving the slider live
+       would make the leaderboard number meaningless. See SURVIVAL_TRAFFIC for
+       where the number comes from. The player's own setting is saved and put
+       back when they next drive free. */
+    if (survival) {
+      if (!g.settings.endless) survivalTraffic.current = g.settings.traffic;
+      g.settings.endless = true;
+      g.settings.traffic = SURVIVAL_TRAFFIC;
+    } else {
+      if (g.settings.endless && survivalTraffic.current !== null)
+        g.settings.traffic = survivalTraffic.current;
+      g.settings.endless = false;
+    }
+    g.applySettings(g.settings);
+    persist();
     const coldStart = !g.loaded; // whether this press pays for the world build
     /* Before anything asynchronous: iOS only unlocks an AudioContext created
        inside the gesture itself, and every line below this one is a task or
@@ -554,26 +609,10 @@ export default function GameApp() {
     markRun();
     persist();
   }, [persist, markRun, ensureGame]);
-  /* ENDLESS on/off from the home board. Writes through the Game when there is
-     one (applySettings is what the engine's own HUD reads) and through the
-     restored profile when the engine chunk is still in the air, so the row
-     works on the very first paint — the same fallback the board's car/paint
-     line already makes. */
-  const endlessOn = !!(gameRef.current
-    ? gameRef.current.settings.endless
-    : profileRef.current?.settings.endless);
-  const toggleEndless = () => {
-    const game = gameRef.current, prof = profileRef.current;
-    if (game) {
-      game.settings.endless = !game.settings.endless;
-      game.applySettings(game.settings);
-      persist();
-    } else if (prof) {
-      prof.settings.endless = !prof.settings.endless;
-      saveProfile(prof);
-    }
-    rerender();
-  };
+  /* The traffic density the player had before a SURVIVAL run took the slider
+     off them, so free drive can hand it back. Null until a survival run has
+     actually borrowed it. */
+  const survivalTraffic = useRef<number | null>(null);
   const resume = () => {
     gameRef.current?.setRunning(true);
     setScreen("playing");
@@ -759,7 +798,7 @@ export default function GameApp() {
             the #hud .runDist rules in globals.css. */}
         <div className="runDist" id="runDist" />
       </div>
-      {/* ENDLESS MODE panel — run score (metres), personal best, bank. The
+      {/* SURVIVAL panel — run score (metres), personal best, bank. The
           engine writes all three figures and owns whether the panel is on
           screen at all (data-on, from settings.endless), the same contract
           the clean-run readout has; this style only ever hides it when the
@@ -767,7 +806,7 @@ export default function GameApp() {
           see the #ezHud block in globals.css. */}
       <div id="ezHud" data-on="0" style={playing ? undefined : { display: "none" }}>
         <div className="ez-cap">
-          <i lang="ja">無限</i>ENDLESS
+          <i lang="ja">生存</i>SURVIVAL
         </div>
         <div className="ez-run">
           <span id="ezRun">0</span>
@@ -903,24 +942,30 @@ export default function GameApp() {
               </header>
               <SignRule />
               <nav className="sign-rows" aria-label="Main menu">
-                <SignRow selected glyph="up" jp="本線" en="DRIVE" dist="0.0" onClick={drive} />
+                <SignRow
+                  selected glyph="up" jp="本線" en="FREE DRIVE" dist="0.0"
+                  onClick={() => drive(false)}
+                />
                 <SignSep />
-                {/* ENDLESS — the one way into the mode that does not need a
-                    menu dive, and the shape the board already had for a mode
-                    (it is the RIVAL row's, badge and all, from before the
-                    rival was held back). A row, not a second DRIVE button:
-                    the mode changes the HUD and the scoring, not how a drive
-                    is started, so it stays a setting that happens to be
-                    reachable from here. The same boolean lives in
-                    SETTINGS > GAMEPLAY. */}
+                {/* SURVIVAL — a second way to START a drive, not a switch.
+
+                    It used to be ENDLESS, a row with an ON/OFF badge that set
+                    a preference the player then had to press DRIVE to use.
+                    The owner: "it should be like free drive instead of drive
+                    and then [survival] should be like another game mode no on
+                    and off just click it and it's like a drive til u crash".
+                    So the badge is gone and the row starts a run, the same as
+                    the one above it — the board offers two drives, and which
+                    one you pressed is what decides the rules.
+
+                    The name is the owner's pick from four shot on this board;
+                    ENDLESS was his to reject ("i don't like the name"). */}
                 <SignRow
                   glyph="ne"
-                  jp="無限"
-                  en="ENDLESS"
+                  jp="生存"
+                  en="SURVIVAL"
                   note="DRIVE UNTIL YOU CRASH"
-                  badge={endlessOn ? "ON" : "OFF"}
-                  badgeOn={endlessOn}
-                  onClick={toggleEndless}
+                  onClick={() => drive(true)}
                 />
                 {/* The same setting the panel carries, surfaced here so the mode
                     is discoverable without going three screens deep. */}
@@ -1290,20 +1335,32 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
         {/* live: passed into traffic.update() every frame as the pool cap
             (engine.ts). Three stops off the settings screen's 20..100 slider,
             which stays the fine control; a load board gets one tap. */}
-        <SignSrow name="Traffic">
-          <SignSeg
-            label="Traffic"
-            value={s.traffic <= 0.5 ? "light" : s.traffic <= 0.85 ? "some" : "heavy"}
-            options={[
-              { v: "light", t: "LIGHT" },
-              { v: "some", t: "SOME" },
-              { v: "heavy", t: "HEAVY" },
-            ]}
-            onChange={(v) =>
-              upd("traffic", (x) => (x.traffic = v === "light" ? 0.4 : v === "some" ? 0.7 : 1))
-            }
-          />
-        </SignSrow>
+        {/* Same pin as the settings panel's slider, and it matters more here:
+            this board is up DURING a survival load, so a control that appeared
+            to change the density would be changing it out from under the run
+            the player just started. */}
+        {s.endless ? (
+          <SignSrow name="Traffic">
+            <span className="sign-cap faint">
+              {Math.round(SURVIVAL_TRAFFIC * 100)}% &middot; FIXED
+            </span>
+          </SignSrow>
+        ) : (
+          <SignSrow name="Traffic">
+            <SignSeg
+              label="Traffic"
+              value={s.traffic <= 0.5 ? "light" : s.traffic <= 0.85 ? "some" : "heavy"}
+              options={[
+                { v: "light", t: "LIGHT" },
+                { v: "some", t: "SOME" },
+                { v: "heavy", t: "HEAVY" },
+              ]}
+              onChange={(v) =>
+                upd("traffic", (x) => (x.traffic = v === "light" ? 0.4 : v === "some" ? 0.7 : 1))
+              }
+            />
+          </SignSrow>
+        )}
         {/* Held back for the beta, but kept in the list — the owner: "rival
             dont remove it just say not available or something". Static
             caption, no toggle: the profile scrub in settings.ts is what makes
@@ -1924,7 +1981,7 @@ function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
       rec: s.bestCombo > 1 && s.bestCombo >= l.bestCombo,
     },
     {
-      /* ENDLESS MODE's two persisted numbers. The bank is a LIFETIME figure
+      /* SURVIVAL's two persisted numbers. The bank is a LIFETIME figure
          by nature — a crash never takes any of it — so the session column is
          what this drive has earned and the lifetime column is the total.
          Never lit: it is not a record to beat, it only grows. */
@@ -2283,14 +2340,16 @@ function SettingsPanel({
                 <SignSrow name="Rival car">
                   <span className="sign-cap faint">NOT AVAILABLE</span>
                 </SignSrow>
-                {/* ENDLESS MODE — the same boolean the home board's ENDLESS
-                    row writes, here because that is where a player looks for
-                    a mode they have already met once. Off by default; it adds
-                    the score panel and the visible reset and changes nothing
-                    about the car. */}
-                <SignSrow name="Endless mode" aside="— drive until you crash, score resets" lit={L("endless")}>
-                  <SignToggle label="Endless mode" checked={s.endless} onChange={(v) => upd((x) => (x.endless = v))} />
-                </SignSrow>
+                {/* SURVIVAL used to have a toggle here, mirroring the home
+                    board's ENDLESS switch. Both are gone: the mode is chosen
+                    by which row on the board you press, so a preference that
+                    sits here between runs would be a second, silent answer to
+                    a question the press already asks. The score panel, the
+                    reset and the pinned traffic all follow that press.
+
+                    Nothing is lost from this screen — SETTINGS is where you
+                    change how the game behaves, and survival is not a way the
+                    game behaves any more, it is a drive you start. */}
                 {/* The clean-run readout: distance since the last real impact
                     (game/engine.ts's runUpdate). On by default. */}
                 <SignSrow name="Clean run" aside="— distance since your last crash" lit={L("cleanRunScore")}>
@@ -2323,14 +2382,27 @@ function SettingsPanel({
                     {/* TILT locked for the beta — see settings.ts */}
                   </SignSelect>
                 </SignSrow>
-                <SignSrow stack last name="Traffic density" lit={L("traffic")}>
-                  <SignSlider
-                    label="Traffic density"
-                    min={20} max={100} value={Math.round(s.traffic * 100)}
-                    text={`${Math.round(s.traffic * 100)}%`}
-                    onChange={(v) => upd((x) => (x.traffic = v / 100))}
-                  />
-                </SignSrow>
+                {/* SURVIVAL pins this — see SURVIVAL_TRAFFIC. A caption
+                    rather than a disabled slider: a control that does not move
+                    is worse than no control, and the row still has to say what
+                    the traffic IS, because the player can see it out of the
+                    windscreen and would otherwise think the setting broke. */}
+                {s.endless ? (
+                  <SignSrow stack last name="Traffic density">
+                    <span className="sign-cap faint">
+                      {Math.round(SURVIVAL_TRAFFIC * 100)}% &middot; FIXED IN SURVIVAL
+                    </span>
+                  </SignSrow>
+                ) : (
+                  <SignSrow stack last name="Traffic density" lit={L("traffic")}>
+                    <SignSlider
+                      label="Traffic density"
+                      min={20} max={100} value={Math.round(s.traffic * 100)}
+                      text={`${Math.round(s.traffic * 100)}%`}
+                      onChange={(v) => upd((x) => (x.traffic = v / 100))}
+                    />
+                  </SignSrow>
+                )}
               </div>
               <div>
                 <SignShead en="WORLD" jp="天候" />
