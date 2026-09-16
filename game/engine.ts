@@ -671,6 +671,45 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02, procDy: 0.14
    re-frames on the next frame. Settled values come back here. */
 const BACKSEAT_CAM = { x: 0, y: 1.30, z: -1.10, fov: 72, tilt: 0.04, yaw: 0 };
 
+/* CAM_HOOD: a lens ON the bonnet, not floating over it.
+
+   Note the near-collision with `HOOD` above — that one is the INTERIOR hood,
+   the sliver of the car's own bonnet drawn at the bottom of the cabin views.
+   This is the camera. `window.__hood` moves the mesh, `window.__hoodCam` moves
+   the lens.
+
+   It used to sit at `(0, belt + 0.5, L/2 - 0.6)`, which on the Volvo is y 1.42
+   — the car's ROOF is at 1.44 — and 1.88 m forward, i.e. half a metre of clear
+   air above the bonnet. That is a nose cam hovering in front of the
+   windscreen, and the owner's read of it was exactly that: it is not a hood
+   view, so make it one. A hood view means the bonnet is IN the frame.
+
+   Both numbers are offsets from the shell rather than absolutes, so a lower or
+   shorter car keeps the same relationship to its own bodywork:
+
+     dz  0.22 m FORWARD of the cowl (`L/2 - hood`), which is the hood's high
+         point. It has to clear the windscreen base, which glassShape() puts at
+         `L/2 - hood + 0.08` — sit behind that and the lens is looking through
+         its own glass. 0.22 leaves 14 cm of margin on the Volvo (z 1.46
+         against a base at 1.32) and 14 cm on the Kaze (1.11 against 0.97).
+
+     dy  0.03 m over the beltline, so the lens sits just proud of the sheet
+         metal at the one place the bonnet is highest. Measured against the
+         hood curve in carshape.ts that is 7.7 cm of clearance at the mount on
+         the Volvo — enough that the Kaze's `hoodBulge` does not eat the lens,
+         not so much that it floats again.
+
+   What that frames, at the 67-degree default lens: the nose crown (z 2.39,
+   y 0.58) lands 21.7 degrees below the horizon against a 33.5-degree half
+   frame, so the bonnet fills the bottom ~18% of the shot and the road starts
+   right above it. Raising dy puts MORE bonnet in frame, not less — the lens
+   sees further down the top surface — which is the opposite of the intuition
+   and the reason the old value showed none at all.
+
+   tilt is nose-down radians on top of the body's own pitch, at 0: the bonnet
+   already sits low enough in frame that raking it up buys nothing. */
+const HOOD_CAM = { dy: 0.03, dz: 0.22, tilt: 0 };
+
 /* ---------------------------------------------------------- cabin lighting --
 
    What is allowed to light the inside of the car, and how much of it.
@@ -1130,6 +1169,7 @@ declare global {
     __backseatCam?: { x: number; y: number; z: number; fov: number; tilt: number; yaw: number };
     __roofTap?: { top: number; half: number };
     __hood?: { on: number; dy: number; dz: number };
+    __hoodCam?: { dy: number; dz: number; tilt: number };
     __cabinVibe?: { amp: number; pow: number; slip: number };
     __chaseFx?: { lag: number; aimSwing: number; speedPull: number };
     __camSmooth?: { pov: number; max: number };
@@ -1651,6 +1691,13 @@ export class Game {
   private backseatCam(): { x: number; y: number; z: number; fov: number; tilt: number; yaw: number } {
     if (!window.__backseatCam) window.__backseatCam = { ...BACKSEAT_CAM };
     return window.__backseatCam;
+  }
+
+  /** Mount and cant for the hood camera — see HOOD_CAM. Not split by interior:
+      it is bolted to the EXTERIOR shell and never sees a cabin at all. */
+  private hoodCam(): { dy: number; dz: number; tilt: number } {
+    if (!window.__hoodCam) window.__hoodCam = { ...HOOD_CAM };
+    return window.__hoodCam;
   }
 
   /** Is the camera inside the cabin? Interior shell on, exterior body off, HUD
@@ -2672,8 +2719,14 @@ export class Game {
         label: "PUTTING CARS ON THE ROAD",
         weight: W.traffic,
         run: async (onStep) => {
+          /* Fleet size is per-tier now, not a flat 120 — it is the ceiling
+             the traffic-density slider reaches at 100%, and the owner wanted
+             that top setting to mean an actual jam. Phones keep 120 (or 150
+             on the high tier): the GPU-memory headroom on iOS Safari is not
+             something to spend on a fuller road. See TierCaps.fleetMax. */
           this.traffic = new Traffic(
-            this.scene, this.world, this.mats.envMap, this.mats.glowTex, 120
+            this.scene, this.world, this.mats.envMap, this.mats.glowTex,
+            this.tierCaps.fleetMax
           );
           this.rainFX = new RainFX(this.scene, this.mats.streakTex);
           // the load's applySettings pass covers mats.setWet but not the
@@ -6409,6 +6462,7 @@ export class Game {
           : 0;
       this.lookaheadYaw = lerp(this.lookaheadYaw, lookTarget, 1 - Math.exp(-4 * dt));
       const P = this.spec.shell;
+      const hk = this.hoodCam();
       /* Looking back, a driver leans in toward the centre of the car and cranes
          up — pivoting the eye in place instead just stares into their own
          headrest. Eased so tapping B doesn't snap the head sideways. */
@@ -6428,7 +6482,15 @@ export class Game {
               + cockEye.dy,
             COCKPIT_EYE.z + this.head.z + cockEye.dz
           )
-          : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5 * this.chaseShake(), P.L / 2 - 0.6);
+          /* CAM_HOOD — on the bonnet, see HOOD_CAM. The head.y term is the
+             chase camera's G-dip and is scaled by chaseShake(), which ships at
+             0, so this mount is rigid in practice; it is kept so that turning
+             the shake knob on moves every exterior view together. */
+          : this.tmpV.set(
+            0,
+            P.belt + hk.dy + this.head.y * 0.5 * this.chaseShake(),
+            P.L / 2 - P.hood + hk.dz
+          );
       /* road micro-vibration (cockpit only): multi-octave value noise keyed
          off car.z, not time. Same stretch of road always buzzes the same
          way — no randomness and nothing that drifts, so it can't build into
@@ -6463,7 +6525,12 @@ export class Game {
          uphill and at the sky downhill. */
       this.camera.position.copy(this.rig.bodyG.localToWorld(this.tmpV2.copy(local)));
       this.camera.rotation.y = car.h + Math.PI + back + this.lookaheadYaw;
-      this.camera.rotation.x = -this.rig.bodyG.rotation.x * (this.lookBack ? -1 : 1);
+      /* Hood cant is skipped when looking back: the tilt is about where the
+         bonnet sits in the forward frame, and applying it to the reverse view
+         just aims at the boot lid. */
+      this.camera.rotation.x =
+        -this.rig.bodyG.rotation.x * (this.lookBack ? -1 : 1) -
+        (this.camMode === CAM_HOOD && !this.lookBack ? hk.tilt : 0);
       // roll matches the shell for the same reason the pitch does, plus the
       // G-lean roll from above
       this.camera.rotation.z =

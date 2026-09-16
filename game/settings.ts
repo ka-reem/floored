@@ -180,6 +180,22 @@ export interface TierCaps {
       donors at 512px, and phones keep their memory and radio for the
       drive itself. Read by traffic.ts once the base fleet has landed. */
   hdFleet?: boolean;
+
+  /** Size of the NPC pool, and therefore the ceiling the traffic-density
+      slider reaches at 100%.
+
+      120 was the single hardcoded number for every device, and it is why the
+      owner's "100% should be bumper to bumper" was not: 120 cars, of which
+      0.74 go on the deck, spread over the ~900 m of corridor the fog keeps
+      alive, is a car every ~35 m per lane. That is moderate traffic, not a
+      jam. See FLEET_BASE in traffic.ts for how the slider reaches the new
+      ceiling WITHOUT moving anything below 75% — every phone and every
+      mid-slider setting keeps exactly the count it has today.
+
+      The phone numbers stay at or near 120 on purpose. The GPU-memory ceiling
+      that kills iOS Safari on the loading screen is not something to spend on
+      a fuller road. */
+  fleetMax: number;
 }
 
 export const TIER_CAPS: Record<RenderTier, TierCaps> = {
@@ -196,6 +212,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 2, townCastShadow: false, overpassLights: false,
     wheelTracks: false, deckDressing: 0.35, districts: 0.55, mtnDetail: 0.5, hdFleet: false,
     vegetation: 0.55,
+    fleetMax: 120,
   },
   "mobile-high": {
     tier: "mobile-high", dprCap: 1.35, pbrDetail: true, spreadCones: true,
@@ -208,6 +225,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 1, townCastShadow: false, overpassLights: true,
     wheelTracks: true, deckDressing: 0.7, districts: 0.8, mtnDetail: 0.75, hdFleet: false,
     vegetation: 0.8,
+    fleetMax: 150,
   },
   desktop: {
     tier: "desktop", dprCap: 1.75, pbrDetail: true, spreadCones: true,
@@ -220,6 +238,7 @@ export const TIER_CAPS: Record<RenderTier, TierCaps> = {
     lampGlowEvery: 1, townCastShadow: true, overpassLights: true,
     wheelTracks: true, deckDressing: 1, districts: 1, mtnDetail: 1, hdFleet: true,
     vegetation: 1,
+    fleetMax: 240,
   },
 };
 

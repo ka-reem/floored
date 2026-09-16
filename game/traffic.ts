@@ -1887,6 +1887,14 @@ export interface NpcAudioSample {
   heavy: boolean;
 }
 
+/* The fleet the density slider used to reach at 100%, on every device.
+
+   It stays here as the ANCHOR for the slider's lower travel rather than as a
+   ceiling: see the cap computation in update(). A device's real ceiling is
+   TierCaps.fleetMax, which is this number on a phone and twice it on a
+   desktop. */
+const FLEET_BASE = 120;
+
 export class Traffic {
   npcs: Npc[] = [];
   private scene: THREE.Scene;
@@ -2109,6 +2117,30 @@ export class Traffic {
     laneWant: 0,
   };
   readonly N: number;
+
+  /* How hard the top of the traffic-density slider is leaning on the road,
+     0..1. Zero below 75%, ramping to 1 at 100%.
+
+     The owner's note was that 100% "should be super super busy, bumper to
+     bumper" and was not. Three things had to move together for that, and this
+     one number drives all three so they cannot drift apart:
+
+       - the fleet ceiling (see FLEET_BASE above),
+       - the spawner's per-lane spacing veto in trySpawnHwy, 20 m -> 8 m,
+       - the deck IDM's desired headway, scaled down so the extra cars pack in
+         and keep flowing instead of concertina-ing into a standstill.
+
+     Raising the car count ALONE does not give a jam, it gives a longer queue:
+     IDM holds its 36 m desired gap at 30 m/s whatever the density is, and the
+     spawner refuses to place a car within 20 m of another in the same lane, so
+     the road simply cannot hold more. Shortening the headway ALONE does not
+     either — there are not enough cars to close the gaps. Both, and the count
+     to fill them.
+
+     Nothing below 75% on the slider is touched by any of this: jam is 0
+     there, every term collapses to the value it has today, and a phone (whose
+     fleetMax is unchanged) never sees a difference at all. */
+  private jam = 0;
 
   constructor(scene: THREE.Scene, world: WorldData, envMap: THREE.CubeTexture, glowTex: THREE.Texture, N = 120) {
     this.scene = scene;
@@ -2932,7 +2964,12 @@ export class Traffic {
            laneClearAt() and trySpawnBypass() both filter by route already. */
         if (m.route !== -1) continue;
         if (Math.abs(m.offCur - off) > 2.2) continue;
-        if (Math.abs(cor.deltaZ(m.s, z)) < 20) blocked = true;
+        /* Per-lane spawn spacing. 20 m at any ordinary density — enough that
+           a seeded car is never dropped on top of another and the corridor
+           reads as free-flowing traffic. At the top of the slider it closes to
+           8 m, which is about two car lengths: that is the only way the extra
+           cars the jam ceiling allows can physically fit on the deck. */
+        if (Math.abs(cor.deltaZ(m.s, z)) < 20 - 12 * this.jam) blocked = true;
       }
       if (blocked) continue;
       let cruise = (rand(24, 30) + laneK * 1.1) * n.drv.spd;
@@ -4527,7 +4564,22 @@ export class Traffic {
     const playerUp =
       (deckY !== null && Math.abs(player.y - deckY) < 7) ||
       this.playerBy !== null || this.playerMt !== null;
-    const cap = Math.round(this.N * clamp(density, 0.15, 1));
+    /* The density slider, read in two pieces so that raising the ceiling does
+       not quietly double the middle of the slider's travel.
+
+       FLEET_BASE is the fleet the slider used to reach at 100%, and the linear
+       term reproduces the OLD number exactly at every setting: 0.5 still means
+       60 cars, 0.75 still means 90. The jam term is what is new, and it only
+       has any value above 75%, where it adds the whole difference between
+       FLEET_BASE and this device's fleetMax. So the curve is continuous, the
+       bottom three quarters are byte-identical to what shipped, and the top
+       quarter climbs to a road the old slider could not ask for. */
+    const jamT = clamp((density - 0.75) / 0.25, 0, 1);
+    this.jam = jamT * jamT * (3 - 2 * jamT); // smoothstep: no kink at 75%
+    const cap = Math.min(
+      this.N,
+      Math.round(FLEET_BASE * clamp(density, 0.15, 1) + (this.N - FLEET_BASE) * this.jam)
+    );
     this.occBudget = 40;
     // camera forward, flattened
     const cl = Math.hypot(camFx, camFz) || 1;
@@ -5820,7 +5872,16 @@ export class Traffic {
       lead = this._stop;
     }
 
-    const aMax = 1.6 * drv.acc, bCom = 2.3, T = 1.25 * drv.gap, s0 = 2.2 + 1.4 * (drv.gap - 1);
+    /* Desired headway, shortened at the top of the density slider — see
+       `jam`. Drivers in heavy traffic accept gaps they would not accept on an
+       empty road, and without that the deck cannot hold the cars the jam
+       ceiling puts on it: IDM would simply brake the whole stream to a halt
+       rather than pack it. At jam 1 this is ~0.6 s of headway, so a stream
+       settling around 55 km/h sits roughly three car lengths apart, which is
+       what a busy Shuto actually looks like. Untouched below 75%. */
+    const jamGap = 1 - 0.55 * this.jam;
+    const aMax = 1.6 * drv.acc, bCom = 2.3,
+      T = 1.25 * drv.gap * jamGap, s0 = (2.2 + 1.4 * (drv.gap - 1)) * jamGap;
     let acc: number;
     if (lead) {
       const dv = n.v - lead.v;
