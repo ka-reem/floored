@@ -1,6 +1,6 @@
 /* TikTok slide compositor — game frames in, postable 1080x1920 PNGs out.
 
-   The posting workflow is "screenshot the slide and post it", so the text has
+   The posting workflow is to screenshot the slide and post it, so the text has
    to be BURNED IN and the frame has to already respect TikTok's overlays. See
    docs/tiktok-slides.md for why each number is what it is, and the sources
    behind them.

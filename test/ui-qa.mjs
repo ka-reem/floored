@@ -1,5 +1,5 @@
-/* Automated UI / gameplay QA walkthrough — the "go play the game and test
-   stuff" pass, made repeatable. Rerun after every merge.
+/* Automated UI / gameplay QA walkthrough — the play-the-game-and-poke-at-
+   everything pass, made repeatable. Rerun after every merge.
 
    What it does, per viewport (desktop 1440×900, phone portrait 390×844 under a
    mobile UA + touch emulation, phone landscape 844×390):

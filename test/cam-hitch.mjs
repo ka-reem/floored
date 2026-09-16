@@ -15,8 +15,8 @@
 
    `renderer.info.programs.length` is the corroborating number, and it needs a
    CONTROL: the game keeps relinking materials on a timer after load (the
-   photo-scan texture upgrade), so "programs grew while I switched camera" and
-   "programs grew because time passed" are the same measurement without one.
+   photo-scan texture upgrade), so programs growing during a camera switch and
+   programs growing simply because time passed are the same measurement without one.
    Each mode therefore gets a control sample of the same length in the mode it
    is already in, immediately before the switch. The camera's share is the
    difference.

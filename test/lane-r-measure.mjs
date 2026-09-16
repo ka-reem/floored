@@ -151,8 +151,8 @@ const measure = () => {
   const bd = g.beamDir.clone().normalize();
   const deckDeg = Math.atan(st.slope) * D;
   // where the dipped cone's UPPER EDGE (the cut-off) meets the deck, marching
-  // along the edge ray from the lamp — the single number that is "how much
-  // road the pool covers"
+  // along the edge ray from the lamp — the single number for how much
+  // road the pool covers
   rig.spotL.getWorldPosition(v);
   const axisPitch = Math.asin(dL.y); // signed, up positive
   const half = rig.spotL.angle;

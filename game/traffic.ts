@@ -76,8 +76,8 @@ export const FLEET_STYLES: string[] = [...FLEET_MIX.map(([s]) => s), "police"];
 /* W is the MESH FIT, and must be kept in sync with the per-style W in
    tools/build-orchids-models.mjs — that table is the source of truth, because
    each GLB is non-uniformly fitted so its whole bounding box lands on exactly
-   those numbers. Do not "correct" these. Everything that asks "how wide is
-   this vehicle" for TRAFFIC purposes — lane keeping, separation, the AI's own
+   those numbers. Do not "correct" these. Everything that asks how wide a
+   vehicle is for TRAFFIC purposes — lane keeping, separation, the AI's own
    wall clamps — reads W, and those all want the mesh's own footprint.
 
    `cw` IS THE COLLISION HALF-WIDTH, and it is a different number.
@@ -725,8 +725,9 @@ const LANE_FOLLOW_RATE = 3.4;
 
    So the zone has a speed in it, in two places.
 
-   Where it STARTS is "will you still be crossing when the lane centres start
-   to spread": a comfort change is up to TOLL_HOLD_MAN seconds of blinker plus
+   Where it STARTS is the point at which a car would still be crossing when
+   the lane centres start
+   to spread: a comfort change is up to TOLL_HOLD_MAN seconds of blinker plus
    crossing, so a car doing 30 m/s must have decided 180 m before the fan-out,
    while one at TOLL_HOLD_VMIN or below is held from the nominal 90 m. The
    zone is therefore widest exactly when traffic is flowing fast enough for a
@@ -872,7 +873,7 @@ const HAIL = {
   /** lateral half-window (m). Your own lane, plus enough slack for a car
       leaning on its line or for the player straddling one mid-overtake — but
       NOT a car sitting centred in the next lane, which is 3.7 m out. The ask
-      is "the one car in front of me, and that's it"; a neighbour absorbing
+      is for the single car directly in front and nothing else; a neighbour absorbing
       the gesture reads as the wrong car reacting. */
   side: 3.0,
 
@@ -927,8 +928,8 @@ const HAIL = {
   /* --- the two reactions --- */
   /** Chance a car that CAN move over actually does, rather than just picking
       its pace up and staying where it is. Moving over is the preferred
-      answer, but it must not be the automatic one: "sometimes it just speeds
-      up and doesn't move, it'll be random". A driver who acknowledges you and
+      answer, but it must not be the automatic one: sometimes a car should
+      just pick up its pace and stay put, at random. A driver who acknowledges you and
       simply gets on with it is a real and common answer on a real road, and
       making the response a coin the player cannot read is most of what keeps
       the mechanic from feeling mechanical. A car with nowhere to go still
@@ -1164,7 +1165,7 @@ const NEARMISS = {
    and brakes (a fleet parting for it would look as unnatural as clipping).
    One-way perception: it avoids them, they ignore it.
 
-   THREE LAYERS KEEP IT OUT OF OTHER BODIES, because "it should not overlap"
+   THREE LAYERS KEEP IT OUT OF OTHER BODIES, because not overlapping
    has to be a guarantee and not an aspiration:
      1. it follows the car in its own path (IDM, always — see `lead` below),
      2. it will not slide sideways into an occupied space (rivalLatClear),
@@ -1192,7 +1193,8 @@ const RIVAL = {
   /** Distance beyond which it starts easing off (m), and the span over which
       that ease reaches full strength.
 
-      THIS IS THE ANSWER TO "IT'S SO SLOW", and it is a change of shape rather
+      THIS IS THE ANSWER TO THE RIVAL READING AS FAR TOO SLOW, and it is a
+      change of shape rather
       than of numbers. Every earlier version eased whenever it was past a
       target gap of a few tens of metres, so the player spent most of their
       time watching it dawdle in front of them. Its sprint was already 2.3x the
@@ -1277,8 +1279,8 @@ const RIVAL = {
       needs; hustleSpan later it is at gainMin. Decays twice as fast as it
       builds, so a moment back in front does not leave it keyed up.
 
-      gainMin stays ABOVE 1. It was 0.85 — "move even to a slightly worse
-      lane" — which was harmless while urgency only ever meant "far behind",
+      gainMin stays ABOVE 1. It was 0.85 — move even to a slightly worse
+      lane — which was harmless while urgency only ever meant being far behind,
       and became a slow leak once press made a player on its bumper count:
       being tailgated is the mode's NORMAL state, and a rival that keeps
       swapping into 15%-worse lanes for as long as someone sits behind it
@@ -1311,8 +1313,8 @@ const RIVAL = {
       it is also the calmest setting (fewest abandoned moves, ≤2 reversals a
       minute). 120 overshot — the band wound up on every ordinary close and
       it started leaving good lanes. A car that sees headlights fill its
-      mirror at 90 m and goes is exactly the "close-ish, never past" this
-      rival is meant to be. */
+      mirror at 90 m and goes is exactly the close-but-never-overtaken rival
+      this is meant to be. */
   pressFrom: 90, pressSpan: 90,
   /** ---- surge: what urgency does to its pace. The ceiling lifts from `top`
       toward surgeTop and accMax toward surgeAcc, both by urgency. Measured
@@ -1399,7 +1401,7 @@ const RIVAL = {
   yieldClose: 14,
   /** how much of a closing-speed advantage it needs before anyone bothers */
   yieldDv: 4,
-  /** lateral window that counts as "in its path" (m) */
+  /** lateral window that counts as being in its path (m) */
   yieldLat: 2.4,
 
   /* ---- misc ---- */
@@ -1848,8 +1850,8 @@ const HLW_GAIN = 0.5;
     beyond that. The car ahead therefore lit up by exactly the same amount
     whether you were two metres off its bumper or twenty, which reads as a
     glow stuck to the car rather than as your headlights falling on it — and
-    it is what "it should illuminate depending on how close or far away I am"
-    is describing.
+    it is what the request for illumination that varies with distance is
+    describing.
 
     Pulling the core in to 5 m (about a car length, where a real dipped beam
     genuinely is saturated) puts the entire following range on the tail
@@ -3438,7 +3440,7 @@ export class Traffic {
       and that matters: laneProgress spans an order of magnitude between a
       packed lane and a clear one, so any absolute bonus is either irrelevant
       when the lanes are far apart or decisive when they are close. A factor keeps the
-      same meaning at every density — "only move for a clearly better lane" —
+      same meaning at every density — move only for a clearly better lane —
       which is what preserves the decisiveness that measured as load-bearing
       (dropping stickiness entirely cost 11 points of time-in-front and doubled
       the passes against it). */
@@ -3693,7 +3695,7 @@ export class Traffic {
   }
 
   /** LAYER 3: the hard backstop. After everything else has had its say the
-      rival must not be sharing a body with a traffic car — "it never overlaps"
+      rival must not be sharing a body with a traffic car — never overlapping
       has to be a guarantee rather than an aspiration, and layers 1 and 2 are
       both heuristics carrying a frame of latency. The case neither of them can
       cover at all is a traffic car changing lanes INTO the rival: traffic is
@@ -4034,8 +4036,8 @@ export class Traffic {
        the player's own target is their car's top speed — so on any clear
        stretch the player accelerated toward 78 m/s while the rival aimed for
        pace plus a few, and was simply driven away from. It could not
-       out-accelerate the player anywhere, which is precisely the "literally so
-       slow" that was reported, and it is why the rival kept accumulating a
+       out-accelerate the player anywhere, which is precisely the extreme
+       slowness that was reported, and it is why the rival kept accumulating a
        deficit it had no way to repay. The deficit was structural, not a tuning
        artifact, which is why raising its authority twice barely moved it.
 
@@ -4083,8 +4085,8 @@ export class Traffic {
       const aMax = lerp(RIVAL.folAMax, RIVAL.surgeAcc, urgency);
       const bCom = lerp(RIVAL.folBCom, RIVAL.hustleFolMax, urgency);
       const dv = n.v - lead.v;
-      /* It is always in a hurry now — there is no "behind where it wants to
-         be" any more, because it has no target gap to be behind. See
+      /* It is always in a hurry now — there is no being behind where it wants
+         to be any more, because it has no target gap to be behind. See
          RIVAL.folTUrgent; this is a driver in a hurry, not permission to pass
          through anybody, and all three layers still bind. */
       const T = RIVAL.folTUrgent;
@@ -4093,7 +4095,7 @@ export class Traffic {
          below does not care about the sign, and the rival read a player
          leaving it at +40 m/s as something to brake for — it sat at 26 m/s
          behind a departing player until they were 90 m clear, and that was
-         the stall behind every "fell 150 m back and reseeded" run in
+         the stall behind every run that fell 150 m back and reseeded, in
          test/rival-sim.mjs. A faster leader is simply not an obstacle. */
       const sStar = Math.max(0, RIVAL.folS0 + n.v * T +
         (n.v * dv) / (2 * Math.sqrt(aMax * bCom)));
@@ -4867,8 +4869,8 @@ export class Traffic {
       /* every driver's cruise speed drifts a little around their own average */
       let v0 = n.v0 * (1 + 0.04 * Math.sin(now * 0.23 + n.drv.jit));
       /* Reactions to being honked/flashed at. `nudgeT` used to be set by an
-         unconditional "anything within 16 m of a held horn speeds up 15%"
-         rule; the HAIL model below supersedes that outright — a car only
+         unconditional rule under which anything within 16 m of a held horn
+         sped up 15%; the HAIL model below supersedes that outright — a car only
          picks its pace up now if it actually decided to, which is the whole
          point of the feature. The timers are counted down here (rather than
          where they are set) because hailGesture() runs after this pass. */
@@ -5313,8 +5315,8 @@ export class Traffic {
       Exactly ONE car reacts per gesture, and it is the nearest one roughly in
       front, with lateral distance weighted heavily so the car in your own lane
       beats a slightly nearer one a lane over. A flash must not part the whole
-      sea: the player has to be able to say "*that* car moved because I flashed
-      at it", and they cannot if three of them stir at once. Honking at nothing
+      sea: the player has to be able to attribute the move to the specific car
+      they flashed at, and they cannot if three of them stir at once. Honking at nothing
       finds no target and does nothing at all. */
   private hailGesture(player: CarState, now: number, pfx: number, pfz: number) {
     let best: Npc | null = null;
@@ -5363,8 +5365,8 @@ export class Traffic {
   /** The lane a hailed car would move over into, or −1 if there isn't one.
 
       Courtesy is moving toward the kerb (lane 0), never out into the faster
-      lane: a car that pulls out to "let you past" has merely swapped places
-      with you. So there is exactly one candidate, and a car already in the
+      lane: a car that pulls out to let the player past has merely swapped
+      places with them. So there is exactly one candidate, and a car already in the
       kerb lane has nowhere courteous to go and picks its pace up instead —
       which is also what happens on a real road. */
   private yieldLane(n: Npc, pOff: number): number {
@@ -5455,8 +5457,8 @@ export class Traffic {
       } else {
         /* Speed up. The gap opening is the honest cue but takes a second to
            read, so blip the hazards first: two flashes of both sides is the
-           real-world "yeah, yeah, going" and is unmistakable through the
-           windshield, day or night. */
+           real-world acknowledgement that the car is moving, and is
+           unmistakable through the windshield, day or night. */
         n.nudgeT = HAIL.boostT;
         n.hailAck = HAIL.ackT;
       }
@@ -5743,7 +5745,7 @@ export class Traffic {
       /* The lane has to survive the WHOLE lookahead, not just its far end.
          Sampling one z at s+look was fine while every shrink was monotone,
          but the playground can re-widen the deck a couple of hundred metres
-         past a drop: the count at s+look is back to "my lane exists" while
+         past a drop: the count at s+look says the lane still exists while
          the pavement in between still dips, the merge block never engages,
          and the car meets the snap net at full speed. 32 m sampling cannot
          miss a dip: the narrowest one is a 120 m drop taper against a 24 m
@@ -6612,7 +6614,7 @@ export class Traffic {
          This used to apply only to styles with lens geometry, because a
          style without one had nothing for the halo to sit around and was
          left on the capped sprite at every range — which is exactly the
-         "lights fade out as you approach" the halo was added to fix. Now
+         lights-fading-out-as-you-approach problem the halo was added to fix. Now
          that the authored quads are gone (npcmodels.ts) most of the fleet
          has no lit lens at all and the glow IS the lamp, so every style
          gets the handover. A car with no tail anchors at all still has

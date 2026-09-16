@@ -2365,8 +2365,8 @@ body .signRoot .paintDot::before {
    portrait window (1774x1800) it is 1800px of line beside a 619px board, and
    what a player sees is a single thin blue-grey vertical line running the whole
    height of the frozen frame, passing behind the PAUSED plate, with the
-   backdrop reading darker on its left than on its right. That is the "weird
-   blue line" on the paused page, reported more than once. Nothing draws it but
+   backdrop reading darker on its left than on its right. That is the stray
+   blue line on the paused page, reported more than once. Nothing draws it but
    this rule, so this rule is what went.
    Deleted rather than trimmed to the board: the two 30x12su stubs that were
    supposed to sell it as a mount are 5px nubs hidden under the plate's own
@@ -2593,8 +2593,8 @@ a.sign-plate-btn {
   min-height: 0;
 }
 /* Header, rule, bar, status and caption are fixed furniture; .loadSet is the
-   only part allowed to give up height, so the thing that says "the game is
-   loading" is never what scrolls away. */
+   only part allowed to give up height, so the thing that says the game is
+   loading is never what scrolls away. */
 .sign.loadboard {
   padding-bottom: calc(20 * var(--su));
   display: flex;

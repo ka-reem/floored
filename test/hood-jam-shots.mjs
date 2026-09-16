@@ -147,7 +147,7 @@ for (const d of [0.5, 0.75, 1]) {
     const deck = t.npcs.filter((n) => n.active && n.hw && n.route === -1);
     /* Bumper-to-bumper gaps, per lane, along the corridor. Sorting by
        arclength inside a lane and differencing is the only honest way to say
-       "how far apart is the traffic" — a mean over all pairs is meaningless
+       how far apart the traffic is — a mean over all pairs is meaningless
        on a one-way road. */
     const lanes = new Map();
     for (const n of deck) {

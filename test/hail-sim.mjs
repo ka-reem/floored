@@ -4,8 +4,8 @@
    The mechanic has to satisfy four things at once and they pull against each
    other, which is why it wants a harness rather than an eyeball:
 
-     1. it must NOT work from a distance ("it shouldn't work where I'm far away
-        and they move because I'm honking from far away"),
+     1. it must NOT work from a distance — a car must not move because the
+        player honked from far away,
      2. it must reach exactly ONE car — the one in front — and not the
         neighbours,
      3. it must never be a button: most cars must ignore you, forever, however
@@ -15,8 +15,8 @@
 
    (1) and (3) are the ones that are easy to get wrong in opposite directions,
    and (3) is measured against a curve whose whole point is that it saturates —
-   so the number that matters is not "did it work" but "what does it converge
-   to after a hundred gestures".
+   so the number that matters is not whether it worked once but what it
+   converges to after a hundred gestures.
 
    Same contract as test/traffic-merge-sim.mjs and test/rival-sim.mjs:
    traffic.ts pulls in three.js and a live scene, so the arithmetic under test
@@ -138,7 +138,7 @@ function rollType(rng) {
 
 /* =====================================================================
    PART A — the compliance curve over the real roster.
-   Pure arithmetic: no geometry, no driving. Answers "is this a button?".
+   Pure arithmetic: no geometry, no driving. Answers whether this is a button.
    ===================================================================== */
 function partA() {
   console.log("\n---- A. compliance over the fleet (Monte Carlo through rollDriver) ----");
@@ -321,7 +321,7 @@ function makeSim(seed) {
       stats.sped++; stats.carsComplied++;
       /* was the speed-up a CHOICE or the only option? yieldLane already told
          us: over >= 0 means a kerbward lane was open and the coin still came
-         up "just get on with it". */
+         up on simply getting on with it. */
       if (over >= 0) stats.couldMoveButSped++; else stats.boxedSoSped++;
       return "sped";
     }
@@ -590,7 +590,7 @@ function run(seed, { playerV, hz, minutes = 3, noHail = false }) {
 /* =====================================================================
    PART C — the range gate, measured directly. One car straight ahead at a
    fixed distance, honked at relentlessly, over many drivers. This is the
-   "honking from far away must do nothing" test and it is the one the fixed
+   test that honking from far away must do nothing, and it is the one the fixed
    metre gate fails.
    ===================================================================== */
 function rangeCurve(playerV, dists, trials = 4000) {
@@ -725,7 +725,7 @@ else ok(`honking added no overlap over the control (${totOverlap} vs ${ctlOverla
 const comply = totComplied / Math.max(1, totCars);
 if (comply > 0.45) bad(`${pc(comply)} of hailed cars complied — it reads as a button`);
 else ok(`${pc(comply)} of hailed cars ever complied — most cars ignore you`);
-/* "prefer moving over" can only be asked of cars that HAVE a lane to move
+/* A preference for moving over can only be asked of cars that HAVE a lane to move
    into. A dawdler in the kerb lane has nowhere courteous to go and speeds up
    instead — by design, and it is also what happens on a real road. So the
    preference is measured among cars with the choice, against moveP. */

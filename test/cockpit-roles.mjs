@@ -55,7 +55,7 @@ console.log(`scene: ${scene.children.length} children\n`);
 for (const role of [...REQUIRED, ...WANTED, ...EXTRA]) {
   const want = man.parts[role] ?? [];
   /* Resolved BY NAME, the way byRole() does it — the check that matters is not
-     "is it in the file" but "does three's name sanitising still find it". */
+     whether it is in the file but whether three's name sanitising still finds it. */
   const got = want.map((p) => scene.getObjectByName(p.name)).filter(Boolean);
   const bad = got.length !== want.length || (want.length === 0 && !EXTRA.includes(role));
   if (bad && !EXTRA.includes(role)) fail++;

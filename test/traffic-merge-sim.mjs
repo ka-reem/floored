@@ -224,7 +224,7 @@ function makeSim(mode, seed) {
         if (n.pendK < 0 && (n.blink === 0 || wasLean) && n.laneK <= nl - 1 && n.laneK > 0) {
           /* the lane must survive the WHOLE lookahead: sample for a dip
              rather than testing the far end, or a pocket road (drop, short
-             flat, the playground re-widen) reads as "my lane comes back"
+             flat, the playground re-widen) reads as the lane coming back
              while the pavement in between still dips (lockstep with
              traffic.ts) */
           const look = clamp(n.v, 15, 32) * 9;

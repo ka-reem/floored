@@ -1,4 +1,4 @@
-/* "WHAT THE AI SEES" — the game's invisible machinery drawn on top of the frame.
+/* WHAT THE AI SEES — the game's invisible machinery drawn on top of the frame.
 
    Debug-only, and gated hard: this module is reached through ONE dynamic
    import inside engine.ts's `if (DEBUG_HOOKS)` block (the __neonx.vision
@@ -9,14 +9,15 @@
 
      hitboxes  every NPC's COLLISION box — n.cw x n.L/2, the box collide.ts
                actually tests (cyan) — and, dimmer in magenta, the pre-fix
-               W/2 box that included the door mirrors ("I'm scraping the bus
-               but there's a gap"). The player's own box, and the barrier
+               W/2 box that included the door mirrors, which registered a
+               scrape against a bus while a visible gap remained. The player's
+               own box, and the barrier
                colliders (Aabb/Obb) within reach, in sodium.
      probes    the two slope probes physics.ts casts 2.2 m ahead/behind the
                car, as rays from the body to the ground they read. A probe
                that SLOPE_PROBE rejects (>maxRise off the ground under the
-               car) is red — that ray hanging over a parapet is the "19.3
-               degrees on flat concrete" bug, drawn.
+               car) is red — that ray hanging over a parapet is the 19.3-
+               degrees-on-flat-concrete bug, drawn.
      lanes     lane centrelines, lane edges and pavement edges of the
                corridor ahead, the route graph's bypass/mountain edges and
                its nodes (EXIT 4, the bypass diverge...) — the road as the

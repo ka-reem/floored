@@ -7,14 +7,23 @@ auditable.
 
 ## NPC vehicle bodyshells — `public/models/cars/*.glb`
 
-**Current state (2026-08-29): eight of the nine styles ship from the Orchids
-pack below; only `bus` ships from the 2026-08-28 hi-fi bake.** The hi-fi
-fleet lasted one evening on the road: taxi/police/van went back to the Orchids
-bakes the same day (`fc4fda1` — the civil-pack versions read "glitched and
-angled"), then sedan/hybrid/compact/suv (`8f85877` — the old bakes simply read
-better), and the desktop HD upgrade parked with them
-(`public/models/cars-hd/` deleted, `HD_STYLES` emptied in
-`game/npcmodels.ts`; the pipeline and tier gate remain for a future bake).
+**Current state: fourteen styles ship, from both bakes.** The list is
+`FLEET_MIX` in `game/traffic.ts`; the files are `public/models/cars/*.glb`.
+
+The hi-fi bake of 2026-08-28 was rolled back the same evening for the civil
+vehicles — taxi, police and van went back to their Orchids bakes because the
+hi-fi versions read as glitched and angled — and for a while sedan, hybrid,
+compact and suv went back too. They have since returned: the fleet now ships
+BOTH, with the hi-fi `sedan`/`hybrid`/`compact`/`suv` and the Orchids
+`osedan`/`ohybrid`/`ocompact`/`osuv` in the mix at once, which is what gives
+the traffic its variety. Every donor listed anywhere in this file is therefore
+shipped, and every one of them needs its attribution honoured.
+
+Three further sets of files come off the same donors and carry the same
+licences: `public/models/cars-hd/` (a 1024px desktop upgrade, streamed after
+the first drivable frame — `HD_STYLES` in `game/npcmodels.ts`),
+`public/models/cars-far/` (decimated far-distance bodies, `tools/build-fleet-lod.mjs`),
+and `public/models/cars/mhybrid.glb`.
 
 | Style | Donor | Author | Licence | Source |
 |---|---|---|---|---|
@@ -43,8 +52,7 @@ Rebuild (donor .gltf exports unzipped one-per-directory, not in the repo):
     node tools/build-hifi-models.mjs --dl <donor-dir> --hd \
         sedan hybrid compact suv                               # HD upgrade (parked)
 
-### Baked 2026-08-28, no longer shipped (kept for provenance — the files
-remain in git history)
+### Hi-fi bake, 2026-08-28 — shipped
 
 | Style | Donor | Author | Licence | Source |
 |---|---|---|---|---|

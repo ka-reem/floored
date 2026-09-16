@@ -86,15 +86,15 @@ export function makeTerrain(rng: Rng): Terrain {
      already sticky: a surface has to come closer than the one the car is
      riding before it can take over.
 
-     …with ONE exception, and it cost the entry ramp. "Agrees with the old
-     Math.max everywhere a car can reach" was wrong about the bare ground: the
+     …with ONE exception, and it cost the entry ramp. The claim that it agreed
+     with the old Math.max everywhere a car can reach was wrong about the bare ground: the
      ground is a candidate at every point in the world, and a car sitting on it
      is at EXACTLY its height, so the ground scores d = 0 and nothing can ever
      beat it. The instant the entry ramp lifted off the ground under the wheels
      the ramp was a centimetre away and the ground was zero away, so the ground
      kept the car — for the whole 264 m climb. The player drove along the flat
      ground UNDERNEATH the ramp and stopped dead against its first pier, which
-     is the "the on ramp is broken, i cant drive on it" report. Nothing threw,
+     is the report of the on-ramp being broken and undrivable. Nothing threw,
      nothing jumped, and every browser-free sim scored it a clean 0.00, because
      they were all measuring how far the car was JOLTED and the car was never
      jolted; it just never went up.

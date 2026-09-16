@@ -964,9 +964,10 @@ export const carbonTexF = () => {
 /** The fat white DOWN arrow face B is built around, drawn into `ctx` with its
     tip at (cx, y1) and its tail at (cx, y0).
 
-    A down-arrow says "the lane under me", which is what an overhead board on
-    a deceleration lane actually means; the diagonal arrow face A carried says
-    "somewhere off to the right" and needs the text to disambiguate it. It is
+    A down-arrow indicates the lane directly beneath, which is what an
+    overhead board on a deceleration lane actually means; the diagonal arrow
+    face A carried points somewhere off to the right and needs the text to
+    disambiguate it. It is
     drawn solid rather than stroked because a stroked arrow at 45 m is four
     thin lines and a filled one is still a shape. */
 function guideArrowDown(

@@ -226,7 +226,7 @@ export const CABIN_DOME = 0.45;
    Which end is which is the whole reason this is exported. engine.ts eased the
    arms back to a hardcoded -0.12 when the rain stopped — the raised end — and
    left two wipers standing up across the glass in clear weather, reported as
-   "the windshield wipers get stuck upwards not down". Nothing about a loose
+   the windscreen wipers sticking upwards instead of down. Nothing about a loose
    -0.12 says which end of a travel it names, and there were three of them.
    Now the sweep's two ends are named once and every site derives from them:
    the build pose, wiperCanvasWipe's mapping back to sweep phase, and
@@ -1613,8 +1613,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      hides the procedural door cards. Left visible under the Volvo they hang in
      its cabin at coordinates that no longer describe any opening, and the rear
      pair in particular read as a flat pale square floating over the quarter
-     window. Reported exactly that way: "theres like a window pane its like
-     opaque square kinda random".
+     window. Reported exactly that way: an opaque, seemingly random square
+     reading as a stray window pane.
 
      The donor brings its own glazing, so there is nothing to replace. */
   const windowGlass: THREE.Mesh[] = [];
@@ -2053,7 +2053,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      RIGHT. Each door's mirror therefore sat on the far side of the car from
      the flank it was showing, at a yaw that is very nearly the mirror image
      of the correct one (+0.72 rad where the donor's own bezel is at +0.216),
-     which is the "angled very weirdly" of the report. Everything below is
+     which is the very odd angle the report describes. Everything below is
      indexed by `s` — +1 car LEFT / driver, -1 car RIGHT — so the two cannot
      drift apart again.
 
@@ -2064,7 +2064,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      GLB: bezel centre (±0.9000, 1.0815, 0.5697), driver-facing normal
      (∓0.2145, 0, -0.9767). The old glass was at (±0.88, 1.12, 0.52) — 4 cm
      high and 5 cm behind the housing it was meant to be set into, which is
-     the "they float" half of the report; the old procedural shells at ±0.955
+     the floating half of the report; the old procedural shells at ±0.955
      were fitted to the retired procedural cabin and missed it too.
 
      THAT NORMAL IS A REAL AIM, worth keeping. Reflect COCKPIT EYE through the
@@ -2084,8 +2084,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      and inboard-bottom corners stood outside the plate on the painted bevel
      while chrome showed around the rest of it, so the mirror read as a
      square-ish pane floating off-centre in a bigger dark shape with black
-     around it (reported: "just squares, off-centred, they don't fit inside
-     the mirrors").
+     around it (reported as off-centred squares that do not fit inside the
+     mirrors).
 
      So the reflection now takes the plate's OUTLINE as its shape. The default
      below is that outline as measured off the shipped GLB (tools: boundary
@@ -2108,7 +2108,7 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
      at z 0.57 sat entirely below and level with it. From EYE (y 1.35, looking
      down at it) the card hid all but a sliver along the top edge, and the
      mirror read as a black shape with a stripe of glass — the procedural
-     cabin's own version of the "doesn't fit, weird black space" report, and
+     cabin's own version of the ill-fitting-glass-and-black-space report, and
      invisible from CONSOLE too.
 
      So the procedural mirror now sits where a door mirror sits: glass bottom
@@ -2193,8 +2193,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
   wiperB.position.set(-0.28, 0.86, 0.95);
   wiperA.rotation.x = wiperB.rotation.x = -0.42;
   /* Built PARKED, not at rest. The car starts dry, so the first pose anyone
-     could see is the parked one — and engine.ts's park test is "are you at
-     WIPER.park", so building them anywhere else would have them travelling
+     could see is the parked one — and engine.ts's park test asks whether the
+     blades are at WIPER.park, so building them anywhere else would have them travelling
      (and briefly visible) on the first frame of a drive that has had no rain
      in it. */
   wiperA.rotation.z = wiperB.rotation.z = WIPER.park;

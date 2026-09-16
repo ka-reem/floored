@@ -4,7 +4,7 @@
    Contract: every export here is safe to call from anywhere, any time.
    Before init, on the server render, with PostHog blocked by an ad-blocker,
    or under Do Not Track, each call is a silent no-op — game code never
-   checks "is analytics up?" and never sees a throw from in here.
+   checks whether analytics is up and never sees a throw from in here.
 
    Event discipline (the whole point of the wrapper):
    - snake_case names, curated in one schema (see the call sites; the full
@@ -235,7 +235,7 @@ function bootPostHog(ph: PostHog) {
 
     lib/telemetry.ts gates its whole sampler on this: with analytics off it
     must not so much as accumulate. Exported rather than inferred so there is
-    one answer to "is anything being sent from this browser?". */
+    one answer to whether anything is being sent from this browser. */
 export function analyticsLive(): boolean {
   return started;
 }
@@ -259,8 +259,8 @@ export function registerSuper(props: Props) {
 }
 
 /* Leading-edge throttle, per event name: the first call fires, everything
-   inside the window is dropped. For burst-shaped inputs (the horn: "beep
-   beep beep" is one use, not three events). */
+   inside the window is dropped. For burst-shaped inputs (the horn: a burst
+   of three beeps is one use, not three events). */
 const lastAt = new Map<string, number>();
 export function trackThrottled(event: string, props?: Props, minMs = 8000) {
   if (!started) return;

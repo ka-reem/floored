@@ -46,7 +46,7 @@ const ok = (cond, msg) => {
 async function startDev() {
   if (externalUrl) return null;
   /* --webpack: this repo's node_modules is a symlink and Turbopack refuses
-     it, which reads as "the game is broken" rather than "the harness is". */
+     it, which reads as the game being broken rather than the harness. */
   const child = spawn("npx", ["next", "dev", "--webpack", "-p", String(PORT)], {
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -111,7 +111,7 @@ const rigState = (page) =>
 const run = async () => {
   /* Both of these are started BEFORE the try that owns their cleanup, which
      leaked a next dev on this port the first time the browser launch threw —
-     and a held port reads as "the test is broken" on every run after. Declared
+     and a held port reads as the test being broken on every run after. Declared
      out here, assigned inside, so the finally can close whatever exists. */
   let dev = null;
   let browser = null;

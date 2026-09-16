@@ -34,9 +34,7 @@ top of the drive (`settings.cleanRunScore` turns it off), plus an optional
 still the drive.
 
 Built with Next.js 16 + React 19 + Three.js (r180). Everything is client-side
-WebGL; the server does nothing but serve the bundle. Package name
-`floored`, version 3.0.0. `racing-game.html` at the repo root is the
-pre-Next single-file v2 original, kept for reference and not part of the build.
+WebGL; the server does nothing but serve the bundle. Package name `floored`, version 3.0.0.
 
 ---
 

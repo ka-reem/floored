@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /* Headless steering-response bench for TEST MODE (the K toggle).
 
-   The question it answers is "how long after you press the key is the car
-   actually turning, and how hard", split into the stages that own the delay:
+   The question it answers is how long after a keypress the car is actually
+   turning, and how hard, split into the stages that own the delay:
 
      1. the KEY FILTER in engine.ts (readInput) ramps `input.st` toward the
         key, at a rate that today HALVES between 0 and 40 m/s,

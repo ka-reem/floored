@@ -151,7 +151,7 @@ for (const [aId, aKey, bId, bKey] of PAIRS) {
 }
 
 /* ---- phase 2: press one, then the NEXT one, one finger at a time -------
-   The report also reads as SEQUENTIAL ("two buttons ... like the next one"),
+   The report also reads as SEQUENTIAL — two buttons, one after the other —
    and a latch left behind by the first press would only ever show on the
    second. Cheap to rule out, so rule it out. */
 for (const [aId, aKey, bId, bKey] of PAIRS) {

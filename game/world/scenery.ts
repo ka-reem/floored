@@ -11,7 +11,8 @@ import { buildRoadside } from "./roadside";
 /* Roadside scenery zones: the stretches of world the corridor passes that are
    neither the town nor the backdrop rings. Before this file the map east of
    the frontage strip — and everything past the town's z range — was bare
-   heightfield, so a lap read as "town, then nothing, nothing, nothing, town".
+   heightfield, so a lap read as town, then a long stretch of nothing, then
+   town again.
    Each zone below gives a stretch of the lap its own signature so the player
    always knows where on the loop they are, the way a real orbital reads as a
    necklace of districts:

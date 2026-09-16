@@ -173,8 +173,8 @@ class Soup {
 
    The old signs were posted at a fixed lateral offset, which put their outer
    post past the pavement edge and left it standing in mid-air — up to 2.2 m off
-   the deck on the narrow sections. That is what read as "signs on the road,
-   glitchy". Every overhead sign is now a cantilever whose dimensions come from
+   the deck on the narrow sections. That is what read as glitchy signs sitting
+   on the road. Every overhead sign is now a cantilever whose dimensions come from
    corridor.SIGN, planted at cor.signPostLat(z):
 
    - the post stands *outboard* of the parapet, where a real gantry leg goes,
@@ -186,7 +186,7 @@ class Soup {
      Inboard of it the post is inside the band a car can still reach (the
      parapet clamp in collide.ts stops the car at hw + 0.06), so it would be
      something you drive straight through — a ghost post beside the lane reads
-     as "the sign is on the road" as surely as a misplaced panel does;
+     as a sign standing on the road as surely as a misplaced panel does;
    - the arm sits wholly *above* the panel rather than across its face, so no
      two surfaces here are coplanar or near-coplanar;
    - the panel gets a back skin BACK_GAP behind its face, so a sign seen in the
@@ -579,7 +579,8 @@ export function buildHighway(
 
        And where it has peeled away, the line it left behind is drawn too —
        a wide SOLID divider on the through-lane edge, the line a real freeway
-       uses to say "past here you are committed to the exit". It is 0.30 m
+       uses to mark the point past which a driver is committed to the exit.
+       It is 0.30 m
        against the shoulder line's 0.20: on a 400 m approach the extra width
        is most of what tells the two lines apart at range.
 
@@ -1575,7 +1576,7 @@ export function buildHighway(
        sheds (mobile-high keeps every other one).
 
        This is the second pass at these. The first pass drew a hard-edged
-       orange ribbon — playtest feedback: "you can literally see the lines".
+       orange ribbon, whose seams were plainly visible in playtesting.
        Three separate hard edges had to die:
        - the START: the old gradient opened at full alpha flush with the
          head, printing a bright horizontal seam. It now fades IN from zero
@@ -1649,7 +1650,8 @@ export function buildHighway(
     const coneEvery = Math.max(1, caps.lampConeEvery ?? 1);
     const cones = wantCones ? new THREE.InstancedMesh(coneG, coneMat, NP) : null;
     /* Ground pools under the cobra heads — the deck-level half of the lamp
-       light, and the answer to "spread the lamp light out more". Emitted as
+       light, and the answer to the request to spread the lamp light out
+       more. Emitted as
        world-space quads (yaw + grade aligned, elongated down the road) and
        handed to townmesh, which renders them through the SAME material
        instance as the town lamp pools — so the engine's per-frame day/night

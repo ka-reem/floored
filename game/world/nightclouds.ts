@@ -32,7 +32,7 @@ import { worldTierCaps } from "../settings";
  * COLOUR IS SHARED WITH THE AURORA. The lit rim takes the aurora's crown hue
  * and the shadow takes a deepened version of its body hue, so the deck reads
  * as the same weather rather than as a second effect stacked on top — which
- * is what "blend in with the background" actually requires.
+ * is what blending in with the background actually requires.
  */
 
 /** Master kill-switch. */

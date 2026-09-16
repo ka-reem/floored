@@ -125,7 +125,7 @@ const npcRun = (page, { back, side, deg, dv, secs }) =>
       /* The NEAREST live NPC in any direction. simStep never runs traffic, so
          the cars sit exactly where the render loop parked them at load — the
          car is teleported to them rather than the other way round, and
-         "ahead of me" would only rule out perfectly good targets. */
+         restricting to cars ahead would only rule out perfectly good targets. */
       const car = g.car;
       let best = null, bd = 1e9;
       for (const n of g.traffic.npcs) {

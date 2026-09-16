@@ -186,7 +186,7 @@ export const TOLL = { z0: 1280, z1: 1560, plazaZ0: 1390, plazaZ1: 1450 };
 
    Everything from here to `applyRoadSeed()` decides, from one integer, how
    many lanes the deck has where and where the tunnels are. It is the answer
-   to "the roads don't feel random any more": they never were. The corridor
+   to the roads no longer feeling random: they never were. The corridor
    used to be a hand-written table, so the lane sequence 3-2-3-5-4-3 at fixed
    z was the only road the game had ever shipped, and re-rolling the world
    seed in the settings panel (which does change the town, the terrain and
@@ -753,7 +753,7 @@ function varied(steps: readonly LaneStep[], tunnels: readonly TunnelSpec[]) {
 
 /* ---- the playground -----------------------------------------------------
 
-   "add some sections where we get wider lanes … make it a bit random": one
+   The goal: some sections with wider lanes, varying somewhat at random. One
    stretch per lap where the deck opens out PAST what the base plan rolls —
    up to MAX_LANES, a count the machinery has always carried (const.ts sizes
    RW for six) and the planner has never used — purely to give the player

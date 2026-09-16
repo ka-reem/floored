@@ -75,8 +75,8 @@ export interface CockpitModelHandle {
       COCKPIT_MODEL), so the handle lands active and stays active for the life
       of the rig. Kept because the swap it performs is the whole of what this
       module does and every hidden part below is described in terms of it — and
-      because a future "show me the procedural cabin" needs no new machinery,
-      only a caller. */
+      because a future request to show the procedural cabin needs no new
+      machinery, only a caller. */
   setActive(on: boolean): void;
   /** Level of the donor's fill light, as a multiple of DONOR_FILL. This is the
       donor's half of the cabin light the I key switches — the procedural
@@ -127,8 +127,8 @@ function alignZ(axis: THREE.Vector3): THREE.Quaternion {
     (build-cockpit.mjs), and a steering wheel's vertices are not spread evenly
     about its axle: spokes, thumb buttons and the airbag shroud all sit low, so
     the centroid lands below the axle — on the shipped Volvo by 19 mm, which
-    swings the rim ~37 mm sideways at 180° of steer. The reported "wheel isn't
-    turning at true center".
+    swings the rim ~37 mm sideways at 180° of steer. That is the reported
+    symptom of the wheel not turning about its true centre.
 
     A rim, unlike the cloud, is a genuine circle about the axle, so this fits
     THAT: take the outermost vertex per angular bin around a provisional
@@ -653,8 +653,8 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
        Two reasons. The read one: the Volvo's housing is a moulded shell that
        was authored to be seen from outside the car in a showroom render, and
        from 12 cm in front of a 105-degree dashcam lens it fills a chunk of
-       the frame as an unlit plastic lump behind the mirror — the reported
-       "plastic mirror holder, it's glitched". The geometric one: it was
+       the frame as an unlit plastic lump behind the mirror, reported as a
+       glitched plastic mirror holder. The geometric one: it was
        modelled around ITS OWN glass, and ours is a different size and gets
        rescaled to fit the aperture, so the shell and the glass it frames no
        longer agree.
@@ -743,7 +743,7 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
     /* Seat the wheel a column-adjustment lower than the donor authored it.
        From the dashcam the rim's upper arc crossed the cluster mid-face: it
        buried the gear digit and the digital speed at center, and the spokes
-       swept over the tacho needle at half lock ("the wheel covers the dash").
+       swept over the tacho needle at half lock, so the wheel covered the dash.
        Geometry of the sightline: the lens sits ~0.29 m behind the rim and
        ~0.54 m ahead of the cluster face, so the arc's shadow on the cluster
        moves ~1.86x any wheel move — 28 mm down here walks the arc ~52 mm down
@@ -802,9 +802,9 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
 
   /* Replaces the reach of the ambient strips this donor displaces. Those were
      pinned to the procedural door card and left with it, and cockpit.ts is
-     blunt about what they were for: without an interior source "the vents,
+     blunt about what they were for: without an interior source the vents,
      glovebox and console reduce to a black mass however well they are
-     modelled". That is exactly what a donor dash inherits.
+     modelled. That is exactly what a donor dash inherits.
 
      Shaped to WIDEN rather than brighten, which is the thing that actually
      survives the POV chain. That chain crushes everything under 0.06 to pure
@@ -851,8 +851,8 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
      seven: cap, base, signal lenses, sensors, a chrome plate) and the plate is
      found by what it is, not what it is called — see platePlane. The glass
      was an inscribed rectangle that neither fit the plate's trapezoid nor
-     covered it, which is the "squares that don't fit inside the mirrors"
-     report; see SIDE_GLASS_OUTLINE in cockpit.ts. The parts stay visible:
+     covered it, which is the report of squares that do not fit inside the
+     mirrors; see SIDE_GLASS_OUTLINE in cockpit.ts. The parts stay visible:
      the plate is what the glass is drawn over, 1 mm proud. Fail-soft — a
      side with no plate keeps cockpit.ts's default, which is the PROCEDURAL
      cabin's placement (a good 10 cm above this donor's plate, over its own

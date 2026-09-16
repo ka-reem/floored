@@ -3,7 +3,7 @@
    Renders ONE game frame and photographs the bottom-left HUD corner three
    times off it — once per treatment (corner / speed / ghost, see RUN_HUD in
    game/engine.ts) — plus a BEFORE frame carrying the retired No Hesi score,
-   reconstructed in the DOM so the "not in your face" change can be judged on
+   reconstructed in the DOM so the stay-out-of-the-way change can be judged on
    the same frame rather than across two drives.
 
    Output (per viewport): three cropped, labelled HUD panels stacked into one

@@ -2,7 +2,7 @@
 
    Frames are judged by looking, not by reading a list of filenames: twenty
    frames side by side, labelled, small enough
-   that "these two are the same picture" is obvious at a glance and big enough
+   that two near-identical frames are obvious at a glance and big enough
    that a HUD leak or a clipped bumper still shows. 4 columns of 640x360 tiles
    with the file name burned into the corner.
 

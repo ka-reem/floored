@@ -27,8 +27,8 @@ import { BRAKE_F, STEER_AY, type PhysicsSpec } from "./carspecs";
    pedal, and are only at full value off the brake. Turn-in and a held
    high-speed corner get the arcade numbers; the moment the pedal goes down
    the car is governed exactly as it is today. Measured, this is the
-   difference between "no new spins on any car" and "spins tanuki at
-   150 km/h" — see test/steer-response-sim.mjs.
+   difference between no new spins on any car and a tanuki that spins at
+   150 km/h — see test/steer-response-sim.mjs.
 
    Live on the console as `window.__arcadeSteer` (same pattern as
    __povMount / __aurora): these are read fresh every physics step, so
@@ -221,10 +221,10 @@ export interface HandbrakeTune {
  *
  *  stock   the handbrake exactly as it shipped — kept so the sim can measure
  *          against it rather than remember it, and as an instant revert.
- *  nudge   "nudges the back out": rotates the car into a corner and tucks
+ *  nudge   nudges the back out: rotates the car into a corner and tucks
  *          straight back in. Barely a drift, very hard to get wrong.
- *  drift   "holds a slide if you stay on the power" — the recommended one.
- *  loose   "hangs it right out and lets you steer on the throttle": a big
+ *  drift   holds a slide if you stay on the power — the recommended one.
+ *  loose   hangs it right out and lets you steer on the throttle: a big
  *          lazy angle that needs the pedal and the counter-steer to hold. */
 export const HB_VARIANTS: Record<string, HandbrakeTune> = {
   stock: {
@@ -303,7 +303,7 @@ try {
    can never carry the car into the opposite parapet in one hop.
 
    `scrub(vn)` — how much of the car's WHOLE velocity a frame of contact
-   costs. This is the "car gets stuck on the barrier" term. It was a flat
+   costs. This is the term behind the car getting stuck on the barrier. It was a flat
    0.965 on any contact, every frame, regardless of how gently the car was
    touching: a 60 fps second of leaning on a wall left 12% of the car's
    speed, and at 120 Hz, 1.4%. A car does not stop dead because it is
@@ -367,13 +367,13 @@ try {
 
    It is measured by sampling the surface 2.2 m ahead of and behind the car
    and dividing by the 4.4 m between them. The trap: terrain.heightAt() has
-   no concept of "off the road". corridor.heightAt() returns null more than a
+   no concept of being off the road. corridor.heightAt() returns null more than a
    metre outside the pavement, and terrain.heightAt() then falls back to the
    town's ground plane — which, on the elevated deck, is TEN METRES DOWN. So
    a car jammed against a parapet at a big yaw angle puts its forward probe
    out past the barrier, reads hF ≈ 0 against hB ≈ 10, and pegs `slope` at
    the -0.35 clamp: 19 degrees of nose-down lean on a car that is standing on
-   flat concrete. That is the reported "car leans downward" symptom. It is a
+   flat concrete. That is the reported symptom of the car leaning downward. It is a
    pure reporting bug — nothing in the handling model moved.
 
    The guard: a probe more than `maxRise` metres away from the ground under
@@ -532,15 +532,15 @@ export const TOP_END_PRESETS = {
   /** Exactly what shipped before this block existed — inert, kept as the
    *  measurement baseline. */
   today: { taperFrom: 1, taperTo: 1, effBase: 1, effFall: 0 },
-  /** "Still pulls hard everywhere, just stops climbing sooner." Softens only
+  /** Still pulls hard everywhere, but stops climbing sooner. Softens only
    *  the last tenth of the rev range: 0-60 mph 4.30 -> 4.54 s, while 120-140
    *  goes 7.9 -> 10.6 s. */
   mild: { taperFrom: 0.9, taperTo: 0.9, effBase: 0.97, effFall: 0.07 },
-  /** SHIPPED. "Quick to 60, then the air starts winning." Matched so the car
+  /** SHIPPED. Quick to 60, then the air starts winning. Matched so the car
    *  settles at 251 km/h — a real S90's 250 — with 0-60 mph 4.74 s and
    *  120-140 mph 14.1 s against today's 7.9. */
   realistic: { taperFrom: 0.86, taperTo: 0.84, effBase: 0.95, effFall: 0.09 },
-  /** "You have to really want the last 20 mph." 120-140 mph takes 25.6 s and
+  /** The last 20 mph has to be really wanted. 120-140 mph takes 25.6 s and
    *  140-150 takes 29.7. Still upshifts into 6th at the same 141 mph every
    *  other preset does — no variant strands the car below top gear. */
   firm: { taperFrom: 0.8, taperTo: 0.78, effBase: 0.93, effFall: 0.11 },
@@ -619,8 +619,8 @@ const REV_HANG = 0.16;
      stationary. Pinning the throttle at a standstill therefore moved the
      needle not at all and moved the engine's PITCH not at all — only its
      level, because the audio mixer's throttle term is the one thing that
-     responded. That is exactly the reported "it sounds like it's idling and
-     just getting louder, it doesn't sound like the revs are climbing".
+     responded. That is exactly the reported symptom: the engine sounded like
+     an idle merely getting louder, with no sense of the revs climbing.
 
    So the engine gets its own state: a flywheel with inertia, coupled to the
    driveline through a clutch that opens across shifts and slips at low speed
@@ -695,8 +695,8 @@ function stepEngineSpeed(
        and asymmetrically — the pull-up is whatever spare torque the engine
        has to accelerate its own inertia with (so it scales with throttle),
        while the fall-off is only pumping and friction losses dragging it
-       back. That asymmetry is the "vroom, and then it comes down slowly"
-       shape, and it is the half the old kinematic rpm had none of.
+       back. That asymmetry is the shape of a hard pull followed by a slow
+       decay, and it is the half the old kinematic rpm had none of.
 
        Both limits open right up once the clutch is locked, because there the
        driveline is physically turning the engine and can change its speed
@@ -869,8 +869,8 @@ export function stepPhysics(
        car happened to be pulling — and, because each upshift only drops the
        revs by one ratio step, could satisfy it AGAIN 0.24s later. Lifting off
        in 4th at 6800rpm fired two upshifts in a quarter of a second and threw
-       the needle from 6800 to ~4500. That is the "the revs teleport when I
-       come off the gas" report: not the engine model, the shift scheduler
+       the needle from 6800 to ~4500. That is the report of the revs
+       teleporting on a throttle lift: not the engine model, the shift scheduler
        reacting to the pedal faster than any gearbox does. Trailing the pedal
        makes the lift-off upshift arrive once, deliberately, the way a real
        automatic's ~0.5s of pedal filtering does. */
@@ -1057,7 +1057,7 @@ export function stepPhysics(
        sustain at this speed. 10.5 m/s² is a road-car number, and an arcade
        tyre holds nearly three times it — left alone, ESC caps a steady
        250 km/h corner at 1.35 g while the tyres still have 3 g, which is
-       exactly the "it refuses to turn at speed" feel.
+       exactly the feel of a car that refuses to turn at speed.
 
        Raising it flat, however, hands the trail-brake spin straight back:
        measured, escAy 18 applied at all times spun tanuki at 150 km/h on the

@@ -35,7 +35,7 @@ import { paintByHex, type CarSpec, type Paint } from "./carspecs";
 
    Desktop and mobile-high run the same file. The dash covers about 800x430 px
    of a 1080p frame (~344k pixels), then the dashcam pass softens and grains it
-   (post.ts: "centre nearly in focus, corners mush") and the night grade
+   (post.ts: centre nearly in focus, corners mush) and the night grade
    crushes most of it toward black — so the resolution that survives to the
    player is nowhere near what a second, larger variant would carry. Build a
    -4k variant and point desktop at it if a brighter interior ever makes the
@@ -43,7 +43,7 @@ import { paintByHex, type CarSpec, type Paint } from "./carspecs";
 
    ALL THREE TIERS NAME THE ASSET NOW, mobile-base included. It used to hold
    "", on the grounds that the tier unknown hardware falls back to could not be
-   trusted with "a third of a million triangles of cabin". Two things were
+   trusted with a third of a million triangles of cabin. Two things were
    wrong with that. It was defensible only while the donor cabin was something
    a player was GIVEN — once the Volvo became a garage CHOICE, the card shows
    that interior and handing back a different one silently is handing back a
@@ -426,8 +426,8 @@ function tintDonorPaint(root: THREE.Object3D, paint: Paint) {
 
 /* ------------------------------------------------- lighting the donor body ----
 
-   "The car is still like black and really dark and hard to see. Can you make it
-   brighter? And can you explain why it's like that?"
+   The car rendered black, very dark and hard to make out, and needed both to
+   be brighter and to have the cause explained.
 
    It was black because NOTHING WAS LIGHTING IT. Not "not enough" — nothing.
 
@@ -505,8 +505,8 @@ function lightDonorBody(
 
 /* ------------------------------------------------------ privacy glass ----
 
-   "Would you happen to know how to make the windows black so that you don't
-   see the interior of the car in third person specifically?"
+   The goal: make the windows black so the interior of the car is not visible
+   in third person specifically.
 
    WHAT WAS ACTUALLY SHOWING THROUGH, because it was not the interior. The
    imported cabin has been hidden from every outside view since the camera
@@ -750,7 +750,7 @@ function trimCabinMaps(root: THREE.Object3D) {
 
 /* ------------------------------------------------------------- the hood ----
 
-   "You render all the inside stuff of the car. But I don't see a hood."
+   Every interior part of the car is rendered, but no hood was visible.
 
    And there is one. The exterior donor (volvo-s90-body-lite.glb, already
    loaded, already resident) carries the bonnet — it is just hidden wholesale,

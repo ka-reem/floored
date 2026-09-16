@@ -92,8 +92,8 @@ const OUT_DIR = path.resolve(flag("--outdir", path.resolve(import.meta.dirname, 
 const REAR_BIAS = argv.includes("--rear-bias");
 const TEX_REAR = Number(flag("--tex-rear", 512));
 const STRIP = argv.includes("--strip");
-/* --chase-bias supersedes --rear-bias: same intent ("spend the budget where the
-   third-person camera looks"), but measured off the chase lens instead of
+/* --chase-bias supersedes --rear-bias: same intent of spending the budget
+   where the third-person camera looks, but measured off the chase lens instead of
    guessed from part names. See CHASE_EYES below. --tex-hi is its texture half:
    the maps on the surfaces that fill the chase frame get the big size, the
    nose's maps get --tex. */
@@ -343,8 +343,8 @@ for (const node of root.getDefaultScene().listChildren()) {
 
    which is exactly the differential solid angle a surface element subtends —
    screen area per unit of surface area. Averaged over the mesh and normalised
-   against the best-lit mesh on the car, that is "how much of the third-person
-   frame is this part", between 0 and 1. A surface facing away scores 0, and so
+   against the best-lit mesh on the car, that is how much of the third-person
+   frame the part occupies, between 0 and 1. A surface facing away scores 0, and so
    does one so far from the lens it is a few pixels.
 
    The score SCALES the name rule rather than replacing it: the name table
@@ -358,7 +358,7 @@ const CHASE_EYES = [
 ];
 /** Mean solid angle per unit area of a mesh's surface as seen from the chase
     lenses — sampled, since a 400k-triangle donor panel does not need every
-    vertex to answer "is this on screen from behind". */
+    vertex to answer whether it is on screen from behind. */
 function meshChaseVis(mesh, m) {
   const cof = [
     m[5]*m[10] - m[6]*m[9],  m[6]*m[8] - m[4]*m[10], m[4]*m[9] - m[5]*m[8],

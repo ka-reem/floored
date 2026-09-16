@@ -1,7 +1,7 @@
 /* Hero photographer — the game at its best, for content rather than for QA.
 
-   Every other shots harness in here answers a question ("is the sign on the
-   right shoulder", "does the rock clear the deck"). This one has no question:
+   Every other shots harness in here answers a question — whether the sign is
+   on the right shoulder, whether the rock clears the deck. This one has no question:
    it exists to produce the most attractive frames the renderer can make, at
    the scenic stations, in the cameras that flatter the car and the city.
 

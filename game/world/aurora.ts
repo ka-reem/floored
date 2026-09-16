@@ -12,7 +12,7 @@ import { DEBUG_HOOKS } from "../debug";
  * enough that there is no bad roll.
  *
  * IT IS SUPPOSED TO BE OBVIOUS. The first cut of this was tuned for physical
- * plausibility and the answer that came back was "i dont see no aurora". The
+ * plausibility, and the result was that no aurora could be seen at all. The
  * levels here are now set for drama: peak radiance lands around 0.36 linear,
  * roughly 0.65 display luma, which is bright and unmissable while still
  * sitting under the ~0.8 where the grade starts eating hue. Soft is a rule,
@@ -49,8 +49,8 @@ import { DEBUG_HOOKS } from "../debug";
  * effect pulsing on a timer. See the EPISODE SCHEDULE block below.
  *
  * The schedule is deterministic — world seed × slot index, no Math.random()
- * — so a seed replays the same run of skies and "seed 47 opened beautifully"
- * is a thing that can be handed to someone else. It is clocked in DARK
+ * — so a seed replays the same run of skies and a note that seed 47 opened
+ * beautifully is a thing that can be handed to someone else. It is clocked in DARK
  * seconds (tDark in update()), not wall seconds, so an arc cannot be spent
  * on a daylight sky nobody can see it against.
  *
@@ -80,11 +80,12 @@ export const FX_AURORA = true;
  *
  *  A slot is EP_SLOT (4 min) of dark time, which at the default 150× time
  *  rate is a little under one per in-game night — so this reads, near enough,
- *  as "odds that a night gets an aurora". With arcs averaging ~3.3 min, this
+ *  as the odds that a night gets an aurora. With arcs averaging ~3.3 min, this
  *  value puts curtains in the sky about half the time you are driving in the
  *  dark: most sessions get one, and it still spends real stretches away.
  *
- *  It was 0.3 for one pass and the verdict was "i never see it anymore" —
+ *  It was 0.3 for one pass, and at that rate the aurora was never seen at
+ *  all —
  *  which is the failure mode to weigh this against, not wallpaper: an arc
  *  that fades away on its own does not become wallpaper the way a curtain
  *  nailed up all night does.
@@ -199,12 +200,12 @@ export interface AuroraRoll {
   palette: string;
   bands: number;
   /** curtains are up right now, or an episode is scheduled inside the next
-      few slots — i.e. "there is an aurora coming", not "there is one now" */
+      few slots — i.e. an aurora is coming, not that one is up right now */
   present: boolean;
   /** which in-game night this is, counting from world build */
   night: number;
   /** the current slot's draw, 0..1 — an episode happens when this is under
-      `chance`, so it doubles as "how close this stretch was to having one" */
+      `chance`, so it doubles as how close this stretch came to having one */
   odds: number;
   /** per band, for eyeballing from the console */
   detail: { azDeg: number; widthDeg: number; baseDeg: number; amp: number }[];
@@ -305,8 +306,8 @@ function pinnedSeed(): number | null {
  *  fresh aurora every run was the point, so it used Math.random(). That trade
  *  stops making sense the moment the aurora comes and goes: if a sky is only
  *  up for part of a drive, a sky you liked is one you can never get back, and
- *  "seed 47 opened
- *  beautifully" has to be a sentence someone can act on. Variety comes from
+ *  a note that seed 47 opened
+ *  beautifully has to be something someone can act on. Variety comes from
  *  the night index instead (a new sky every in-game night, ~9.6 real minutes
  *  at the default time rate), which gives MORE different skies per session
  *  than one random draw at startup ever did — just reproducibly. */
@@ -326,8 +327,8 @@ function worldSeed(): number {
  *  confined to the bottom `chance` slice of the hash space — and since the
  *  palette pick is a deterministic function of that seed, the table's weights
  *  would quietly stop meaning what they say. The same argument applies field
- *  by field inside an episode: share a hash between "how long is the fade-in"
- *  and "how bright does it get" and every dim aurora also arrives slowly. */
+ *  by field inside an episode: share a hash between the length of the fade-in
+ *  and the peak brightness and every dim aurora also arrives slowly. */
 function hash32(seed: number, night: number, salt: number): number {
   let h = (seed ^ Math.imul(night + 1, salt)) >>> 0;
   h = Math.imul(h ^ (h >>> 16), 0x21f0aaad) >>> 0;
@@ -345,7 +346,8 @@ const SALT_SKY = 0x85ebca6b;
    never chop the previous slot's fade-out off mid-air.
 
    WHY A SLOT SCHEDULE AND NOT NOISE. A threshold on a noise field is the
-   cheaper way to get "sometimes on, sometimes off", and it is the wrong one:
+   cheaper way to get something that is sometimes on and sometimes off, and
+   it is the wrong one:
    noise crossing a threshold produces brief blips as readily as long arcs,
    and a curtain that flickers up for eight seconds is exactly the pop this
    whole design exists to avoid. Here the SHORTEST arc that can be rolled is
@@ -367,7 +369,8 @@ const EP_FADE_IN = [45, 80];
 const EP_HOLD = [30, 90];
 const EP_FADE_OUT = [55, 100];
 /** Peak of an arc. Not every display is a strong one — but the floor stays
- *  high, because the complaint that started this was "i never see it". */
+ *  high, because the complaint that started this was that it was never
+ *  seen at all. */
 const EP_PEAK = [0.75, 1.0];
 const SALT_EP_ODDS = 0x27d4eb2f;
 const SALT_EP_T0 = 0x165667b1;
@@ -787,7 +790,7 @@ void main(){
 
   /* PINNED vs SCHEDULED. `pinned` freezes the nightly look-roll AND pins the
      envelope open at 1: it is what `?aurora=<n>`, reroll() and next() all do,
-     because every one of them means "show me THIS sky, now" — a tuning tool
+     because every one of them means showing THIS sky immediately — a tuning tool
      that hands back a sky that is between arcs is not a tool. auto() clears
      it and drops back into the schedule. */
   const pin = seedIn ?? pinnedSeed();
@@ -850,7 +853,7 @@ void main(){
     if (u <= 0 || u >= ep.span) return 0;
     /* Ramp up, sit, ramp down — then smoothstep the WHOLE thing, so the two
        ends and the two corners at the top of the hold all come out with zero
-       slope. That is the "always fade in/out" requirement in one line: there
+       slope. That is the always-fade-in-and-out requirement in one line: there
        is no value of u where this function has a jump or even a kink. */
     const k = u < ep.fi ? u / ep.fi
       : u < ep.fi + ep.hold ? 1

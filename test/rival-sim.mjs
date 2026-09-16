@@ -465,11 +465,12 @@ console.log("5. threading traffic — body separation");
    BOTH the player and the rival are pinned by it, so nothing about the
    rival's own speed model can be measured there at all (that cost a couple
    of tuning rounds before it was noticed). The flowing case is the one that
-   can actually answer "is the rival fast", and the corridor spends plenty of
+   can actually answer whether the rival is fast, and the corridor spends plenty of
    time looking like it. */
 /* Five seeds per density (ten runs), not one — a single fixed seed cannot
-   back the "zero overlaps is absolute" claim, "the player never holds the
-   lead" needs at least ten draws to mean anything, and the ahead%/speed-ratio
+   back the claim that zero overlaps is absolute, the claim that the player
+   never holds the
+   lead needs at least ten draws to mean anything, and the ahead%/speed-ratio
    numbers the report cites need a range rather than one lucky (or unlucky)
    draw. */
 const DENSITY_SEEDS = [20260825, 90210, 314159, 424242, 777001];
@@ -708,7 +709,7 @@ for (const NC of [180, 60]) for (const SEED of DENSITY_SEEDS) {
   let overlapFrames = 0, worstDepth = 0, minSep = 1e9, pinned = 0, ovBlind=0, ovYield=0, ovMoving=0;
   let vSum = 0, pvSum = 0, leadFrames = 0, leadDsSum = 0, capFrames = 0;
   // its pace when it is NOT deliberately easing off, which is the honest
-  // answer to "is it faster than me" — the mean folds in the easing
+  // answer to whether it is faster than the player — the mean folds in the easing
   let freeV = 0, freePv = 0, freeN = 0, easeN = 0;
   let aheadFrames = 0, closeFrames = 0, passes = 0, wasAhead = true, reseeds = 0, behindT = 0;
   /* LEAD-HOLD — the pass criterion the rubber-band exists for: the longest

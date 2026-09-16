@@ -2,8 +2,8 @@
    itself (routegraph's real stations, both pavement edges), as an SVG.
 
    Two reasons this exists alongside the photographs. A night dashcam shows
-   almost none of the pavement the driver is standing on, so "how wide is it"
-   and "how tight is that corner" are the two questions a screenshot answers
+   almost none of the pavement the driver is standing on, so how wide the road
+   is and how tight a given corner is are the two questions a screenshot answers
    worst — and they are the whole brief of the 2026-09-08 rebuild. And a plan
    view costs a second of node time, against ~8 minutes to boot the game under
    SwiftShader for one frame.

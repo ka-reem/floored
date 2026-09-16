@@ -250,8 +250,8 @@ check("releasing the puck finally stops the horn", !s.sounding && !s.key, JSON.s
 /* ---- 7. a sub-frame keyboard stab still sounds (the HORN_MIN_S floor) ----
    input.horn is a per-frame sample of keydown["f"], so a press and release
    dispatched back-to-back in one task is exactly the case the floor exists
-   for: without it this is silent, which is the half of "beep beep" that
-   used to go missing. */
+   for: without it this is silent, which is the half of a quick double beep
+   that used to go missing. */
 before = await state(page);
 await page.evaluate(() => {
   dispatchEvent(new KeyboardEvent("keydown", { key: "f" }));
@@ -266,7 +266,7 @@ check("the sub-frame stab releases itself", !(await state(page)).sounding);
 /* ---- 8. a HELD key survives the frame watchdog on a touch device ----
    Regression guard for the watchdog bug found here: every puck registers
    a touchHold on its key, and an idle hold's id set is empty. The watchdog
-   used to read "no ids" as "the finger is gone" and zero the key on the very
+   used to read an empty id set as the finger having lifted, and zero the key on the very
    next frame — whoever had pressed it. On any touch device with a keyboard
    attached that made W/A/S/D/F impossible to HOLD at all. */
 before = await state(page);

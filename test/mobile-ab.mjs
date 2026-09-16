@@ -275,7 +275,8 @@ if (!SKIP_PERF) {
    once with everything on to get the totals, then once per top-level child
    with that child hidden; the drop in renderer.info.render is exactly what
    that subtree was submitting. Costs one extra frame per node, which on this
-   box is seconds, and answers "931k triangles of WHAT" without a guess in it. */
+   box is seconds, and shows what the 931k triangles are actually for, without
+   a guess in it. */
 if (!SKIP_CENSUS) try {
   await page.evaluate(() => {
     window.__neonx.setCam(3);

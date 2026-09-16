@@ -13,7 +13,7 @@
    Frame time is sampled in-page with requestAnimationFrame deltas rather than
    from anything the engine reports, so it counts everything the browser does
    per frame, not just the parts the engine knows it is doing. Median is the
-   honest "how does it feel" number; p95 is where a spike lives, and a spike is
+   honest number for how it feels; p95 is where a spike lives, and a spike is
    what was reported at the toll plaza.
 
    IMPORTANT: this box has no GPU. Chrome runs SwiftShader, so absolute frame

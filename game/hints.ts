@@ -50,7 +50,7 @@ export const HINT_SHOW_MS = 6000;
 const GAP_S = 4;
 /** Driving time before the settle-in hints fire: late enough that the player
     has the car moving and the load fade is long gone, early enough to still
-    be "when you first drive". */
+    count as the first drive. */
 const SETTLE_S = 6;
 
 interface HintDef {

@@ -120,8 +120,8 @@ export const ACCEL_MULT = 2.7;
 export function arcadeSpec(spec: PhysicsSpec): PhysicsSpec {
   return {
     ...spec,
-    /* Second pass, deliberately arcade — "like No Hesi, where the cars drive
-       like F1 cars". The numbers are no longer road-car plausible and are not
+    /* Second pass, deliberately arcade — modelled on No Hesi, where the cars
+       drive like F1 cars. The numbers are no longer road-car plausible and are not
        meant to be; this is the toy mode.
 
        Grip x2.8 is the headline. Real downforce-era grip is ~3g against a
@@ -237,8 +237,8 @@ export const paintByHex = (hex: number): Paint =>
   PAINTS.find((p) => p.hex === hex) || { name: "Custom", hex, finish: "metallic" };
 
 /* ---- The two playable cars share ONE physics object -------------------
-   "they drive the exact same. We're not going to worry about different
-   driving or anything. They just both look different."
+   The two cars are meant to drive exactly the same. Differing handling
+   between them is explicitly out of scope; only their appearance differs.
 
    So this is not two specs that happen to hold matching numbers — it is one
    spec, referenced twice. Copying the table would leave a retune of either car

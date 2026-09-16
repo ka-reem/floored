@@ -97,8 +97,8 @@ const CLEAN_RUN = {
       into that one figure) reaches this, in m/s. The normal component is
       what separates a scrape from an impact: it ignores however fast the car
       was travelling ALONG the surface, so kerbing a barrier at 200 km/h and
-      touching it at 30 km/h read the same, which is what a player means by
-      "I brushed it".
+      touching it at 30 km/h read the same, which is what a player would call
+      a brush rather than a crash.
 
       5.0 m/s, from the clean-distance measurements
       (test/clean-run-check.mjs re-runs them). Kerbing a barrier at a shallow
@@ -114,7 +114,7 @@ const CLEAN_RUN = {
       Deliberately ABOVE the crash-sound gates (NPC relSpeed > 2.5,
       wallImpact > 4), which are unchanged: every reset is audible, but not
       every audible knock ends a run — a 14 km/h nudge in traffic thumps and
-      keeps the run, which is what a player means by "that was nothing". */
+      keeps the run, which is what a player would dismiss as nothing. */
   impact: 5.0,
   /** seconds the readout spends dimmed-then-settling after a reset, so the
       player SEES the run end without a banner (see run.flash / .run-reset) */
@@ -146,7 +146,7 @@ const CLEAN_RUN = {
 
     THE MONEY is the only new quantity, and it is deliberately NOT a score:
     it accrues from metres driven and a crash never takes any of it away
-    ("anytime you crash your score resets" — the SCORE, not the bank). It is
+    (a crash resets the SCORE, not the bank). It is
     also banked continuously rather than at the end of a run, so a closed tab
     or a container restart mid-drive cannot cost a player what they drove for
     (GameApp persists on pause, on exit, on tab-hide and on a slow timer). */
@@ -324,7 +324,7 @@ const HL_THROW = 130, HL_THROW_HI = 200;
     runs decay 1.5, so at 290 it has 5400/250^1.5 ~= 1.4 units left at 250 m
     against a ~4.0 knee ceiling — dim, small on screen, and fading on its own
     curve rather than on the clip's. Do not pull these back to HL_THROW to
-    "shorten the beam": shorten the beam with intensity or angle, because this
+    shorten the beam: shorten the beam with intensity or angle, because this
     knob can only make it stop. */
 const HL_CLIP = 190, HL_CLIP_HI = 290;
 
@@ -399,8 +399,8 @@ const TAP_FLASH_MS = 140;
 
 /* Minimum time a horn press stays audible, seconds. input.horn is a per-frame
    sample of keydown["f"], so without a floor a press and release that both
-   land inside one frame is silent — and that is exactly the gesture "beep
-   beep" is made of. Armed on the press EDGE (which is why it lives at the
+   land inside one frame is silent — and that is exactly the gesture a quick
+   double beep is made of. Armed on the press EDGE (which is why it lives at the
    three places the key goes down, not in the per-frame read), it holds the
    horn on just long enough to be a stab rather than a click. A held horn is
    unaffected: the key is still down, so the floor changes nothing. */
@@ -502,8 +502,8 @@ const POV_MOUNT = { dx: 0.28, dy: -0.03, dz: 0.61 };
    measured against the frustum-CUT dash, whose pad was the only cabin geometry
    that existed; the shipped interior is unclipped and brings a seat, floor,
    headliner and rear bench, so what fills the frame at a given eye height is
-   not what filled it then. "By 1.10 the view is dash and sky" is a reading
-   taken on a different object. Trust the reported frame over the numbers here
+   not what filled it then. The note that by 1.10 the view is dash and sky is
+   a reading taken on a different object. Trust the reported frame over the numbers here
    until someone re-measures them on the current asset.
 
    Live knob because the numbers above bound it but do not pick it, and picking
@@ -568,7 +568,7 @@ const CHASE_SHAKE = 0;
    - x 0. The console (`shell_0`) runs x -0.136..0.131 and the two front seats
      start at x 0.115 and -0.121, so the centreline is the only clear channel
      between them.
-   - z -0.05. "Back where the centre console is": the console spans z
+   - z -0.05, back where the centre console is: the console spans z
      -0.244..0.815 and the seat backs are at z -0.29, so this sits over the
      armrest end of it, level with the driver's shoulder — 0.36 m behind the
      dashcam lens and 0.05 m behind the cockpit eye.
@@ -629,7 +629,7 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02, procDy: 0.14
 
 /* Backseat camera (CAM_BACKSEAT): a passenger's phone held up from the rear
    bench, looking forward past the front headrests and out the windscreen —
-   the "night drive vlog" frame. Player-facing — every camera in the cycle
+   the night-drive-vlog frame. Player-facing — every camera in the cycle
    ships — so it is framed to be looked at, not to debug from.
 
    The rear bench is real geometry in BOTH interiors: cockpit.ts builds it
@@ -663,7 +663,7 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02, procDy: 0.14
      under the mirror rather than behind it.
    - yaw 0: shipped straight. The field exists because this is the one
      bracket whose whole point is a framed COMPOSITION, and off-axis
-     variants (the "phone aimed across the cabin" look) are one knob write
+     variants (a phone aimed across the cabin) are one knob write
      away for anyone tuning — positive yaw looks toward the passenger side.
 
    Live knob, same pattern as __consoleCam — `window.__backseatCam.y = 1.2`
@@ -765,8 +765,8 @@ const HOOD_CAM = { dy: 0.16, dz: 0.05, tilt: 0 };
 
    `on` mirrors the I key so the console can force any state, and because
    `DOME_LEVELS[on] * dome` is the effective level it also buys a residual:
-   set on = 2 and dome = 0.15 for "not off, just very low" without touching
-   the key.
+   set on = 2 and dome = 0.15 for a lamp that is not off but very low,
+   without touching the key.
 
    It is a THREE-WAY CYCLE, not a flip: off -> dim -> full -> off, both from
    the key and from the console click, so the two can never disagree about
@@ -782,7 +782,8 @@ const HOOD_CAM = { dy: 0.16, dz: 0.05, tilt: 0 };
    its own affordance. Resting the cursor on the overhead console eases the
    lamp this fraction of the way toward the level a CLICK would produce —
    the next stop around the off/dim/full cycle — then eases back when the
-   cursor leaves. Reported as "idk where to click", and this is the answer that
+   cursor leaves. Reported as there being no visible indication of where to
+   click, and this is the answer that
    suits the geometry: the console is the donor's own moulded ceiling panel and
    its material is shared with the floor and the mirror holder, so there is
    nothing there to make glow without lighting three unrelated parts, and a
@@ -796,8 +797,8 @@ const HOOD_CAM = { dy: 0.16, dz: 0.05, tilt: 0 };
    is a fraction of a level that was already tuned, and it explains itself: the
    thing under the cursor visibly drives the thing the click switches.
 
-   Symmetric on purpose. A lift-only version would answer "where do I turn it
-   on" and leave "where do I turn it off" exactly as lost as before.
+   Symmetric on purpose. A lift-only version would show where the light turns
+   on and leave where it turns off exactly as lost as before.
 
      window.__cabinLight.hover = 0.35    // a stronger tell while hunting for it
      window.__cabinLight.hover = 0       // off; the I key still works */
@@ -817,8 +818,8 @@ const CABIN_HOVER_EASE = 11;
 
    Night fog used to sit on 0x03040a, which is invisible by construction: fog
    blends a fragment toward the fog colour, and blending near-black geometry
-   toward near-black does nothing at any density. Reported as "the game said we
-   added fog but i dont see any" — correct, and it was never a density problem.
+   toward near-black does nothing at any density. Reported as fog having been
+   added but not being visible — correct, and it was never a density problem.
 
    Real night fog near a city is lit by the light pollution under it. Measured
    off the reference capture the haze at the road's vanishing point is
@@ -844,8 +845,8 @@ const CABIN_HOVER_EASE = 11;
    whole spectrum, so the brown goes out of it.
 
    DECOUPLED FROM THE CLEAR COLOUR, which is new. The two used to be the one
-   value, and the note that used to sit here — "the clear colour comes off this
-   same value, so the horizon has to go with it" — is exactly why the fog could
+   value, and the note that used to sit here — that the clear colour comes off
+   this same value, so the horizon has to go with it — is exactly why the fog could
    never be lifted. They want opposite things: fog is the veil in FRONT of
    things and has to be brighter than what it veils, while the clear colour is
    the void BEHIND everything and has to be black or it prints as a flat plate
@@ -895,11 +896,11 @@ const FOG_TUNE = {
    whenever the imported Volvo shell is up, i.e. by default. The car actually on
    screen in CHASE had no envMap at all and, being metalness 1, no diffuse term
    either, so it rendered at very near zero however far this was turned up.
-   That is the "impossible to see the car" report, and the full account of it is
-   in the block above lightDonorBody().
+   That is the report of the car being impossible to see, and the full account
+   of it is in the block above lightDonorBody().
 
    5 now that it lands on the car being looked at. Two things let it go past the
-   old ceiling, and neither is "turn it up and hope":
+   old ceiling, and neither is simply turning it up and hoping:
 
    - carenv.ts weights the amount ABOVE 3 by material roughness. What used to
      bite first was the near-mirror trim — the glazing (envMapIntensity 1.7 at
@@ -928,8 +929,9 @@ const CAR_ENV = { night: 5 };
    cap at dist + 1.2 and the minimum swing radius at dist * 0.6 both follow it
    in — so moving this one number does not need three others moved with it.
 
-   It has been three numbers: 3.75 originally, 3.0 for "a bit closer", and 3.6
-   now for "a little bit back" — most of that pull-in handed back, not all of
+   It has been three numbers: 3.75 originally, 3.0 after a request to bring the
+   camera a bit closer, and 3.6 now after a request to move it a little back
+   again — most of that pull-in handed back, not all of
    it. On the shipping Volvo (L 4.96) the standoff goes 4.24 -> 4.84 m at rest,
    on the Kaze (L 4.42) 4.11 -> 4.71; the trail cap follows to 6.04 m and the
    minimum swing radius to 2.90 m (Volvo), so the transient bounds keep the
@@ -976,8 +978,8 @@ const CHASE_FLOOR_EASE = 10;
    the top of the dashcam frame is at 0.37 (0.55 on a portrait phone, where
    POV_V_CAP opens the vertical up). It is off the top of the shipping view
    entirely, so on a phone there is no pixel whose ray could reach it, however
-   fat the finger or however padded the box. The request was "press on the top
-   middle part of the car", and in the frame the player is actually looking at,
+   fat the finger or however padded the box. The request was to press on the
+   top middle part of the car, and in the frame the player is actually looking at,
    the top middle IS the roof. So that is the target.
 
    0.20 x ±0.28 is 20% of frame height by 56% of its width. Sized against what
@@ -1058,8 +1060,8 @@ const CREEP_MS = 120;
    reaches the eye.
 
      amp   overall scale. 1 is the level as built; 0.65 is where it is now,
-           reported as "that interior view has shakiness sometimes when you're
-           at high speed, can you just lower it, just a nudge". 0 is off.
+           after a report that the interior view shook too much at high speed
+           and wanted a small reduction rather than a large one. 0 is off.
      pow   the speed exponent. 2 as built.
      slip  the tyre-slip term's share, which is what buzzes it in a slide
            rather than on a straight.
@@ -1087,8 +1089,8 @@ const CABIN_VIBE = { amp: 0.65, pow: 2, slip: 1 };
 
 /* ------------------------------------------------------------- chase fx ----
 
-   "For the third-person view, remove the shakiness and camera effects totally.
-   Like just remove them. They're so bad."
+   The third-person view's shake and camera effects were to be removed
+   entirely, not merely reduced — they read as plainly bad.
 
    All three ship at 0. What each one was, and why it counted as an effect
    rather than as the camera doing its job, is at its own site in the chase
@@ -1114,7 +1116,8 @@ const CABIN_VIBE = { amp: 0.65, pow: 2, slip: 1 };
      into both points before they ease (the FEED-FORWARD block in the chase
      branch), so forward motion never builds a lag. It used to — a lag of
      v/k that at speed dragged the aim point back past the camera, which is
-     the "points down, then shakes" report, and the one genuine oscillator
+     the report of the camera pointing down and then shaking, and the one
+     genuine oscillator
      left in this branch after the spring below was zeroed.
    - the trail-length clamps, the minimum radius, and the terrain height floor.
      Those stop the camera stretching away at speed, cutting through the car
@@ -1329,7 +1332,8 @@ const PHOTO = {
       so the default frame is car-with-some-road rather than car-in-the-sky */
   aimY: 0.9,
   /** metres of air kept between the lens and whatever surface is under it
-      (deck, ramp, town street) — the "don't clip under the deck" clamp */
+      (deck, ramp, town street) — the clamp that stops the lens clipping
+      under the deck */
   clearance: 0.35,
   /** rad/s of gentle self-orbit until the first drag/wheel input — the mode
       opens as a slow dolly around the car rather than a frozen frame */
@@ -1365,8 +1369,8 @@ export class Game {
   grade = false; // set from settings.dashcam in the constructor
   /* THERE IS NO `dashImported` ANY MORE, and its absence is the point.
 
-     It was one boolean meaning "the donor Volvo is on show, interior and
-     exterior body together", flipped by J, and read by the lens offsets, the
+     It was one boolean meaning the donor Volvo is on show, interior and
+     exterior body together, flipped by J, and read by the lens offsets, the
      interior hood and the cabin hotspot. With two cars in the garage the same
      question has a better answer: WHICH interior you are in is decided by the
      car you picked, so the state already exists in the rig that was built for
@@ -1444,7 +1448,7 @@ export class Game {
       The shipped interior is built --no-clip and carries the real seat — 34k
       triangles spanning z -0.286..0.598 with its headrest up at y 1.327,
       while the lens sits at z ~0.31, y ~1.175. That is INSIDE the seat
-      volume, which is what "the camera is behind the seat" actually is. No
+      volume, which is what the camera-behind-the-seat report actually is. No
       value of dy fixes it; height is not the axis that is wrong.
 
       So all three are live knobs, not just the height:
@@ -1454,7 +1458,7 @@ export class Game {
         window.__povMount.dx = 0.02    // and inboard/outboard
 
       dx and dz are DELTAS on top of POV_MOUNT.dx/dz rather than replacements,
-      so zero means "exactly where it was" and a reading taken from the console
+      so zero leaves the lens exactly where it was and a reading taken from the console
       can be pasted straight into POV_MOUNT_DELTA below. dy stays absolute
       because POV_MOUNT_DY_IMPORTED already is. */
   /** Multiplier on the CHASE camera's "sensation" effects — the head-spring
@@ -1462,8 +1466,8 @@ export class Game {
       speed FOV kick. 0 disables all three at once; 1 restores the old feel.
 
       One multiplier rather than three flags because the user could not name
-      which of them was the problem ("remove the shake stuff in 3rd person too
-      idk waht that is") — they read as one wobble from outside the car, and
+      which of them was the problem, only that the third-person shake effects
+      should go — they read as one wobble from outside the car, and
       splitting them into separate settings would ask a question nobody can
       answer by looking. If only one turns out to be wanted back, this is the
       place to split it.
@@ -1665,7 +1669,7 @@ export class Game {
       (0.61 m) further back than the dashcam. Seat z -0.286..0.598 against an
       eye at COCKPIT_EYE.z ~ -0.30 puts it behind the backrest outright, not
       merely inside the seat — which is why the imported interior reads as
-      "behind the seat" here first.
+      being behind the seat here first.
 
       Applied ONLY with the imported interior up. The procedural cockpit has no
       seat geometry in front of the eye and is framed against COCKPIT_EYE as
@@ -1686,8 +1690,8 @@ export class Game {
 
       SPLIT BY INTERIOR, like povMount() and cockpitEye() — one knob object, one
       field of which (procDy) applies only without a donor cabin. It used to be
-      unsplit on the grounds that "neither dash is in the shot the way a
-      binnacle is", and that was wrong: the procedural pad is very much in the
+      unsplit on the grounds that neither dash is in the shot the way a
+      binnacle is, and that was wrong: the procedural pad is very much in the
       shot, and its cabin sits its eye 14 cm higher than the donor's, so the
       donor-derived y read as a lens buried in the dash on every car wearing
       the procedural interior. See CONSOLE_CAM.procDy.
@@ -1794,8 +1798,8 @@ export class Game {
 
       So the knob's `fov` is re-read as the baseline AT THE SLIDER'S DEFAULT
       and SHIFTED by the slider's degrees from there: 78 at 67, 71 at 60, 91
-      at 80. Whatever window.__consoleCam.fov is set to keeps meaning "what
-      this camera looks like with the slider where it shipped", so a tuning
+      at 80. Whatever window.__consoleCam.fov is set to keeps meaning what
+      this camera looks like with the slider where it shipped, so a tuning
       session is not undone by someone else's setting.
 
       This used to be multiplicative (`fov * (slider / FOV_SLIDER_REF)`), which
@@ -1803,7 +1807,8 @@ export class Game {
       degrees near 180 are tangent-nonlinear: at the slider's max of 100 that
       scaled the 78-degree baseline to 116.4 vertical, ~141.8 horizontal at
       16:9 through lensFov, well past the ~100 vertical / ~129.5 horizontal
-      every other camera tops out at — the "stretched at max FOV" report.
+      every other camera tops out at — the report of the view stretching at
+      max FOV.
       Additive keeps the console a constant amount wider than the dashcam
       across the whole range instead of diverging from it at the top.
 
@@ -1936,7 +1941,7 @@ export class Game {
   /* cockpit corner lookahead: eased yaw offset toward the steering direction */
   private lookaheadYaw = 0;
   /* chase cam lateral lag: trails the yaw-driven offset then eases to it,
-     giving the classic GT "camera catches up out of the corner" feel */
+     giving the classic GT feel of the camera catching up out of the corner */
   private chaseLag = { x: 0, vx: 0 };
   /* Photo mode state — see the PHOTO block. `on` is only ever flipped by
      photoEnter/photoExit, which GameApp calls around the same setRunning(false)
@@ -1953,7 +1958,7 @@ export class Game {
       whole restore-on-exit guarantee is that the gameplay camera is not
       touched while this one is on duty. */
   private photoCam: THREE.PerspectiveCamera | null = null;
-  /** "What the AI sees" debug overlay (game/vision.ts). Only ever assigned
+  /** Debug overlay showing what the AI sees (game/vision.ts). Only ever assigned
       through the __neonx.vision handle below, which exists only under
       DEBUG_HOOKS — so on a player's tab this stays null for the life of the
       engine and the module is never even fetched. */
@@ -2079,8 +2084,8 @@ export class Game {
   /** One entry per held touch puck (bindHold), tracking every pointer id
       currently pressing it. A second finger's stray pointerup landing on a
       puck it never pressed must not release the first finger's hold — see
-      bindHold — so release is "the ids we captured minus the one that left,"
-      not "any pointerup that reaches this element." */
+      bindHold — so release is the ids we captured minus the one that left,
+      not any pointerup that reaches this element. */
   /* `el` is carried so the two paths that clear a hold WITHOUT going through
      bindPointerHold's own release — the frame watchdog and the blur/pause
      sweep — can put the press light out too. A puck left lit with nothing
@@ -2094,7 +2099,7 @@ export class Game {
       logic read this, the car's own z stays inside the canonical band */
   private loops = 0;
   /** smoothed tunnel blend (0 outside, 1 well inside), and the edge-triggered
-      "am I in the tunnel" flag that drives the entry/exit thumps */
+      in-tunnel flag that drives the entry/exit thumps */
   private tunT = 0;
   private tunIn = false;
   /** refractory timer, so a car hovering at a mouth can't machine-gun thumps */
@@ -2556,9 +2561,10 @@ export class Game {
       (bodyshells, donor dash) are network-bound and therefore wildly variable,
       so they are weighted at what a warm cache costs rather than a cold one.
 
-      SECOND PASS, and the reason is in the first paragraph: "estimates of where
-      the time goes ON A MID-RANGE PHONE". Reported again as "it loads fast then
-      gets stuck towards the end every time", from a desktop — and a desktop
+      SECOND PASS, and the reason is in the first paragraph: these are
+      estimates of where the time goes ON A MID-RANGE PHONE. Reported again
+      from a desktop, where the load runs fast and then stalls near the end
+      every time — and a desktop
       redistributes this badly. The two mesh builds are pure JS on one core and
       a fast CPU eats them; the tail is not CPU at all. Fetching a 5.7 MB donor
       dash takes what it takes, a driver linking a few hundred programs takes
@@ -2578,8 +2584,8 @@ export class Game {
       THE WEIGHTS WERE ONLY HALF OF IT. Of the eight stages, `warm` was the
       only one reporting intra-stage progress; `traffic`, `car` and `shaders`
       each moved the bar in ONE jump while waiting on a promise with a budget
-      of 5, 8 and 15 seconds. Together they covered 64% -> 94%, so "stuck
-      towards the end" was three back-to-back single jumps, and no amount of
+      of 5, 8 and 15 seconds. Together they covered 64% -> 94%, so the stall
+      near the end was three back-to-back single jumps, and no amount of
       reweighting fixes a stall inside one stage — it only changes the number
       it stalls on. They creep now; see creepAwait.
 
@@ -2694,8 +2700,9 @@ export class Game {
              one frame.
 
              How often that ordering actually happens is the whole question,
-             and the honest answer is "when the download outlasts the world
-             build". On the sandbox it never does — the scans are applied 147
+             and the honest answer is that it happens when the download
+             outlasts the world build. On the sandbox it never does — the
+             scans are applied 147
              s BEFORE the game is playable and cost nothing — so this is
              insurance for the real first-time player on a phone connection,
              not a fix for a stall anyone has reproduced on a driving frame.
@@ -2852,7 +2859,8 @@ export class Game {
   /** Ask the browser to fetch the world build's big downloads NOW, at the
       lowest priority it has, while the player is still on the menu.
 
-      This is the honest half of "the menu is idle time being thrown away".
+      This is the honest half of the observation that the menu is idle time
+      being thrown away.
       The other half — starting the BUILD on the menu — cannot work: every
       stage in buildStages() is one synchronous block (RAISING THE EXPRESSWAY
       is the longest single thing the game ever does on the main thread) and
@@ -3094,8 +3102,8 @@ export class Game {
 
        `renderer` is the unmasked GPU string where the browser will give it
        (it is the single most useful field, and Safari usually masks it);
-       `secs` separates "died on the loading screen" — an allocation the
-       device could never satisfy — from "died after twenty minutes", which is
+       `secs` separates a death on the loading screen — an allocation the
+       device could never satisfy — from a death after twenty minutes, which is
        pressure or a leak, and those have nothing to do with each other. */
     try {
       const gl = this.renderer.getContext();
@@ -3363,9 +3371,9 @@ export class Game {
        already spends C L Q E R T V M J N K H X P B G and the , . transport
        pair, and W A S D, the arrows, space and F are the driving controls.
 
-       DESKTOP ONLY, by explicit request — "it would only work on like desktop
-       not the mobile version, ill mostly just use it for testing and
-       comparing". Same gate the music transport uses. Belt and braces rather
+       DESKTOP ONLY, by explicit request: it is wanted on desktop and not on
+       the mobile version, since its use is mostly testing and
+       comparing. Same gate the music transport uses. Belt and braces rather
        than strictly needed: the touch buttons write keydown[] directly and
        never reach this handler, so there is no path to it from a phone even
        without the test. There is no touch button and none is wanted — this is
@@ -3446,7 +3454,7 @@ export class Game {
      switches the dome light.
 
      ONE ray serves every target and both handlers — the click and the hover —
-     so there is exactly one answer to "what is the cursor over" and the
+     so there is exactly one answer to what the cursor is over and the
      highlight can never point at something the click would miss.
 
      The ORDER of onPointerDown is the load-bearing part. Everything above the
@@ -3587,7 +3595,7 @@ export class Game {
       return;
     }
     /* ONE aim for every target, the same one onPointerDown uses. Two rays
-       would be two answers to "what is the cursor over", and the highlight
+       would be two answers to what the cursor is over, and the highlight
        could then point at something the click would miss. */
     this.aimRay(e);
     this.cabinHover = sw && this.clickRay.intersectObject(sw, true).length ? 1 : 0;
@@ -3716,7 +3724,7 @@ export class Game {
     }
     /* Everything left is the games pane's (consolegame.ts) — the ordering
        above is what narrows the type down to GameAction. The blip rides the
-       "it actually did something" edge, through the same master chain as
+       edge that confirms the click did something, through the same master chain as
        every other UI sound, so volume and mute apply unchanged. The hover
        re-ask matches the view-switch above: a landed mark changes what is
        under the still-parked cursor. */
@@ -4161,8 +4169,8 @@ export class Game {
        BOOST below is `1 + 2.2*(1 - |st|)`, i.e. exactly 1x at full lock — so a
        flick from one stop to the other STARTS at the slowest rate the filter
        has. At 1.7/s that is 1.18 s for the input alone, before the steer angle
-       or the tyres are involved at all. Reported as "when i turn from left to
-       right qucikly its so slow to react", and the report is about this line
+       or the tyres are involved at all. Reported as a quick left-to-right
+       turn being very slow to respond, and the report is about this line
        rather than about the physics.
 
        The droop is 4.6 -> 4.0 instead. A reversal at speed becomes 0.5 s, and
@@ -4179,8 +4187,8 @@ export class Game {
     let sRate = analog ? 7 : lerp(4.6, 4.0, sDroop);
     /* A PROGRESSIVE ramp rather than a flat one.
 
-       The flat ramp is the single biggest source of the "it takes a bit to
-       actually turn" feel, and it is worse the faster you go — measured, 0 to
+       The flat ramp is the single biggest source of the car feeling slow to
+       actually turn, and it is worse the faster you go — measured, 0 to
        full stick is 0.39 s at 72 km/h and 0.59 s at 144 km/h, against just
        0.15 s for the steer angle itself to follow. The keyboard filter, not
        the physics, is the lag.
@@ -4355,15 +4363,16 @@ export class Game {
 
   /* ---------------- audio resume after backgrounding ----------------
 
-     REPORTED: "if i leave chrome and return to it the audio dont work" — a
-     real phone, backgrounded and brought back, silent for the rest of the
+     REPORTED: leaving the browser and returning to it leaves the audio dead
+     — a real phone, backgrounded and brought back, silent for the rest of the
      session.
 
      The cause is not in the audio graph. Both AudioContexts (game/audio.ts's
      and the music player's) are SUSPENDED by the browser when the page is
      hidden, and nothing ever resumed them: every gain, oscillator and buffer
      is exactly where it was, the context clock just never restarts. Only a
-     reload got the sound back, which is why it read as "audio is dead".
+     reload got the sound back, which is why it read as the audio being dead
+     outright.
 
      Three doors, because no one of them is enough on its own:
 
@@ -4739,7 +4748,8 @@ export class Game {
   }
 
   /* ---------------- tunnel ---------------- */
-  /** 0..1 "how enclosed are we". Read off the corridor's own tunnel fade, but
+  /** 0..1 measure of how enclosed the car is. Read off the corridor's own
+      tunnel fade, but
       only while we are actually on the deck: the alignment happily reports a
       station for a point in town at the tunnel's z, and reverberating the
       whole town would be badly wrong. */
@@ -4945,7 +4955,7 @@ export class Game {
   /** Street and deck lamps are built as one pooled sprite cloud plus one
       ground-quad batch. Both come out of the town builder as a generic warm
       white; retint them once, here, to low-pressure sodium — the orange is
-      most of what says "road at night" in the reference, and a wider sprite
+      most of what reads as a road at night in the reference, and a wider sprite
       with additive blending gives each head the halation a real lamp has in
       damp air instead of a flat dot.
 
@@ -5060,8 +5070,8 @@ export class Game {
       fogMultiplier(this.settings.fog) * fk.density;
     /* Ambient is shaped, not lerped. A straight lerp on f leaves a floor of
        fill light at midnight that lights every surface the lamps never reach,
-       and that even wash is what makes a night scene read as "day with a blue
-       filter". The floors here are ~6x lower, so an unlit wall goes to a
+       and that even wash is what makes a night scene read as daylight under a
+       blue filter. The floors here are ~6x lower, so an unlit wall goes to a
        silhouette and its lit windows do all the work; the 0.7 power pulls the
        curve back up through dusk so twilight keeps roughly its old shape and
        full day lands on exactly the values it had before. */
@@ -5099,7 +5109,7 @@ export class Game {
        whose rings the 4 km lap physically outruns: nearing z = +Z1 the
        skyline ring stood a few hundred metres past the deck — a wall across
        the road — and the loop splice then snapped it 4 km away, which is the
-       visible "drive into a wall, then teleport" at the end of the map.
+       visible drive-into-a-wall-then-teleport at the end of the map.
        Glued to the viewer it stays on the horizon at both ends, so the
        splice's pure z-translation leaves the whole frame unchanged. y stays
        0: the deck's own ±5 m grade must not bob the horizon. */
@@ -5173,8 +5183,8 @@ export class Game {
        only ~0.7 m from the lamp, so the pool's own dynamic range is what was
        blowing it out, not its level. Cutting I is what buys the room to
        flatten decay and widen the cone back out, which is what the user
-       actually asked for ("less bright but cover more space and have more
-       gradient"). At 30 m this costs only ~9% against the previous cut.
+       actually asked for: less bright, covering more space, with more
+       gradient. At 30 m this costs only ~9% against the previous cut.
        High beam is untouched — its 5400/7000 pair is solved against the
        traffic knee described above.
 
@@ -5765,7 +5775,8 @@ export class Game {
       brake: braking,
       /* Selected AND moving backwards. A reverse lamp that lights the instant
          the gear is chosen, while the car is still rolling forward, is the
-         thing every other car on the road reads as "that car is backing into me". */
+         thing every other car on the road reads as a car reversing into
+         them. */
       reverse: car.rev && car.u < -0.15,
       sigL: car.sigL && bOn,
       sigR: car.sigR && bOn,
@@ -6230,8 +6241,8 @@ export class Game {
          act on the residual — a heading change, a bump — and never on plain
          forward motion.
 
-         "The car in third person when it speeds up, the camera points down
-         and then it shakes." Both halves came from one thing: the position
+         In third person, the camera pitched down as the car accelerated and
+         then shook. Both halves came from one thing: the position
          and aim eases were first-order lags on WORLD points, and a
          first-order lag chasing a target that moves at v settles v/k behind
          it. The trail clamp below caught the camera (dist + 1.2 m), but
@@ -6309,8 +6320,8 @@ export class Game {
         this.chasePos.y = lerp(this.chasePos.y, chaseFloorY, 1 - Math.exp(-CHASE_FLOOR_EASE * dt));
       /* THE LATERAL LAG WAS THE SHAKE, and it is off (fx.lag 0).
 
-         "For the third-person view, remove the shakiness and camera effects
-         totally." CHASE_SHAKE was already 0, which kills the head-spring bob,
+         The third-person view's shake and camera effects were to be removed
+         entirely. CHASE_SHAKE was already 0, which kills the head-spring bob,
          the G-lean roll and the FOV kick — but it never reached this, and this
          is a SECOND-ORDER SPRING: stiffness 24 against damping 6 is a damping
          ratio of 0.61, i.e. underdamped, so it overshoots the target and rings

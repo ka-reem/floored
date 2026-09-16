@@ -27,7 +27,7 @@ async function startDev() {
      Turbopack refuses it ("Symlink [project]/node_modules is invalid, it
      points out of the filesystem root"), so the server never comes up and the
      whole smoke run dies on ERR_CONNECTION_REFUSED against its own port —
-     which reads as "the game is broken" rather than "the harness is". Every
+     which reads as the game being broken rather than the harness. Every
      other harness here already passes --webpack; this one was missed. */
   const child = spawn("npx", ["next", "dev", "--webpack", "-p", String(PORT)], {
     stdio: ["ignore", "pipe", "pipe"],

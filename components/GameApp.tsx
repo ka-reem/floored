@@ -23,14 +23,17 @@ import {
 
 type Screen = "main" | "garage" | "settings" | "controls" | "stats" | "credits" | "loading" | "playing" | "paused" | "photo";
 
-/** The "Report a bug" link (pause + credits): a plain mailto with the
-    subject filled in and the build — beta flag included — in the body, so a
-    report always says which build it saw. Everything about the build's
-    identity comes from lib/build.ts; nothing here reads package.json.
+/** The "Report a bug" link (pause + credits). It opens a prefilled GitHub
+    issue rather than a mailto: an address published in a client bundle is an
+    address that gets scraped, and an issue arrives with a thread attached
+    instead of landing in an inbox.
 
-    SET THE ADDRESS BELOW before shipping — it is a placeholder. */
+    The build string — beta flag included — goes in the body, so a report
+    always says which build it saw. That identity comes from lib/build.ts;
+    nothing here reads package.json. */
 const BUG_MAILTO =
-  "mailto:you@example.com?subject=" + encodeURIComponent(`${NAME_VERSION} bug`) +
+  "https://github.com/ka-reem/floored/issues/new?title=" +
+  encodeURIComponent(`${NAME_VERSION} bug`) +
   "&body=" + encodeURIComponent(`${NAME_VERSION}\n\nWhat happened:\n`);
 
 /** The BETA mark: 試験版 · BETA on a small outline chip, sitting with the
@@ -210,7 +213,8 @@ export default function GameApp() {
 
      A class on <html> rather than pointer-lock. Lock would need a click to
      engage and Esc to release, and would break the clickable in-dash nav
-     screen, which is a lot of machinery for "the arrow is in my shot".
+     screen, which is a lot of machinery for a pointer arrow sitting in the
+     shot.
 
      pointermove with `pointerType === "mouse"` rather than mousemove, so a
      touch or a stylus tap cannot trip a cursor state that device does not
@@ -978,8 +982,9 @@ export default function GameApp() {
                     control that wrote settings.rival outside the settings
                     panel's upd(), and the badge read from the profile — with
                     the scrub in settings.ts clearing rival on load, a live
-                    badge here would always have said OFF, which reads as "you
-                    can switch it on" rather than "not yet". Unlocking is
+                    badge here would always have said OFF, which reads as an
+                    invitation to switch it on rather than as not yet
+                    available. Unlocking is
                     restoring the onClick and the badge, un-disabling it, and
                     dropping the scrub. */}
                 <SignRow
@@ -1220,8 +1225,9 @@ export default function GameApp() {
    bar, and it leaves with the screen.
 
    IT WAS GATED BEHIND A DELAY AND THAT IS GONE. First 2500 ms, then 800 —
-   both were guesses at "only show this if the load is slow enough to be
-   worth filling", and watching the 800 ms build settled it: a panel that
+   both were guesses at a rule that would show this only if the load were
+   slow enough to be worth filling, and watching the 800 ms build settled it:
+   a panel that
    arrives seconds after the loading screen does reads as a glitch, not as an
    offer. So there is no gate — the rows are in the first painted frame of
    the loading screen. A warm DRIVE is over
@@ -1808,8 +1814,8 @@ function QuickDrawer({
        Here rather than at the bottom of the list because the sheet SCROLLS on
        a 390x664 phone (max-height: 100vh - 280px) — eleven rows do not fit —
        and a control that exists to be reached quickly should not be the one
-       below the fold. Beside MAP ZOOM is also where it belongs: both are "how
-       much of the world do I see". */
+       below the fold. Beside MAP ZOOM is also where it belongs: both control
+       how much of the world is visible at once. */
     { k: "k", en: "FIELD OF VIEW", jp: "画角", state: game.fovRow.text, on: game.fovRow.changed },
     { k: "m", en: "MIRRORS", jp: "ミラー", state: game.mirror ? "ON" : "OFF", on: game.mirror },
     /* RAIN AND WIPERS ARE HELD BACK for the beta, shown but not tappable.

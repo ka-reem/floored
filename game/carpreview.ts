@@ -36,7 +36,7 @@ const cache = new Map<string, string>();
    FIVE of them. That is roughly a second of main-thread work on a desktop
    and several on a phone, paid on the first garage open of every visit and
    again on every paint the player has not already seen — which is exactly
-   the shape of "the garage takes a while to load sometimes".
+   the shape of the garage sometimes taking a while to load.
 
    The in-memory caches above already make the SECOND open of a session
    instant. This makes the first one instant too, on every visit after the

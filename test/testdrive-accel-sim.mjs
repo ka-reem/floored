@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /* Headless straight-line bench for TEST MODE's acceleration multiplier.
 
-   The question it answers is "did lowering arcadeSpec's torque multiplier
-   slow the launch WITHOUT moving top speed" — the two claims the change rests
+   The question it answers is whether lowering arcadeSpec's torque multiplier
+   slowed the launch WITHOUT moving top speed — the two claims the change rests
    on. Test-mode vmax is not drag-bound — it sits on the 82 m/s sanity clamp
    in physics.ts, with the gearing/rev-limit above that — so the torque
    multiplier should be free to fall a long way before vmax notices; this

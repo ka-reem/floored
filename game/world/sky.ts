@@ -153,8 +153,8 @@ export function buildSky(scene: THREE.Scene, glowTex: THREE.Texture): Sky {
     /* HEIGHT. The cones used to run 220-520 m at 2.0-2.5 km, which puts the
        tallest ones well ABOVE the horizon glow they are supposed to sit under
        — from the dashcam a 520 m peak at 2 km subtends ~15 degrees and stands
-       as a hard black pyramid in the middle of the sky. Reported as "the
-       pyramid... it blocks the view". Halved, so the ridgeline reads as
+       as a hard black pyramid in the middle of the sky. Reported as that
+       pyramid blocking the view. Halved, so the ridgeline reads as
        distant relief rather than as an object.
 
        Then reported AGAIN after that, so mtnScale now ships at 0 and the

@@ -116,8 +116,8 @@ body {
 
      Holding a button on iOS Safari raises the selection callout and the
      MAGNIFIER LOUPE — the little round lens that pops up over the text
-     cursor. Reported as "sometimes i hold down the buttons and then it like
-     magnifies it". body already carries user-select:none, but that alone does
+     cursor. Reported as a long press on a control raising the magnifier over
+     the button. body already carries user-select:none, but that alone does
      not stop the callout: -webkit-touch-callout is a separate opt-out, and
      without it a long press on any element can still raise the loupe.
 
@@ -165,7 +165,7 @@ canvas.game {
 
    `cursor: none` only, never pointer-lock: the in-dash nav screen is
    clickable, and capture would mean a click to engage and Esc to escape for
-   a problem that is just "the arrow is sitting in my shot". Any mouse
+   a problem that is just the pointer arrow sitting in the shot. Any mouse
    movement clears the class instantly, so nothing is ever unreachable.
 
    Touch devices never show a pointer, so this is inert there. */
@@ -224,7 +224,7 @@ html.cursor-idle * {
 /* ---------- CLEAN RUN readout ----------
 
    Distance since the last real impact (engine.ts's runUpdate writes the text;
-   empty text when the setting is off). THE BRIEF IS "not in your face": small,
+   empty text when the setting is off). THE BRIEF IS TO STAY OUT OF THE WAY: small,
    dim, out of the sightline, no pulse, no toast. So the base rule below is
    deliberately smaller and dimmer than everything else in the corner — 11px
    against the gear line's 15px and the speedo's 44px, and roughly half the
@@ -691,8 +691,8 @@ body:not(.touch) #mmap {
    load stage is a solid block of main-thread work — a single buildHighway()
    call is hundreds of milliseconds on a phone — and anything that needs the
    main thread to advance (a width/left transition, a JS-driven ticker, a
-   spinning GIF) freezes solid for the duration, which is precisely the "it
-   just hangs" this screen exists to fix. Transform/opacity animations are
+   spinning GIF) freezes solid for the duration, which is precisely the
+   apparent hang this screen exists to fix. Transform/opacity animations are
    handed to the compositor and keep moving while the main thread is buried.
    The viewfinder frame above is exempt from that rule because it never
    animates — it paints once and sits still, same as the rest of this

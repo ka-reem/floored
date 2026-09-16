@@ -1,8 +1,8 @@
 /* Browser-free drive of the whole corridor, hunting for anything that stops a
    car that should not be stopped.
 
-   This exists because of a reported "invisible wall at the end of the
-   highway". Two things can cause that and neither shows up in a geometry
+   This exists because of a report of an invisible wall at the end of the
+   highway. Two things can cause that and neither shows up in a geometry
    check: a collider box sitting in the drivable band with no visible mesh
    under it, and a splice that never fires so the player runs out of road.
    Both are reproducible here with no GPU.

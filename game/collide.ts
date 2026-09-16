@@ -229,7 +229,7 @@ export function collidePlayer(
   let wallImpact = 0;
   /* Hardest contact this call, as closing speed along the contact normal —
      see NO_CONTACT. Walls, buildings and NPCs all fold into this one number,
-     so "how hard was that?" has a single answer everywhere it is judged. */
+     so how hard a contact was has a single answer everywhere it is judged. */
   let normalImpact = 0;
   const npcHits: NpcHit[] = [];
   const preVx = car.wvx, preVz = car.wvz;

@@ -1,6 +1,6 @@
 /* What the lane schedule and the tunnels actually look like, over many seeds.
 
-   This is the measurement the "the roads don't feel random any more" report
+   This is the measurement the report of the roads no longer feeling random
    was missing: the corridor's lane count used to come from a hand-written
    table, so there was exactly one road and no distribution to measure. Now
    there is, and this prints it — per seed, and pooled — so a change to the

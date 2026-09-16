@@ -32,7 +32,7 @@ const CAM_CHASE = 0, CAM_POV = 3;
 
 /* Fractions of route length, plus the two deck-side views of the gores. The
    apex is where the road is furthest out over the water and is the shot that
-   carries "how wide is this thing". */
+   carries how wide the road is. */
 const PLACES = [
   ["entry", 0.10], ["outbound", 0.28], ["apex", 0.50],
   ["homebound", 0.72], ["rejoin", 0.92],

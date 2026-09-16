@@ -13,7 +13,7 @@
 
    Three measurements, all interleaved A/B/A/B so drift in the box hits both:
      OFF   telemetryTick() with analytics off — the production path for an
-           opted-out or blocked browser, and the "free when off" claim
+           opted-out or blocked browser, and the claim that it is free when off
      ON    telemetryTick() sampling for real
      CTRL  chunksUpdate(), same tick, same build
 

@@ -12,7 +12,7 @@ import * as THREE from "three";
    bright pass that the road materials sample on the following frame. It
    replaced a second full scene render — see the block comment there.
 
-   `grade` no longer means "slightly different colours": it swaps the clean
+   `grade` no longer means merely slightly different colours: it swaps the clean
    look for the full dashcam pass (soft cheap lens, chroma bleed, sensor noise,
    crushed highlights, rolling-shutter wobble, burnt-in timestamp).
 
@@ -144,8 +144,8 @@ const POV_TUNE_DEFAULT = {
 };
 /* Per-tier POV grade profiles. The dashcam identity is non-negotiable, but a
    phone shows this frame at a fifth of the visual angle, outdoors, off a
-   1.1-1.35 DPR render — the same degrade strengths that read as "night
-   evidence footage" on a monitor read as "can't see the road" there — the
+   1.1-1.35 DPR render — the same degrade strengths that read as night
+   evidence footage on a monitor leave the road impossible to see there — the
    reported symptom, exactly. So the mobile tiers keep every effect, at gentler
    strengths, plus a slightly faster sensor: shallower/softer black crush,
    flatter midtone gamma where the road and cars sit, quieter grain, a lighter
@@ -221,8 +221,8 @@ const REF_TAIL = 0.38;
    lamp, less white in its middle.
 
    FILM FINISHERS: each behind its own flag so any one of them can be zeroed
-   at merge without shader surgery. Amplitudes are deliberately "shot on a
-   camera at night", not Instagram — see the composite shader for the exact
+   at merge without shader surgery. Amplitudes are deliberately those of a
+   camera shooting at night, not Instagram — see the composite shader for the exact
    terms. */
 const DUAL_BLOOM = true;    // two-scale bloom master flag (desktop)
 const DUAL_CORE_MUL = 0.78; // core strength = base(0.85/1.15) * this
@@ -251,7 +251,7 @@ const DIRT_URL = "/assets/lens/dirt_02.png";
  * desktop frame is unchanged to four decimal places.
  *
  * Lower this to shorten the smear; it is a real exposure time, so 0.030 reads
- * as a faster sensor rather than as "motion blur turned down".
+ * as a faster sensor rather than as motion blur being turned down.
  *
  * Now carried by the __povTune.mbTau knob (this constant is its desktop
  * default, duplicated as a literal in POV_TUNE_DEFAULT above because that
@@ -275,7 +275,7 @@ function readPovTune(def: typeof POV_TUNE_DEFAULT) {
   const c01 = (v: number, d: number) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : d);
   const cGain = (v: number) => (Number.isFinite(v) ? Math.max(1, Math.min(3, v)) : def.sensorGain);
   // mbTau floor: a zero/negative time constant would make the blend divide
-  // toward retention 1 (a frozen frame); 5 ms is already "no visible drag"
+  // toward retention 1 (a frozen frame); 5 ms already leaves no visible drag
   const cTau = (v: number) => (Number.isFinite(v) ? Math.max(0.005, Math.min(0.12, v)) : def.mbTau);
   return {
     gainFloor: c01(t.gainFloor, def.gainFloor),
@@ -332,7 +332,7 @@ export class PostFX {
       `perf`, which is the reactive frame-time fallback and can fire on top of
       this on any tier. */
   private mobile = false;
-  /** engine's per-frame answer to "is the road reflecting?" (user setting AND
+  /** engine's per-frame answer to whether the road is reflecting (user setting AND
       tier). Off means the reflection source pass is skipped outright — the RT
       keeps its last contents but nothing samples it, since setWet zeroes
       uRefStr in the same breath. */
@@ -1190,7 +1190,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
   }
 
   /** Register a physical impact for the dashcam-glitch burst: a short,
-   * randomized "physically struck camera" flourish layered on top of the POV
+   * randomized physically-struck-camera flourish layered on top of the POV
    * degrade (frame-jump snaps, tear lines, a dropped frame, an exposure
    * flash, a chroma-separation spike and a settling refocus wobble), all
    * driven off one decaying envelope so it collapses back to the plain POV
@@ -1441,8 +1441,8 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
        the A-pillar, the door card, the wheel rim — and those are rigidly
        attached to the camera and not moving relative to it at all. Blurring
        them says the car is smearing, which is wrong and reads as a bug.
-       Reported as "the inside of the car cabin gets very blurry... in any of
-       the inside driving car views".
+       Reported as the inside of the cabin going very blurry in any of the
+       interior driving views.
 
        POV was already excluded (its degrade owns the whole edge treatment);
        this extends the same exclusion to the cockpit and console cameras,
@@ -1611,7 +1611,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // entirely and let the degrade run again on the stale texture — a
       // real held frame, not a simulated one. Same event-local ~24fps
       // bucket + seed the shader uses for its own jump gating, so the
-      // "camera skipped a beat" moments line up with the frame-jump snaps.
+      // moments where the camera skips a beat line up with the frame-jump snaps.
       const hitBucket = Math.floor(hitElapsed * 24 + this.hitSeed);
       const holdFrame =
         hitActive && hitEnv > 0.2 &&
@@ -1638,7 +1638,7 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
       // the mirror shield's clean layer: the full-res pre-degrade frame (cur
       // is whichever of the blend pair this frame wrote — POV forces doFinal
       // on, so it is always set). Live even on holdFrame
-      // frames, which is right: the DVR "drops a frame" but the shielded
+      // frames, which is right: the DVR drops a frame but the shielded
       // glass is presented as unmangled optics, not part of the encode.
       this.povMat.uniforms.tFull.value = cur.texture;
       // wrapped: the noise clock is floor(t*15) and float precision in the

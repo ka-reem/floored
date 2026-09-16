@@ -154,8 +154,8 @@ const TILT = 0.227;
     edge it was sliced on. --full-cabin builds screen whole NODES against the
     100 pair instead and never slice, so this does not bind them.
     Overridable so a deliberately over-wide control build can be made and
-    diffed against the shipped one — that diff is how "the clip is wide enough"
-    gets demonstrated rather than asserted. */
+    diffed against the shipped one — that diff is how the clip's width gets
+    demonstrated to be sufficient rather than asserted. */
 const CLIP_HFOV = Number(flag("--clip-h", 119.6));
 const CLIP_VFOV = Number(flag("--clip-v", 110.0));
 /* Base mozjpeg quality for the colour maps; normal maps get +5 on top, since a
@@ -192,7 +192,7 @@ const NEAR = 0.02;
 
    THIS CLIP RUNS EVEN UNDER --no-clip, and that is the whole reason an
    unclipped whole-cabin build can inherit the mirror the dash cut was tuned
-   for. --no-clip means "do not slice geometry the player might see"; the
+   for. --no-clip means not slicing geometry the player might see; the
    mirror housing is never seen, so it is not geometry in that sense — it is a
    measuring stick, and a measuring stick that changes length between builds
    is worse than useless. Anchor roles are also exempt from --simplify below,

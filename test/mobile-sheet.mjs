@@ -1,9 +1,9 @@
 /* Labelled option sheets and proof sheets from the mobile shot dirs.
 
-   test/shot-compare.mjs already answers "is this change invisible" for a
+   test/shot-compare.mjs already answers whether a change is invisible for a
    whole frame. This answers the other two questions worth asking of a
-   change: "what do the OPTIONS look like side by side", and "what changed,
-   big enough to see". A 429x928 phone frame shrunk into a contact sheet is far
+   change: what the OPTIONS look like side by side, and what changed, at a
+   size big enough to see. A 429x928 phone frame shrunk into a contact sheet is far
    too small to judge a bloom edge or a mirror in, so this crops first.
 
    Usage:

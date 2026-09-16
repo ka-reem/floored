@@ -15,7 +15,8 @@
      route surfaces the original table never saw.
    - `programs` per station: renderer.info.programs.length — the shader-
      compile budget. A program count that GROWS between stations means the
-     drive is compiling shaders mid-lap, which is the "hard to load" hitch.
+     drive is compiling shaders mid-lap, which is the hitch that reads as the
+     game being hard to load.
    - `--hitches` runs scripted drives through the route transitions (tunnel
      entry, toll, mountain entry/exit, district boundary) recording rAF frame
      deltas and the program count before/after: compile stutter shows as a

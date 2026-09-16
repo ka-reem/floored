@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-/* Headless check for the "leave the tab, come back, no audio" bug.
+/* Headless check for the bug where leaving the tab and coming back leaves no
+   audio.
 
-   REPORTED: "if i leave chrome and return to it the audio dont work" — a real
-   phone, backgrounded and brought back, silent for the rest of the session.
+   REPORTED: leaving the browser and returning to it leaves the audio dead — a
+   real phone, backgrounded and brought back, silent for the rest of the session.
    The cause is the AudioContext: a hidden page has its context SUSPENDED by
    the browser, and nothing in game/ ever resumed it. Desktop Chrome does not
    suspend a backgrounded tab's context (it keeps playing), so this script

@@ -192,7 +192,7 @@ async function run(dev) {
   check("setRunning(false) actually paused", runningAfterPause === false);
   check("keydown.a cleared by the pause (clearLatchedInput)", (await gameState(page, "keydown.a")) === 0);
   // resume — real finger is long gone; the stuck-ON scenario this guards
-  // against is exactly "resumes still steering with nobody touching it"
+  // against is exactly a resume that still steers with nobody touching it
   await page.evaluate(() => {
     const b = [...document.querySelectorAll("button")].find((x) => x.textContent === "RESUME");
     b?.click();

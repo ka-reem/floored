@@ -21,7 +21,8 @@
    Discipline this file inherits and must not break:
    - it goes through track() in lib/analytics.ts, so the developer opt-out
      (`?owner=1`), the webdriver guard that keeps the harnesses out of the
-     dashboard, and the "PostHog never loaded" no-op path all apply unchanged;
+     dashboard, and the no-op path for a PostHog that never loaded all apply
+     unchanged;
    - it accumulates NOTHING when analytics is not live. Opted out, blocked by
      an extension, DNT, headless: telemetryTick() returns on its first line and
      the sample array stays empty for the life of the tab;

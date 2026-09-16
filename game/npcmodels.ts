@@ -93,7 +93,7 @@ export const npcModelUrl = (style: string, base: string = BASE): string =>
    at all and carries its lights on the glow alone — see HALO in traffic.ts,
    which is why `hasTailGeo` staying false for those styles matters. */
 
-/** lampKind for "this is rear bodywork that PAINTS its own tail lens": the
+/** lampKind for rear bodywork that PAINTS its own tail lens: the
     shader lights only the texels there that test as lens red, so the lit
     shape is the car's own artwork rather than a quad laid over it.
     Keyed on `> 4.5` in npcShader. */

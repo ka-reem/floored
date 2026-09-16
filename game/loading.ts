@@ -55,8 +55,8 @@ const HIDDEN_TICK_MS = 250;
     Not setTimeout(0): nested timers are clamped to 4 ms and, worse, a timer
     can be serviced in the same turn as the rAF, i.e. still before paint.
     Not scheduler.yield(): it resumes at a priority ABOVE rendering, which is
-    exactly right for keeping a page responsive and exactly wrong for "let the
-    frame land before I block again". */
+    exactly right for keeping a page responsive and exactly wrong for letting
+    the frame land before blocking again. */
 export function yieldToPaint(): Promise<void> {
   return new Promise((resolve) => {
     const ch = new MessageChannel();

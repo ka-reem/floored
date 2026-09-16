@@ -38,8 +38,8 @@
    Both engine voices (the synth body below and the recorded ladder further
    down) sum into one output stage — level trim, low-shelf rumble boost, then
    a tanh soft clip that keeps the engine bus from ever pushing master into
-   clipping. Its four constants (ENGINE_TUNE_DEFAULT) are the "louder /
-   beefier" knobs and are live-editable from the console via
+   clipping. Its four constants (ENGINE_TUNE_DEFAULT) are the louder-and-
+   beefier knobs and are live-editable from the console via
    window.__audioTune, the same way post.ts exposes window.__povTune.
 
    The whole graph is built once in init(); update() only moves AudioParams.
@@ -267,7 +267,8 @@ const ladderAnchors = (cyl: number) => LOOP_F0.map((f) => (f * 120) / cyl);
     is mixed at up there, than a stationary one.
 
     2.4 -> 2.6, because the reason it was cut to 2.4 no longer applies. It
-    came down from 3.6 on "it sounds like a motorbike", which was the right
+    came down from 3.6 because the engine had taken on a motorbike-like
+    whine, which was the right
     diagnosis of the wrong constant: with a set that spanned 1.63x, the
     formant shift was already severe in the middle of the rev range, and
     clamping the top just moved where it stopped getting worse. The set now
@@ -311,7 +312,7 @@ const LADDER_STRETCH = 1.9;
     at ordinary rpm. Was 0 — sampled mode muted the oscillator path outright
     (driveTrim -> 0) and handed the whole engine to four recordings that, per
     LOOP_F0, could not actually carry a rev sweep. A floor keeps a correctly
-    pitched fundamental present at every rpm, so "the revs are climbing" is
+    pitched fundamental present at every rpm, so a climbing rev is
     audible even where the ladder is thin, without the synth reading as a
     separate voice on top.
 
@@ -339,8 +340,9 @@ const LADDER_TRIM = 2.4;
 
 /* ---- The mix map: where every continuous layer sits ---------------------
    The level BALANCE between the sound families, gathered from four rounds
-   of by-ear feedback ("engine too loud" x4, "wind drowns the mix", "more
-   road presence"). These are the CEILINGS each layer can reach at full
+   of by-ear feedback (the engine too loud, four separate times; the wind
+   drowning the mix; too little road presence). These are the CEILINGS each
+   layer can reach at full
    drive — the per-frame formulas in update() shape how each one gets there.
    Approximate full-song picture at high speed, dB vs the wind ceiling:
 
@@ -436,7 +438,8 @@ const smoothstep = (e0: number, e1: number, x: number) => {
    to master and stays dry: those are made inside the cabin (or, for rain,
    do not happen inside a tunnel at all).
 
-   so "louder / more rumble" is a one-number edit here rather than a hunt
+   so making the engine louder or adding rumble is a one-number edit here
+   rather than a hunt
    through the per-layer coefficients in update(). Those per-layer numbers
    still set the BALANCE between throttle/revs/overrun and between the two
    voices; these set how loud the whole engine sits in the mix and how much
@@ -458,7 +461,8 @@ const smoothstep = (e0: number, e1: number, x: number) => {
    tanh(1) = 0.76 — and it was already compressing well below that
    (tanh(.65) = .57, i.e. -1.1dB on ordinary signal). Every dB of `level` or
    `rumbleDb` past that point turned into fold-over distortion instead of
-   volume, which is exactly the "I raised it and it isn't louder" symptom. A
+   volume, which is exactly the symptom where raising the level produced no
+   extra loudness. A
    compressor takes input above 1.0 properly, and `makeup` after it converts
    the headroom the limiting frees into actual level — that is where the
    loudness now comes from, not from driving `level` higher. */
@@ -472,8 +476,8 @@ const ENGINE_TUNE_DEFAULT = {
       shipped at, while still sitting forward of where it was before anyone
       touched it. 1.85 was set to fix an engine that was too quiet, but
       tyre/wind/traffic were left where they were, so the fix was applied
-      entirely by making one source dominate — which is the reported "the
-      engine drowns out the other car sounds".
+      entirely by making one source dominate — which is the reported symptom
+      of the engine drowning out the other car sounds.
 
       There is a second reason to come down that has nothing to do with the
       meter: a correctly pitched engine sweeping through its rev range is
@@ -606,7 +610,7 @@ function readAudioTune(): AudioTune {
 
    The four `*Send` values are the fixed-ratio feeds into the reverb input;
    they do NOT scale with the tunnel factor (the wet gain gates the whole
-   thing), so they are pure "how much of THIS source does the tunnel hear".
+   thing), so they are purely how much of THIS source the tunnel hears.
    Rough guide: continuous broadband sources want a low ratio or the tail
    turns to porridge; transient events want a high one, because a horn or a
    backfire bouncing off the walls is most of what "tunnel" sounds like and
@@ -652,7 +656,7 @@ function readAudioTune(): AudioTune {
    a quiet tunnel, it is no tunnel — which is exactly how it was reported. */
 const TUNNEL_TUNE_SPEC = {
   /** Convolver wet gain at full tunnel, before the portal curve. The single
-      "more tunnel / less tunnel" number; everything else is character. */
+      more-tunnel/less-tunnel number; everything else is character. */
   wet: { d: 1.15, lo: 0, hi: 2.5 },
   /** Portal curve exponent: wet = wet * t^gamma. gamma < 1 front-loads the
       transition so the reverb slams on at the mouth instead of easing in
@@ -828,8 +832,8 @@ const ROAD_GROWL_SPEC = {
       the (already growl-EQ'd) engine bus is mixed in ALONGSIDE the dry path.
       Parallel, not in-line, on purpose — the existing soft-clip stage in the
       engine tone chain (shaperCurve, ~2.6x drive) is the one that owns the
-      dry path's character, and pushing more level into it is the "I turned
-      it up and it just got dirtier" failure. This adds grunt without moving
+      dry path's character, and pushing more level into it is the failure
+      where turning it up only makes it dirtier. This adds grunt without moving
       the dry signal at all. */
   sat: { d: 0, lo: 0, hi: 1 },
   /** Input gain into the saturation branch's shaper. Higher = more harmonics
@@ -1156,7 +1160,7 @@ export class GameAudio {
       ~2.6x gain baked in by design and would defeat the loop's gain
       staging). tanh(x) has slope 1 at the origin, so normal-level signal
       passes through essentially unchanged; only amplitude approaching ±1
-      gets compressed, which is exactly the "can't ever scream" ceiling a
+      gets compressed, which is exactly the never-runaway ceiling a
       feedback loop should have regardless of how carefully its gain
       staging was reasoned about elsewhere. */
   private limiterCurve() {
@@ -1570,9 +1574,9 @@ export class GameAudio {
       this.noiseNode().connect(this.roadRumbleF).connect(this.roadRumbleG).connect(this.master);
 
       // Rain: was a flat 2600Hz+ highpass on raw noise, i.e. the single
-      // brightest, most literally "white noise" layer in the file — that's
-      // exactly what two separate bug reports keyed on ("constant white
-      // noise"). A car cabin doesn't hear rain as hiss: it's a muffled
+      // brightest, most literally white-noise layer in the file — that's
+      // exactly what two separate bug reports keyed on, both describing a
+      // constant white noise. A car cabin doesn't hear rain as hiss: it's a muffled
       // mid/low body (lowpassed hard, not highpassed at all) plus gusting
       // and — the part that actually reads as "rain" to a listener rather
       // than generic noise — a sparse random pattern of droplet impacts.
@@ -1933,13 +1937,13 @@ export class GameAudio {
       convPeak the growl, on the tail: up to +10dB at growlHz*1.18, opened by
                applyTunnel with the tunnel factor. Far more than either dry
                path gets, because a tail is diffuse — a resonance that would
-               be a honk on a direct signal is just "the size of the tube" on
+               be a honk on a direct signal is just the size of the tube on
                a reverb, and this bus has its own soft clip to catch it.
       convLP   closes with the tunnel factor: concrete absorbs the top end a
                little more on every bounce, so a long tail should be darker
                than the sound that made it. Only the TAIL darkens — the
                direct sound is untouched, which is what stops this reading
-               as "someone put a blanket over the car".
+               as a blanket thrown over the car.
       convSat  the same unity-at-origin soft clip the FDN loop uses, and
                placed AFTER convWet so it bounds the wet bus's contribution
                to master at |1| whatever the wet knob says. That is what
@@ -2009,7 +2013,7 @@ export class GameAudio {
   }
 
   /** Debug snapshot of every noise/tone layer's current live gain, for
-      diagnosing "mystery background sound" reports from the console:
+      diagnosing reports of an unidentified background sound, from the console:
       `__audioDebug.getLevels()` (this instance is auto-exposed there by
       init()). Returns null if audio isn't initialized. Read-only — reading
       .value off existing nodes, no extra state, negligible cost, safe to
@@ -2017,7 +2021,7 @@ export class GameAudio {
   getLevels() {
     if (!this.ok) return null;
     // NPC pool detail: npcVoicesActive alone can't tell a diagnosis apart
-    // from "the pool is fine, something else is the source" — these let a
+    // from the pool being fine and something else being the source — these let a
     // pasted snapshot show the pool's actual output and the closest voice's
     // character (distance/gain/cutoff) directly, rather than needing a
     // follow-up round-trip to ask for them.
@@ -2043,8 +2047,8 @@ export class GameAudio {
       sampledSkid: this.skidG ? this.skidG.gain.value : null,
       convolverWet: this.convWet ? this.convWet.gain.value : null,
       engine: this.engG.gain.value,
-      /* shared engine output stage (window.__audioTune) — a "the engine is
-         too loud/quiet" report is answered by these three plus `engine`/
+      /* shared engine output stage (window.__audioTune) — a report that the
+         engine is too loud or too quiet is answered by these three plus `engine`/
          `sampledEngine` above, without needing to know which voice is live */
       engineBusLevel: this.engLevel.gain.value,
       engineCeilingDb: this.engLim.threshold.value,
@@ -2069,7 +2073,7 @@ export class GameAudio {
       rain: this.rG.gain.value,
       scrape: this.scrapeG.gain.value,
       reverbWet: this.reverbWet.gain.value,
-      /* tunnel state — enough to answer "is the reverb even on?" from one
+      /* tunnel state — enough to answer whether the reverb is on at all, from one
          pasted snapshot: which voice is live (convolverWet above is null
          until the IR decodes), the smoothed factor engine.ts last sent, the
          four send ratios, and the two EQ moves. */
@@ -2134,7 +2138,7 @@ export class GameAudio {
     if (!this.peakAnalyser) {
       this.peakAnalyser = this.ctx.createAnalyser();
       this.peakAnalyser.fftSize = 2048;
-      // Tap the LAST node in the master chain, so "what the speakers get"
+      // Tap the LAST node in the master chain, so what the speakers get
       // includes the tunnel EQ — the growl is the one move here that adds
       // level, and audio-mix-check.mjs's |peak| < 0.99 assertion is the only
       // automated thing standing between it and a clipped output.
@@ -2710,8 +2714,8 @@ export class GameAudio {
         - start/end: a sustain-only loop window. The previous hardcoded
                   window (0.16..0.42 s) overshot the note — the recorded horn
                   releases at ~0.385 s, so every loop pass played the die-off
-                  then snapped back to full blast: the reported "beep beep
-                  beep" under a held key. Here the sustain is derived from a
+                  then snapped back to full blast: the reported repeated
+                  beeping under a held key. Here the sustain is derived from a
                   10 ms RMS envelope (windows holding >= 70% of peak), the
                   loop start snaps to a RISING zero crossing past the attack
                   wobble, and the loop end is chosen among rising zero
@@ -2913,7 +2917,8 @@ export class GameAudio {
   }
 
   /** The context's own state, or null before init(). "suspended" here is the
-      whole of the "I came back to the tab and the game is silent" bug: a
+      whole of the bug where returning to a backgrounded tab finds the game
+      silent: a
       backgrounded page has its AudioContext suspended by the browser, and
       nothing in the graph below ever notices — every gain is still where it
       was, the oscillators are still started, the clock simply is not running.
@@ -3047,7 +3052,7 @@ export class GameAudio {
        open/closed contrast; the beds are exactly that load character, so
        their trim now rides the throttle: -6dB closed (tucked under the
        recording instead of reading as hiss) opening to ~-1.4dB wide open —
-       the intake/exhaust roar is most of the "growl under acceleration" the
+       the intake/exhaust roar is most of the growl under acceleration that the
        fixed recordings can't provide. engG still gates the beds, so
        bodyLevel keeps shaping them. */
     const sampled = this.sampledActive();
@@ -3159,7 +3164,7 @@ export class GameAudio {
       // thr coefficient 0.23 (0.11 -> 0.17 -> 0.23): +3.2dB on the ladder at WOT
       // throttle while closed-throttle cruise level is untouched — paired
       // with the bed trim above and the faster-opening airbox below, this is
-      // the "elevate the engine growl when accelerating" change.
+      // the change that raises the engine growl under acceleration.
       // The (1 - 0.8*takeover) factor is the other half of the handover: past
       // the ladder's usable range the recordings are being stretched too far
       // to read as pitch, so they step back to being texture under the synth
@@ -3202,8 +3207,8 @@ export class GameAudio {
     // then has the same noise floor as the loudest-toned car (kaze,
     // p.level=1.0) fighting a quieter signal, so the noise reads as
     // relatively more exposed/prominent — a real per-car imbalance, not a
-    // leak, but one that plausibly explains "this car has more hiss than
-    // that one" reports: it's a masking-ratio problem, not an on/off bug.
+    // leak, but one that plausibly explains reports of one car having more
+    // hiss than another: it's a masking-ratio problem, not an on/off bug.
     this.sp(this.inF.frequency, 900 + rn * 2700, 0.04);
     this.sp(this.inG.gain, thr * (0.012 + rn * 0.05) * p.level, 0.04);
     this.sp(this.exF.frequency, 220 + rn * 900, 0.04);
@@ -3214,8 +3219,8 @@ export class GameAudio {
 
     /* Turbo spool follows boost, i.e. throttle held at revs. Peak level
        coefficient 0.0042 (0.01 -> 0.007 -> 0.0042, a clean -40% on the last
-       value and -58%/-7.5dB on the original) after a second "lower the
-       whistling" call. Worth knowing why
+       value and -58%/-7.5dB on the original) after a second call to lower the
+       whistling. Worth knowing why
        this needs to sit so low: turboOsc is a bare sine sweeping 2200-6600 Hz,
        and a pure tone up there is perceptually piercing at an amplitude where
        broadband noise would be inaudible — equal-loudness puts 4 kHz near the
@@ -3229,8 +3234,8 @@ export class GameAudio {
        widened to POV this can likely come back up. */
     /* Boost, not pedal. A turbo is driven by exhaust flow, so it takes time
        to come up and it does not fall the instant the pedal does — spooling
-       is the whole difference between "this car is turbocharged" and "there
-       is a whistle in the mix". The demand is `thr * rn` (a turbo makes no
+       is the whole difference between a car reading as turbocharged and a
+       bare whistle sitting in the mix. The demand is `thr * rn` (a turbo makes no
        boost at idle however hard you press) and `boost` chases it with an
        asymmetric time constant: ~0.55s to build, ~0.22s to bleed away. Both
        framerate-independent.
@@ -3279,7 +3284,7 @@ export class GameAudio {
     // braking force, so a no-gas constant-speed cruise holds `overrun` at a
     // steady 0.3-0.8 forever, and the old always-on x(1+overrun*2.4) pinned
     // the whine at ~0.018 — ~2x the turbo's own full-boost ceiling — as a
-    // fixed-pitch drone (the reported "turbo is humming" at cruise; the
+    // fixed-pitch drone (reported as the turbo humming at cruise; the
     // actual turbo is silent at thr=0 by construction). The boost now
     // charges to full on a genuine throttle lift-off edge and decays over
     // ~1.1s of steady speed, and a smoothed actual-deceleration term keeps
@@ -3341,8 +3346,8 @@ export class GameAudio {
        sharp high-Q crack for a backfire pop. p.burble sets both how often a
        lift queues a volley at all and how many/how sharp the pops are, so
        kaze/okami crackle readily while shirayuki/tanuki stay mostly quiet. */
-    /* Made deliberately rarer, per "subtle pops sometimes, but it's less
-       likely". Three independent gates were tightened rather than one, so the
+    /* Made deliberately rarer: the target is an occasional subtle pop, not a
+       steady stream. Three independent gates were tightened rather than one, so the
        volley stays a real event instead of just a quieter constant:
          rn      0.35 -> 0.50  only high in the revs, where a lift actually
                                dumps enough unburnt charge to pop
@@ -3491,7 +3496,7 @@ export class GameAudio {
        ordinary firm braking (br=0.6, a normal stop) never engages ABS at
        all (raw slip stays exactly 0 throughout), while only a real
        max-effort stop does, so slip > a small floor here is already a
-       reliable "this is a hard stop" signal on its own, no separate brake-
+       reliable hard-stop signal on its own, no separate brake-
        pedal input needed. Also requires an actual decelerating trend (not
        just low speed) so idling/crawling doesn't trigger it. Pitch rises
        and level swells as speed approaches zero, then cuts out at
@@ -3508,8 +3513,8 @@ export class GameAudio {
     /* Road texture bed: low rumble (55-125Hz) tied to speed, deliberately a
        separate band from the tyre hum above (150-370Hz) and from wind — the
        split is what makes road noise read as texture rather than as one
-       noise blob. Ceiling 0.05 -> 0.07 as the other half of the same
-       "bring in road noise, take wind out of the mid-range" call.
+       noise blob. Ceiling 0.05 -> 0.07 as the other half of the same call
+       to bring in road noise and take wind out of the mid-range.
        Ducked while the tyre screech layer is active so the two low-mid
        layers don't stack into mud; that duck deepens 0.45 -> 0.55 to keep
        the pre-raise ratio against screech (full screech now leaves
@@ -3542,8 +3547,8 @@ export class GameAudio {
        (70 mph) the rise goes 0.299 -> 0.109, so the level goes 0.081 ->
        0.033: still clearly audible, no longer the dominant voice. The
        cruise-to-flat-out contrast widens from 3.4x to 9.2x.
-       Ceiling 0.27 -> 0.30. The earlier 0.32 -> 0.27 cut (user call: "at
-       top speed the wind was drowning the whole mix") was made against a
+       Ceiling 0.27 -> 0.30. The earlier 0.32 -> 0.27 cut (made because at
+       top speed the wind was drowning the whole mix) was made against a
        curve that hit full wind by 60 m/s and therefore sat at or near the
        ceiling through most of the usable fast range; with the knee at 75
        the car is only near the ceiling when genuinely flat out, so peak
@@ -3831,8 +3836,8 @@ export class GameAudio {
 
       POV used to be handed "out", so the shipping camera showed you the
       windscreen, the pillars and the cluster while playing a fully open
-      exterior mix. That is the reported "it should sound slightly muted,
-      we're inside the car". It also flattered the engine's brightest
+      exterior mix. That is the reported problem: from inside the car the mix
+      should sound slightly muted. It also flattered the engine's brightest
       harmonics, which is a large part of why the top of the rev range read as
       a motorbike rather than a car: nothing was rolling off the buzz.
 

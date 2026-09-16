@@ -265,7 +265,7 @@ function table(cfg, label) {
 
 function stickTable(cfg, label) {
   /* THE STUCK CASE. A shallow 6 deg lean on the wall at 120 km/h — the
-     everyday "I kissed the barrier" — with the throttle held, as a player
+     everyday glancing brush of the barrier — with the throttle held, as a player
      would. A real car scrubs paint and keeps going. */
   console.log(`\n=== ${label} — 6 deg lean-on at 120 km/h, throttle held ===`);
   const r = run(cfg, 120 / 3.6, 6, { secs: 4, th: 1, gap: 1.2 });

@@ -1,4 +1,4 @@
-/* "What the AI sees" photographer — the debug overlay (game/vision.ts) over
+/* Photographer for the what-the-AI-sees debug overlay (game/vision.ts) over
    the game's best frames, for content rather than for QA.
 
    Modelled on hero-shots.mjs (HIGH preset, desktop tier, HUD and dashcam

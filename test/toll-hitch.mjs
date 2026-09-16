@@ -108,8 +108,8 @@ const rows = [];
    created on the SECOND arrival too (+10, then +30), which looks like the
    compile story failing — but the game also upgrades its photo-scan textures
    on a timer after load, and every such upgrade relinks the materials it
-   touches. Without a control, "programs grew while I was at the plaza" and
-   "programs grew because time passed" are the same measurement. With one, the
+   touches. Without a control, programs growing while at the plaza and
+   programs growing simply because time passed are the same measurement. With one, the
    plaza's share is the DIFFERENCE. */
 for (const pass of [1, 2]) {
   await go(AWAY);

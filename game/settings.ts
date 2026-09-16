@@ -570,7 +570,7 @@ export interface GameSettings {
   /** the clean-run readout: distance since the last real impact, in the
       player's own distance unit (see runUpdate in game/engine.ts). This is
       the successor to `noHesiScore` — the toggle survived the scoring
-      change, its meaning is now "show the clean-run readout", and
+      change, its meaning is now whether to show the clean-run readout, and
       loadProfile carries a stored noHesiScore across to it once. On by
       default: it costs nothing while driving clean and it is now a quiet
       corner figure rather than a running arcade total. */
@@ -712,11 +712,11 @@ export const defaultSettings = (): GameSettings => ({
   mblur: false,
   /* OFF by default. FogExp2 grows with distance squared, so at the densities
      that keep the road visible it does nothing to anything NEARBY — which is
-     what people mean by "foggy". It only ever veiled the far skyline, and to
+     what people mean by foggy. It only ever veiled the far skyline, and to
      do that it had to be a lifted colour, which then painted every unlit
      surface it touched (dark buildings became the fog rather than being
-     veiled by it). Judged not worth the trade: "it just makes everything
-     yellow and doesnt even work like i thought fog would".
+     veiled by it). Judged not worth the trade: it merely tinted everything
+     yellow and did not behave the way fog is expected to.
 
      Everything behind it is intact — the colour fields, the density curve,
      __fog, and the four levels. Settings -> Fog -> light/medium/heavy brings
@@ -753,8 +753,8 @@ export const defaultSettings = (): GameSettings => ({
   // reads at a glance while driving — the overview is the opt-in
   mmapZoom: false,
   tierOverride: "auto",
-  /* Auto, which now means "load it unless this device visibly cannot" rather
-     than the old "only on hardware we recognised". */
+  /* Auto, which now means loading it unless this device visibly cannot,
+     rather than the old rule of only on hardware we recognised. */
   cabin: "auto",
   /* A mode, not a difficulty: off until it is switched on, from either the
      start menu or the settings panel. Off costs one boolean test per frame —
@@ -902,7 +902,7 @@ export function loadProfile(): Profile {
     /* RENAME CARRY: noHesiScore -> cleanRunScore.
 
        The scoring changed underneath this toggle but the toggle did not: it
-       still answers "do I want the score readout on the HUD?", and a player
+       still answers whether the score readout belongs on the HUD, and a player
        who turned it off does not want the clean-run figure either. Carried
        across once, only when the new key is absent (so a real choice made
        against the new name always wins), then the old key is dropped so the
@@ -1193,7 +1193,7 @@ export function saveProfile(p: Profile) {
  * this browser. Deliberately NOT a field of the Profile: persist() copies the
  * whole settings object out on every menu exit and the panel's DEFAULTS
  * button rewrites it wholesale, and neither of those should be able to replay
- * or eat "you have already seen this". Same storage prefix and the same
+ * or eat the record of what has already been seen. Same storage prefix and the same
  * failure posture as the profile itself — a browser that refuses the write
  * repeats a tip next session, which is the harmless direction to fail in.
  */

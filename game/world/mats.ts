@@ -742,7 +742,7 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
         /* Uniform-valued branch: with reflections off (setting or tier) every
            fragment in the draw takes the same side, so the GPU skips the body
            outright and the road costs exactly what it did before the effect
-           existed. Nothing else is needed to "turn it off". */
+           existed. Nothing else is needed to turn it off. */
         "if (uRefStr > 0.0) {" +
           "float ndv=clamp(dot(normalize(vNormal),normalize(vViewPosition)),0.,1.);" +
           "float fr=uRefStr*pow(1.0-ndv,2.0);" +
@@ -929,7 +929,7 @@ export function buildMats(opts?: { pbr?: boolean }): Mats {
          normal map, its normalScale, the weathering's roughness swing, the
          geometry's own facets: all of it modulates nothing, because nothing
          that reaches the wall cares which way it points. That is the actual
-         defect behind "the walls look flat", and no texture spend fixes it.
+         defect behind the walls reading as flat, and no texture spend fixes it.
 
          The fix is to give the wash an incidence term, referenced so the tuned
          gain above still means what its budget note says:
@@ -1507,7 +1507,8 @@ roughnessFactor = clamp(roughnessFactor, 0.05, 1.0);`
 
       /* ---- RELIEF: the joints and the grit, and nothing else ----
          The macro and streak fields are deliberately left out and it is worth
-         writing down why, because "add relief to the weathering" reads like it
+         writing down why, because a request to add relief to the weathering
+         reads like it
          should apply to everything: a normal perturbation is a SLOPE, and
          slope is amplitude over feature size. Those two fields have features
          metres across, so a physically honest few millimetres of undulation
@@ -2117,8 +2118,8 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
         /* Puddle-patch modulation is a rain effect. On a dry road the scan's
            smooth patches were still mirroring up to 3x at grazing angles, so
            bright signage reflected as hard-edged patches far ahead that faded
-           out on approach (Fresnel steepening) — the "square of light that
-           vanishes as you reach it" artifact. Dry roads keep only a whisper
+           out on approach (Fresnel steepening) — the artifact of a square of
+           light that vanishes as you reach it. Dry roads keep only a whisper
            of patch variation; rain restores the full standing-water look. */
         d.curRoughMod = (on ? 1 : 0.15) * d.roughMod;
         if (d.sh && d.sh.uniforms.uRoughMod)
@@ -2249,8 +2250,8 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
        __wall.detail = 0        neither: the tGrit fetch and the whole
                                 surface-gradient block are skipped outright
 
-     `detail` is the one to reach for when the question is "is the concrete
-     what is costing me frames?" rather than "does the concrete look right".
+     `detail` is the one to reach for when the question is whether the
+     concrete is what costs the frame budget, rather than whether it looks right.
      It drives uGritK and uReliefK together, and both are tested against a
      UNIFORM inside the shader, so 0 makes the GPU jump over the body instead
      of multiplying a computed result by zero — the frame time moves or it does
@@ -2403,8 +2404,8 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
            metalness sheen to lean on; with metalness at 0 the normals have to
            do that work alone.
 
-           The earlier ceilings ("left below 1.0 so the aggregate does not
-           start reading as gravel") were set against an assumed map, not a
+           The earlier ceilings, left below 1.0 so the aggregate would not
+           start reading as gravel, were set against an assumed map, not a
            measured one. Measured: Concrete033's normal is nearly flat — xy
            sigma is 6.8/255, about 4 degrees of tilt at the old 0.85, and the
            map is not even unit length (mean vector length 0.676, so three's

@@ -317,8 +317,8 @@ function paint(hover: ScreenAction | null, dots: number) {
       const faded = !!st.line && !st.line.includes(i);
       mark(gg, st.board[i], c.x + CELL / 2, c.y + CELL / 2, 9.5, faded);
     } else if (on) {
-      // ghost of the mark a click would land — the panel's usual "this is
-      // what this control does" hover language, in mark form
+      // ghost of the mark a click would land — the panel's usual hover
+      // language for showing what a control does, in mark form
       mark(gg, 1, c.x + CELL / 2, c.y + CELL / 2, 9.5, true);
     }
   }

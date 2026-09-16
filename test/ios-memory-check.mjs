@@ -11,7 +11,7 @@
  *   CANNOT: Safari's decision to drop the context. That is iOS's memory
  *   manager on 4 GB of shared RAM, and no Linux/SwiftShader run reproduces it.
  *
- * So this does not prove "the phone crashes". It proves what the phone is
+ * So this does not prove that the phone crashes. It proves what the phone is
  * asked to carry, and how much less it is asked to carry in safe mode. The
  * crash report supplies the other half.
  *

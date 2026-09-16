@@ -473,8 +473,8 @@ for (const cr of g.crossings) {
       bad("the pass is barely longer than the deck it bypasses — not a detour");
     if (maxG > 0.09) bad(`mtn grade ${f(maxG * 100)}% is steeper than 9%`);
     /* The radius band IS the rebuild's brief, in numbers. The floor was 13 m
-       (drivable at all); it is now 55 m, because anything tighter is "so hard
-       to drive, road is too tight" — a defect, not a challenge. The ceiling
+       (drivable at all); it is now 55 m, because anything tighter is too
+       tight to drive comfortably — a defect, not a challenge. The ceiling
        stops the sweeper being flattened into a straight by some later tidy-
        up — at 160 m there is no corner left to drive. */
     if (minR < 55) bad(`mtn corner radius ${f(minR)} m is under 55 m — too tight to drive fast`);
@@ -493,7 +493,7 @@ for (const cr of g.crossings) {
     if (Math.abs(mt.laneOffset(0, 100)) > 1e-9)
       bad("the single lane is not on the road's centreline");
     const running = 2 * MTN.half;
-    /* Width floor raised from 4.4 to 9.0 with the rebuild: "make it wide" was
+    /* Width floor raised from 4.4 to 9.0 with the rebuild: making it wide was
        half the brief, and the pass reads as a goat track below that. The
        ceiling is what stops it drifting into a second deck. */
     if (running > 13) bad(`the running road is ${f(running)} m wide — that is a second deck`);

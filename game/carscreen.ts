@@ -445,7 +445,7 @@ function paintMusic(
 
   /* --- transport -------------------------------------------------------- */
   /* Three states per button and all three are visible on a dark screen at a
-     steep angle: rest is a faint plate that says "this is a control", hover
+     steep angle: rest is a faint plate that reads as a control, hover
      is a blue wash with a lit rim, and the glyph brightens with it. The rim
      is what carries at the dashcam's angle — a fill alone flattens out. */
   const ids: ScreenAction[] = ["prev", "toggle", "next"];

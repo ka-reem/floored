@@ -119,8 +119,8 @@ for (const car of CARS) {
 
   // 2. It must leave idle promptly on a standing-start full-throttle launch,
   //    while the car is still barely moving. This is the converter-stall
-  //    flare, and it is the difference between "the revs climb" and "the idle
-  //    just gets louder".
+  //    flare, and it is the difference between revs that climb and an idle
+  //    that merely gets louder.
   const half = trace.find((r) => r.t >= 0.5);
   check(
     half.rpm > IDLE_RPM + 900,

@@ -1,4 +1,5 @@
-/* Before/after shots for "the horn button over the steering wheel remove it!"
+/* Before/after shots for the removal of the horn button sitting over the
+   steering wheel.
 
    Shoots the phone's bottom control strip in WHEEL steer mode, which is the
    only mode the wheel — and the HORN boss painted in the middle of it — is on
