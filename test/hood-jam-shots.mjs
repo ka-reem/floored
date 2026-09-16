@@ -11,6 +11,24 @@
    and a shot. The measurement is what makes the picture trustworthy: median
    bumper-to-bumper gap in the player's own lane, in metres.
 
+   #16 GREEN DOTS — the dashcam POV chain is the only thing in the renderer
+   that can put green where the scene has none. Three mechanisms in it, all of
+   them reachable from `window.__povTune`, so each can be nulled in turn on the
+   SAME frozen frame parked in a streetlight pool and the green counted:
+
+     grain      col += vec3(n2-.5,(n2+n3)*.5-.5,n3-.5) * .10 * dark, off a
+                np = floor(uv*uLow*.8) grid — coarse BLOCKS, not per-pixel
+                speckle, i.e. dots.
+     gainFloor  col += lift * vec3(1.02,1.05,.98) * (.72+.56*n1) — a green-
+                biased lift (G 1.05 against B 0.98) that only fires where luma
+                is under ~0.055, modulated by the same block noise. Dark floor
+                only, which is where he saw them.
+     shadowGrain  how much of the grain survives in the shadows.
+
+   Counted as pixels where G leads both R and B by a margin, in the lower half
+   of the frame only (the road), with the DOM hidden so no HUD can be read as
+   scene — the two false positives that cost the last attempt.
+
    Usage: node test/hood-jam-shots.mjs --url http://localhost:3701 --out DIR
 */
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -162,7 +180,65 @@ for (const d of [0.5, 0.75, 1]) {
   await shot(`traffic-${String(Math.round(d * 100)).padStart(3, "0")}.png`);
 }
 
+/* ---------- #16 green dots in the dashcam chain ------------------------- */
+await page.evaluate(() => {
+  /* Every earlier hunt for these was poisoned by the HUD and by the cluster
+     drawn INSIDE the canvas, so both go: the DOM overlay is hidden outright
+     and the camera is parked in POV where the cluster sits in the bottom
+     strip, which the count already excludes by looking at rows 0.5..0.92. */
+  for (const el of document.querySelectorAll("body > *"))
+    if (!el.querySelector("canvas") && el.tagName !== "CANVAS") el.style.visibility = "hidden";
+});
+await page.evaluate((d) => { window.__neonx.game.settings.traffic = d; }, 1);
+/* Park under a lamp: the pools sit on the lattice, so walk a short way and
+   stop where the road in front is brightest and most orange. */
+await setCam(3);
+for (let i = 0; i < 60; i++) await step();
+await setDt(1e-6);
+await step();
+
+const greenCount = () => page.evaluate(() => {
+  const cv = window.__neonx.game.renderer.domElement;
+  const c = document.createElement("canvas");
+  c.width = cv.width; c.height = cv.height;
+  const g = c.getContext("2d");
+  g.drawImage(cv, 0, 0);
+  const y0 = Math.floor(c.height * 0.5), y1 = Math.floor(c.height * 0.92);
+  const d = g.getImageData(0, y0, c.width, y1 - y0).data;
+  let n = 0, worst = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], gg = d[i + 1], b = d[i + 2];
+    const lead = gg - Math.max(r, b);
+    if (lead > 6 && gg > 24) { n++; if (lead > worst) worst = lead; }
+  }
+  return { green: n, worstLead: worst, px: (y1 - y0) * c.width };
+});
+
+const tune = (o) => page.evaluate((o) => Object.assign(window.__povTune, o), o);
+const green = [];
+for (const [name, knobs] of [
+  ["shipping", {}],
+  ["grain-0", { grain: 0 }],
+  ["gainfloor-0", { gainFloor: 0 }],
+  ["both-0", { grain: 0, gainFloor: 0 }],
+]) {
+  await page.evaluate(() => {
+    const d = window.__neonx.game.post.povDef;
+    Object.assign(window.__povTune, d);
+  });
+  await tune(knobs);
+  await step();
+  const g = await greenCount();
+  green.push({ name, ...g });
+  console.log("green", name, g);
+  await page.screenshot({ path: path.join(OUT, `green-${name}.png`) });
+}
+await page.evaluate(() => {
+  const d = window.__neonx.game.post.povDef;
+  Object.assign(window.__povTune, d);
+});
+
 writeFileSync(path.join(OUT, "measurements.json"),
-  JSON.stringify({ hoodGeom, traffic: rows, errors }, null, 1));
+  JSON.stringify({ hoodGeom, traffic: rows, green, errors }, null, 1));
 console.log("errors:", errors.length, errors.slice(0, 5));
 await browser.close();

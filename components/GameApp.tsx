@@ -1147,9 +1147,11 @@ export default function GameApp() {
                      window where a raw assignment could be undone; see the
                      method for why.
      traffic         engine.ts passes settings.traffic into traffic.update()
-                     every frame as the live pool cap. The fleet is a fixed
-                     120 slots built by the traffic stage no matter what this
-                     says, so the row is honoured before and after it.
+                     every frame as the live pool cap. The POOL is a fixed
+                     TierCaps.fleetMax slots built by the traffic stage no
+                     matter what this row says — the slider only decides how
+                     many of them are live — so the row is honoured before and
+                     after it.
      minimap         hudVisible() reads game.mmap every frame, and the canvas
                      is shown by GameApp's own render once play starts.
 
