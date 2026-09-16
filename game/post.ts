@@ -1453,9 +1453,9 @@ void main(){ gl_FragColor=vec4(texture2D(tIn,vUv).rgb,1.0); }`,
        edge treatment, and it was excluded from the interior cameras once the
        cabin turned out to be what was smearing (the frame edge in there is the
        A-pillar, which is bolted to the camera and cannot move relative to it).
-       That left it running in exactly the two views the user then asked to
-       have stripped: "remove the shakiness and camera effects totally. they're
-       so bad. the shakiness, blurriness, motion — they're just crap."
+       That left it running in exactly the two views where the shake and the
+       smear were judged to be hurting the image rather than selling speed, so
+       both came out.
 
        Kept as a named constant rather than deleted so it is one edit to bring
        back, and so `doFinal` below still has something to read. The shader

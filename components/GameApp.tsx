@@ -2599,9 +2599,10 @@ function SettingsPanel({
                       />
                     </SignSrow>
                     {/* Held back with the rival itself — it is only ever read
-                        while a rival is running. Kept rather than deleted, on
-                        the same instruction as the RIVAL row on the home board
-                        ("dont remove it just say not available"). */}
+                        while a rival is running. Shown as unavailable rather
+                        than deleted, for the same reason as the RIVAL row on
+                        the home board: the feature is coming back, and a row
+                        that vanishes reads as a feature that was cut. */}
                     <SignSrow last name="Rival indicators" aside="— the rival signals its lane changes">
                       <span className="sign-cap faint">NOT AVAILABLE</span>
                     </SignSrow>
