@@ -13,16 +13,19 @@ Two things this document is *not*: it is not a changelog (git has that), and it
 is not a wishlist. If something is genuinely gone, it is only here when a copy
 still exists somewhere recoverable.
 
-Written 2026-08-26 against `main` @ `31d623e`; every entry re-verified
-2026-08-29 against post-overhaul `main` (updates are marked in place, with
-commits). Line numbers drift — the constant names and comment quotes are the
-durable handles.
+Written 2026-08-26; every entry re-verified 2026-08-29 against `main` after
+the overhaul (updates are marked in place).
+
+Entries cite FILES and CONSTANT NAMES, never line numbers. Line numbers drift
+within days in a codebase this active, and a register whose coordinates are
+stale is worse than no register — it sends the reader to the wrong place with
+full confidence. Grep for the name.
 
 ---
 
 ## 1. Settings defaulted off
 
-`game/settings.ts` `defaultSettings()` (line 252) is the first-run profile.
+`game/settings.ts` `defaultSettings()` is the first-run profile.
 An **existing** profile in `localStorage` under `neonx.profile.v3` keeps whatever
 it last held, so changing a default here only affects new players — with the one
 exception noted in the migration row.
@@ -50,7 +53,7 @@ unaffected unless you also write a migration like the one below.
 
 ### 1a. The one-time `mblur` scrub (a migration, not a default)
 
-`game/settings.ts:372-376`, in `loadProfile()`. Under key
+`game/settings.ts`, in `loadProfile()`. Under key
 `neonx.profile.v3.mbcleared`, an existing profile's `mblur:true` is forced to
 `false` **exactly once**, then never touched again.
 
@@ -67,7 +70,7 @@ profiles as they are.
 
 ## 2. Per-tier caps — capability hidden by hardware class
 
-`game/settings.ts` `TIER_CAPS` (line 78). A cap **never adds** a feature; it only
+`game/settings.ts` `TIER_CAPS`. A cap **never adds** a feature; it only
 gates one further down. The effective state is `userSetting && tierCap`.
 
 | Cap | mobile-base | mobile-high | desktop | What is lost when off |
@@ -126,12 +129,12 @@ degrade any tier further; nothing in the cap table disables it.
 
 ### 3a. `CHASE_SHAKE = 0` — chase-camera sensation, gated to nothing
 
-`game/engine.ts:360`. One multiplier gating **three** effects together:
+`game/engine.ts`. One multiplier gating **three** effects together:
 head-spring bob, the G-lean roll, and the speed FOV kick.
 
 > *"Reported as unwanted wobble in third person, so it ships at 0."*
 
-Applied at `engine.ts:3185` (`camMode === CAM_CHASE ? this.chaseShake() : 1`) and
+Applied at `engine.ts` (`camMode === CAM_CHASE ? this.chaseShake() : 1`) and
 in the FOV kick at 3203.
 
 **Re-enable:** live, `window.__chaseShake = 1`, no reload — `chaseShake()`
@@ -145,15 +148,15 @@ so this is a ship decision, not a debug-camera shrug.*
 
 ### 3b. `TOWN_TRAFFIC = false` — the entire town driving model, parked
 
-`game/traffic.ts:87`.
+`game/traffic.ts`.
 
 > *"Town/side-street traffic is parked for now at the user's request: the whole
 > budget goes to the expressway. The town driving model below is intact — flip
 > this back to true to bring it back."*
 
 The model behind it (junction yielding, blinkers, curvature-aware speeds — see
-the note at `traffic.ts:30`) is complete and compiled; only the spawn target is
-zeroed, at `traffic.ts:3319` (`const townTarget = TOWN_TRAFFIC ? … : …`).
+the note at `traffic.ts`) is complete and compiled; only the spawn target is
+zeroed, at `traffic.ts` (`const townTarget = TOWN_TRAFFIC ? … : …`).
 
 **Re-enable:** set to `true` and rebuild. Expect a real frame-rate cost — this is
 the largest single disabled feature in the repo.
@@ -186,8 +189,8 @@ setting also still gates the whole thing.
 
 ### 3d. NPC engine voices — the doppler drone pool, disabled outright
 
-`game/audio.ts:619`, `private static readonly NPC_VOICES_ENABLED = false;`
-Consumed at `audio.ts:2869`.
+`game/audio.ts`, `private static readonly NPC_VOICES_ENABLED = false;`
+Consumed at `audio.ts`.
 
 > *"User decision (2026-08-17): NPC traffic makes NO engine/proximity sound at
 > all — the doppler drone pool is disabled outright. `updateNpcs()` still runs so
@@ -200,7 +203,7 @@ its wiring are intact.
 
 ### 3e. FDN reverb — superseded, parked at zero
 
-`game/audio.ts`, `wireConvolver()` (line 1292) and `setReverb()` (line 2743).
+`game/audio.ts`, `wireConvolver()` and `setReverb()`.
 Once the recorded underpass impulse response decodes, the convolver becomes the
 only reverb voice and the feedback-delay-network reverb is killed
 (*"the FDN stays parked at zero (wireConvolver() killed it)"*). The FDN code path
@@ -210,7 +213,7 @@ remains and is still the live fallback if `ir` fails to decode.
 
 ### 3f. Synth engine voice — intact, but not the default
 
-`game/audio.ts:587`, `private engineMode: EngineMode = "sampled";`
+`game/audio.ts`, `private engineMode: EngineMode = "sampled";`
 
 The synthesized engine model *"stays fully intact for A/B"*. One-shots
 (crash, horns) are sample-first with synth fallback regardless of mode.
@@ -283,7 +286,7 @@ stat bars, cockpit accent colour. The lock is one line and three consequences:
 | Engine lookup | `carspecs.ts` `getCar()` | *"A locked id falls back exactly like an unknown one"* → the VOLVO S90 |
 | Raw lookup | `carspecs.ts` `carById()` | **Ignores** the lock, so the garage card draws the car as itself |
 | Profile scrub | `settings.ts` `loadProfile()` | A stored `carId:"tanuki"` is rewritten to `DEFAULT_CAR_ID` on load, so the next save doesn't carry it forward |
-| Garage card | `GameApp.tsx:474-482` | Renders dimmed with a COMING SOON badge; `onClick` is dropped, `aria-disabled` set. Stat bars stay (greyed) *"because they are what the card is teasing, and because a card without them would sit at a different height and break the grid row it shares with KAZE"* |
+| Garage card | `GameApp.tsx` | Renders dimmed with a COMING SOON badge; `onClick` is dropped, `aria-disabled` set. Stat bars stay (greyed) *"because they are what the card is teasing, and because a card without them would sit at a different height and break the grid row it shares with KAZE"* |
 
 > *"putting a car back on the roster is deleting this one line."*
 
@@ -358,7 +361,7 @@ one most likely to be asked about.
 
 The DASHCAM POV's 40 ms frame blend (`POV_MB_TAU`, `game/post.ts`) used to be
 forced on with `|| pov`, ignoring the Motion blur setting. Commit `5c6cadd`
-removed that force (`post.ts:1134-1143`):
+removed that force (`post.ts`):
 
 > *"That reasoning is defensible but it made the Motion blur checkbox a lie in the
 > one view the game is actually played in: turning it off changed the chase camera
@@ -383,7 +386,7 @@ Motion blur checkbox now controls the dashcam exposure.
 
 ## 7. Test mode — an alternate physics set, off unless toggled
 
-`game/carspecs.ts:100` `testDriveSpec(spec)`, gated by `settings.testMode`
+`game/carspecs.ts` `testDriveSpec(spec)`, gated by `settings.testMode`
 (default `false`) and toggled by **K** or the settings-panel row.
 
 Derived from whichever car is active rather than written out as a fifth spec,
@@ -432,7 +435,7 @@ are still where "why does the chase cam not shake?" gets answered.
 | 3 | **DASHCAM** — `CAM_POV` | **The default and most-played view.** `defaultProfile().camMode = 3` |
 | 4 | CONSOLE — `CAM_CONSOLE` | Player-facing. A wide lens on the tunnel between the seats (`CONSOLE_CAM`); its FOV now follows the slider (`05cea99`) |
 
-The cycle order is **not** numeric order (`CAM_CYCLE`, engine.ts:246). The
+The cycle order is **not** numeric order (`CAM_CYCLE`, engine.ts). The
 dashcam must stay last in the cycle, but `camMode` is *persisted*, so renumbering
 *"would boot every existing player into whatever took index 3"* — hence
 CAM_CONSOLE taking the free index at the end while the cycle walks a table.
@@ -447,8 +450,8 @@ meant every new visitor landed in third person and never saw the interior at all
 
 ### Keys
 
-Canonical list, `game/engine.ts` `onKeyDown` (line 1324) — mirrored in the in-game
-CONTROLS screen at `components/GameApp.tsx:294-312`.
+Canonical list, `game/engine.ts` `onKeyDown` — mirrored in the in-game
+CONTROLS screen at `components/GameApp.tsx`.
 
 | Key | Action | Note |
 |---|---|---|
@@ -494,13 +497,13 @@ flag, no row in the CONTROLS screen; `j` falls through `onKeyDown` to nothing.
 
 | Clamp | Where | Value | Note |
 |---|---|---|---|
-| `POV_FOV_MAX` | `engine.ts:472` | 100° | *"A clamp rather than a comment, because the slider's `max` attribute does not bind"* — `settings.ts` only TYPE-checks `fovBase`, so a value saved while the maximum was briefly higher survives forever. This is the last gate before the projection matrix. **`POV_FOV_MAX_CUT = 88` is gone** with the frustum-cut dash |
-| `povFov()` floor | `engine.ts:632` | 58° | Lower bound on the slider |
-| `POV_V_CAP` / `POV_V_FLOOR` / `POV_H_CEIL` | `engine.ts:448-451` | 1.25 / 62 / 118 | Aspect-relative caps so portrait doesn't become a fisheye and ultrawide doesn't become a letterbox slit |
-| Draw distance | `GameApp.tsx:638` slider, `settings.drawDist` | 350–1100 m, default 700 | Multiplied by `drawDistScale` per tier (0.65 / 0.85 / 1.0) |
-| Traffic density | `GameApp.tsx:644` | 20–100% | |
-| Asset size budgets | `test/size-budget.mjs:17-19` | 15 MB critical / 30 MB total | `public/assets-staging` is intentionally NOT scanned. `public/assets/audio` and `public/assets/lens` count against total, not critical |
-| `NPC_POOL` | `audio.ts:612` | 8 voices | Moot while `NPC_VOICES_ENABLED` is false (§3d) |
+| `POV_FOV_MAX` | `engine.ts` | 100° | *"A clamp rather than a comment, because the slider's `max` attribute does not bind"* — `settings.ts` only TYPE-checks `fovBase`, so a value saved while the maximum was briefly higher survives forever. This is the last gate before the projection matrix. **`POV_FOV_MAX_CUT = 88` is gone** with the frustum-cut dash |
+| `povFov()` floor | `engine.ts` | 58° | Lower bound on the slider |
+| `POV_V_CAP` / `POV_V_FLOOR` / `POV_H_CEIL` | `engine.ts` | 1.25 / 62 / 118 | Aspect-relative caps so portrait doesn't become a fisheye and ultrawide doesn't become a letterbox slit |
+| Draw distance | `GameApp.tsx` slider, `settings.drawDist` | 350–1100 m, default 700 | Multiplied by `drawDistScale` per tier (0.65 / 0.85 / 1.0) |
+| Traffic density | `GameApp.tsx` | 20–100% | |
+| Asset size budgets | `test/size-budget.mjs` | 15 MB critical / 30 MB total | `public/assets-staging` is intentionally NOT scanned. `public/assets/audio` and `public/assets/lens` count against total, not critical |
+| `NPC_POOL` | `audio.ts` | 8 voices | Moot while `NPC_VOICES_ENABLED` is false (§3d) |
 
 ---
 
@@ -516,7 +519,7 @@ window.__povMount.dy = -0.28   // down (this is THE seating position)
 window.__povMount.dz = 0.16    // forward, past the seat
 window.__povMount.dx = 0.02    // inboard / outboard
 ```
-Seeded from `POV_MOUNT_DELTA` (engine.ts:331). **If you settle on a `dy`, move
+Seeded from `POV_MOUNT_DELTA` (engine.ts). **If you settle on a `dy`, move
 `cockpitmodel.ts`'s `MIRROR_NUDGE.y` by the same amount in the same direction, or
 the mirror leaves the top of frame.** The framing bounds written in the engine.ts
 comment block were measured against the *retired* cut dash and the file says so
@@ -528,13 +531,13 @@ re-measures them on the current asset."*
 window.__cockpitEye.dy = -0.14
 window.__cockpitEye.dz = 0.30
 ```
-Seeded from `COCKPIT_EYE_IMPORTED` (engine.ts:356).
+Seeded from `COCKPIT_EYE_IMPORTED` (engine.ts).
 
 ### `window.__consoleCam` — the experimental console camera
 ```js
 window.__consoleCam.z = -0.1   // also .x .y .fov .tilt
 ```
-Seeded from `CONSOLE_CAM` (engine.ts:401). *"This is the view whose whole point
+Seeded from `CONSOLE_CAM` (engine.ts). *"This is the view whose whole point
 is being moved around."*
 
 ### `window.__chaseShake` — restores the chase sensation effects
@@ -552,7 +555,7 @@ window.__povTune.skyCrush     = 0.6    // 0..1  (0 = off)
 window.__povTune.mirrorShield = 0.85   // 0..1  (0 = A/B the mirror shield off)
 window.__povTune.screenShield = 0.92   // 0..1  (0 = A/B the head-unit shield off)
 ```
-Defaults are `POV_TUNE_DEFAULT` (post.ts:105). *"the defaults below are the
+Defaults are `POV_TUNE_DEFAULT` (post.ts). *"the defaults below are the
 shipped balance, not 'off' — only sensorGain=1 and skyCrush/gainFloor=0 are truly
 off."* Values are clamped on read, so a nonsense value falls back rather than
 poisoning the chain.
@@ -571,7 +574,7 @@ The aurora seed deliberately does **not** ride the world seed — *"a fresh auro
 every run is the point."*
 
 ### `window.__audioTune` — engine bus level and rumble
-Seeded from `ENGINE_TUNE_DEFAULT` (audio.ts:310). Read fresh each frame via
+Seeded from `ENGINE_TUNE_DEFAULT` (audio.ts). Read fresh each frame via
 `readAudioTune()`. Safe to turn up: `engLim` is a real `DynamicsCompressorNode`
 on the engine bus only, and `test/audio-mix-check.mjs` asserts final peak < 0.99.
 
@@ -583,7 +586,7 @@ __audioDebug.setEngineMode("synth")   // or "sampled"
 *"for identifying which layer a 'mystery noise' report is coming from in one call
 instead of guessing."*
 
-### `window.__neonx` — the test-harness hook (engine.ts:862)
+### `window.__neonx` — the test-harness hook (engine.ts)
 ```js
 __neonx.state()                       // full pose/perf/tier snapshot
 __neonx.teleport(x, z, y?, h?, u?)
@@ -599,7 +602,7 @@ __neonx.collidersNear(x, z)
 __neonx.loadTimings                   // real per-stage load ms
 __neonx.game                          // the Game instance
 ```
-Deleted on `dispose()` (engine.ts:1855).
+Deleted on `dispose()` (engine.ts).
 
 ---
 
@@ -646,7 +649,7 @@ size budget). Browse it on GitHub or open `index.html` from a clone over
 
 ### Not built: a `-4k` interior variant
 
-`game/player.ts:31` — *"Build a -4k variant and point desktop at it if a brighter
+`game/player.ts` — *"Build a -4k variant and point desktop at it if a brighter
 interior ever makes the difference visible."* Desktop and mobile-high currently
 share one file, because the dash covers ~344k pixels of a 1080p frame and the
 dashcam pass then softens, grains and crushes most of it toward black.
@@ -731,14 +734,14 @@ The original entry follows as a record of the intent.
 to `HEAD` (`git diff` is empty; mtime 2026-08-21 18:11), and still describes and
 draws the split layout:
 
-- `carscreen.ts:10-11` — *"a nav map on the right (~60%), a music player card on
+- `carscreen.ts` — *"a nav map on the right (~60%), a music player card on
   the left (~40%), thin bezel and a glass reflection over the lot"*
-- `carscreen.ts:43-44` — `const NAV_W = 154;` `// split: right 60% map, left 40% music`
+- `carscreen.ts` — `const NAV_W = 154;` `// split: right 60% map, left 40% music`
   and `const NAV_X = W - NAV_W;` `// nav pane spans NAV_X..W; music pane 0..NAV_X`
-- `carscreen.ts:60` — `const CARD = { x: 6, y: 6, w: 91, h: 148 };` the music card rect
-- `carscreen.ts:61` — `const BAR_X = 15, BAR_W = 73, BAR_Y = 128;` its progress bar
-- `carscreen.ts:151` / `:215` — the music-card section and its offscreen repaint
-- `carscreen.ts:298` — the nav pane section
+- `carscreen.ts` — `const CARD = { x: 6, y: 6, w: 91, h: 148 };` the music card rect
+- `carscreen.ts` — `const BAR_X = 15, BAR_W = 73, BAR_Y = 128;` its progress bar
+- `carscreen.ts` — the music-card section and its offscreen repaint
+- `carscreen.ts` — the nav pane section
 
 So I am describing the *intent* rather than the code, and deliberately not
 guessing at post-edit line numbers. Once it lands this entry should be rewritten
@@ -750,7 +753,7 @@ map takes the freed space, filling the whole 256×160 centre-console screen.
 **What is explicitly NOT deleted:** the music system itself. `game/music.ts`
 (45 KB), the audio graph, and the P / `,` / `.` transport keys all stay. Music
 still plays; it just stops having a card on the head unit. Note `music.enabled`
-is already `false` on touch devices (`music.ts:487`) — so on mobile the card was
+is already `false` on touch devices (`music.ts`) — so on mobile the card was
 already showing a static fallback rotation, which is part of why it was the
 expendable half of the split.
 

@@ -15,6 +15,10 @@
 >
 > Much of this was written with AI assistance; the commits say so where that is
 > the case.
+>
+> **Licence:** source-available for reading and review, all rights reserved —
+> see `LICENSE`. The assets under `public/` are third-party CC0/CC-BY and are
+> governed by `ATTRIBUTIONS.md` instead.
 
 Night driving through a **procedurally generated Japanese town** and the
 elevated expressway looping above it — a browser take on the "No Hesi" vibe.
