@@ -370,8 +370,17 @@ because `game/player.ts` lifts its connected component into the shipping
 DASHCAM view (3,304 triangles, up from 1,172). `--strip` drops the donor's
 wheels, tyres, brake discs, calipers and hubs at selection time, because the
 game keeps its own — they steer and spin, and the donor's would not. Encoded
-straight to meshopt: 254,200 triangles, 23 draw calls, 9 textures (three
-chase-visible maps at 1024 px webp, the rest at 512 px), 1.36 MB on disk.
+straight to meshopt: 451,359 triangles, 23 draw calls, 9 textures at 1024 px
+webp, 2.21 MB on disk, 48.0 MiB of decoded texture.
+
+An earlier line here claimed the 2026-09-04 build carried "three chase-visible
+maps at 1024 px webp, the rest at 512 px". It did not, and neither did any
+build before 2026-09-14: `--tex-hi` was defeated by its own second resize pass
+(`textureCompress`'s `pattern` cannot EXCLUDE a texture whose name or URI is
+empty, which is every texture here), so every map came out at the flat `--tex`
+value. The shipped file was a uniform 9 x 512 px, 12.0 MiB. Verified by
+re-running the 2026-09-04 command verbatim against the donor and reading the
+histogram the tool now prints.
 
 Loaded by `game/bodymodel.ts`. It and the donor dash are two cuts of the same
 car and now belong to the same garage entry: the **VOLVO S90**, which is the
@@ -389,7 +398,16 @@ directly, no .glb repack needed) in one command, no post-steps:
 
     node --max-old-space-size=5120 tools/build-car-body.mjs <scene.gltf> \
       --out volvo-s90-body-lite --exterior --strip --chase-bias \
-      --tris 250000 --tex 512 --tex-hi 1024 --compress meshopt
+      --tris 450000 --tex 1024 --tex-hi 1024 --compress meshopt
+
+Note what `--tex-hi` can and cannot buy on THIS donor: of the 23 materials that
+survive `--exterior --strip`, only four wear any texture at all — `Taillight`,
+`Headlight_Insides`, `GlassRunninglight` and `turnsignal`. The painted shell
+(`Car_Paint`), the chrome and the glass are flat PBR factors with no maps, and
+the donor's 4096 px `Shell_*` maps belong to the CABIN, which `--exterior`
+drops. So texture budget on this asset only ever buys lamp detail; the quality
+of the paint — the roof, the flanks, the tailgate — is purely a triangle
+question, which is why the rebuild spends its increase there.
 
 The donor download is not committed (gitignored); the source URL and licence
 are above. Candidate table (four measured builds, 0.79-1.55 MB), size-budget

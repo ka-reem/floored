@@ -118,6 +118,10 @@ console.log(`→ serving ${path.relative(ROOT, OUT)} at ${srv.url} (Workers asse
 
 const browser = await puppeteer.launch({
   headless: true,
+  /* Honour a browser the environment already provides. A sandbox that skips
+     puppeteer's own download fails here with "Could not find Chrome", which
+     reads as a broken release gate rather than a missing binary. */
+  executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
   args: [
     "--enable-unsafe-swiftshader",
     "--use-gl=angle",

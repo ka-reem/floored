@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { clamp, lerp, rand, pick, TAU, angDiff, mulberry32 } from "./util";
-import { loadNpcModels, HD_STYLES, HD_BASE, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
+import { loadNpcModels, HD_STYLES, HD_BASE, FAR_BASE, MAX_WHEELS, type NpcLamps, type NpcModel } from "./npcmodels";
 import { HX, LANE_LAT } from "./world/const";
 import { getCorridor, PITCH, PHASE, TOLL } from "./world/corridor";
 import { worldTierCaps, rivalMode } from "./settings";
@@ -1536,7 +1536,9 @@ type Cloud = {
       range — the tail/brake glows, which hand over from the emissive lenses */
   fade?: Float32Array;
 };
-type Lod = {
+/** One DRAW TIER of one style: an instanced mesh plus the per-instance
+    attributes renderInstances fills it from. */
+type Tier = {
   mesh: THREE.InstancedMesh;
   paint: THREE.InstancedBufferAttribute;
   diss: THREE.InstancedBufferAttribute;
@@ -1546,6 +1548,18 @@ type Lod = {
   wash: THREE.InstancedBufferAttribute;
   n: number;
 };
+/** A style's tiers. The Lod IS its near tier — every call site that only ever
+    wants the full-detail mesh is unchanged — and `far` is its decimated one
+    (public/models/cars-far, ~39% of the triangles), null until that body
+    lands and null forever if it never does. That null IS the fallback: a
+    style with no far body simply draws every one of its cars at full detail,
+    which is what shipped before this existed.
+
+    The two tiers own SEPARATE per-instance arrays on purpose. They are filled
+    with different cars in the same frame from the same loop, each counting
+    from index 0, so one shared paint/lamp/wash array would have the near cars
+    and the far cars writing over each other's colours and lights. */
+type Lod = Tier & { far: Tier | null };
 
 /* ---- fake NPC headlight ground pools ----
    Real per-NPC SpotLights are banned (each one multiplies the lit-shader cost
@@ -1873,12 +1887,23 @@ export interface NpcAudioSample {
   heavy: boolean;
 }
 
+/* The fleet the density slider used to reach at 100%, on every device.
+
+   It stays here as the ANCHOR for the slider's lower travel rather than as a
+   ceiling: see the cap computation in update(). A device's real ceiling is
+   TierCaps.fleetMax, which is this number on a phone and twice it on a
+   desktop. */
+const FLEET_BASE = 120;
+
 export class Traffic {
   npcs: Npc[] = [];
   private scene: THREE.Scene;
   private world: WorldData;
   private npcMat: THREE.MeshStandardMaterial;
   private styles: Lod[] = [];
+  /** per style, how many instances its tiers are sized for — the far tier is
+      built late (applyFarModel) and has to be sized the same as the near one */
+  private styleCap: number[] = [];
   private styleOf: Record<string, number> = {};
   /** per style, the loaded model's real lamp clusters; null until one lands */
   private lampsOf: (NpcLamps | null)[] = [];
@@ -2093,6 +2118,30 @@ export class Traffic {
   };
   readonly N: number;
 
+  /* How hard the top of the traffic-density slider is leaning on the road,
+     0..1. Zero below 75%, ramping to 1 at 100%.
+
+     The owner's note was that 100% "should be super super busy, bumper to
+     bumper" and was not. Three things had to move together for that, and this
+     one number drives all three so they cannot drift apart:
+
+       - the fleet ceiling (see FLEET_BASE above),
+       - the spawner's per-lane spacing veto in trySpawnHwy, 20 m -> 8 m,
+       - the deck IDM's desired headway, scaled down so the extra cars pack in
+         and keep flowing instead of concertina-ing into a standstill.
+
+     Raising the car count ALONE does not give a jam, it gives a longer queue:
+     IDM holds its 36 m desired gap at 30 m/s whatever the density is, and the
+     spawner refuses to place a car within 20 m of another in the same lane, so
+     the road simply cannot hold more. Shortening the headway ALONE does not
+     either — there are not enough cars to close the gaps. Both, and the count
+     to fill them.
+
+     Nothing below 75% on the slider is touched by any of this: jam is 0
+     there, every term collapses to the value it has today, and a phone (whose
+     fleetMax is unchanged) never sees a difference at all. */
+  private jam = 0;
+
   constructor(scene: THREE.Scene, world: WorldData, envMap: THREE.CubeTexture, glowTex: THREE.Texture, N = 120) {
     this.scene = scene;
     this.world = world;
@@ -2131,31 +2180,15 @@ export class Traffic {
     for (const type in perStyle) {
       const cap = perStyle[type];
       this.styleOf[type] = this.styles.length;
+      this.styleCap.push(cap);
       /* The mesh starts on an empty geometry — the style is invisible (and
          barred from spawning) until applyModel installs its Orchids
          bodyshell. There is no placeholder body on purpose. */
-      const m = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.npcMat, cap);
-      m.castShadow = true;
-      m.frustumCulled = false; // instances are culled by hand below
-      m.count = 0;
-      m.visible = false;
-      const paint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
-      const diss = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
-      const lamp = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
-      const wash = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
-      diss.array.fill(1);
-      paint.setUsage(THREE.DynamicDrawUsage);
-      diss.setUsage(THREE.DynamicDrawUsage);
-      lamp.setUsage(THREE.DynamicDrawUsage);
-      wash.setUsage(THREE.DynamicDrawUsage);
-      m.geometry.setAttribute("paintCol", paint);
-      m.geometry.setAttribute("dissolve", diss);
-      m.geometry.setAttribute("lampLvl", lamp);
-      m.geometry.setAttribute("washCol", wash);
-      scene.add(m);
+      const near = this.mkTier(cap) as Lod;
+      near.far = null; // filled in by applyFarModel, if that body ever lands
       this.lampsOf.push(null);
       this.ready.push(false);
-      this.styles.push({ mesh: m, paint, diss, lamp, wash, n: 0 });
+      this.styles.push(near);
     }
 
     this.buildLampWashTables();
@@ -2377,6 +2410,20 @@ export class Traffic {
       () => { this.fleetReady = true; }
     );
 
+    /* The far tier (public/models/cars-far, ~39% of the triangles per car,
+       1.2 MB for the fourteen — geometry only, no second copy of the atlas).
+
+       ARMED here, FIRED from update(), exactly like the HD stream below and
+       for the same reason: `fleetLoaded` resolves while the world build is
+       still running, so fetching and parsing fourteen more GLBs off that
+       promise puts them in competition with the first frames — the contention
+       the HD note documents. Counting seconds of DRIVING instead waits for a
+       drivable frame however slow the device was getting there. Nothing is
+       lost by waiting: until a style's far body lands it has `far: null` and
+       draws every one of its cars at full detail, which is what shipped
+       before this existed. */
+    this.fleetLoaded.then(() => { this.farArmed = true; });
+
     /* Desktop upgrade: stream the HD bodyshells (1024px atlas, ~3x the
        triangles) well after the opening seconds and hot-swap them through
        the same applyModel path, which already supports landing mid-drive.
@@ -2393,6 +2440,27 @@ export class Traffic {
        shader compiles + 1024² texture uploads spread across frames instead
        of stacking into one. */
     if (worldTierCaps().hdFleet) this.fleetLoaded.then(() => { this.hdArmed = true; });
+  }
+
+  /** Far-tier streaming state — see the far-tier block in the constructor. */
+  private farArmed = false;
+  private farDelay = 2.5; // seconds of driving before the fetch starts
+
+  /** Counted down by update(); fetches once, and each body is installed the
+      moment it lands. Deliberately NOT queued one-per-tick the way the HD
+      stream is: that stagger exists because each HD model costs a shader
+      compile and a 1024² texture upload, and a far model costs neither — it
+      brings no material and no texture, and hangs its geometry on a mesh
+      whose program is already linked. Metering it only delayed the saving
+      (measured: on a software renderer, where sim time crawls against the
+      wall clock, a 0.25 s-per-model drip still had six of the fourteen
+      unlanded half a minute into the drive). */
+  private farUpdate(dt: number) {
+    if (!this.farArmed) return;
+    this.farDelay -= dt;
+    if (this.farDelay > 0) return;
+    this.farArmed = false;
+    loadNpcModels(Object.keys(this.styleOf), (m) => this.applyFarModel(m), FAR_BASE);
   }
 
   /** HD-fleet streaming state — see the hdFleet block in the constructor. */
@@ -2479,6 +2547,69 @@ export class Traffic {
     }
   }
 
+  /** One instanced mesh sized for `cap` cars, with the four per-instance
+      attributes the NPC shader binds to, added to the scene and drawing
+      nothing yet. Both tiers of every style are built through here, so near
+      and far are identical in every respect except the geometry that lands on
+      them — same material, same attributes, same shadow and culling flags. */
+  private mkTier(cap: number): Tier {
+    const m = new THREE.InstancedMesh(new THREE.BufferGeometry(), this.npcMat, cap);
+    m.castShadow = true;
+    m.frustumCulled = false; // instances are culled by hand in renderInstances
+    m.count = 0;
+    m.visible = false;
+    const paint = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+    const diss = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+    const lamp = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
+    const wash = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
+    diss.array.fill(1);
+    paint.setUsage(THREE.DynamicDrawUsage);
+    diss.setUsage(THREE.DynamicDrawUsage);
+    lamp.setUsage(THREE.DynamicDrawUsage);
+    wash.setUsage(THREE.DynamicDrawUsage);
+    m.geometry.setAttribute("paintCol", paint);
+    m.geometry.setAttribute("dissolve", diss);
+    m.geometry.setAttribute("lampLvl", lamp);
+    m.geometry.setAttribute("washCol", wash);
+    this.scene.add(m);
+    return { mesh: m, paint, diss, lamp, wash, n: 0 };
+  }
+
+  /** Install a style's decimated bodyshell as its FAR tier, building that
+      tier's mesh the first time one arrives.
+
+      A pure swap, which is the whole point: the far mesh takes the near
+      mesh's material (the far GLBs carry none — geometry only, see FAR_BASE),
+      so a car that crosses the swap distance keeps its atlas, its per-instance
+      paint tint, its lamp levels and its headlight wash, and only the density
+      of its interior triangles changes. Nothing here touches spawning, the
+      lamp anchors or the wheels: those all come from the NEAR model, which is
+      the one the rest of the class reads. */
+  private applyFarModel(m: NpcModel) {
+    const si = this.styleOf[m.style];
+    if (si === undefined) return;
+    const lod = this.styles[si];
+    if (!lod.far) lod.far = this.mkTier(this.styleCap[si]);
+    const far = lod.far;
+    const old = far.mesh.geometry;
+    if (old === m.geo) return;
+    // same order as applyModel: the per-instance buffers have to be off the
+    // old geometry before it is disposed, or the dispose frees buffers the
+    // mesh is still drawing from
+    m.geo.setAttribute("paintCol", far.paint);
+    m.geo.setAttribute("dissolve", far.diss);
+    m.geo.setAttribute("lampLvl", far.lamp);
+    m.geo.setAttribute("washCol", far.wash);
+    far.mesh.geometry = m.geo;
+    // the style's own textured clone, if applyModel has already made one
+    far.mesh.material = lod.mesh.material;
+    old.deleteAttribute("paintCol");
+    old.deleteAttribute("dissolve");
+    old.deleteAttribute("lampLvl");
+    old.deleteAttribute("washCol");
+    old.dispose();
+  }
+
   /** Install a loaded bodyshell as its style's one and only geometry, and let
       the style spawn. Instance state — matrices, paint colours, dissolve — is
       untouched, so this can land on any frame, mid-drive. */
@@ -2511,6 +2642,11 @@ export class Traffic {
       material.needsUpdate = true;
       npcShader(material, m.style);
       lod.mesh.material = material;
+      // the far tier draws through the SAME material, so a far car is the same
+      // car — atlas, paint reference and lamp shader included. (Order is not
+      // fixed: the far bodies load after this one, but the desktop HD stream
+      // comes back through here later and re-clones the material.)
+      if (lod.far) lod.far.mesh.material = material;
       // a fresh material after the load's compile pass — let the engine's
       // slow tick precompile it (data.ts compileDirty) rather than the draw
       this.world.compileDirty = true;
@@ -2828,7 +2964,12 @@ export class Traffic {
            laneClearAt() and trySpawnBypass() both filter by route already. */
         if (m.route !== -1) continue;
         if (Math.abs(m.offCur - off) > 2.2) continue;
-        if (Math.abs(cor.deltaZ(m.s, z)) < 20) blocked = true;
+        /* Per-lane spawn spacing. 20 m at any ordinary density — enough that
+           a seeded car is never dropped on top of another and the corridor
+           reads as free-flowing traffic. At the top of the slider it closes to
+           8 m, which is about two car lengths: that is the only way the extra
+           cars the jam ceiling allows can physically fit on the deck. */
+        if (Math.abs(cor.deltaZ(m.s, z)) < 20 - 12 * this.jam) blocked = true;
       }
       if (blocked) continue;
       let cruise = (rand(24, 30) + laneK * 1.1) * n.drv.spd;
@@ -4391,6 +4532,7 @@ export class Traffic {
     flashed = false
   ) {
     this.hdUpdate(dt);
+    this.farUpdate(dt);
     /* "on the expressway" has to come from the corridor now — the deck rises
        and falls by several metres, so a fixed height threshold would misread
        it near the low points. */
@@ -4422,7 +4564,22 @@ export class Traffic {
     const playerUp =
       (deckY !== null && Math.abs(player.y - deckY) < 7) ||
       this.playerBy !== null || this.playerMt !== null;
-    const cap = Math.round(this.N * clamp(density, 0.15, 1));
+    /* The density slider, read in two pieces so that raising the ceiling does
+       not quietly double the middle of the slider's travel.
+
+       FLEET_BASE is the fleet the slider used to reach at 100%, and the linear
+       term reproduces the OLD number exactly at every setting: 0.5 still means
+       60 cars, 0.75 still means 90. The jam term is what is new, and it only
+       has any value above 75%, where it adds the whole difference between
+       FLEET_BASE and this device's fleetMax. So the curve is continuous, the
+       bottom three quarters are byte-identical to what shipped, and the top
+       quarter climbs to a road the old slider could not ask for. */
+    const jamT = clamp((density - 0.75) / 0.25, 0, 1);
+    this.jam = jamT * jamT * (3 - 2 * jamT); // smoothstep: no kink at 75%
+    const cap = Math.min(
+      this.N,
+      Math.round(FLEET_BASE * clamp(density, 0.15, 1) + (this.N - FLEET_BASE) * this.jam)
+    );
     this.occBudget = 40;
     // camera forward, flattened
     const cl = Math.hypot(camFx, camFz) || 1;
@@ -5715,7 +5872,16 @@ export class Traffic {
       lead = this._stop;
     }
 
-    const aMax = 1.6 * drv.acc, bCom = 2.3, T = 1.25 * drv.gap, s0 = 2.2 + 1.4 * (drv.gap - 1);
+    /* Desired headway, shortened at the top of the density slider — see
+       `jam`. Drivers in heavy traffic accept gaps they would not accept on an
+       empty road, and without that the deck cannot hold the cars the jam
+       ceiling puts on it: IDM would simply brake the whole stream to a halt
+       rather than pack it. At jam 1 this is ~0.6 s of headway, so a stream
+       settling around 55 km/h sits roughly three car lengths apart, which is
+       what a busy Shuto actually looks like. Untouched below 75%. */
+    const jamGap = 1 - 0.55 * this.jam;
+    const aMax = 1.6 * drv.acc, bCom = 2.3,
+      T = 1.25 * drv.gap * jamGap, s0 = (2.2 + 1.4 * (drv.gap - 1)) * jamGap;
     let acc: number;
     if (lead) {
       const dv = n.v - lead.v;
@@ -6069,17 +6235,77 @@ export class Traffic {
   }
 
   /* ---------------- instanced rendering ----------------
-     One pass builds every instance buffer: every body goes into its style's
-     single instanced mesh (the Orchids models are 0.3-2.6k triangles — cheap
-     enough that a separate coarse far tier stopped paying for itself), and
-     wheels only go on cars close enough to read as wheels. Nothing is culled
-     by view direction here — the scene is also rendered from the rear camera
-     for the mirrors and from the reflection camera for the road, and both
-     want the traffic behind the player. Nothing in here allocates. */
+     One pass builds every instance buffer: every body goes into one of its
+     style's two instanced meshes — the near one or, past FAR_SWAP, the
+     decimated far one — and wheels only go on cars close enough to read as
+     wheels. Nothing is culled by view direction here — the scene is also
+     rendered from the rear camera for the mirrors and from the reflection
+     camera for the road, and both want the traffic behind the player. A
+     DISTANCE tier has no such problem and is why the far tier is one: it
+     makes every pass cheaper at once, mirrors included, with no per-camera
+     bookkeeping. Nothing in here allocates.
+
+     (The note that used to stand here — "the Orchids models are 0.3-2.6k
+     triangles, cheap enough that a separate coarse far tier stopped paying
+     for itself" — went stale with the bodyshell rebake. Measured 2026-09-14
+     on mobile-base with 89 cars active: 4.0k triangles a car, 389k of a 938k
+     frame. See tools/build-fleet-lod.mjs.) */
   private renderInstances(player: CarState, night: boolean) {
-    for (const st of this.styles) st.n = 0;
+    for (const st of this.styles) { st.n = 0; if (st.far) st.far.n = 0; }
     let wk = 0;
-    const WHEEL2 = 150 * 150;
+    /* Where wheels stop being drawn. 150 m -> 75 m.
+
+       The wheels are not a rounding error: wheelGeo() is a 12-segment tyre
+       plus two 10-segment rims and two 6-segment hubs, ~156 triangles, and
+       every car carries four (the box truck six). At the old cutoff that is
+       ~56k triangles a frame — about a third of what the whole fleet's BODIES
+       cost after the far tier, spent on parts that at 150 m are two pixels.
+
+       75 m is still well past the range at which a wheel is a distinguishable
+       round thing rather than a dark smudge under a sill, and it sits inside
+       the body swap below on purpose: a car loses its wheels first and its
+       interior panel density second, so neither change lands on the same
+       frame as the other and a car never visibly "pops" twice at once.
+
+       On the same live knob as the body swap (`window.__npcLod.wheel`, in
+       metres) so a before/after can be shot from one frozen frame with only
+       the cutoff moved — see test/lod-aggressive-shots.mjs. */
+    const WHEEL2 = (((window as any).__npcLod?.wheel as number | undefined) ?? 75) ** 2;
+    /* Where a car swaps to its decimated body. 120 m -> 65 m.
+
+       The owner's read of the first far tier was that it "made zero effect —
+       you can't really see those cars in a distance anyways", and he is right
+       about both halves: the change was invisible, which was the point, and
+       invisible means there was room left.
+
+       The obvious way to take that room is a harder bake, and it is a dead
+       end. Measured, three ways, on the same fourteen models:
+
+         shipped   ratio 0.20  error 0.02              mean 1545 tris/car
+                   ratio 0.07  error 0.09              mean 1548
+                   ratio 0.07  error 0.12  weld 0.004  mean 1544
+
+       Asking for 7% and being handed 39% every time means meshoptimizer is
+       stopped by the meshes' own attribute seams, not by the parameters.
+       There is nothing more to take out of the geometry.
+
+       So take it out of the DISTANCE instead, which costs no payload and no
+       bake. A phone frame is 390 CSS px wide in portrait and the camera's fov
+       is VERTICAL (68° at the constructor, 58-100 across the fov slider), so
+       at aspect 0.46 the horizontal fov is only ~35°: the frame is ~41 m wide
+       at 65 m, and a 1.79 m car in it is about 17 px across — call it 38 px
+       along, seen at a three-quarter angle. What the far bake drops is
+       interior panel density, by an edge collapse that locks the outline
+       (tools/build-fleet-lod.mjs), so the silhouette at that size is
+       unchanged and the panel lines it removes were never resolvable.
+
+       It sits OUTSIDE the wheel cutoff now rather than inside it, and that
+       swap of order is deliberate — see WHEEL2 above. Tunable live through
+       `window.__npcLod.far` (metres) the same way __npcLamp/__npcHalo are —
+       1e9 pins the whole fleet to its near bodies, which is how
+       test/fleet-lod-shots.mjs shoots both tiers of the same frozen frame. */
+    const FAR_SWAP = 65;
+    const far2 = (((window as any).__npcLod?.far as number | undefined) ?? FAR_SWAP) ** 2;
     /* live lamp-level knobs (window.__npcLamp, see LAMP) — one vertex
        attribute write per car, so a change lands on the next frame with no
        rebuild, the same way __npcHalo works for the glow around them */
@@ -6096,18 +6322,24 @@ export class Traffic {
       const dx = n.x - player.x, dz = n.z - player.z;
       const d2 = dx * dx + dz * dz;
       const lod = this.styles[n.style];
-      const i = lod.n++;
-      const e = lod.mesh.instanceMatrix.array as Float32Array;
+      /* Near body or far body. This is a DISTANCE test, never a view-direction
+         one — see the block comment above: the buffers built here are drawn
+         again from the mirror and reflection cameras, and a directional cull
+         would empty them. A style whose far body never loaded has `far: null`
+         and stays on the near mesh at every range. */
+      const tier = lod.far !== null && d2 > far2 ? lod.far : lod;
+      const i = tier.n++;
+      const e = tier.mesh.instanceMatrix.array as Float32Array;
       const c = Math.cos(n.hVis), sn = Math.sin(n.hVis), o = i * 16;
       e[o] = c; e[o + 1] = 0; e[o + 2] = -sn; e[o + 3] = 0;
       e[o + 4] = 0; e[o + 5] = 1; e[o + 6] = 0; e[o + 7] = 0;
       e[o + 8] = sn; e[o + 9] = 0; e[o + 10] = c; e[o + 11] = 0;
       e[o + 12] = n.x; e[o + 13] = n.y; e[o + 14] = n.z; e[o + 15] = 1;
-      const pa = lod.paint.array as Float32Array;
+      const pa = tier.paint.array as Float32Array;
       pa[i * 3] = n.cr;
       pa[i * 3 + 1] = n.cg;
       pa[i * 3 + 2] = n.cb;
-      (lod.diss.array as Float32Array)[i] = n.fade;
+      (tier.diss.array as Float32Array)[i] = n.fade;
       /* Streetlight wash: nearest-lamp distance by lattice arithmetic (fold
          the car's station into the lamp period, one table read), then a
          smooth along-road × lateral falloff over the pool's footprint. Night
@@ -6184,28 +6416,34 @@ export class Traffic {
           }
         }
       }
-      const wa = lod.wash.array as Float32Array;
+      const wa = tier.wash.array as Float32Array;
       wa[i * 3] = wshR;
       wa[i * 3 + 1] = wshG;
       wa[i * 3 + 2] = wshB;
       /* Emissive lamp levels. A wreck's lights are dead; otherwise the tails
          glow at a running level and jump on the brakes. These are radiance
-         multipliers on lamp-flagged vertices (lampKind), and since 2026-08
-         EVERY style has tail lens geometry: the hi-fi bakes tag their real
-         lens pixels in `_LAMP`, and npcmodels.ts authors lens quads at load
-         time for any bake that arrives without tags (the Orchids fleet, and
-         the suv/bus bakes whose tail artwork the tagger missed). So the rear
-         level below is the live brightness of every taillight in the game.
+         multipliers on lamp-flagged vertices (lampKind), and they only reach
+         a style that HAS a lit lens. Measured 2026-09-11 across all fourteen
+         fleet styles: four (sedan, hybrid, compact, mhybrid) carry real lens
+         geometry tagged `_LAMP` in the bake, the taxi has its lens found
+         per-texel in its own texture, and the other NINE have no lit lens at
+         all — their taillight is the glow sprite alone (see HALO below and
+         seatTailAnchors in npcmodels.ts, which seats those sprites on the
+         car's own rear skin). The claim that used to stand here — that every
+         style has lens geometry because npcmodels authors lens quads at load
+         time — went stale when those quads were removed.
 
          Level arithmetic (kept from the original sizing pass): emissive is
          `diffuseColor.rgb * lvl`, albedo-proportional. A tagged red lens
          texel is roughly (0.62, 0.055, 0.06) and the authored albedo of the
          runtime lenses is (0.55, 0.035, 0.045) — see npcShader — so the two
          paths land within ~12% of each other. The bloom bright-pass floor is
-         0.40 post-exposure (uExp 0.98 at night): running 3.1 puts the lens
-         at luma ~0.55 (blooms, reads as a lit lamp), brake 4.4 at ~0.75 — a
-         clear step up, matching the sprite targets (tail 0.68, brake 0.95). */
-      const la = lod.lamp.array as Float32Array;
+         0.40 post-exposure (uExp 0.98 at night). NB the 3.1/4.4 in that
+         sizing pass are NOT what ships: `LAMP` above is {run: 1.7, brake: 3.0},
+         a 1.76x step rather than 1.42x. The conclusion still holds — brake is
+         a clear step up and both clear the bloom floor — but take the levels
+         from LAMP, not from these two numbers. */
+      const la = tier.lamp.array as Float32Array;
       const lit = night && !n.wreck;
       la[i * 2] = lit ? 2.2 : 0;
       la[i * 2 + 1] = n.wreck ? 0 : n.brake ? lampBrake : lit ? lampRun : 0;
@@ -6222,7 +6460,13 @@ export class Traffic {
         }
       }
     }
-    for (const st of this.styles) this.flushLod(st);
+    for (const st of this.styles) {
+      this.flushLod(st);
+      // the far tier flushes through the same path — it has to, because
+      // flushLod rewrites `visible` from `n` every frame, so a tier left out
+      // of this loop would draw last frame's instances forever
+      if (st.far) this.flushLod(st.far);
+    }
     this.wheelInst.count = wk;
     this.wheelCount = wk;
     if (wk) {
@@ -6238,7 +6482,7 @@ export class Traffic {
     }
   }
 
-  private flushLod(lod: Lod) {
+  private flushLod(lod: Tier) {
     lod.mesh.visible = lod.n > 0; // an empty LOD must not reach the renderer
     if (lod.n === 0 && lod.mesh.count === 0) return;
     lod.mesh.count = lod.n;

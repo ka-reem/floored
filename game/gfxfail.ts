@@ -16,6 +16,7 @@
    if the stylesheet is what failed to load. */
 
 import { NAME_LABEL } from "@/lib/build";
+import { forceSafeMode, safeMode } from "./safemode";
 
 export type GfxFailKind = "nowebgl" | "lost";
 
@@ -39,6 +40,21 @@ const COPY: Record<GfxFailKind, { head: string; body: string; btn: string }> = {
     btn: "RELOAD",
   },
 };
+
+/* The second button, and the reason it exists.
+ *
+ * A driver reset on a desktop is a one-off: RELOAD is the whole fix. Running
+ * out of memory on a phone is not, because the reload rebuilds the identical
+ * world out of the identical assets and runs out of memory in the identical
+ * place — the player presses RELOAD, watches the same panel come back, and
+ * correctly concludes the game is broken. game/safemode.ts latches after two
+ * such deaths on its own, but a player looking at this panel right now should
+ * not have to crash twice more to be taken at their word.
+ *
+ * Only on "lost": a browser with no WebGL at all has nothing to hold back. */
+const SAFE_NOTE =
+  "Crashed here before? Safe mode drops the heaviest textures — the imported " +
+  "car interior above all — for a lighter build that fits in less memory.";
 
 /** True when a WebGL2 or WebGL1 context can be created. The probe context is
  *  released straight away so it never competes with the renderer's own. */
@@ -114,6 +130,33 @@ export function showGfxFail(host: HTMLElement, kind: GfxFailKind): HTMLElement {
   btn.addEventListener("click", () => doc.defaultView?.location.reload());
 
   box.append(title, jp, head, body, btn);
+
+  /* Offered only where it can still help: on a context loss, and only while
+     the game is not already holding itself back. Once safe mode is on, a
+     second loss means the cut did not cover it and re-offering the same cut
+     would be a lie. */
+  if (kind === "lost" && !safeMode()) {
+    const note = doc.createElement("p");
+    note.textContent = SAFE_NOTE;
+    note.style.cssText =
+      "margin:26px auto 12px;max-width:380px;font-size:12.5px;line-height:1.5;" +
+      "color:var(--ink-dim,#a6b3d6);opacity:0.85;";
+
+    const safe = doc.createElement("button");
+    safe.type = "button";
+    safe.textContent = "RELOAD IN SAFE MODE";
+    safe.style.cssText =
+      "appearance:none;cursor:pointer;min-height:44px;padding:12px 24px;border-radius:999px;" +
+      "font-family:var(--font-display,'Segoe UI',system-ui,sans-serif);font-weight:600;" +
+      "letter-spacing:0.16em;font-size:12px;color:var(--ink-dim,#a6b3d6);" +
+      "background:transparent;border:1px solid var(--accent-line,rgba(140,178,255,0.32));";
+    safe.addEventListener("click", () => {
+      forceSafeMode();
+      doc.defaultView?.location.reload();
+    });
+
+    box.append(note, safe);
+  }
   root.appendChild(box);
   btn.focus({ preventScroll: true });
   return root;

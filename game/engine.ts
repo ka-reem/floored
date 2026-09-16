@@ -40,10 +40,12 @@ import { bindGameTally, gameClick, gameTally } from "./consolegame";
 import { RainFX, SmokeFX } from "./fx";
 import { PostFX } from "./post";
 import { drawMiniMap, type MiniMapOpts } from "./minimap";
-import { track, trackThrottled, registerSuper } from "../lib/analytics";
+import { track, trackThrottled, registerSuper, deviceType } from "../lib/analytics";
 import { telemetryTick, telemetryDebug } from "../lib/telemetry";
 import { DEBUG_HOOKS } from "./debug";
+import type { Vision, VisionFlags } from "./vision";
 import { SHOW_DEV_SETTINGS } from "@/lib/build";
+import { markBootStart, markBootOk, safeMode } from "./safemode";
 import { showGfxFail } from "./gfxfail";
 import { npcModelUrl } from "./npcmodels";
 import { prefetchAssets } from "./prefetch";
@@ -119,6 +121,51 @@ const CLEAN_RUN = {
   flash: 1.4,
 };
 
+/** ENDLESS MODE — "you basically drive until you crash. Once you crash, your
+    points get reset to zero ... it's just gonna be based by distance. There
+    won't be any multipliers ... And then that's how you collect money as
+    well." (owner, 2026-09-11)
+
+    Three numbers and no more, because the mode deliberately has no other
+    rules yet — no multipliers, no combo, no risk bonus. Everything else it
+    needs already exists:
+
+    THE SCORE is `run.dist` — metres driven since the last real impact,
+    integrated once in statsUpdate off the same |u| and the same standing-
+    still floor the lifetime odometer uses. The endless panel shows it in
+    METRES (the owner's own unit for this: "based by distance", and a score
+    wants a number that moves), unlike the clean-run readout next to it,
+    which stays in the player's mi/km. Same metres, two formats, one source.
+
+    THE CRASH is CLEAN_RUN.impact — 5.0 m/s of closing speed along the contact
+    normal, walls, buildings and NPCs alike. It is NOT re-picked here on
+    purpose: that threshold is the one measured number in the game (see the
+    CLEAN_RUN block above — every scrape measured came in under 3.3, every
+    genuine impact over 7.7, and 5.0 sits in the empty gap between), and a
+    second crash rule would mean the readout and the score could disagree
+    about whether the player just crashed. One rule, one constant, one reset.
+
+    THE MONEY is the only new quantity, and it is deliberately NOT a score:
+    it accrues from metres driven and a crash never takes any of it away
+    ("anytime you crash your score resets" — the SCORE, not the bank). It is
+    also banked continuously rather than at the end of a run, so a closed tab
+    or a container restart mid-drive cannot cost a player what they drove for
+    (GameApp persists on pause, on exit, on tab-hide and on a slow timer). */
+const ENDLESS = {
+  /** currency per metre driven. ¥1 per 10 m: a 10 km drive pays ¥1,000 and a
+      good run is worth a four-figure number, which is the arcade shape the
+      owner asked for without needing decimals or a separate multiplier. Money
+      accrues whether or not the mode is switched on — free-roam metres are
+      still metres driven, and the owner drives free-roam too — so switching
+      ENDLESS on adds the score and the reset, never the earning. */
+  perMetre: 0.1,
+  /** seconds the endless panel wears .ez-reset after a crash. Longer than
+      CLEAN_RUN.flash: this readout is the mode's whole point, so the reset is
+      allowed to be an EVENT (the figure knocks out and settles back to 0)
+      rather than the corner readout's quiet dim. Still no banner, no toast. */
+  flash: 1.8,
+};
+
 /** WHICH HUD TREATMENT the clean-run readout wears. One line to swap; the
     three are rendered side by side in
     docs/handoff/reports/clean-distance.md.
@@ -134,6 +181,14 @@ const CLEAN_RUN = {
     the engine writes the same text and the same .run-reset / .run-blip
     classes whichever is on. */
 const RUN_HUD: "corner" | "speed" | "ghost" = "corner";
+
+/** Thousands-grouped integer, for the endless panel's three figures. Called
+    at HUD cadence (hudT, ~10 Hz) and only ever on a value that changed, so
+    the regex is nowhere near a per-frame path. */
+const group = (n: number) => {
+  const t = String(Math.max(0, Math.floor(n)));
+  return t.length > 3 ? t.replace(/\B(?=(\d{3})+(?!\d))/g, ",") : t;
+};
 
 /** What is left of the No Hesi loop: the near-miss STREAK, kept because two
     lifetime statistics are built on it (stats.nearMisses, stats.bestCombo)
@@ -616,6 +671,69 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02, procDy: 0.14
    re-frames on the next frame. Settled values come back here. */
 const BACKSEAT_CAM = { x: 0, y: 1.30, z: -1.10, fov: 72, tilt: 0.04, yaw: 0 };
 
+/* CAM_HOOD: a lens ON the bonnet, not floating over it.
+
+   Note the near-collision with `HOOD` above — that one is the INTERIOR hood,
+   the sliver of the car's own bonnet drawn at the bottom of the cabin views.
+   This is the camera. `window.__hood` moves the mesh, `window.__hoodCam` moves
+   the lens.
+
+   It used to sit at `(0, belt + 0.5, L/2 - 0.6)`, which on the Volvo is y 1.42
+   — the car's ROOF is at 1.44 — and 1.88 m forward, i.e. half a metre of clear
+   air above the bonnet. That is a nose cam hovering in front of the
+   windscreen, and the owner's read of it was exactly that: it is not a hood
+   view, so make it one. A hood view means the bonnet is IN the frame.
+
+   Both numbers are offsets from the shell rather than absolutes, so a lower or
+   shorter car keeps the same relationship to its own bodywork:
+
+     dz  0.22 m FORWARD of the cowl (`L/2 - hood`), which is the hood's high
+         point. It has to clear the windscreen base, which glassShape() puts at
+         `L/2 - hood + 0.08` — sit behind that and the lens is looking through
+         its own glass. 0.22 leaves 14 cm of margin on the Volvo (z 1.46
+         against a base at 1.32) and 14 cm on the Kaze (1.11 against 0.97).
+
+     dy  0.16 m over the beltline, dz 0.05. Both were higher and further
+         forward (0.24 / 0.21) until the owner saw that mount and asked for
+         more bonnet than it gave. Shot as a ladder off the profile below:
+         0.24/0.21 puts the bonnet across the bottom ~20% of the frame,
+         0.16/0.05 takes it to about a third, and 0.13/-0.10 is past the
+         useful end — the lens drops level with the cowl, the windscreen
+         frame starts intruding and the reflection band blows out. His pick
+         is the middle one.
+
+         dy was 0.03 originally, computed against
+         carshape.ts's hood curve, and it put the lens INSIDE the car: the
+         frame came back full of windscreen header and A-pillar. The player
+         car does not wear the procedural shape. It wears the imported donor
+         exterior, and test/hood-mount-probe.mjs — every exterior vertex
+         transformed into this same bodyG space, binned into 5 cm slices of z
+         along the centreline — says the donor's bonnet at the mount is at
+         y 0.997, not the 0.857 the parameters implied. 0.95 was 4.5 cm under
+         the sheet metal.
+
+         So every figure below is measured off that profile rather than off
+         the shell. The donor's bonnet runs from y 0.72 at the nose crown
+         (z 2.4) back to y 1.05 at the cowl (z 1.0), and the windscreen base
+         is at z ~0.98 — a good 45 cm forward of where glassShape() puts the
+         procedural one, which is the whole reason the first attempt missed.
+         At dz 0.21 the lens sits at z 1.45 with 16 cm of air under it.
+
+   What that frames, at the default lens (71.2 vertical, so a 35.6-degree half
+   frame): the bonnet is convex, so what bounds the shot is not the nose crown
+   but the silhouette — the tangent point, which lands at z 2.3 and 21.1
+   degrees below the horizon. The bonnet fills the bottom ~20% and the road
+   starts immediately above it.
+
+   Note which way dy moves that, because it is not the obvious one and it is
+   what made the first attempt's reasoning wrong: RAISING the lens shows LESS
+   bonnet, not more. A lower lens flattens the bonnet toward the horizon and
+   the silhouette climbs the frame.
+
+   tilt is nose-down radians on top of the body's own pitch, at 0: the bonnet
+   already sits low enough in frame that raking it up buys nothing. */
+const HOOD_CAM = { dy: 0.16, dz: 0.05, tilt: 0 };
+
 /* ---------------------------------------------------------- cabin lighting --
 
    What is allowed to light the inside of the car, and how much of it.
@@ -1075,6 +1193,7 @@ declare global {
     __backseatCam?: { x: number; y: number; z: number; fov: number; tilt: number; yaw: number };
     __roofTap?: { top: number; half: number };
     __hood?: { on: number; dy: number; dz: number };
+    __hoodCam?: { dy: number; dz: number; tilt: number };
     __cabinVibe?: { amp: number; pow: number; slip: number };
     __chaseFx?: { lag: number; aimSwing: number; speedPull: number };
     __camSmooth?: { pov: number; max: number };
@@ -1281,6 +1400,14 @@ export class Game {
       carId/seed/camMode. */
   get cleanRunDist() { return this.run.dist; }
   get cleanRunBest() { return this.run.best; }
+  /** ENDLESS MODE, same contract: the bank and the record as they stand right
+      now, for persist() to copy into the profile. `money` already includes
+      the total the profile was constructed with, so writing it back is
+      idempotent at any cadence. */
+  get money() { return this.ez.money; }
+  get bestDistance() { return this.ez.best; }
+  /** currency earned in THIS session only — the STATS board's session column */
+  get moneyEarned() { return this.ez.earned; }
   get tttTally() { return gameTally(); }
 
   /** This session's drive statistics, live — the STATS panel reads fields
@@ -1590,6 +1717,13 @@ export class Game {
     return window.__backseatCam;
   }
 
+  /** Mount and cant for the hood camera — see HOOD_CAM. Not split by interior:
+      it is bolted to the EXTERIOR shell and never sees a cabin at all. */
+  private hoodCam(): { dy: number; dz: number; tilt: number } {
+    if (!window.__hoodCam) window.__hoodCam = { ...HOOD_CAM };
+    return window.__hoodCam;
+  }
+
   /** Is the camera inside the cabin? Interior shell on, exterior body off, HUD
       minimap suppressed (every in-car view carries the head unit's own map),
       nav panel clickable, cabin trim audible, rear view rendered.
@@ -1821,6 +1955,11 @@ export class Game {
       whole restore-on-exit guarantee is that the gameplay camera is not
       touched while this one is on duty. */
   private photoCam: THREE.PerspectiveCamera | null = null;
+  /** "What the AI sees" debug overlay (game/vision.ts). Only ever assigned
+      through the __neonx.vision handle below, which exists only under
+      DEBUG_HOOKS — so on a player's tab this stays null for the life of the
+      engine and the module is never even fetched. */
+  private vision: Vision | null = null;
   private photoPtrs = new Map<number, { x: number; y: number }>();
   /** captures completed this session (toBlob landed) — read by the smoke test */
   photoShots = 0;
@@ -1829,6 +1968,9 @@ export class Game {
   private last = 0;
   private acc = 0;
   private frameN = 0;
+  /* When this engine was constructed. Only consumer is the context-lost
+     report, where "died at 4 s" and "died at 40 min" are different bugs. */
+  private readonly bootMs = performance.now();
   private emaMs = 16;
   private slowT = 0;
   private gaugeT = 0;
@@ -1867,6 +2009,14 @@ export class Game {
       (the contact-normal closing speed that ended the last run) are what the
       headless checks read to prove the crash rule. */
   private run = { dist: 0, best: 0, flash: 0, resets: 0, lastImpact: 0 };
+  /** ENDLESS MODE state (see the ENDLESS block). `money` is the running bank
+      — the profile's stored total plus everything earned this session, so the
+      getter can be read back out at any cadence without double counting the
+      way lifetimeStats() can't. `best` is the furthest single run in metres,
+      seeded from the profile and only ever growing. `flash` is the post-crash
+      settle clock the panel reads, `earned` is this session's share of the
+      bank (the STATS board's SESSION column). */
+  private ez = { money: 0, best: 0, flash: 0, earned: 0 };
   /** Debug builds only: contact-normal closing speeds recorded inside
       simStep, so the crash threshold can be measured rather than guessed
       (see __neonx.state().impacts / clearImpacts). Bounded ring. */
@@ -1977,6 +2127,12 @@ export class Game {
     override: null as Partial<DriverInput> | null,
     errors: [] as string[],
     frames: 0,
+    /** Frame-stepped capture (debug builds only — the setter lives on
+        __neonx). >0 makes loop() advance a VIRTUAL clock by exactly this much
+        per call and stop scheduling itself; __neonx.step() then runs one
+        frame at a time, so a box that takes seconds per frame can still
+        assemble a real-time 30 fps clip. 0 = the wall clock, as always. */
+    fixedDt: 0,
   };
 
   constructor(container: HTMLElement, profile: Profile, ui: UiBridge) {
@@ -2000,6 +2156,11 @@ export class Game {
     this.seed = profile.seed;
     this.camMode = profile.camMode;
     this.run.best = Number.isFinite(profile.cleanRunBest) ? profile.cleanRunBest : 0;
+    /* ENDLESS: loadProfile already scrubbed both to non-negative finite
+       numbers (and seeded bestDistance from cleanRunBest for a profile that
+       predates the mode), so these are straight copies. */
+    this.ez.money = profile.money;
+    this.ez.best = profile.bestDistance;
     // loadProfile scrubbed every field; the copy is what makes lifetimeStats()
     // idempotent (see statsSeed)
     this.statsSeed = { ...defaultLifetimeStats(), ...profile.stats };
@@ -2045,7 +2206,25 @@ export class Game {
     this.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight(0x9db4ff, 0.16);
     this.scene.add(this.sun);
-    this.sun.shadow.mapSize.set(2048, 2048);
+    /* SHADOW MAP SIZE, which until now was 2048² on every device that drew a
+       shadow at all — the one large per-frame cost the tier system never
+       priced.
+
+       2048² is 4.19 Mpx rendered every frame. Measured against it, the whole
+       of the app tier's scene and post chain together fill 1.94 Mpx, and the
+       frame the player actually sees on a phone is 526×1139 = 0.60 Mpx. So the
+       shadow map was SEVEN TIMES the visible frame and more than twice
+       everything else put together, and it re-submits every casting object as
+       a second set of draw calls on top of that. It is invisible to the
+       engine's own instrumentation because three renders it inside
+       `renderer.render()`, which is why it survived this long.
+
+       1024² on the phone tiers quarters that to 1.05 Mpx. Desktop keeps 2048²
+       — it has the fill rate, and it is the tier that sees shadow edges at
+       size. This is a VISIBLE change on phones (a softer, coarser shadow edge
+       at the 340 m ortho extent set below), taken on the owner's explicit
+       "optimize it, make it less laggy"; one value here reverts it. */
+    this.sun.shadow.mapSize.setScalar(this.renderTier === "desktop" ? 2048 : 1024);
     this.sun.shadow.camera.left = -170;
     this.sun.shadow.camera.right = 170;
     this.sun.shadow.camera.top = 170;
@@ -2085,6 +2264,15 @@ export class Game {
     // only (game/debug.ts); test/lib/debug-url.mjs adds the flag for the scripts
     if (DEBUG_HOOKS) (window as any).__neonx = {
       game: this,
+      /* Debug overlay — see game/vision.ts. Loaded on first use so the
+         player bundle never carries it; every call resolves to the flags. */
+      vision: {
+        set: async (f: Partial<VisionFlags>) => (await this.visionGet()).set(f),
+        all: async (on = true) => (await this.visionGet()).all(on),
+        off: async () => (await this.visionGet()).all(false),
+        flags: () => this.vision?.flags ?? null,
+        probe: () => this.vision?.probe ?? null,
+      },
       teleport: (x: number, z: number, y?: number, h?: number, u?: number) => {
         this.car.x = x;
         this.car.z = z;
@@ -2106,6 +2294,29 @@ export class Game {
         this.chaseRefOk = false;
       },
       setCam: (i: number) => (this.camMode = i % CAM_COUNT),
+      /* Frame-stepped capture — tools/tiktok-video.mjs. setFixedDt(1/30)
+         freezes the wall clock out of the loop; step() then advances and
+         draws exactly one frame per call. setFixedDt(0) re-arms the normal
+         rAF loop. setPerfMode(false) undoes the automatic PERFORMANCE MODE
+         drop, which a software renderer trips within seconds of loading and
+         which halves the resolution of everything captured after it. */
+      setFixedDt: (dt: number) => {
+        const was = this.debug.fixedDt;
+        this.debug.fixedDt = dt > 0 ? dt : 0;
+        if (was > 0 && !(dt > 0) && this.started) {
+          cancelAnimationFrame(this.raf);
+          this.last = performance.now() / 1000;
+          this.loop();
+        }
+      },
+      step: () => {
+        cancelAnimationFrame(this.raf);
+        this.loop();
+      },
+      setPerfMode: (on: boolean) => {
+        this.perfMode = !!on;
+        this.applySettings(this.settings);
+      },
       /* Both AudioContext states plus whether the gesture fallback is waiting —
          what test/audio-resume-check.mjs reads across a hide/show cycle. */
       audioState: () => ({
@@ -2211,6 +2422,10 @@ export class Game {
            measurements: metres this run, the profile best, the settle clock
            and how many resets this session. */
         run: { ...this.run },
+        /* ENDLESS: the bank, the record, this session's earnings and the
+           post-crash settle clock — what a headless check reads to prove that
+           a crash zeroed run.dist and left ez.money alone. */
+        ez: { ...this.ez },
         /* Contact-normal closing speeds seen inside simStep since the last
            clearImpacts(): the hardest one, and the newest few hundred (the
            ring is bounded, so read impactMax for the peak). The raw material
@@ -2240,11 +2455,27 @@ export class Game {
       setCleanRun: (m: number) => {
         this.run.dist = m;
         if (m > this.run.best) this.run.best = m;
+        /* the endless record is the same metres (see ENDLESS), so a staged
+           run moves it too — otherwise a shot shows a run past a best it
+           already beat */
+        if (m > this.ez.best) this.ez.best = m;
+      },
+      /** ENDLESS: stage the bank for a shot or a check. Nothing in the game
+          writes money except statsUpdate. */
+      setMoney: (v: number) => {
+        this.ez.money = Math.max(0, v);
+      },
+      /** ENDLESS: stage the mode itself, so a capture does not have to walk
+          the home board to turn it on. */
+      setEndless: (on: boolean) => {
+        this.settings.endless = on;
       },
       runReset: () => {
         this.run.dist = 0;
         this.run.flash = CLEAN_RUN.flash;
         this.run.resets++;
+        /* the same reset the real one fires, money deliberately untouched */
+        this.ez.flash = ENDLESS.flash;
       },
       crashTest: () => {
         this.traffic.spawnObstacleAhead(this.car);
@@ -2512,8 +2743,14 @@ export class Game {
         label: "PUTTING CARS ON THE ROAD",
         weight: W.traffic,
         run: async (onStep) => {
+          /* Fleet size is per-tier now, not a flat 120 — it is the ceiling
+             the traffic-density slider reaches at 100%, and the owner wanted
+             that top setting to mean an actual jam. Phones keep 120 (or 150
+             on the high tier): the GPU-memory headroom on iOS Safari is not
+             something to spend on a fuller road. See TierCaps.fleetMax. */
           this.traffic = new Traffic(
-            this.scene, this.world, this.mats.envMap, this.mats.glowTex, 120
+            this.scene, this.world, this.mats.envMap, this.mats.glowTex,
+            this.tierCaps.fleetMax
           );
           this.rainFX = new RainFX(this.scene, this.mats.streakTex);
           // the load's applySettings pass covers mats.setWet but not the
@@ -2665,6 +2902,12 @@ export class Game {
   }
 
   private async runLoad(onProgress: (r: LoadReport) => void): Promise<void> {
+    /* The two ends of the safe-mode bracket (game/safemode.ts). Everything
+       that can take a phone's memory out from under it — the donor cabin's
+       21-image decode above all — happens between these two lines, and a
+       context lost in there never runs code again, so the ONLY way to notice
+       it is to have written the attempt down before it started. */
+    markBootStart();
     let timings: Record<string, number>;
     try {
       timings = await runStages(this.buildStages(), onProgress, () => this.disposed);
@@ -2674,9 +2917,31 @@ export class Game {
     }
     if (this.disposed) return;
     this.loaded = true;
+    markBootOk();
     // real per-stage milliseconds, for retuning LOAD_WEIGHTS against a device
     const dbg = (window as any).__neonx;
     if (dbg) dbg.loadTimings = timings;
+  }
+
+  /** The debug overlay, built on first ask (DEBUG_HOOKS callers only). */
+  private async visionGet(): Promise<Vision> {
+    if (this.vision) return this.vision;
+    const m = await import("./vision");
+    if (this.vision) return this.vision;
+    this.vision = new m.Vision({
+      scene: this.scene,
+      car: this.car,
+      cor: this.cor,
+      npcs: () => this.traffic?.npcs ?? [],
+      terrain: () => this.terrain,
+      world: () => this.world,
+      rig: () => this.rig ?? null,
+      size: () => ({
+        w: this.post.sceneRT.width, h: this.post.sceneRT.height,
+        aspect: (this.photo.on && this.photoCam ? this.photoCam : this.camera).aspect,
+      }),
+    });
+    return this.vision;
   }
 
   /** Run the render loop, paused, until `n` frames have been drawn. */
@@ -2817,6 +3082,48 @@ export class Game {
 
   private onContextLost = (e: Event) => {
     e.preventDefault();
+    /* REPORT IT. Until now this was the one failure the game could see happen
+       and told nobody about: the panel goes up, the player reloads or leaves,
+       and the owner learns about it only if that player happens to say so.
+       There is no way to reproduce a crash you cannot see, and "GPU context
+       lost" is exactly the kind that depends on the device rather than on
+       anything the game does differently.
+
+       So capture what would actually narrow it down, and capture it FIRST —
+       the context is already gone, the page may be seconds from being closed,
+       and showGfxFail() below can throw on a detached host.
+
+       `renderer` is the unmasked GPU string where the browser will give it
+       (it is the single most useful field, and Safari usually masks it);
+       `secs` separates "died on the loading screen" — an allocation the
+       device could never satisfy — from "died after twenty minutes", which is
+       pressure or a leak, and those have nothing to do with each other. */
+    try {
+      const gl = this.renderer.getContext();
+      const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+      const nav = navigator as Navigator & { deviceMemory?: number };
+      track("webgl_context_lost", {
+        renderer: dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) : "masked",
+        vendor: dbg ? String(gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL)) : "masked",
+        tier: this.renderTier,
+        preset: this.settings.preset,
+        cabin: this.settings.cabin,
+        loaded: this.loaded,
+        /* was the game already holding itself back when it died? a loss WITH
+           this true means safe mode's cut is not deep enough, which is the
+           one thing the panel cannot work out on its own */
+        safe: safeMode(),
+        secs: Math.round((performance.now() - this.bootMs) / 1000),
+        px: `${Math.round(innerWidth)}x${Math.round(innerHeight)}@${devicePixelRatio}`,
+        pixelRatio: this.renderer.getPixelRatio(),
+        maxTex: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+        deviceMemoryGb: nav.deviceMemory ?? null,
+        cores: navigator.hardwareConcurrency ?? null,
+        device: deviceType(),
+      });
+    } catch {
+      /* never let reporting be the reason the panel does not appear */
+    }
     showGfxFail(this.renderer.domElement.parentElement ?? document.body, "lost");
   };
 
@@ -4234,6 +4541,7 @@ export class Game {
        and smokeTex is the same object on all 70 sprites. */
     this.rainFX?.dispose(this.scene);
     this.smokeFX?.dispose(this.scene);
+    this.vision?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
     delete (window as any).__neonx;
@@ -6178,6 +6486,7 @@ export class Game {
           : 0;
       this.lookaheadYaw = lerp(this.lookaheadYaw, lookTarget, 1 - Math.exp(-4 * dt));
       const P = this.spec.shell;
+      const hk = this.hoodCam();
       /* Looking back, a driver leans in toward the centre of the car and cranes
          up — pivoting the eye in place instead just stares into their own
          headrest. Eased so tapping B doesn't snap the head sideways. */
@@ -6197,7 +6506,15 @@ export class Game {
               + cockEye.dy,
             COCKPIT_EYE.z + this.head.z + cockEye.dz
           )
-          : this.tmpV.set(0, P.belt + 0.5 + this.head.y * 0.5 * this.chaseShake(), P.L / 2 - 0.6);
+          /* CAM_HOOD — on the bonnet, see HOOD_CAM. The head.y term is the
+             chase camera's G-dip and is scaled by chaseShake(), which ships at
+             0, so this mount is rigid in practice; it is kept so that turning
+             the shake knob on moves every exterior view together. */
+          : this.tmpV.set(
+            0,
+            P.belt + hk.dy + this.head.y * 0.5 * this.chaseShake(),
+            P.L / 2 - P.hood + hk.dz
+          );
       /* road micro-vibration (cockpit only): multi-octave value noise keyed
          off car.z, not time. Same stretch of road always buzzes the same
          way — no randomness and nothing that drifts, so it can't build into
@@ -6232,7 +6549,12 @@ export class Game {
          uphill and at the sky downhill. */
       this.camera.position.copy(this.rig.bodyG.localToWorld(this.tmpV2.copy(local)));
       this.camera.rotation.y = car.h + Math.PI + back + this.lookaheadYaw;
-      this.camera.rotation.x = -this.rig.bodyG.rotation.x * (this.lookBack ? -1 : 1);
+      /* Hood cant is skipped when looking back: the tilt is about where the
+         bonnet sits in the forward frame, and applying it to the reverse view
+         just aims at the boot lid. */
+      this.camera.rotation.x =
+        -this.rig.bodyG.rotation.x * (this.lookBack ? -1 : 1) -
+        (this.camMode === CAM_HOOD && !this.lookBack ? hk.tilt : 0);
       // roll matches the shell for the same reason the pitch does, plus the
       // G-lean roll from above
       this.camera.rotation.z =
@@ -6340,6 +6662,7 @@ export class Game {
   private runUpdate(dt: number, impact: number) {
     const r = this.run;
     r.flash = Math.max(0, r.flash - dt);
+    this.ez.flash = Math.max(0, this.ez.flash - dt);
     if (impact < CLEAN_RUN.impact) return;
     /* Already flashing = still the same wreck: a car folded into a barrier
        goes on generating contacts for a second or more, and re-arming the
@@ -6350,6 +6673,10 @@ export class Game {
     r.flash = CLEAN_RUN.flash;
     r.resets++;
     r.lastImpact = impact;
+    /* ENDLESS: the same reset, its own settle clock. NOTHING here touches
+       ez.money or ez.best — the run score is what a crash costs, and the bank
+       and the record are what the player keeps. */
+    this.ez.flash = ENDLESS.flash;
   }
 
   /** Drive statistics — see the STATS block. One in-place accumulator fed
@@ -6370,6 +6697,15 @@ export class Game {
          standing-still floor — see runUpdate, which owns only the reset. */
       this.run.dist += sp * dt;
       if (this.run.dist > this.run.best) this.run.best = this.run.dist;
+      /* ENDLESS rides the same integration a third time: the record is the
+         same metres the clean-run best counts, and the money is those metres
+         priced (ENDLESS.perMetre). Both are banked HERE, per frame, rather
+         than at the end of a run — a crash must never be able to cost money
+         that was already driven for. */
+      if (this.run.dist > this.ez.best) this.ez.best = this.run.dist;
+      const pay = sp * dt * ENDLESS.perMetre;
+      this.ez.money += pay;
+      this.ez.earned += pay;
     }
     if (this.combo.combo > st.bestCombo) st.bestCombo = this.combo.combo;
 
@@ -6461,6 +6797,44 @@ export class Game {
           enh.classList.remove("run-reset", "run-blip");
         }
       }
+      /* ENDLESS MODE panel — run score, personal best, bank. See the ENDLESS
+         block. The engine owns whether it is on screen (data-on, the same
+         contract the clean-run readout has with its setting) so the mode can
+         be switched from the home board, the settings panel or the loading
+         board without any of them having to know about this element; GameApp
+         only mounts it while playing.
+
+         Text is written only when it changes. The score turns over ~10x a
+         second at speed, the other two barely move. */
+      const eez = this.dom("ezHud");
+      if (eez) {
+        const on = this.settings.endless ? "1" : "0";
+        if (eez.dataset.on !== on) eez.dataset.on = on;
+        if (on === "1") {
+          const ezRun = this.dom("ezRun");
+          if (ezRun) {
+            const txt = group(this.run.dist);
+            if (ezRun.textContent !== txt) ezRun.textContent = txt;
+          }
+          const ezBest = this.dom("ezBest");
+          if (ezBest) {
+            const txt = group(this.ez.best);
+            if (ezBest.textContent !== txt) ezBest.textContent = txt;
+          }
+          const ezMoney = this.dom("ezMoney");
+          if (ezMoney) {
+            const txt = group(this.ez.money);
+            if (ezMoney.textContent !== txt) ezMoney.textContent = txt;
+          }
+          /* THE CRASH, and the one loud moment the mode has: the panel wears
+             .ez-reset for ENDLESS.flash seconds and the CSS knocks the score
+             out and lets it settle back from 0. Toggled rather than re-armed
+             so a car still grinding along a barrier cannot stutter it. */
+          const flashing = this.ez.flash > 0;
+          if (eez.classList.contains("ez-reset") !== flashing)
+            eez.classList.toggle("ez-reset", flashing);
+        }
+      }
       /* exit navigation hint */
       let exOn: { no: number; dist: number } | null = null;
       if (car.y > 4 && Math.abs(car.u) > 1) {
@@ -6505,6 +6879,10 @@ export class Game {
       if (this.slowT > 4) {
         this.perfMode = true;
         this.renderer.setPixelRatio(1);
+        // keep applySettings' cache in step with the ratio we just forced —
+        // without this the next settings tick sees pr(1) !== lastPR(cap) and
+        // rebuilds all 16 screen-sized targets for no change
+        this.lastPR = 1;
         this.post.makeTargets(true);
         this.mats.setReflectionTexture(this.post.reflectRT.texture);
         this.mats.setReflectionScreen(
@@ -6520,9 +6898,13 @@ export class Game {
   /* ---------------- main loop ---------------- */
   private loop = () => {
     if (this.disposed) return;
-    this.raf = requestAnimationFrame(this.loop);
-    const t0 = performance.now(), now = t0 / 1000;
-    let dt = Math.min(now - this.last, 0.1);
+    /* debug.fixedDt (see its note): stepped, the loop does not re-arm and
+       `now` is a virtual clock, so every phase that reads it — blinkers,
+       aurora, traffic, the time of day — moves exactly one frame per call. */
+    const fixed = DEBUG_HOOKS && this.debug.fixedDt > 0 ? this.debug.fixedDt : 0;
+    if (!fixed) this.raf = requestAnimationFrame(this.loop);
+    const t0 = performance.now(), now = fixed ? this.last + fixed : t0 / 1000;
+    let dt = fixed ? fixed : Math.min(now - this.last, 0.1);
     this.last = now;
     this.debug.frames++;
     this.readInput(dt);
@@ -6704,6 +7086,8 @@ export class Game {
        Zero at night; this is the day pass's one hook into the fleet. */
     this.sunDirW.copy(this.sun.position).sub(this.sun.target.position).normalize();
     setNpcDaylight(this.dayFactor(), this.sunDirW, cam);
+    // debug overlay (null on every player tab — see `vision`)
+    this.vision?.update();
     this.renderer.setRenderTarget(this.post.sceneRT);
     /* No explicit clear: renderer.render() clears the bound target itself
        while autoClear is on (three's WebGLBackground.render does it before
@@ -6767,6 +7151,7 @@ export class Game {
       this.photo.shot = false;
       this.captureShot();
     }
-    this.perfCheck(performance.now() - t0, dt);
+    // a stepped frame is slow by construction — it must not trip perf mode
+    if (!fixed) this.perfCheck(performance.now() - t0, dt);
   };
 }

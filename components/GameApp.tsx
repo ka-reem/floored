@@ -154,7 +154,38 @@ if (typeof window !== "undefined") void loadEngine();
 /** Run `fn` when the main thread is next idle, with a timeout backstop for a
     page that never goes idle — and a plain timer on Safari, which has no
     requestIdleCallback at all. */
+/* Traffic density every SURVIVAL run is driven at, whatever the player's own
+   slider says.
+
+   The owner asked for a fixed number ("find a good percentage for the survival
+   mode for traffic, and then it should be unchangeable") and the reason it has
+   to be fixed is the score: survival's number is a distance, kept as a
+   personal best, and a best set on an empty road is not the same achievement
+   as one set in traffic. A live slider would make the record meaningless.
+
+   0.75, and the value is NOT a taste call — it is the highest density that
+   means the same thing on every device.
+
+   traffic.ts reads the slider in two pieces: a linear term against FLEET_BASE
+   (120) that every tier shares, plus a jam term that only has any value above
+   0.75 and that scales with TierCaps.fleetMax — 240 on desktop, 150 and 120 on
+   the two phone tiers. So 0.85 is 144 cars on a desktop and 102 on a phone,
+   and two players comparing bests would not have driven the same road. At 0.75
+   the jam term is zero everywhere and the answer is 90 cars on every machine
+   there is.
+
+   90 is also, not by accident, exactly what the slider's 100% used to mean
+   before the jam ceiling — i.e. the busiest road the game has ever actually
+   shipped. Raising it is one constant here, but it costs cross-device
+   comparability to do it. */
+const SURVIVAL_TRAFFIC = 0.75;
+
 const IDLE_TIMEOUT_MS = 1200;
+
+/** How often the profile is written to localStorage WHILE DRIVING — the
+    endless bank's safety net (see the effect that uses it). The most a player
+    can lose to a closed tab, in milliseconds. */
+const BANK_SAVE_MS = 20000;
 function whenIdle(fn: () => void) {
   const ric = (window as unknown as {
     requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => void;
@@ -429,6 +460,14 @@ export default function GameApp() {
     p.seed = g.seed;
     p.camMode = g.camMode;
     p.cleanRunBest = g.cleanRunBest;
+    /* SURVIVAL: the bank and the record. Both getters already fold in what the
+       profile was constructed with, so this is idempotent however often it
+       runs — which matters, because unlike everything else here these are
+       also written on a timer while the player drives (see the effect below):
+       money that was driven for must survive a closed tab, not just a clean
+       exit through the menu. */
+    p.money = g.money;
+    p.bestDistance = g.bestDistance;
     /* Lifetime totals: construction-time seed + this session, recomputed on
        every call (see Game.lifetimeStats) — writing it repeatedly is safe. */
     p.stats = g.lifetimeStats();
@@ -473,7 +512,7 @@ export default function GameApp() {
      only sets up a canvas and the settings the menus read (see Game.load) —
      so the first press pays for the whole build behind the loading screen.
      A second press (after MAIN MENU from the pause screen) is instant. */
-  const drive = useCallback(async () => {
+  const drive = useCallback(async (survival = false) => {
     /* Almost always already there — the engine chunk is fetched from module
        scope, so it has had the whole time the player spent reading the board.
        `waited` is true only for a press that beat the download on a cold,
@@ -481,6 +520,35 @@ export default function GameApp() {
     const waited = !gameRef.current;
     const g = await ensureGame();
     if (!g) return;
+    /* WHICH MODE THIS PRESS STARTS, decided here and written before the world
+       build rather than carried in a toggle the player set earlier.
+
+       The owner's call: "it should be like free drive instead of drive and
+       then [survival] should be like another game mode no on and off just
+       click it". So the board has two ways in, not one way in plus a switch,
+       and `endless` stops being a preference the player leaves lying around —
+       every press states it. Free drive presses clear it; survival presses
+       set it. A player who last drove survival and then taps FREE DRIVE gets
+       free drive, which a toggle could not promise.
+
+       SURVIVAL ALSO PINS THE TRAFFIC. The density slider is the player's
+       everywhere else, but a distance score is only comparable against other
+       runs at the same density — a personal best set at 15% traffic is not
+       the same achievement as one set in a jam, and leaving the slider live
+       would make the leaderboard number meaningless. See SURVIVAL_TRAFFIC for
+       where the number comes from. The player's own setting is saved and put
+       back when they next drive free. */
+    if (survival) {
+      if (!g.settings.endless) survivalTraffic.current = g.settings.traffic;
+      g.settings.endless = true;
+      g.settings.traffic = SURVIVAL_TRAFFIC;
+    } else {
+      if (g.settings.endless && survivalTraffic.current !== null)
+        g.settings.traffic = survivalTraffic.current;
+      g.settings.endless = false;
+    }
+    g.applySettings(g.settings);
+    persist();
     const coldStart = !g.loaded; // whether this press pays for the world build
     /* Before anything asynchronous: iOS only unlocks an AudioContext created
        inside the gesture itself, and every line below this one is a task or
@@ -541,6 +609,10 @@ export default function GameApp() {
     markRun();
     persist();
   }, [persist, markRun, ensureGame]);
+  /* The traffic density the player had before a SURVIVAL run took the slider
+     off them, so free drive can hand it back. Null until a survival run has
+     actually borrowed it. */
+  const survivalTraffic = useRef<number | null>(null);
   const resume = () => {
     gameRef.current?.setRunning(true);
     setScreen("playing");
@@ -587,6 +659,35 @@ export default function GameApp() {
   useEffect(() => {
     if (screen !== "playing") track("screen_view", { screen });
   }, [screen]);
+
+  /* BANK THE DRIVE WHILE IT IS HAPPENING. Everything persist() writes used to
+     be saved only at the edges of a drive — DRIVE, RESUME, MAIN MENU — which
+     is fine for a setting and wrong for a currency: a tab closed or a phone
+     that discards the page mid-run would cost the player every metre of money
+     they had just earned (and their session's stats and clean-run record with
+     it). So while the wheels are turning, save on a slow timer and on the way
+     out of the page.
+
+     BANK_SAVE_MS is 20s: one JSON.stringify of a small object per 20 seconds
+     is nothing next to a frame, and 20s is the most a player can lose.
+     pagehide covers the iOS case visibilitychange misses, and both are cheap
+     no-ops when there is no Game. */
+  useEffect(() => {
+    if (screen !== "playing") return;
+    const t = setInterval(persist, BANK_SAVE_MS);
+    const onHide = () => persist();
+    const onVis = () => {
+      if (document.visibilityState === "hidden") persist();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", onHide);
+      persist();
+    };
+  }, [screen, persist]);
 
   const g = gameRef.current;
   const playing = screen === "playing";
@@ -696,6 +797,29 @@ export default function GameApp() {
             attribute the engine stamps on #hud — see RUN_HUD in engine.ts and
             the #hud .runDist rules in globals.css. */}
         <div className="runDist" id="runDist" />
+      </div>
+      {/* SURVIVAL panel — run score (metres), personal best, bank. The
+          engine writes all three figures and owns whether the panel is on
+          screen at all (data-on, from settings.endless), the same contract
+          the clean-run readout has; this style only ever hides it when the
+          player is not driving. Top left — the one free corner of the frame;
+          see the #ezHud block in globals.css. */}
+      <div id="ezHud" data-on="0" style={playing ? undefined : { display: "none" }}>
+        <div className="ez-cap">
+          <i lang="ja">生存</i>SURVIVAL
+        </div>
+        <div className="ez-run">
+          <span id="ezRun">0</span>
+          <small>m</small>
+        </div>
+        <div className="ez-line">
+          <b>BEST</b>
+          <span id="ezBest">0</span> m
+        </div>
+        <div className="ez-line ez-bank">
+          <b>¥</b>
+          <span id="ezMoney">0</span>
+        </div>
       </div>
       <div id="toast" style={{ opacity: toast ? 1 : 0 }}>{toast}</div>
       <div id="exitHint" style={{ opacity: exitHint && playing ? 1 : 0 }}>{exitHint}</div>
@@ -818,8 +942,31 @@ export default function GameApp() {
               </header>
               <SignRule />
               <nav className="sign-rows" aria-label="Main menu">
-                <SignRow selected glyph="up" jp="本線" en="DRIVE" dist="0.0" onClick={drive} />
+                <SignRow
+                  selected glyph="up" jp="本線" en="FREE DRIVE" dist="0.0"
+                  onClick={() => drive(false)}
+                />
                 <SignSep />
+                {/* SURVIVAL — a second way to START a drive, not a switch.
+
+                    It used to be ENDLESS, a row with an ON/OFF badge that set
+                    a preference the player then had to press DRIVE to use.
+                    The owner: "it should be like free drive instead of drive
+                    and then [survival] should be like another game mode no on
+                    and off just click it and it's like a drive til u crash".
+                    So the badge is gone and the row starts a run, the same as
+                    the one above it — the board offers two drives, and which
+                    one you pressed is what decides the rules.
+
+                    The name is the owner's pick from four shot on this board;
+                    ENDLESS was his to reject ("i don't like the name"). */}
+                <SignRow
+                  glyph="ne"
+                  jp="生存"
+                  en="SURVIVAL"
+                  note="DRIVE UNTIL YOU CRASH"
+                  onClick={() => drive(true)}
+                />
                 {/* The same setting the panel carries, surfaced here so the mode
                     is discoverable without going three screens deep. */}
                 {/* THE RIVAL IS HELD BACK for the beta, but the row STAYS —
@@ -941,7 +1088,19 @@ export default function GameApp() {
                   <SignRow jpAttr glyph={<>↩</>} jp="出口" en="MAIN MENU" note="ENDS THE DRIVE" onClick={backToMenu} />
                 </nav>
               </SignBody>
-              <SignFootbar keep caption={<>{GAME_NAME} <span className="sign-ver">{VERSION_LABEL}</span></>}>
+              {/* One line, because a pause screen is a four-second
+                  interruption: the endless record, in the mode's own metres.
+                  Only while the mode is on — with it off this is the clean-run
+                  readout's number and the STATS board is where it belongs. */}
+              <SignFootbar
+                keep
+                caption={
+                  <>
+                    {GAME_NAME} <span className="sign-ver">{VERSION_LABEL}</span>
+                    {g?.settings.endless && <> · BEST {Math.floor(g.bestDistance).toLocaleString("en-US")} m</>}
+                  </>
+                }
+              >
                 <a className="sign-btn ghost sm" href={BUG_MAILTO}>REPORT A BUG</a>
               </SignFootbar>
             </SignPlate>
@@ -969,6 +1128,10 @@ export default function GameApp() {
           onBack={() => {
             persist();
             backFrom(true);
+          }}
+          onApplyReload={() => {
+            persist();
+            location.reload();
           }}
           onReseed={() => {
             /* Write the new seed to the GAME, not to the profile. persist()
@@ -1029,9 +1192,11 @@ export default function GameApp() {
                      window where a raw assignment could be undone; see the
                      method for why.
      traffic         engine.ts passes settings.traffic into traffic.update()
-                     every frame as the live pool cap. The fleet is a fixed
-                     120 slots built by the traffic stage no matter what this
-                     says, so the row is honoured before and after it.
+                     every frame as the live pool cap. The POOL is a fixed
+                     TierCaps.fleetMax slots built by the traffic stage no
+                     matter what this row says — the slider only decides how
+                     many of them are live — so the row is honoured before and
+                     after it.
      minimap         hudVisible() reads game.mmap every frame, and the canvas
                      is shown by GameApp's own render once play starts.
 
@@ -1170,20 +1335,32 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
         {/* live: passed into traffic.update() every frame as the pool cap
             (engine.ts). Three stops off the settings screen's 20..100 slider,
             which stays the fine control; a load board gets one tap. */}
-        <SignSrow name="Traffic">
-          <SignSeg
-            label="Traffic"
-            value={s.traffic <= 0.5 ? "light" : s.traffic <= 0.85 ? "some" : "heavy"}
-            options={[
-              { v: "light", t: "LIGHT" },
-              { v: "some", t: "SOME" },
-              { v: "heavy", t: "HEAVY" },
-            ]}
-            onChange={(v) =>
-              upd("traffic", (x) => (x.traffic = v === "light" ? 0.4 : v === "some" ? 0.7 : 1))
-            }
-          />
-        </SignSrow>
+        {/* Same pin as the settings panel's slider, and it matters more here:
+            this board is up DURING a survival load, so a control that appeared
+            to change the density would be changing it out from under the run
+            the player just started. */}
+        {s.endless ? (
+          <SignSrow name="Traffic">
+            <span className="sign-cap faint">
+              {Math.round(SURVIVAL_TRAFFIC * 100)}% &middot; FIXED
+            </span>
+          </SignSrow>
+        ) : (
+          <SignSrow name="Traffic">
+            <SignSeg
+              label="Traffic"
+              value={s.traffic <= 0.5 ? "light" : s.traffic <= 0.85 ? "some" : "heavy"}
+              options={[
+                { v: "light", t: "LIGHT" },
+                { v: "some", t: "SOME" },
+                { v: "heavy", t: "HEAVY" },
+              ]}
+              onChange={(v) =>
+                upd("traffic", (x) => (x.traffic = v === "light" ? 0.4 : v === "some" ? 0.7 : 1))
+              }
+            />
+          </SignSrow>
+        )}
         {/* Held back for the beta, but kept in the list — the owner: "rival
             dont remove it just say not available or something". Static
             caption, no toggle: the profile scrub in settings.ts is what makes
@@ -1803,6 +1980,15 @@ function StatsPanel({ game, onBack }: { game: Game; onBack: () => void }) {
       sv: "×" + s.bestCombo.toFixed(1), lv: "×" + l.bestCombo.toFixed(1),
       rec: s.bestCombo > 1 && s.bestCombo >= l.bestCombo,
     },
+    {
+      /* SURVIVAL's two persisted numbers. The bank is a LIFETIME figure
+         by nature — a crash never takes any of it — so the session column is
+         what this drive has earned and the lifetime column is the total.
+         Never lit: it is not a record to beat, it only grows. */
+      en: "MONEY", jp: "所持金",
+      sv: "¥" + Math.floor(game.moneyEarned).toLocaleString("en-US"),
+      lv: "¥" + Math.floor(game.money).toLocaleString("en-US"),
+    },
     { en: "CRASHES", jp: "クラッシュ", sv: String(s.crashes), lv: String(l.crashes) },
     { en: "LAPS", jp: "周回", sv: String(s.laps), lv: String(l.laps) },
     { en: "TOUGE RUNS", jp: "峠走破", sv: String(s.mtnRuns), lv: String(l.mtnRuns) },
@@ -2064,11 +2250,14 @@ function GaragePanel({ game, onBack }: { game: Game; onBack: () => void }) {
    lane-edge rule, so the one warm thing on the board is the thing you just
    touched. */
 function SettingsPanel({
-  game, onBack, onReseed,
+  game, onBack, onReseed, onApplyReload,
 }: {
   game: Game;
   onBack: () => void;
   onReseed: () => void;
+  /** persist the profile, then reload — for a setting the engine can only
+      read at construction (device tier). */
+  onApplyReload: () => void;
 }) {
   const [, force] = useState(0);
   const [lit, setLit] = useState<string | null>(null);
@@ -2151,6 +2340,16 @@ function SettingsPanel({
                 <SignSrow name="Rival car">
                   <span className="sign-cap faint">NOT AVAILABLE</span>
                 </SignSrow>
+                {/* SURVIVAL used to have a toggle here, mirroring the home
+                    board's ENDLESS switch. Both are gone: the mode is chosen
+                    by which row on the board you press, so a preference that
+                    sits here between runs would be a second, silent answer to
+                    a question the press already asks. The score panel, the
+                    reset and the pinned traffic all follow that press.
+
+                    Nothing is lost from this screen — SETTINGS is where you
+                    change how the game behaves, and survival is not a way the
+                    game behaves any more, it is a drive you start. */}
                 {/* The clean-run readout: distance since the last real impact
                     (game/engine.ts's runUpdate). On by default. */}
                 <SignSrow name="Clean run" aside="— distance since your last crash" lit={L("cleanRunScore")}>
@@ -2183,14 +2382,27 @@ function SettingsPanel({
                     {/* TILT locked for the beta — see settings.ts */}
                   </SignSelect>
                 </SignSrow>
-                <SignSrow stack last name="Traffic density" lit={L("traffic")}>
-                  <SignSlider
-                    label="Traffic density"
-                    min={20} max={100} value={Math.round(s.traffic * 100)}
-                    text={`${Math.round(s.traffic * 100)}%`}
-                    onChange={(v) => upd((x) => (x.traffic = v / 100))}
-                  />
-                </SignSrow>
+                {/* SURVIVAL pins this — see SURVIVAL_TRAFFIC. A caption
+                    rather than a disabled slider: a control that does not move
+                    is worse than no control, and the row still has to say what
+                    the traffic IS, because the player can see it out of the
+                    windscreen and would otherwise think the setting broke. */}
+                {s.endless ? (
+                  <SignSrow stack last name="Traffic density">
+                    <span className="sign-cap faint">
+                      {Math.round(SURVIVAL_TRAFFIC * 100)}% &middot; FIXED IN SURVIVAL
+                    </span>
+                  </SignSrow>
+                ) : (
+                  <SignSrow stack last name="Traffic density" lit={L("traffic")}>
+                    <SignSlider
+                      label="Traffic density"
+                      min={20} max={100} value={Math.round(s.traffic * 100)}
+                      text={`${Math.round(s.traffic * 100)}%`}
+                      onChange={(v) => upd((x) => (x.traffic = v / 100))}
+                    />
+                  </SignSrow>
+                )}
               </div>
               <div>
                 <SignShead en="WORLD" jp="天候" />
@@ -2242,6 +2454,45 @@ function SettingsPanel({
                     onChange={(v) => upd((x) => applyPresetDefaults(x, v))}
                   />
                 </SignSrow>
+                {/* DEVICE TIER — the second quality axis, and the one detection
+                    gets wrong. Graphics quality above is what you WANT; this is
+                    what the machine is allowed to attempt (TIER_CAPS), and the
+                    preset is capped by it. Auto is right for almost everyone,
+                    so it leads and says what it detected.
+
+                    IT RELOADS, and the row says so, because renderTier is
+                    resolved once in the engine constructor and decides which
+                    donor assets are even fetched (donorAssetUrls) — there is no
+                    honest way to change it mid-drive. Same contract as NEW TOWN
+                    below: write the profile, then location.reload().
+
+                    Was developer-only behind SHOW_DEV_SETTINGS at both ends
+                    until the owner asked for it back: "ppl can adjust the
+                    setting for like laptop base mobile base like before". */}
+                <SignSrow stack name="Device tier" aside={s.tierOverride === "auto" ? `— detected "${game.renderTier}" \u00b7 reloads` : `— running "${game.renderTier}" \u00b7 reloads`} lit={L("tierOverride")}>
+                  <SignSelect
+                    aria-label="Device tier"
+                    value={s.tierOverride}
+                    onChange={(e) => {
+                      const v = e.target.value as GameSettings["tierOverride"];
+                      if (v === s.tierOverride) return;
+                      upd((x) => (x.tierOverride = v));
+                      /* THROUGH THE PARENT, because the panel's own upd() does
+                         NOT persist — the profile is written when the screen is
+                         left. Reloading straight from here would have thrown
+                         the choice away on the way out, which is the one thing
+                         a reloading setting must not do. onApplyReload does
+                         persist() then location.reload(), exactly like NEW
+                         TOWN. */
+                      onApplyReload();
+                    }}
+                  >
+                    <option value="auto">Auto &mdash; detect this device</option>
+                    <option value="mobile-base">Mobile base &mdash; fewest effects</option>
+                    <option value="mobile-high">Mobile high</option>
+                    <option value="desktop">Desktop &mdash; everything</option>
+                  </SignSelect>
+                </SignSrow>
                 <SignSrow stack name="Field of view" lit={L("fovBase")}>
                   <SignSlider
                     label="Field of view"
@@ -2250,18 +2501,16 @@ function SettingsPanel({
                     onChange={(v) => upd((x) => (x.fovBase = v))}
                   />
                 </SignSrow>
-                {/* game.grade is the live truth — the in-game V key flips it too */}
-                <SignSrow last name="Dashcam filter" aside="(V)" lit={L("dashcam")}>
-                  <SignToggle
-                    label="Dashcam filter"
-                    checked={game.grade}
-                    onChange={(v) =>
-                      upd((x) => {
-                        x.dashcam = v;
-                        game.grade = v;
-                      })
-                    }
-                  />
+                {/* THE DASHCAM FILTER IS LOCKED OFF for the beta, the same way
+                    rain and the rival are: the row keeps its place so the
+                    section still reads the same, but it is a static NOT
+                    AVAILABLE caption instead of a switch. game.grade, the
+                    grade pass in post and the V key are all untouched, and
+                    game/settings.ts scrubs a stored `true` so nobody is left
+                    wearing the filter with no control to remove it. Unlocking
+                    is putting this SignToggle back and dropping that line. */}
+                <SignSrow last name="Dashcam filter">
+                  <span className="sign-cap faint">NOT AVAILABLE</span>
                 </SignSrow>
                 {/* DEVELOPER — not in a public build (lib/build.ts). Both rows
                     here are testing levers, and each one RESOLVES to its auto
@@ -2274,18 +2523,9 @@ function SettingsPanel({
                 {SHOW_DEV_SETTINGS && (
                   <>
                     <SignShead en="DEVELOPER" jp="開発" />
-                    <SignSrow name="Device tier" aside={`— ${game.renderTier}`} lit={L("tierOverride")}>
-                      <SignSelect
-                        aria-label="Device tier"
-                        value={s.tierOverride}
-                        onChange={(e) => upd((x) => (x.tierOverride = e.target.value as any))}
-                      >
-                        <option value="auto">Auto</option>
-                        <option value="mobile-base">Mobile base</option>
-                        <option value="mobile-high">Mobile high</option>
-                        <option value="desktop">Desktop</option>
-                      </SignSelect>
-                    </SignSrow>
+                    {/* Device tier moved to PICTURE as a player row — it is a
+                        real setting now, not a debug affordance, and two copies
+                        of one control is how they drift apart. */}
                     <SignSrow last name="Imported cabin" aside={`— auto is "${cabinAutoLabel(game.renderTier)}"`} lit={L("cabin")}>
                       <SignSelect
                         aria-label="Imported cabin"
