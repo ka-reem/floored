@@ -1,6 +1,6 @@
 # Route graph — stage-2 integration contract
 
-> **2026-08-28, mountain-road lane:** the graph has since grown EXIT 4
+> **2026-08-28 update:** the graph has since grown EXIT 4
 > (`corridor.MTN`, the one-way mountain pass — two-way when it first
 > landed, reworked to a single lane in one direction on 2026-09-04). Two
 > junction nodes split the
@@ -10,17 +10,17 @@
 > fourth loop, `mountain`. `surfaceAt`/`newParapetGaps`/`distToNew` walk
 > `graph.attached` (`[bypass, mtn]`); `mergeWindow(edge?)` takes the edge;
 > gap entries carry an `edgeId`; `graph.apronW/apronAt/mtnAprons` are the
-> deck-frame gore runoff aprons (see docs/handoff/reports/mountain-road.md).
+> deck-frame gore runoff aprons.
 > The stage-2 contract below is otherwise unchanged and remains accurate for
 > the bypass/town wiring it describes.
 
-Stage 1 (this worktree) shipped the graph **core**: `game/world/routegraph.ts`,
+Stage 1 shipped the graph **core**: `game/world/routegraph.ts`,
 verified standalone by `test/routegraph-check.mjs`. Nothing visual changed and
 no consumer was touched — the main loop is bit-identical (corridor-check runs
 inside routegraph-check as a regression gate).
 
-This file is the exact work order for stage 2, per consumer, on fresh main
-after the concurrent lanes merge. Everything stage 2 needs is already exported
+This file is the exact work order for stage 2, per consumer, against current
+main. Everything stage 2 needs is already exported
 and tested; the tasks below are mechanical.
 
 ## The model (what stage 2 builds against)
@@ -79,7 +79,7 @@ Bypass shape (all verified by the test):
 1. `const routes = getRouteGraph(); routes.assertClosed();` and store it:
    `world.routes = routes` (`WorldData.routes` already exists, optional).
 
-## terrain.ts (Lane H's file — ONE addition)
+## terrain.ts (ONE addition)
 
 `makeTerrain().heightAt(x, z, refY)` gains, next to the ramp clause:
 

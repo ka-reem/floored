@@ -12,12 +12,11 @@
    of the triangle budget and the size of its textures (--tex-hi). The roof,
    the rear screen, the C-pillars, the tailgate and the upper flanks come out
    sharp; the nose, the grille and the front wings come out cheap, which is
-   what the owner asked for and what --rear-bias only approximated. Supersedes
-   --rear-bias (which biased the tail LAMPS by name and starved the roof).
+   what --rear-bias only approximated. Supersedes --rear-bias (which biased
+   the tail LAMPS by name and starved the roof).
 
-   --rear-bias: this asset is a THIRD-PERSON body — the dashcam that ships
-   the game never sees it (AGENTS.md), only the chase cam, the mirror, and
-   the garage card, all of which frame the car from behind or at a 3/4 rear
+   --rear-bias: this asset is a THIRD-PERSON body — the dashcam never sees
+   it, only the chase cam, the mirror, and the garage card, all of which frame the car from behind or at a 3/4 rear
    angle far more than they frame the front. Skews the per-part budget (see
    WEIGHTS below) and the texture pass toward -Z, the donor's rear.
 
@@ -247,9 +246,8 @@ const WEIGHTS = [
    mirrors) at its old, even-handed weight. */
 const REAR_WEIGHTS = [
   /* The one exception to "front low": the hood. player.ts lifts its connected
-     component out of this asset and draws it in the DASHCAM view — the view
-     that ships (AGENTS.md) — as the silhouette band along the bottom of the
-     frame. Weight 8 lands it near the old build's ~1,500 tris instead of the
+     component out of this asset and draws it in the DASHCAM view as the
+     silhouette band along the bottom of the frame. Weight 8 lands it near the old build's ~1,500 tris instead of the
      ~450 the front demotion would leave, so the bonnet's crown line does not
      go polygonal in the one place this asset reaches the shipping camera. */
   [/^Hood[ _]/i, 8.0, true],
@@ -326,8 +324,8 @@ for (const node of root.getDefaultScene().listChildren()) {
 
 /* --chase-bias: measure, don't guess.
 
-   The owner's rule is "whatever the third-person camera sees stays sharp, the
-   nose and front flanks can be cheap". --rear-bias tried to spell that out as
+   The rule: whatever the third-person camera sees stays sharp, the nose and
+   front flanks can be cheap. --rear-bias tried to spell that out as
    a list of part NAMES and got it wrong in both directions: it pinned the tail
    LAMPS (56% of the shipped file's triangles sit in the lamp cluster) while the
    roof, the rear screen and the upper flanks — which the chase camera stares
@@ -412,8 +410,8 @@ if (CHASE_BIAS) {
        reads by. */
     let f = CHASE_LO + (CHASE_HI - CHASE_LO) * Math.sqrt(peak ? info.vis / peak : 0);
     /* The hood is the one front part with a shipping-view job: player.ts lifts
-       its connected component into the DASHCAM frame (AGENTS.md), where it is
-       the silhouette band along the bottom. Cheap, but not polygonal. */
+       its connected component into the DASHCAM frame, where it is the
+       silhouette band along the bottom. Cheap, but not polygonal. */
     if (/^Hood[ _]/i.test(info.name)) f = Math.max(f, 1.0);
     info.chaseF = f;
     info.weight = info.ruleWeight * f;

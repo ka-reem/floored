@@ -239,7 +239,7 @@ for (const [what, e] of blockers)
    carries on ahead to ZB1, and the player is standing against nothing. That is
    the reported "invisible wall".
 
-   physics.ts is not this lane's file, so this reads the constant rather than
+   physics.ts is out of scope here, so this reads the constant rather than
    changing it — but a geometry check that cannot see the one line able to
    veto the whole loop is not worth much. */
 {

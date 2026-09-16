@@ -3959,9 +3959,9 @@ function buildMountainRoad(
   const step = detail >= 0.95 ? 3 : detail >= 0.65 ? 4 : 6;
 
   /* ---- how far west the hillside may reach, station by station ----------
-     THE MOUNTAIN-CLIPPING FIX (owner, 2026-09-09: "the mountain is clipping
-     with the road at the end of mountain exit and the beginning of the
-     mountain entrance").
+     THE MOUNTAIN-CLIPPING FIX (2026-09-09). The reported symptom: the
+     mountain clips into the road at the end of the mountain exit and at the
+     beginning of the mountain entrance.
 
      The cut face and its back flank used to be swept at a FLAT 12 m west of
      the pavement edge, and they started doing it at the first station that
@@ -4031,8 +4031,8 @@ function buildMountainRoad(
      and the cameras that ship do get behind its skin: CHASE swings out over
      the river drop and looks back through the east bank faces, and at the
      crest it can rise past the cut face's top edge. A shell you can see
-     through from a shipped camera is the bug this lane was opened for, so
-     the cheap structural guarantee is worth one hillside's worth of
+     through from a shipped camera is the bug this fixes, so the cheap
+     structural guarantee is worth one hillside's worth of
      backface culling. three.js flips the normal for backfacing fragments,
      so the shading stays right on both sides. */
   const rockMat = new THREE.MeshStandardMaterial({
@@ -4103,9 +4103,10 @@ function buildMountainRoad(
            hill's own flank falling to the bank behind it. The face leans
            BACK as it rises (a real cut face batters away from the road).
 
-           WINDING — this is the see-through bug (owner, 2026-09-04: "there's
-           no mountain once you drive on the mountain road, but on the highway
-           side you actually see the mountain"). All three bands of this face
+           WINDING — this is the see-through bug (2026-09-04). The reported
+           symptom: from the mountain road there is no mountain at all, while
+           from the highway side it is plainly there. All three bands of this
+           face
            used to be emitted station-first (a, b, upper-b, upper-a), which
            winds them so the generated normal points AWAY from the pavement
            and downward: on a FrontSide material every one of them was a

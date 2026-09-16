@@ -51,11 +51,11 @@ export interface TierCaps {
   filmLook?: boolean;
   /* bloom is deliberately absent: it stays on for every tier. */
 
-  /* -- world-dressing caps (Lane H). Consumed at world-BUILD time by
+  /* -- world-dressing caps. Consumed at world-BUILD time by
         game/world/{highway,sky,townmesh,decals}.ts via worldTierCaps(); the
         FX_* constants in those files remain the master kill-switches, these
-        only gate further down. All optional so older saved caps objects and
-        the other lanes' TIER_CAPS edits merge cleanly. -- */
+        only gate further down. All optional, so an older saved caps object
+        still merges cleanly. -- */
   /** fake volumetric cones under the streetlight heads (pure overdraw) */
   lampCones?: boolean;
   /** emit a cone under every Nth lamp only (1 = all of them) */
@@ -184,8 +184,8 @@ export interface TierCaps {
   /** Size of the NPC pool, and therefore the ceiling the traffic-density
       slider reaches at 100%.
 
-      120 was the single hardcoded number for every device, and it is why the
-      owner's "100% should be bumper to bumper" was not: 120 cars, of which
+      120 was the single hardcoded number for every device, and it is why
+      100% was nothing like bumper to bumper: 120 cars, of which
       0.74 go on the deck, spread over the ~900 m of corridor the fog keeps
       alive, is a car every ~35 m per lane. That is moderate traffic, not a
       jam. See FLEET_BASE in traffic.ts for how the slider reaches the new
@@ -283,7 +283,7 @@ export function detectRenderTier(
      cockpit.ts calls it with none and so made a throwaway one here that was
      never freed. Note the desktop early-return above, which means the leak
      only ever happened on TOUCH devices — phones, where contexts are
-     scarcest and the owner's "Graphics context lost" panel actually fires.
+     scarcest and the "Graphics context lost" panel actually fires.
 
      gfxfail.ts's webglAvailable() probe already does exactly this; this one
      was missed. WEBGL_lose_context is the only way to hand a context back
@@ -477,9 +477,8 @@ export function resolveRenderTier(
      profile could carry an override that silently did nothing, which is the
      one state a setting must never be in.
 
-     The owner's call: "ppl can adjust the setting for like laptop base mobile
-     base like before". Auto stays the default and stays right for almost
-     everyone — detectRenderTier already caps a phone hard. The override is for
+     So players can pick the tier themselves — laptop-base, mobile-base and
+     the rest. Auto stays the default and stays right for almost everyone — detectRenderTier already caps a phone hard. The override is for
      the cases detection cannot see: a laptop throttling on battery, an old
      tablet that reports like a desktop, or someone who simply wants more
      frames than picture. */
@@ -513,9 +512,9 @@ export const unitLabel = (units: SpeedUnits) => (units === "mph" ? "mph" : "km/h
 
 /** Convert a distance (metres, the engine's own unit) to the DISTANCE that
     goes with the configured speed unit — miles on mph, kilometres on km/h.
-    There is deliberately no second unit control: the owner's ask was "by
-    miles or smth", and a player already told us which system they think in
-    when they picked the speedo. */
+    There is deliberately no second unit control: a player already told us
+    which system they think in when they picked the speedo, so asking twice
+    would only let the two disagree. */
 export const distInUnits = (m: number, units: SpeedUnits) =>
   m / (units === "mph" ? 1609.344 : 1000);
 
@@ -650,8 +649,8 @@ export interface Profile {
   /** lifetime drive statistics — see the DRIVE STATS block in engine.ts.
       Written by GameApp.tsx's persist() the same way cleanRunBest is. */
   stats: LifetimeStats;
-  /** ENDLESS MODE persistence — device-only, the owner's explicit call: no
-      server, no sync, no account. Both are plain non-negative metres/currency
+  /** ENDLESS MODE persistence — device-only by design: no server, no sync,
+      no account. Both are plain non-negative metres/currency
       so the scrub in loadProfile can treat them like cleanRunBest.
 
       `money` is the bank: it accrues from distance driven (ENDLESS.perMetre in
@@ -679,8 +678,7 @@ export interface Profile {
 export const PROFILE_VERSION = 1;
 
 export const defaultSettings = (): GameSettings => ({
-  /* LOW is the default for every device, on the owner's call ("i think by
-     default we just need to run low graphics for everyone").
+  /* LOW is the default for every device, deliberately.
 
      It is not the same lever as TIER_CAPS. The caps are a CEILING the device
      cannot exceed — a phone was never getting reflections whatever this said.
@@ -733,8 +731,8 @@ export const defaultSettings = (): GameSettings => ({
      The slider used to run 0.2..1 over one linear term against a fleet of 120,
      so 1 meant 90 cars on the deck and that is what has shipped as the default
      all along. The jam ceiling (see FLEET_BASE and TierCaps.fleetMax) adds a
-     second term above 0.75 that climbs to 240 on a desktop, because the owner
-     asked for a 100% that is genuinely bumper to bumper.
+     second term above 0.75 that climbs to 240 on a desktop, so that 100%
+     means a road that is genuinely bumper to bumper.
 
      Leaving the default at 1 would have handed every existing player TWICE
      the traffic they have been driving, without asking, on the same day
@@ -764,9 +762,9 @@ export const defaultSettings = (): GameSettings => ({
   rival: false,
   rivalSignals: false,
   cleanRunScore: true,
-  /* OFF for a fresh profile. The owner drives free-roam as much as he plays a
-     mode, and a score panel plus a visible reset on a drive nobody asked to be
-     scored is the mode imposing itself — so it is one tap on the home board
+  /* OFF for a fresh profile. Free-roam is as much the point of the game as
+     any mode, and a score panel plus a visible reset on a drive nobody asked
+     to be scored is the mode imposing itself — so it is one tap on the home board
      (ENDLESS) or one row in SETTINGS > GAMEPLAY, and free-roam is unchanged
      until then. Money still accrues either way; see ENDLESS in engine.ts. */
   endless: false,
@@ -780,26 +778,22 @@ export const defaultProfile = (): Profile => ({
   carId: DEFAULT_CAR_ID,
   paintIx: 0,
   seed: 1987,
-  /* COCKPIT (CAM_COCKPIT = 1 in engine.ts). The owner's call, asked and then
-     confirmed: "the camera view by default should always be the interior car
-     view inside the cockpit the reg one ... default view" / "cockpit main
-     view".
+  /* COCKPIT (CAM_COCKPIT = 1 in engine.ts). A new player starts inside the
+     car, in the regular interior view.
 
      This was 3 (CAM_POV, the hard-mounted dashcam), and before that 0 (chase).
-     Both POV and COCKPIT are interior views, which is why this needed asking
-     rather than guessing: POV is a rigid bracket at the windscreen, COCKPIT is
-     a head — it has springs, it cranes to look back and it breathes under
-     braking (see the camera-mode block in engine.ts). The owner wants the head.
+     POV and COCKPIT are both interior views, and the difference between them
+     is the whole reason this is a deliberate choice rather than an obvious
+     one: POV is a rigid bracket at the windscreen, COCKPIT is a head — it has
+     springs, it cranes to look back and it breathes under braking (see the
+     camera-mode block in engine.ts). The head is the better first impression.
 
      Only affects a FIRST RUN. An existing profile keeps whatever camera it was
-     last left on, so nobody who has already picked a view gets moved off it —
-     including the owner, whose own profile still holds his last choice.
+     last left on, so nobody who has already picked a view gets moved off it.
 
-     Note AGENTS.md's older "the dashcam POV is the game" rule was already
-     retired by the owner in the 2026-08-28 update ("every camera ships now"),
-     and POV remains the FIRST FRAME TO JUDGE VISUAL CHANGES IN — that is a
-     separate rule from which camera a new player starts on, and this does not
-     change it. */
+     Separately: POV is still the frame visual changes are judged in first,
+     because that is where a regression shows up soonest. Which camera a new
+     player starts on is a different question, and this does not change it. */
   camMode: 1,
   cleanRunBest: 0,
   money: 0,
@@ -1028,20 +1022,19 @@ export function loadProfile(): Profile {
        ACTIVE, and a stored `true` would have the world raining while the panel
        says it is not — the one state the lock must not produce.
 
-       Why it is locked rather than shipped: the owner pulled the mode. The
-       engine path is entirely untouched — setRain, the rain FX, the wet-road
+       Why it is locked rather than shipped: the mode was pulled from the beta
+       rather than deleted. The engine path is entirely untouched — setRain, the rain FX, the wet-road
        materials and all four wiper modes still run, and R and U still reach
        them — so unlocking is putting the SignToggle and the two QuickDrawer
        rows back in GameApp and dropping this line. */
     if (prof.settings?.rain) prof.settings.rain = base.settings.rain;
-    /* THE RIVAL PACE CAR IS OFF for the beta — the owner: "turn the rival car
-       off for now". Same shape as rain: the ways in are gone (the home-board
-       shortcut, the settings row and the loading board's row), the car itself
-       is untouched in traffic.ts.
+    /* THE RIVAL PACE CAR IS OFF for the beta. Same shape as rain: the ways in
+       are gone (the home-board shortcut, the settings row and the loading
+       board's row), the car itself is untouched in traffic.ts.
 
        This scrub is what makes the lock true rather than cosmetic. `rival` has
-       been a saved setting for weeks, so anyone who switched it on — the owner
-       and every tester on this build — carries `true` in their profile, and
+       been a saved setting for weeks, so every tester who switched it on
+       carries `true` in their profile, and
        without this line they would keep getting a rival with no control left
        to turn it off. rivalSignals goes with it: it is only read while a rival
        is running, and leaving it set would resurface in ADVANCED describing a
@@ -1052,9 +1045,8 @@ export function loadProfile(): Profile {
        follows the scrubbed profile and traffic.ts never claims the slot. */
     if (prof.settings?.rival) prof.settings.rival = base.settings.rival;
     if (prof.settings?.rivalSignals) prof.settings.rivalSignals = base.settings.rivalSignals;
-    /* THE DASHCAM FILTER IS OFF for the beta — the owner: "turn off dash cam
-       filter put not available or something". Same shape as rain and the
-       rival above, and it needs the scrub for the same reason they do: the
+    /* THE DASHCAM FILTER IS OFF for the beta, and the row reads NOT AVAILABLE
+       rather than disappearing. Same shape as rain and the rival above, and it needs the scrub for the same reason they do: the
        default has been `dashcam: false` all along, but the filter has been
        reachable from the settings row and the V key for weeks, so anyone who
        switched it on carries `true` in their profile. Without this line they
@@ -1136,7 +1128,7 @@ export function loadProfile(): Profile {
   }
 }
 
-/** Caps resolved for world-CONSTRUCTION time (additive; Lane H).
+/** Caps resolved for world-CONSTRUCTION time (additive).
  *
  *  The engine resolves its tier once at startup, but the world builders in
  *  game/world/* run inside that same startup call and cannot reach the engine

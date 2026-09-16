@@ -2,13 +2,13 @@
    UI SYSTEM — "Blue Route": the Japanese expressway guide-sign language
    ==========================================================================
 
-   The owner picked the Blue Route direction for the whole chrome: every
-   player-facing screen is a piece of highway signage — a blue guide-board
+   "Blue Route" is the direction for the whole chrome: every player-facing
+   screen is a piece of highway signage — a blue guide-board
    with a thick white border, Highway-Gothic-lineage Latin (Overpass) with
    Japanese (Zen Kaku Gothic New) above or left of it, sodium-orange for the
    ONE primary/selected thing on a screen, all hung on lit steel over the
-   dashcam deck. Source of truth for the values: the designer's System sheet
-   (scratchpad ui-directions/System.dc.html + ui/common.css). This sheet is
+   dashcam deck. Source of truth for the values is the design system sheet
+   these tokens were lifted from. This sheet is
    the shared foundation: the home screen, and — in the SUB-SCREENS half at
    the bottom — garage / settings / controls / stats / pause / credits /
    loading / photo mode, plus the HUD's exit board and hint plate and the
@@ -1409,8 +1409,8 @@
 /* ==========================================================================
    SUB-SCREENS — garage / settings / controls / stats / pause / credits /
    loading / photo, plus the HUD's two sign plates and the touch press state.
-   Values lifted from the designer's screen artboards (scratchpad
-   ui-directions/ui/screens/*.html): the 1320-wide boards sit at left 60 /
+   Values lifted from the screen artboards in the design system: the
+   1320-wide boards sit at left 60 /
    top 90 of the 1440×900 frame with 34px insets; stats is 900 wide; pause is
    a 620-wide post-mounted board; loading is a 900-wide board under a toll
    gantry. Everything is in design pixels × --su on desktop and the fixed
@@ -1627,7 +1627,7 @@ a.sign-btn {
    ON transform was written from the unclamped numbers
    (64*su - 20*su - 12px), which is 10px of travel where the real geometry
    needs 22 — so the knob stopped a third of the way across the pill and just
-   sat there, mid-slide, which is exactly what the owner photographed. The
+   sat there, mid-slide, which is exactly what the bug report showed. The
    vertical centring had the same fault: margin-top: -10*su is -5px against a
    knob that is really 14px tall, leaving it 2px high in the track.
 

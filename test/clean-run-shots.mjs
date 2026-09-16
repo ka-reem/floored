@@ -24,8 +24,8 @@ const arg = (n, d) => {
 const URL = arg("--url", "http://localhost:3153");
 const OUT = arg("--out", path.join(process.cwd(), "test", "artifacts"));
 /* Render tier. Empty = let the page decide (desktop here), which is the frame
-   the owner actually judges; --tier mobile-base is the escape hatch when the
-   box is too loaded to build the full world. */
+   worth judging; --tier mobile-base is the escape hatch when the box is too
+   loaded to build the full world. */
 const TIER = arg("--tier", "");
 mkdirSync(OUT, { recursive: true });
 

@@ -1,7 +1,7 @@
 /* WHICH LANE DOES EXIT 4 LEAVE FROM?
 
-   The owner: "it would be nice if ... the exits could be like the most left
-   or most right lane by default maybe just try this for the mountain".
+   The question: should an exit leave from the leftmost or rightmost lane by
+   default? Tried here on the mountain exit first.
 
    This draws the answer rather than asserting it: the deck's lanes at the
    mountain diverge, each with its index and lateral offset, the two deck

@@ -99,10 +99,9 @@ export const FLEET_STYLES: string[] = [...FLEET_MIX.map(([s]) => s), "police"];
      sedan  0.890 -> 0.769
      ...    every style, see the table in that file
 
-   The owner found it twice in one session, once alongside a bus and once at
-   a Camry's front corner: "im scraping the bus like i hear it and im going
-   slow but in reality theres a gap", and "maybe dont include the side mirrors
-   since they stick out a lot". He was right about the mechanism.
+   It shows up most visibly alongside a bus, and at a Camry's front corner:
+   the scrape fires — audibly, at low speed — while there is plainly still a
+   gap, because the mirrors are inside the collider width.
 
    HOW cw IS DERIVED, so it can be re-derived rather than trusted: it is the
    widest half-width that at least 1.5% of the vehicle's flank area actually
@@ -131,8 +130,8 @@ const TYPE_DIM: Record<
   { L: number; W: number; cw: number; wr: number; wz: number; mass: number }
 > = {
   /* o-prefixed styles are the original Orchids bodyshells riding alongside
-     their modern replacements — the owner wants both generations in
-     traffic. Same dims as their twins. */
+     their modern replacements — both generations run in traffic together.
+     Same dims as their twins. */
   osedan: { L: 4.44, W: 1.78, cw: 0.779, wr: 0.32, wz: 1.37, mass: 1380 },
   ohybrid: { L: 4.54, W: 1.75, cw: 0.801, wr: 0.32, wz: 1.4, mass: 1400 },
   ocompact: { L: 3.94, W: 1.70, cw: 0.763, wr: 0.30, wz: 1.24, mass: 1080 },
@@ -549,7 +548,7 @@ function npcShader(mat: THREE.MeshStandardMaterial, style = "") {
           float lvl = vLampKind > 1.5 ? vLampLvl.y : vLampLvl.x;
           totalEmissiveRadiance += diffuseColor.rgb * lvl;
         }
-        /* Streetlight wash (Lane S). The deck's sodium lamps are pure fakes —
+        /* Streetlight wash. The deck's sodium lamps are pure fakes —
            emissive heads + additive cones + ground-pool quads, zero dynamic
            lights — so nothing ever lit an NPC body passing under one. This is
            the matching fake: renderInstances writes a per-instance warm
@@ -1054,11 +1053,11 @@ const NUDGE = {
   probe: 2.2,
 };
 
-/* ===================== white-lining (see USER-REQUESTS #4) =====================
+/* ============================== white-lining ===============================
 
    Two NPCs riding side-by-side in adjacent lanes normally sit close enough
-   that the gap on the line between them is not really rideable. This is the
-   owner's own spec: side-by-side pairs drift apart on the white line ~70% of
+   that the gap on the line between them is not really rideable. So the rule
+   is deliberate: side-by-side pairs drift apart on the white line ~70% of
    the time, by a randomised width, so a driver who is actually good can
    thread it. It rides the SAME offset pathway as the courtesy nudge above —
    `offT`, folded in and clamped by maxBias exactly where nudgeCur is — not a
@@ -1145,8 +1144,8 @@ const NEARMISS = {
        direction only, slow-acting, and the only place its speed refers to the
        player at all while it is comfortably clear. The OTHER direction — the
        rubber band that winds up when the player closes in or gets past — is
-       the owner's explicit ask (2026-09: "it must do anything possible for me
-       to not catch up to it"), and it lives in RIVAL.pressFrom / surgeTop:
+       deliberate and central to the character: the rival must do everything
+       it can to avoid being caught. It lives in RIVAL.pressFrom / surgeTop:
        when they are on its bumper or in front it hunts harder, accelerates
        harder and may run over its normal ceiling. It still never blocks.
      · IT GETS GENUINELY HELD UP, occasionally, behind traffic it cannot get
@@ -1312,8 +1311,8 @@ const RIVAL = {
       it is also the calmest setting (fewest abandoned moves, ≤2 reversals a
       minute). 120 overshot — the band wound up on every ordinary close and
       it started leaving good lanes. A car that sees headlights fill its
-      mirror at 90 m and goes is exactly the "close-ish, never past" the
-      owner asked for. */
+      mirror at 90 m and goes is exactly the "close-ish, never past" this
+      rival is meant to be. */
   pressFrom: 90, pressSpan: 90,
   /** ---- surge: what urgency does to its pace. The ceiling lifts from `top`
       toward surgeTop and accMax toward surgeAcc, both by urgency. Measured
@@ -1661,16 +1660,14 @@ function poolTexture(): THREE.Texture {
 /* ---- near-field tail/brake lamp halos ----
    History, because this has flipped twice. The red lamps used to be the
    round glow sprites (clouds.tail/brake, the shared glowTex) at every range,
-   and on the modelled fleet they read as blobs floating in front of the car
-   — the owner: "I don't want red blob taillights anymore. I want real
-   taillights." So the emissive lens geometry (baked `_LAMP` tags, or the
+   and on the modelled fleet they read as red blobs floating in front of the
+   car rather than as taillights. So the emissive lens geometry (baked `_LAMP` tags, or the
    quads npcmodels.ts authors at load) took over inside 70 m and the sprites
    became a 70→95 m far-field fade (5ac8a4f). That left the near lamps as
    flat lit polygons: the lens sits at ~0.55 luma running / ~0.75 braking,
    under the bloom bright-pass knee (soft knee from 0.40, threshold 0.95, so
    the bright-pass weight is ~0.02 / ~0.07), which is to say no glow at all.
-   The owner's follow-up: keep the shaped lamps, "add some glow like it used
-   to be previously".
+   What is wanted is both: keep the shaped lamps, and put the glow back.
 
    So the glow is back, as a HALO rather than a blob — the differences from
    the old sprites are exactly the things that made those read badly:
@@ -1701,8 +1698,8 @@ function poolTexture(): THREE.Texture {
    these live (read every frame) for A/B from the console; 0 weights are
    the pre-halo look. */
 const HALO = {
-  /** Halo diameters, true metres. The owner picked these off a four-row
-      render of the same frame; they were 1.4 / 1.9, sized back when a lens
+  /** Halo diameters, true metres. Chosen off a four-row render of the same
+      frame; they were 1.4 / 1.9, sized back when a lens
       quad sat underneath and the halo was only its skirt. With the quads
       gone (npcmodels.ts) the glow IS the lamp on most of the fleet, and at
       the old size it read as a red cloud the car sat inside rather than as
@@ -1722,17 +1719,17 @@ const HALO = {
 
    It sat at run 3.1 / brake 4.4, which put the running lens near 0.55 output
    luma — past the point where the ACES pass in post.ts starts pulling colour
-   out of a highlight, so it came through pale, flat and far too loud. The
-   owner: "the red square is too distinct ... so much more opaque." The fix is
-   DOWN, not up: below the bleach ceiling the same lens reads as deeper, more
+   out of a highlight, so it came through pale, flat and far too loud — a red
+   square too distinct from the bodywork, and nowhere near opaque enough to
+   read as a lens. The fix is DOWN, not up: below the bleach ceiling the same lens reads as deeper, more
    saturated red, because it is spending its level on hue instead of on white.
    Running now clears the bloom bright-pass floor rather than sitting well
    over it, so a running lamp is a lit lens and only the brakes bloom — which
    is also what makes the brake step read as a step.
 
-   Shipped values are the ones the owner chose off a render, paired with the
-   HALO sizes above: he judged one frame carrying both, so the two move
-   together or the game stops matching the picture he picked.
+   Shipped values were chosen off a render carrying the HALO sizes above at
+   the same time: the two were judged together in one frame, so they move
+   together or the lamp stops matching the look that was signed off.
    `window.__npcLamp = { run, brake }` overrides these live for A/B. */
 const LAMP = { run: 1.7, brake: 3.0 };
 const HALO_STOPS = 18;
@@ -1909,8 +1906,9 @@ export class Traffic {
   private lampsOf: (NpcLamps | null)[] = [];
   /** per style: the model carries real emissive lens geometry (split per
       kind), so the matching glow sprites hold back until distance shrinks
-      the lenses to sub-pixels (the owner: sprite blobs "make it look
-      bad") — but a kind the bake missed keeps its sprite at every range */
+      the lenses to sub-pixels (a sprite blob laid over real lens geometry
+      reads badly) — but a kind the bake missed keeps its sprite at every
+      range */
   /** per style: its Orchids bodyshell has landed and the style may spawn.
       Nothing renders, spawns or sprites a style before this flips — there is
       no placeholder body to fall back to, by design. */
@@ -2121,9 +2119,9 @@ export class Traffic {
   /* How hard the top of the traffic-density slider is leaning on the road,
      0..1. Zero below 75%, ramping to 1 at 100%.
 
-     The owner's note was that 100% "should be super super busy, bumper to
-     bumper" and was not. Three things had to move together for that, and this
-     one number drives all three so they cannot drift apart:
+     100% is meant to read as genuinely bumper to bumper, and it did not.
+     Three things had to move together for that, and this one number drives
+     all three so they cannot drift apart:
 
        - the fleet ceiling (see FLEET_BASE above),
        - the spawner's per-lane spacing veto in trySpawnHwy, 20 m -> 8 m,
@@ -2344,14 +2342,13 @@ export class Traffic {
          by eye is the whole trick here.
        sig/roof/police tints are deliberately untouched — no complaint about
        them, and the amber already clears the floor (luma 0.638). */
-    /* Sprite sizes tightened 2026-08-28 (owner: lamp glows "can't be blobs
-       — precisely on the lights"): the glow should halo a lens, not replace
-       it. The hifi styles already suppress these inside 70 m in favour of
+    /* Sprite sizes tightened 2026-08-28: a lamp glow must sit precisely on
+       the light rather than read as a blob — the glow should halo a lens,
+       not replace it. The hifi styles already suppress these inside 70 m in favour of
        their emissive lens pixels; these sizes are what the OLD bakes (and
        everything past 70 m) show. Inside 70 m the lenses now wear the
-       tailHalo/brakeHalo clouds instead (HALO above) — the glow the owner
-       asked back, shaped as a skirt around the lens rather than a disc
-       over it. */
+       tailHalo/brakeHalo clouds instead (HALO above) — the glow returns,
+       shaped as a skirt around the lens rather than a disc over it. */
     this.clouds = {
       head: mkCloud(0xa9b7d1, 1.0),
       tail: mkCloud(new THREE.Color(2.05, 0.15, 0.22), 0.8, true),
@@ -3176,8 +3173,8 @@ export class Traffic {
          calls poseAt() WITHOUT an out-param (routegraph.ts), so it allocates
          a fresh RoutePose on every call however the `out` is passed — once
          per bypass car per frame, which is exactly the churn the reused
-         `bpose` exists to avoid. This is that method's body verbatim against
-         a pose sampled into bpose instead. */
+         `bpose` exists to avoid. This is that method's body, unchanged,
+         against a pose sampled into bpose instead. */
       const lat = n.offCur + (n.wob || 0);
       const p = this.routes.bypass.poseAt(n.s, this.bpose);
       n.x = p.x + lat * p.nx;
@@ -5575,8 +5572,8 @@ export class Traffic {
     const rnd = mulberry32(seed);
     const open = rnd() < WLINE.openChance;
     // average two draws so the width leans toward the middle of the band
-    // rather than sitting flat across it — "sometimes wide, sometimes
-    // narrow" per the owner's spec, not uniformly either
+    // rather than sitting flat across it — sometimes wide, sometimes
+    // narrow, but not uniformly distributed either
     const gap = lerp(WLINE.gapLo, WLINE.gapHi, (rnd() + rnd()) / 2);
     return { open, gap };
   }
@@ -6184,7 +6181,7 @@ export class Traffic {
           aMax * (1 - Math.pow(n.v / Math.max(4, v0), 4) - Math.pow(sStar / Math.max(ds, 0.4), 2)));
       }
     } else if (n.s >= mw.s0 - 60) {
-      /* the merge, verbatim from the bypass: signal, take an accepted gap in
+      /* the merge, identical to the bypass's: signal, take an accepted gap in
          the deck's fast lane inside the window, forced by the wedge end */
       n.blink = -1;
       if (n.s >= mw.s0) {
@@ -6273,10 +6270,10 @@ export class Traffic {
     const WHEEL2 = (((window as any).__npcLod?.wheel as number | undefined) ?? 75) ** 2;
     /* Where a car swaps to its decimated body. 120 m -> 65 m.
 
-       The owner's read of the first far tier was that it "made zero effect —
-       you can't really see those cars in a distance anyways", and he is right
-       about both halves: the change was invisible, which was the point, and
-       invisible means there was room left.
+       The first far tier made no visible difference at all — at that range
+       the cars are too small to read — and both halves of that matter: the
+       change was invisible, which was the point, and invisible means there
+       was room left.
 
        The obvious way to take that room is a harder bake, and it is a dead
        end. Measured, three ways, on the same fourteen models:

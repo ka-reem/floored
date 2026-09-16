@@ -8,9 +8,9 @@
      optimisation touches is behind `tierCaps` and a desktop viewport gets
      none of it;
    - every player-facing camera is captured, not just the default one. The
-     dashcam POV is still shot FIRST because it is the default and the frame
-     to judge in, but per AGENTS.md "only matters in CHASE" is not a reason
-     to skip a view;
+     dashcam POV is still shot FIRST because it is the frame a regression
+     shows up in soonest, but "it only matters in CHASE" is not a reason to
+     skip a view — every camera in the cycle ships;
    - the freeze is the same one look-shots.mjs uses and for the same reason:
      hide the fleet, stop the car, pause the sim, pin performance.now and
      Date so the film grain, the blink phases and the burnt-in DVR stamp are

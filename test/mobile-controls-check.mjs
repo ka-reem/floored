@@ -136,12 +136,12 @@ async function main() {
       const s = getComputedStyle(document.getElementById("tcDrawer"));
       return s.opacity === "0" && s.pointerEvents === "none";
     }));
-    /* The tap-to-signal telltales were REMOVED at the owner's request
-       (d4356a7) — signals are keyboard-only again, and the telltales must be
+    /* The tap-to-signal telltales were REMOVED (d4356a7) — signals are
+       keyboard-only again, and the telltales must be
        passive glyphs a mid-turn touch cannot trip. These three checks used
        to assert the opposite and were left failing by that commit; they now
        pin the removal instead. */
-    check("signal telltales are passive again (owner removed tap-to-signal)", await page.evaluate(
+    check("signal telltales are passive again (tap-to-signal removed)", await page.evaluate(
       () => getComputedStyle(document.getElementById("indL")).pointerEvents === "none"));
     await page.evaluate(pd("indL", 80));
     await page.evaluate(pu("indL", 80));

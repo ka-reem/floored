@@ -31,11 +31,6 @@ public/assets-staging/
 # public/ and under the size budget — not here with an exception carved out.
 docs/gallery/
 
-# ---- agent worktrees --------------------------------------------------------
-# 1.6 GB of checked-out git worktrees from parallel agent lanes. Gitignored, and
-# for the same reason as assets-staging that is not enough on its own here.
-.claude/worktrees/
-
 # ---- build output and test junk ---------------------------------------------
 # node_modules and .next are excluded by Vercel's own defaults; listed anyway so
 # this file reads as the whole picture rather than half of it.

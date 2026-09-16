@@ -9,18 +9,18 @@ auditable.
 
 **Current state (2026-08-29): eight of the nine styles ship from the Orchids
 pack below; only `bus` ships from the 2026-08-28 hi-fi bake.** The hi-fi
-fleet lasted one evening on the road: the owner sent taxi/police/van back to
-the Orchids bakes the same day (`fc4fda1` — the civil-pack versions read
-"glitched and angled"), then sedan/hybrid/compact/suv (`8f85877` — "the old
-bakes read better"), and the desktop HD upgrade parked with them
+fleet lasted one evening on the road: taxi/police/van went back to the Orchids
+bakes the same day (`fc4fda1` — the civil-pack versions read "glitched and
+angled"), then sedan/hybrid/compact/suv (`8f85877` — the old bakes simply read
+better), and the desktop HD upgrade parked with them
 (`public/models/cars-hd/` deleted, `HD_STYLES` emptied in
 `game/npcmodels.ts`; the pipeline and tier gate remain for a future bake).
 
 | Style | Donor | Author | Licence | Source |
 |---|---|---|---|---|
-| sedan | Hyundai Accent 2013 | I95XP | **CC BY 4.0** | https://sketchfab.com/3d-models (uid via docs/handoff — owner pick #23) |
-| suv | Toyota Fortuner 2021 | Asadawut.Kaewma | **CC BY 4.0** | owner pick #3 |
-| compact | Honda Civic Type R '98 | tiedtke | **CC BY 4.0** | owner pick #99 |
+| sedan | Hyundai Accent 2013 | I95XP | **CC BY 4.0** | https://sketchfab.com/3d-models (uid recorded with the bake — pick #23) |
+| suv | Toyota Fortuner 2021 | Asadawut.Kaewma | **CC BY 4.0** | pick #3 |
+| compact | Honda Civic Type R '98 | tiedtke | **CC BY 4.0** | pick #99 |
 | (prior heroes, superseded) Toyota Camry 2020 etc. | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/236a5a6e2fa6420fbdf641f4800cd544 |
 | hybrid | Toyota Prius 2020 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/ad0d925cb51040798d96f166db8c7f80 |
 | compact | Volkswagen Golf GTI 2021 | ItsDiyor | **CC BY 4.0** | https://sketchfab.com/3d-models/82a55610817646539ce699a6aaa5dda0 |
@@ -227,9 +227,8 @@ preserved exactly and `envScale` is unchanged.
 are 512x256 (see above). The bytes at `cobblestone_street_night_2k.hdr` are
 the **Shanghai Bund** night-city panorama (CC0, Poly Haven). The world-dressing
 wave replaced the original cobblestone street with the dense city-skyline glow,
-but the loader probes a fixed URL list in `game/carenv.ts` (owned by another
-lane at the time), so the swap was done at the file path the loader already
-prefers. A follow-up may rename the file and the URL together. The 4K Shanghai
+but the loader probes a fixed URL list in `game/carenv.ts`, so the swap was
+done at the file path the loader already prefers. A follow-up may rename the file and the URL together. The 4K Shanghai
 Bund master stays in `public/assets-staging/hdri-night/` as a future
 desktop-lazy upgrade; `modern_evening_street` remains the softer fallback the
 loader falls to when the primary is missing.
@@ -362,7 +361,7 @@ up (`engine.ts` `CHASE_CAM`), plus the two rear three-quarters photo mode and
 the live mirror use — and that score scales both its share of the triangles and
 the size of its textures. The tailgate, rear lamps, rear screen, C-pillars,
 roof and upper flanks come out sharp; the nose, grille, headlight internals and
-front wings come out cheap, which is what the owner asked for. The painted
+front wings come out cheap, which is the intent. The painted
 skin carries 79,846 triangles against the previous rear-biased build's 19,610 —
 that build spent 56% of the file on the tail-lamp cluster alone and starved the
 roof, which is what tore. The bonnet is floored at full name-rule weight
@@ -379,7 +378,7 @@ build before 2026-09-14: `--tex-hi` was defeated by its own second resize pass
 (`textureCompress`'s `pattern` cannot EXCLUDE a texture whose name or URI is
 empty, which is every texture here), so every map came out at the flat `--tex`
 value. The shipped file was a uniform 9 x 512 px, 12.0 MiB. Verified by
-re-running the 2026-09-04 command verbatim against the donor and reading the
+re-running the 2026-09-04 command unchanged against the donor and reading the
 histogram the tool now prints.
 
 Loaded by `game/bodymodel.ts`. It and the donor dash are two cuts of the same
@@ -412,8 +411,8 @@ question, which is why the rebuild spends its increase there.
 The donor download is not committed (gitignored); the source URL and licence
 are above. Candidate table (four measured builds, 0.79-1.55 MB), size-budget
 position and before/after captures:
-`docs/handoff/reports/volvo-hd.md`. The previous rear-biased build and its
-numbers: `docs/handoff/reports/volvo-body-local.md`.
+the build notes. The previous rear-biased build and its
+numbers are recorded in the bake tool, `tools/build-car-body.mjs`.
 
 ## Sourcing notes / other candidates evaluated but not shipped
 

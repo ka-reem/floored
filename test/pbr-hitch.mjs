@@ -1,6 +1,6 @@
 /* The stutter that is not the toll plaza.
 
-   The owner reported a lag spike "at the toll booth". Three separate probes
+   The reported symptom was a lag spike "at the toll booth". Three separate probes
    (test/toll-hitch.mjs, test/cam-hitch.mjs, and the CONSOLE camera) all found
    the same thing instead: the plaza draws LESS than open road, and the worst
    frame in every run landed wherever the player happened to be a few seconds

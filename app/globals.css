@@ -553,7 +553,7 @@ body:not(.touch) #mmap {
   background: var(--scrim-pause);
 }
 /* Viewfinder frame — the one unique flair. The menus sit over an idling
-   dashcam canvas (AGENTS.md: the dashcam IS the game), so instead of a flat
+   dashcam canvas — the view the game is built around — so instead of a flat
    panel the overlay reads as a camera viewfinder around it: four corner
    brackets, static, painted once. Ties the chrome to the game's own identity
    rather than decorating for its own sake. Kept off .loadRoot's ::after (the
@@ -1492,8 +1492,8 @@ body.touch #gearBtn {
    The two-level touch scheme (see QuickDrawer in GameApp.tsx): while driving
    the screen carries only the pucks plus one quiet addition — a ⋯ chip
    beside the pause gear opening a narrow drawer with every remaining
-   keyboard feature. (The tap-to-signal telltales were removed at the
-   owner's request; the topbar is fully passive again.) All of it
+   keyboard feature. (The tap-to-signal telltales have been removed; the
+   topbar is fully passive again.) All of it
    body.touch-gated; desktop is untouched. */
 
 /* The ⋯ chip. Same size, surface and radius as #gearBtn next door, so the

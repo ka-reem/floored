@@ -1,7 +1,7 @@
 /* Does a SECOND simultaneous finger light its puck?
 
-   Owner: "on mobile if i press two buttons like the next one the 2nd button
-   im pressing wont light up."
+   The reported symptom: on mobile, pressing two buttons — the second one,
+   landing while the first is still held — leaves the second unlit.
 
    The press glow is the `pressed` class, written by engine.ts bindPointerHold
    from the same down/up the input reads (`:active` is unreliable under a
@@ -151,9 +151,9 @@ for (const [aId, aKey, bId, bKey] of PAIRS) {
 }
 
 /* ---- phase 2: press one, then the NEXT one, one finger at a time -------
-   The owner's words also read as sequential ("two buttons ... like the next
-   one"), and a latch left behind by the first press would only ever show on
-   the second. Cheap to rule out, so rule it out. */
+   The report also reads as SEQUENTIAL ("two buttons ... like the next one"),
+   and a latch left behind by the first press would only ever show on the
+   second. Cheap to rule out, so rule it out. */
 for (const [aId, aKey, bId, bKey] of PAIRS) {
   await touchDown(1, await centre(aId));
   await touchUp(1);
@@ -192,8 +192,8 @@ for (const [aId, aKey, bId, bKey] of PAIRS) {
    things a thumb lands on during a drive — the ⋯ chip, the drawer rows, the
    CAM tap — light by other means, and each is checked the same way: does its
    PAINT change when it is the second finger, and does it change when it is
-   the only finger? A control that lights alone and not in company is the bug
-   the owner is describing. */
+   the only finger? A control that lights alone and not in company is the
+   reported bug. */
 const paint = (id) => page.evaluate((i) => {
   const e = document.getElementById(i) || document.querySelector(i);
   if (!e) return null;

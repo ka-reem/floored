@@ -3,12 +3,12 @@
    tic-tac-toe can be played through the panel, with real synthetic pointer
    events on the canvas rather than direct method calls.
 
-   Why the paranoia about the full event path: the owner reported clicks on
-   the panel's MAP pill not switching views. Every hop is exercised here the
+   Why the paranoia about the full event path: clicks on the panel's MAP pill
+   were reported as not switching views. Every hop is exercised here the
    way a mouse does it — pointermove for hover, pointerdown for the click,
    the engine's own raycast, hitScreen's uv → rect mapping, the view flip,
    and the repaint — so a regression anywhere in that chain fails this test
-   rather than waiting for the owner to click on it.
+   rather than waiting for a player to find it.
 
    The panel is aimed at through the engine's own ray: findClient() scans
    client space for the point whose panel-hit uv lands closest to the target

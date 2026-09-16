@@ -383,8 +383,8 @@ export class Vision {
       const c = n.wreck ? RED : CYAN;
       L.box(n.x, n.y + 0.05, n.z, n.cw, n.L / 2, h, n.hVis, c);
       if (f.oldW && d < 90) {
-        // the pre-fix box: W/2 includes the door mirrors — what the owner
-        // was "scraping" through air
+        // the pre-fix box: W/2 includes the door mirrors, which is what was
+        // "scraping" through clear air
         L.box(n.x, n.y + 0.05, n.z, n.W / 2, n.L / 2, h, n.hVis, MAGENTA, 0.4);
       }
       if (f.labels && d < 70) {

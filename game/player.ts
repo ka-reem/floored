@@ -382,7 +382,7 @@ function paintMaterial(paint: Paint, env: THREE.Texture): THREE.MeshPhysicalMate
    (base colour + metalness/roughness/env level, plus the mica sheen for
    pearls), so one swatch means one colour on both cars, in the garage card
    and on the road. Factors only, deliberately: the GLB on disk is untouched
-   (the model build belongs to another lane), the material keeps its maps (it
+   (the model build is a separate pipeline), the material keeps its maps (it
    has none) and its authored clearcoat, and lightDonorBody() below still
    applies its own floor to that clearcoat right after this runs. The
    orange-peel normal map is NOT copied over — it is tiled for the procedural
@@ -1200,7 +1200,7 @@ export function buildPlayerCar(
      centimetres inside the arch. ShellParams.track is that number when a car
      has one, and the old formula is the default for every car that does not.
 
-     Measured against this donor (scratchpad analysis of the shipped GLB, in
+     Measured against this donor (offline analysis of the shipped GLB, in
      car-local metres after bodymodel.ts's fit): fender at |x| = 0.959 at both
      axles, so a 1.60 m track leaves 3.4 cm of tuck. It also stays inside
      halfW (W/2 - 0.005 = 0.935), so no wheel reaches past the collision box. */

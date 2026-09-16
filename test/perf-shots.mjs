@@ -1,5 +1,5 @@
-/* Dashcam evidence shots for the perf-pass lane: the handful of spots whose
-   geometry/textures the lane touched — mountain chevron corner, the waypoint
+/* Dashcam evidence shots for the perf pass: the handful of spots whose
+   geometry/textures it touched — mountain chevron corner, the waypoint
    lamps, the toll plaza props, the canyon ad boards, the town lamp field —
    CAM_POV, night, so a before/after pair proves no perceptible loss.
 

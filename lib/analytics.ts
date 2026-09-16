@@ -15,9 +15,12 @@
    - anonymous only. We never call posthog.identify — PostHog's own
      anonymous distinct_id is the person. No emails, no names, ever.
 
-   The phc_ key below is a PUBLIC client token (it can only ingest events,
-   not read anything) — committing it is fine and is how PostHog snippets
-   ship. A personal PostHog API key must never appear in this repo. */
+   The key is read from NEXT_PUBLIC_POSTHOG_KEY. A phc_ project key is a
+   PUBLIC client token — it can only ingest events, never read anything, and
+   shipping one in a client bundle is how PostHog snippets work. It lives in
+   the environment rather than in the source anyway, so that a clone of this
+   repo does not send its events to somebody else's project. A PERSONAL
+   PostHog API key is a different thing entirely and must never appear here. */
 
 import type posthogT from "posthog-js";
 
@@ -38,7 +41,10 @@ import type posthogT from "posthog-js";
 type PostHog = typeof posthogT;
 let posthog: PostHog | null = null;
 
-const PH_KEY = "phc_wnyGBeLnfzWK3EgKMWeapbjtbDMuVrnVTkrjd5er2XYS";
+/* Set NEXT_PUBLIC_POSTHOG_KEY to a phc_ project key to turn analytics on;
+   with it unset every call below is a no-op and the module is never even
+   fetched, which is the right default for a fork or a local run. */
+const PH_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY ?? "";
 const PH_HOST = "https://us.i.posthog.com";
 
 let ready = false;
@@ -74,11 +80,11 @@ export function deviceType(): "mobile" | "desktop" {
       boot the real game in puppeteer, and their menu-walks must not pour
       fake players into the dashboard;
     - double mount (React strict/dev): the `ready` latch. */
-/** Owner / tester opt-out. Visit once with `?owner=1` on a device and that
-    browser is excluded from analytics for good (localStorage flag);
+/** Developer / tester opt-out. Visit once with `?owner=1` on a device and
+    that browser is excluded from analytics for good (localStorage flag);
     `?owner=0` re-enables it. Client-side because the site has no server
-    session to key an IP filter on — and the owner plays from several
-    networks anyway. */
+    session to key an IP filter on, and a developer moves between networks
+    anyway. */
 const OWNER_KEY = "neonx.analytics.optout";
 function ownerOptedOut(): boolean {
   try {
@@ -109,6 +115,10 @@ function whenIdle(fn: () => void) {
 
 export function initAnalytics() {
   if (started || typeof window === "undefined") return;
+  /* No key configured: do not even fetch posthog-js. This is the path a
+     clone takes by default, and it has to cost nothing rather than fetching
+     273 KB to initialise against an empty string. */
+  if (!PH_KEY) return;
   if (navigator.webdriver) return;
   if (ownerOptedOut()) {
     console.info("[analytics] owner opt-out active — nothing is sent from this browser");
@@ -143,8 +153,8 @@ function bootPostHog(ph: PostHog) {
       person_profiles: "always",
       session_recording: {
         /* Canvas replay, NOW ON PHONES TOO — at a quarter of the desktop
-           sample rate, because the owner asked for the gameplay itself and
-           not just the menus around it.
+           sample rate, because what is worth watching is the gameplay
+           itself and not just the menus around it.
 
            The whole game is one <canvas>, and session replay records the DOM,
            so with recordCanvas off a replay shows the menus and HUD correctly
@@ -188,9 +198,9 @@ function bootPostHog(ph: PostHog) {
            SessionRecordingOptions.sampleRate).
 
            It was 0.25 — sensible at scale, useless here: at a few dozen
-           visitors a quarter-sample is a handful of replays, and the owner
-           looked for recordings and found none. Sample everything until the
-           traffic is big enough for a sample to mean something.
+           visitors a quarter-sample is a handful of replays, and in practice
+           meant looking for a recording and finding none. Sample everything
+           until the traffic is big enough for a sample to mean something.
 
            Recording ALSO has to be switched on project-side
            (session_recording_opt_in, PostHog → Settings → Session Replay);
@@ -219,8 +229,9 @@ function bootPostHog(ph: PostHog) {
 
 /** True while events have somewhere to go: init has been asked for and the
     module is either in flight (calls buffer) or up (calls fire). False when
-    the owner opted out, under webdriver, before initAnalytics, and — the case
-    that matters — after a posthog-js that never arrived cleared `started`.
+    the browser opted out, under webdriver, before initAnalytics, and — the
+    case that matters — after a posthog-js that never arrived cleared
+    `started`.
 
     lib/telemetry.ts gates its whole sampler on this: with analytics off it
     must not so much as accumulate. Exported rather than inferred so there is

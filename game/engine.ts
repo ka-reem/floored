@@ -100,7 +100,7 @@ const CLEAN_RUN = {
       touching it at 30 km/h read the same, which is what a player means by
       "I brushed it".
 
-      5.0 m/s, from the measurements in docs/handoff/reports/clean-distance.md
+      5.0 m/s, from the clean-distance measurements
       (test/clean-run-check.mjs re-runs them). Kerbing a barrier at a shallow
       angle read 0.45, 0.87, 1.72 and — worst case, a 1-degree drift at 180
       km/h left to wander — 3.24. Nudging traffic from behind at +4 m/s read
@@ -121,10 +121,9 @@ const CLEAN_RUN = {
   flash: 1.4,
 };
 
-/** ENDLESS MODE — "you basically drive until you crash. Once you crash, your
-    points get reset to zero ... it's just gonna be based by distance. There
-    won't be any multipliers ... And then that's how you collect money as
-    well." (owner, 2026-09-11)
+/** ENDLESS MODE — you drive until you crash. A crash resets the score to
+    zero; the score is a DISTANCE, with no multipliers; and distance is also
+    how money is earned.
 
     Three numbers and no more, because the mode deliberately has no other
     rules yet — no multipliers, no combo, no risk bonus. Everything else it
@@ -133,8 +132,8 @@ const CLEAN_RUN = {
     THE SCORE is `run.dist` — metres driven since the last real impact,
     integrated once in statsUpdate off the same |u| and the same standing-
     still floor the lifetime odometer uses. The endless panel shows it in
-    METRES (the owner's own unit for this: "based by distance", and a score
-    wants a number that moves), unlike the clean-run readout next to it,
+    METRES (the mode is scored by distance, and a score wants a number that
+    moves), unlike the clean-run readout next to it,
     which stays in the player's mi/km. Same metres, two formats, one source.
 
     THE CRASH is CLEAN_RUN.impact — 5.0 m/s of closing speed along the contact
@@ -153,11 +152,11 @@ const CLEAN_RUN = {
     (GameApp persists on pause, on exit, on tab-hide and on a slow timer). */
 const ENDLESS = {
   /** currency per metre driven. ¥1 per 10 m: a 10 km drive pays ¥1,000 and a
-      good run is worth a four-figure number, which is the arcade shape the
-      owner asked for without needing decimals or a separate multiplier. Money
-      accrues whether or not the mode is switched on — free-roam metres are
-      still metres driven, and the owner drives free-roam too — so switching
-      ENDLESS on adds the score and the reset, never the earning. */
+      good run is worth a four-figure number: the arcade shape this wants,
+      without needing decimals or a separate multiplier. Money accrues whether
+      or not the mode is switched on — free-roam metres are still metres
+      driven — so switching ENDLESS on adds the score and the reset, never
+      the earning. */
   perMetre: 0.1,
   /** seconds the endless panel wears .ez-reset after a crash. Longer than
       CLEAN_RUN.flash: this readout is the mode's whole point, so the reset is
@@ -168,7 +167,7 @@ const ENDLESS = {
 
 /** WHICH HUD TREATMENT the clean-run readout wears. One line to swap; the
     three are rendered side by side in
-    docs/handoff/reports/clean-distance.md.
+    the clean-distance measurements.
 
       "corner" — a small dim figure on its own line under the gear, in the
                  existing bottom-left HUD stack. THE DEFAULT.
@@ -423,8 +422,8 @@ const CAM_COUNT = 6;
 export { CAM_NAMES, WIPER_MODE_NAMES } from "./camnames";
 /* CYCLE ORDER IS NOT NUMERIC ORDER, and the split is deliberate.
 
-   AGENTS.md requires the dashcam to be LAST in the cycle — it is the view the
-   game ships in, and C from CHASE should always walk toward it. But camMode is
+   The dashcam is LAST in the cycle by design — it is the view the game is
+   tuned around, and C from CHASE should always walk toward it. But camMode is
    PERSISTED: settings.ts defaults it to 3 and every saved profile holds a
    number, so renumbering the dashcam to make room for a new view would boot
    every existing player into whatever took index 3. CAM_CONSOLE therefore takes
@@ -630,8 +629,8 @@ const CONSOLE_CAM = { x: 0, y: 1.22, z: -0.05, fov: 78, tilt: 0.02, procDy: 0.14
 
 /* Backseat camera (CAM_BACKSEAT): a passenger's phone held up from the rear
    bench, looking forward past the front headrests and out the windscreen —
-   the "night drive vlog" frame. Player-facing (AGENTS.md 2026-08-28: every
-   camera ships), so it is framed to be looked at, not to debug from.
+   the "night drive vlog" frame. Player-facing — every camera in the cycle
+   ships — so it is framed to be looked at, not to debug from.
 
    The rear bench is real geometry in BOTH interiors: cockpit.ts builds it
    (squab z -1.02, backrest z -1.24, headrests x ±0.36 / y 1.22, parcel shelf
@@ -681,8 +680,8 @@ const BACKSEAT_CAM = { x: 0, y: 1.30, z: -1.10, fov: 72, tilt: 0.04, yaw: 0 };
    It used to sit at `(0, belt + 0.5, L/2 - 0.6)`, which on the Volvo is y 1.42
    — the car's ROOF is at 1.44 — and 1.88 m forward, i.e. half a metre of clear
    air above the bonnet. That is a nose cam hovering in front of the
-   windscreen, and the owner's read of it was exactly that: it is not a hood
-   view, so make it one. A hood view means the bonnet is IN the frame.
+   windscreen, not a hood view at all. A hood view means the bonnet is IN
+   the frame.
 
    Both numbers are offsets from the shell rather than absolutes, so a lower or
    shorter car keeps the same relationship to its own bodywork:
@@ -694,13 +693,12 @@ const BACKSEAT_CAM = { x: 0, y: 1.30, z: -1.10, fov: 72, tilt: 0.04, yaw: 0 };
          against a base at 1.32) and 14 cm on the Kaze (1.11 against 0.97).
 
      dy  0.16 m over the beltline, dz 0.05. Both were higher and further
-         forward (0.24 / 0.21) until the owner saw that mount and asked for
-         more bonnet than it gave. Shot as a ladder off the profile below:
-         0.24/0.21 puts the bonnet across the bottom ~20% of the frame,
-         0.16/0.05 takes it to about a third, and 0.13/-0.10 is past the
-         useful end — the lens drops level with the cowl, the windscreen
-         frame starts intruding and the reflection band blows out. His pick
-         is the middle one.
+         forward (0.24 / 0.21), which showed too little bonnet. Shot as a
+         ladder off the profile below: 0.24/0.21 puts the bonnet across the
+         bottom ~20% of the frame, 0.16/0.05 takes it to about a third, and
+         0.13/-0.10 is past the useful end — the lens drops level with the
+         cowl, the windscreen frame starts intruding and the reflection band
+         blows out. The middle rung is what ships.
 
          dy was 0.03 originally, computed against
          carshape.ts's hood curve, and it put the lens INSIDE the car: the
@@ -852,7 +850,7 @@ const CABIN_HOVER_EASE = 11;
    things and has to be brighter than what it veils, while the clear colour is
    the void BEHIND everything and has to be black or it prints as a flat plate
    wherever the sky dome does not cover. So sky* below carry the old fog values
-   verbatim, and the clear colour in the frame is byte-for-byte what it was.
+   unchanged, and the clear colour in the frame is byte-for-byte what it was.
    `__fog.sky = __fog.night` re-couples them if that turns out to be wrong.
 
    Live, read fresh every frame:
@@ -1145,15 +1143,15 @@ const CHASE_FX = { lag: 0, aimSwing: 0, speedPull: 0 };
            nothing.
      max   the most the lens may ever sit off the nose, in radians.
 
-   A DELIBERATE DEPARTURE FROM "HARD-MOUNTED", and it is written down here so
-   the next person does not read AGENTS.md and correct it back. A real bracket
+   A DELIBERATE DEPARTURE FROM "HARD-MOUNTED", written down here so the next
+   person does not read the mount as a bug and correct it back. A real bracket
    yaws exactly with the car, which is why this view was built with
    `rotation.y = car.h + PI` and nothing else. Then 432a53d flattened the
    keyboard steer-rate droop for test mode and a full-lock reversal at speed
    went from ~1.18 s to ~0.5 s. The camera was faithfully reproducing all of
-   it: "if there's any aggressive turning ... can you move the camera a bit
-   less aggressively? it's a bit overwhelming, just a tad bit. I notice it when
-   I'm jerking left to right a lot."
+   it, and under aggressive left-right steering the result is overwhelming to
+   look at — the view whips hard enough to be the thing you notice instead of
+   the road.
 
    A FIRST-ORDER LAG IS ALREADY RATE-SCALED, which is why there is no separate
    rate term. The offset a lag produces is the yaw rate times its time
@@ -1170,8 +1168,8 @@ const CHASE_FX = { lag: 0, aimSwing: 0, speedPull: 0 };
 
    CAM_POV ONLY. CAM_COCKPIT is a head, not a bracket: it has springs and its
    own eased lookahead already, and a lag on top would be two filters arguing.
-   CAM_CONSOLE is a rigid mount with the same whip, but AGENTS.md rates it
-   debug-only and this is a feel change for the view that ships.
+   CAM_CONSOLE is a rigid mount with the same whip, but it is a secondary
+   view and this is a feel change aimed at the most-driven one.
 
    It settles to EXACT tracking — that is what makes it a lag and not a
    decoupling. Steady state is zero error, so the lens cannot end up pointing
@@ -1266,8 +1264,8 @@ const POV_H_CEIL = 118;
    `fovBase`, so a value saved while the maximum was briefly higher survives in
    the profile forever and povFov() would honour it. This is the last gate
    before the projection matrix. The durable companion fix is a range clamp in
-   settings.ts's NUM_KEYS pass, which would also catch a hand-edited profile —
-   that file belongs to another agent right now. */
+   settings.ts's NUM_KEYS pass, which would also catch a hand-edited profile;
+   this clamp stands whether or not that lands. */
 const POV_FOV_MAX = 100;
 /* The Field of view slider's DEFAULT, mirrored from settings.ts's DEFAULTS.
    Not a preference — it is the anchor consoleFov() scales CONSOLE_CAM.fov
@@ -1310,8 +1308,8 @@ const CONSOLE_FOV_MAX = 130;
    leaves "playing" — no per-element hiding to forget.
 
    The lens is a FIXED 55-degree vertical. Deliberately not the FOV slider and
-   not lensFov()/povFov(): those are the driving views' contract (AGENTS.md),
-   and a photo wants a longer lens than a windscreen does — 55 at 16:9 is
+   not lensFov()/povFov(): those are the driving views' contract, and a photo
+   wants a longer lens than a windscreen does — 55 at 16:9 is
    ~84 horizontal, about what a 24 mm walk-around on full frame gives, wide
    enough to frame the whole car at 6 m without the barrel-stretch a 100-degree
    gameplay FOV would smear across the paintwork. */
@@ -1382,9 +1380,9 @@ export class Game {
      dropping the flag just leaves the half that was doing the work. */
   /** The car is the arcade spec now (carspecs.ts arcadeSpec) — grip, brakes
       and power up. This was a dev toggle on K with a settings row behind the
-      debug gate, which meant the public build could never reach it; the owner
-      drove it and asked for it to be the only car ("it should always be on").
-      Both the key and the row are gone.
+      debug gate, which meant the public build could never reach it. It is now
+      the only car — the arcade handling IS the game's handling — so both the
+      key and the row are gone.
 
       Still a named constant rather than an inlined `true`, because it is what
       stepPhysics's `arcade` option is fed and that option still selects
@@ -1674,8 +1672,8 @@ export class Game {
       authored; shifting it would break the binnacle/wheel/mirror framing that
       cockpit.ts pins to that exact point.
 
-      Live: `window.__cockpitEye.dy = -0.14`, `.dz = 0.6`. AGENTS.md rates this
-      camera as debug-only, so it gets knobs and defaults rather than a tuning
+      Live: `window.__cockpitEye.dy = -0.14`, `.dz = 0.6`. This camera is a
+      secondary view, so it gets knobs and defaults rather than a full tuning
       pass — bring settled values back into COCKPIT_EYE_IMPORTED. */
   private cockpitEye(): { dy: number; dz: number } {
     if (!this.rig.cockpitModel) return { dy: 0, dz: 0 };
@@ -1861,7 +1859,7 @@ export class Game {
       still degrade any tier further; nothing here disables it. */
   renderTier: RenderTier = "desktop";
   /** the tier's caps on existing levers — public so the UI can show the
-      resolved tier and so other lanes (fence overdraw) can gate on it */
+      resolved tier and so other systems (fence overdraw) can gate on it */
   tierCaps: TierCaps = TIER_CAPS.desktop;
   lookBack = false;
   /* High beams. G is momentary (flash-to-pass) on a short press and toggles the
@@ -2051,9 +2049,9 @@ export class Game {
   private statsSeed: LifetimeStats = defaultLifetimeStats();
   private raf = 0;
   private disposed = false;
-  /** Public because the loading board's steering picker is touch-only (the
-      owner: "on desktop dont show the controls bcs the controls are only for
-      mobile"), and that row must be shown by exactly the predicate readInput
+  /** Public because the loading board's steering picker is touch-only — the
+      on-screen controls exist only for mobile, so the row has no business on
+      desktop — and that row must be shown by exactly the predicate readInput
       uses to decide whether to read the touch controls — not by a second,
       drifting copy of it. Set once in the constructor and never written
       again; deviceType() in lib/analytics.ts is deliberately the same test. */
@@ -2222,8 +2220,9 @@ export class Game {
        1024² on the phone tiers quarters that to 1.05 Mpx. Desktop keeps 2048²
        — it has the fill rate, and it is the tier that sees shadow edges at
        size. This is a VISIBLE change on phones (a softer, coarser shadow edge
-       at the 340 m ortho extent set below), taken on the owner's explicit
-       "optimize it, make it less laggy"; one value here reverts it. */
+       at the 340 m ortho extent set below), taken deliberately: frame time on
+       phones is worth more than shadow-edge sharpness. One value here
+       reverts it. */
     this.sun.shadow.mapSize.setScalar(this.renderTier === "desktop" ? 2048 : 1024);
     this.sun.shadow.camera.left = -170;
     this.sun.shadow.camera.right = 170;
@@ -2744,8 +2743,8 @@ export class Game {
         weight: W.traffic,
         run: async (onStep) => {
           /* Fleet size is per-tier now, not a flat 120 — it is the ceiling
-             the traffic-density slider reaches at 100%, and the owner wanted
-             that top setting to mean an actual jam. Phones keep 120 (or 150
+             the traffic-density slider reaches at 100%, and that top setting
+             is meant to produce an actual jam. Phones keep 120 (or 150
              on the high tier): the GPU-memory headroom on iOS Safari is not
              something to spend on a fuller road. See TierCaps.fleetMax. */
           this.traffic = new Traffic(
@@ -3084,7 +3083,7 @@ export class Game {
     e.preventDefault();
     /* REPORT IT. Until now this was the one failure the game could see happen
        and told nobody about: the panel goes up, the player reloads or leaves,
-       and the owner learns about it only if that player happens to say so.
+       and we hear about it only if that player happens to say so.
        There is no way to reproduce a crash you cannot see, and "GPU context
        lost" is exactly the kind that depends on the device rather than on
        anything the game does differently.
@@ -3301,7 +3300,7 @@ export class Game {
     if (k === "l") this.cycleLights();
     /* Stalk click on the toggle edge, both engage and cancel — the click
        volumes that used to give the signals their mechanical clunk are gone
-       (keyboard-only now, owner's call), but the stalk itself still moves.
+       (the click is keyboard-only now), but the stalk itself still moves.
        The blink-rate tick in hud() is separate and untouched. */
     if (k === "q") {
       this.car.sigL = !this.car.sigL;
@@ -3433,7 +3432,7 @@ export class Game {
        this turns out to be is only known at 2 s (hiBeamHold) or at release,
        whichever comes first. `e.repeat` is already filtered above, so
        autorepeat can't re-arm the timer under a held key. */
-    if (!this.highBeam) this.audio.stalkClick(); // stalk click on the OFF→ON edge only (lane O)
+    if (!this.highBeam) this.audio.stalkClick(); // stalk click on the OFF→ON edge only
     // traffic reads this as one flash-at-the-car-ahead gesture. Only while
     // running: nothing consumes the pulse when the world is paused, and a
     // flash banked in a menu must not fire the moment play resumes.
@@ -3600,13 +3599,14 @@ export class Game {
     this.screenHover =
       hit && hit.uv ? hitScreen(hit.uv.x, hit.uv.y, this.screenView) : null;
     /* The stalk zone and the mirror glass have no state to preview — the
-       cursor change is their hover channel (round 1's precedent for targets
-       with no lamp to ease toward), so a boolean each is all this needs. */
+       cursor change is their hover channel — the established pattern for a
+       target with no lamp to ease toward — so a boolean each is all this
+       needs. */
     const overStalk = !!stalk && this.clickRay.intersectObject(stalk, false).length > 0;
     const overMir = !overStalk && !!mir && this.clickRay.intersectObject(mir, false).length > 0;
     /* One cursor for every cabin target, new and old alike — none of them had
-       one before this lane; a control that only reveals itself once you have
-       already clicked it is not discoverable. */
+       one before; a control that only reveals itself once you have already
+       clicked it is not discoverable. */
     this.renderer.domElement.style.cursor =
       this.cabinHover || this.screenHover || overStalk || overMir ? "pointer" : "";
   };
@@ -3890,8 +3890,8 @@ export class Game {
   /** Is `key` still held by some OTHER live touch hold? Written when two
       controls shared "f" — the HORN puck and the steering-wheel hub — and
       either could be released while the other was still pressed, zeroing the
-      key under a finger that was still on it. The hub is gone (the owner had
-      it removed), but the guard is not about the hub: it is what makes it
+      key under a finger that was still on it. The hub has since been removed,
+      but the guard is not about the hub: it is what makes it
       safe for any two controls to write one key, and the pucks still sit on
       keys a physical keyboard can also hold. Holds whose ids are empty are
       already released (bindPointerHold clears the set before calling onUp,
@@ -4393,8 +4393,8 @@ export class Game {
      the last word — it calls resumeAudio() after it has set `running` and
      re-written the levels. */
 
-  /** Whether sound is wanted RIGHT NOW. Both halves are the owner's stated
-      requirement that coming back to the tab must not start audio playing on
+  /** Whether sound is wanted RIGHT NOW. Both halves exist to satisfy one
+      requirement: coming back to the tab must not start audio playing on
       its own. */
   private audioWanted() {
     return !this.disposed && this.started && this.running && this.settings.vol > 0;
@@ -4586,9 +4586,9 @@ export class Game {
          N used to have two answers here: from up on the deck it snapped to
          the corridor, but from down in the town it looked up the nearest
          street in the road net and righted the car there. That second answer
-         is the one the owner asked to change — "pressing n should reset you
-         on the nearest highway. so if im on the city road i can press n and
-         itll reset me to highway not keep me in the city".
+         is the one that changed: N should put you back on the nearest
+         HIGHWAY, so pressing it on a city street lifts you out of the city
+         rather than keeping you in it.
 
          It matters more than a convenience. N is the only way out of a stuck
          car, and the town is where a player gets stuck WITHOUT a way back:
@@ -4642,7 +4642,7 @@ export class Game {
       one frame. This used to be assigned here, every frame, as
       `f > 0.22 && !perfMode && settings.shadows` — so every in-game dawn
       rebuilt every shader the moment f crossed 0.22, which is the one-to-two
-      second stall the user reported at the night/day transition. It also armed
+      second stall reported at the night/day transition. It also armed
       a second, unreported one: perfMode latches true from perfCheck() after
       four slow seconds, and hitting that in daylight recompiled everything
       again, at the exact moment the frame budget was already blown.
@@ -5765,7 +5765,7 @@ export class Game {
       brake: braking,
       /* Selected AND moving backwards. A reverse lamp that lights the instant
          the gear is chosen, while the car is still rolling forward, is the
-         thing every other car on the road reads as "he is backing into me". */
+         thing every other car on the road reads as "that car is backing into me". */
       reverse: car.rev && car.u < -0.15,
       sigL: car.sigL && bOn,
       sigR: car.sigR && bOn,
@@ -7016,7 +7016,7 @@ export class Game {
         // NOTE: slipDemand used to be passed 11th, landing in the optional
         // rainIntensity slot — realigned (rainIntensity has no source yet).
         this.car.gear, this.car.onLimiter, undefined, this.car.slipDemand,
-        // lane U (interior trim creaks): smoothed body accels + grade, and
+        // interior trim creaks: smoothed body accels + grade, and
         // whether the camera is an in-cabin view (cockpit/console/POV).
         this.car.axS, this.car.ayS, this.car.slope,
         this.inCar()

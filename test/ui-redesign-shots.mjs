@@ -1,4 +1,4 @@
-/* Gallery screenshots for the ui-redesign lane: main menu, pause, garage,
+/* Gallery screenshots for the UI redesign: main menu, pause, garage,
    settings, controls, and loading, at a desktop and a phone viewport.
    Loading is captured by throttling the network so the staged build takes
    long enough to catch a frame mid-progress; the touch/mobile shots set

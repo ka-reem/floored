@@ -290,7 +290,7 @@ export function collidePlayer(
           else if (side > 0) {
             /* MOUNTAIN pavement. The apron's moving wall used to stay armed
                here too, on the theory that the road inside the bulge is the
-               hugger hole. It is not — and armed, it was the wall the owner
+               hugger hole. It is not — and armed, it was the wall players
                hit: the apron caps and tapers back at 0.35 m/m from the first
                z where the road's inner edge has left the deck edge, which is
                ~20 m past the nose, while the road itself is still at deck

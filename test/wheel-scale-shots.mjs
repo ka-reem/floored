@@ -1,5 +1,5 @@
-/* The owner's question, and nothing else: "keep the pov the same and just make
-   the wheel larger, show me screenshots".
+/* One question, and nothing else: with the POV held exactly where it is, what
+   does a LARGER wheel look like?
 
    One boot, one camera, N wheel scales. Cameras are NOT touched. The cluster is
    NOT touched — not its size, not its seat. The only variable is axisG.scale,
@@ -10,8 +10,8 @@
    wheel-cluster-measure.mjs does. That buffer is the whole cost of the other
    instrument (a depth pass per region per camera per steering angle) and this
    box cannot afford it; what comes back instead is the handful of projected
-   landmarks the owner's reference photograph is actually about, which cost a
-   few hundred point projections:
+   landmarks the reference photograph is actually about, which cost a few
+   hundred point projections:
 
      D          the wheel's projected outer diameter  = the normalising length
      D/frameW   the reference's "the wheel dominates the picture" (target 0.63)

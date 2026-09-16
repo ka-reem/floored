@@ -13,9 +13,9 @@ declare global {
 
 
 /* Sky dome, stars, moon, distant skyline ring, mountains, and the two
-   landmarks (broadcast tower west, ferris wheel east). Ported from v2.
-   Lane A adds the layered point-cloud city (buildCityGlow) and the airport
-   control tower landmark. */
+   landmarks (broadcast tower west, ferris wheel east). Ported from v2, plus
+   the layered point-cloud city (buildCityGlow) and the airport control tower
+   landmark. */
 
 /** Master kill-switch for the layered distant-city point clouds (3 draw
     calls, ~9k points). The live per-device depth of the stack comes from

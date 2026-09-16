@@ -1,4 +1,4 @@
-/* Cold-load meter for the perf-pass lane: production build, 4x CPU throttle
+/* Cold-load meter for the perf pass: production build, 4x CPU throttle
    (CDP), one cold visit. Reports the times that make up "hard to load":
 
    - nav → menu interactive (__neonx debug hook up, DRIVE clickable)

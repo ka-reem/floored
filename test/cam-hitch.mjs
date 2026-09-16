@@ -1,7 +1,7 @@
 /* Is the first camera switch's hitch a shader compile?
 
-   Owner: "the camera when i press camera to change camera mode it lags only
-   on the first time tho."
+   The reported symptom: pressing the camera key to change camera mode lags,
+   but only the first time.
 
    "Only the first time" is the signature of a one-off cost, and the cheapest
    way to prove which one is the same trick test/toll-hitch.mjs uses: DO IT

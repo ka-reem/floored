@@ -1279,8 +1279,8 @@ function sweep(z0: number, z1: number, d: number, n = 7, core = 0.72): Bend[] {
     the excursion at ~105 m of lat. Inside that box radius and route length
     trade against each other directly (R ≈ L²/(4.7·d) once swept, while the
     extra length comes from d/L), so the old check's "≥ 28% longer than the
-    deck" and a fast sweeper cannot both be had here. The owner picked the
-    sweeper; 58 m of excursion is where the curve was cut — 79 m worst
+    deck" and a fast sweeper cannot both be had here. The sweeper wins:
+    58 m of excursion is where the curve was cut — 79 m worst
     radius, ~127 km/h, and still 12% more road than the deck it leaves. */
 function mtnLatBends(): Bend[] {
   /* S stops at 156 rather than filling the window: every bend must be CLOSED

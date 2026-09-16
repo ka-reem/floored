@@ -1,10 +1,8 @@
-/* Gallery screenshots for the mobile-input lane report — the dashcam POV on
-   a touch-emulated phone, in both steer modes, plus the pause screen the
-   gearBtn/clearLatchedInput fix is about. The lane's actual fixes are
-   behavioral (pointer-id tracking, a frame watchdog) and mostly invisible on
-   screen — see docs/handoff/reports/mobile-input.md for the real proof —
-   these are documentation of the surface they run under, not before/after
-   diffs.
+/* Screenshots for the mobile-input work — the dashcam POV on a touch-emulated
+   phone, in both steer modes, plus the pause screen the gearBtn/
+   clearLatchedInput fix is about. The actual fixes are behavioral (pointer-id
+   tracking, a frame watchdog) and mostly invisible on screen, so these are
+   documentation of the surface they run under, not before/after diffs.
 
    Usage: node test/mobile-input-shots.mjs */
 

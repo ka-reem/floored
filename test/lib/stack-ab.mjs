@@ -1,7 +1,7 @@
 /* Stack two captures into ONE labelled before/after image.
 
-   AGENTS.md: "Stack before/after into ONE image where you can, labelled, so
-   there is nothing to line up by eye." Vertical by default (phone strips are
+   A before/after pair belongs in ONE image, labelled, so there is nothing to
+   line up by eye. Vertical by default (phone strips are
    wide and short); --side for two tall frames.
 
    Usage: node test/lib/stack-ab.mjs before.png after.png out.png \

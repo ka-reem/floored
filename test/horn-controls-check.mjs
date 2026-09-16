@@ -1,8 +1,8 @@
 /* Horn controls on a touch-emulated phone, and the steering wheel that no
    longer carries one.
 
-   The HORN boss in the middle of the analog wheel was removed at the owner's
-   request ("the horn button over the steering wheel remove it!"). This file
+   The HORN boss in the middle of the analog wheel has been removed — a
+   second horn control a hand's width from the HORN puck. This file
    used to prove that hub honked without ever costing a steering input; it now
    proves the opposite half — that the wheel is nothing but a wheel, that no
    press anywhere on it can sound the horn, and that every route the horn
@@ -132,7 +132,7 @@ await page.evaluate(() => window.__neonx.setCam(3)); // CAM_POV — the shipped 
 await advance(page, 3);
 
 /* `horn2-` rather than `horn-`: the old suite's captures are the record of a
-   control that existed, and docs/gallery/AGENTS.md forbids overwriting them. */
+   control that existed, so they are never overwritten. */
 const shot = async (name, caption) => {
   const raw = await page.screenshot({ type: "png" });
   const out = path.join(OUT, `horn${name}.jpg`);
@@ -264,7 +264,7 @@ await advance(page, 3);
 check("the sub-frame stab releases itself", !(await state(page)).sounding);
 
 /* ---- 8. a HELD key survives the frame watchdog on a touch device ----
-   Regression guard for the watchdog bug this lane found: every puck registers
+   Regression guard for the watchdog bug found here: every puck registers
    a touchHold on its key, and an idle hold's id set is empty. The watchdog
    used to read "no ids" as "the finger is gone" and zero the key on the very
    next frame — whoever had pressed it. On any touch device with a keyboard

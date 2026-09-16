@@ -7,9 +7,9 @@ to bottom and you should be able to open any file in `game/` and know why it
 looks the way it does. It is not API reference — it is the reasoning.
 
 A warning about line numbers: this document names **files and symbols**, and
-mostly avoids line numbers, because the tree was under active edit by a dozen
-agents while this was written and line numbers drift by the hundred. Symbol
-names are stable; grep for them.
+mostly avoids line numbers, because the tree was under heavy parallel edit
+while this was written and line numbers drift by the hundred. Symbol names are
+stable; grep for them.
 
 ---
 
@@ -42,15 +42,15 @@ pre-Next single-file v2 original, kept for reference and not part of the build.
 
 ## 2. The one rule that governs everything — and its 2026-08-28 amendment
 
-The original rule from `AGENTS.md` explains more odd-looking code than
-anything else in this document:
+The original rule explains more odd-looking code than anything else in this
+document:
 
 > `CAM_POV` — the hard-mounted **DASHCAM** view, last in the camera cycle — is
 > the view the game is actually played in. Treat it as the only one that ships.
 > CHASE, COCKPIT and HOOD exist for debugging and possible later use.
 
-**The "only view that ships" half is RETIRED** (owner update in `AGENTS.md`,
-2026-08-28): players use multiple cameras, so CHASE, COCKPIT, HOOD and the
+**The "only view that ships" half is RETIRED** (2026-08-28): players use
+multiple cameras, so CHASE, COCKPIT, HOOD and the
 CONSOLE camera are player-facing now, and a change may not degrade them. What
 survives: the dashcam is still the **default** and the first frame to judge
 any visual change in, and everything below about the optimisations the rigid
@@ -111,11 +111,11 @@ takes all of them:
   clip `max(col - .06, 0)` is now a soft-max toe, so darks fade out instead of
   snapping to black — but the *threshold* is still the tuning target.) A light
   that "has a hard edge" is usually not a falloff bug — it is one of those two
-  thresholds being crossed. There is a `realistic-light` skill for this.
+  thresholds being crossed.
 
 A change is judged in the dashcam first — but "only matters in CHASE" is no
-longer a reason to skip it (the owner's 2026-08-28 update): the chase camera
-fronts the rebuilt player-car exterior and gets real quality attention.
+longer a reason to skip it (2026-08-28): the chase camera fronts the rebuilt
+player-car exterior and gets real quality attention.
 
 ---
 
@@ -145,8 +145,8 @@ means every visitor silently falls back to the procedural one.
 ### The test suite
 
 ~47 scripts in `test/` as of 2026-08-29 (plus whatever `_*-scratch.mjs` probes
-an agent has left lying around) — the overhaul lanes each brought their own
-sims and probes — of which exactly **two** are wired to npm:
+are left lying around) — the overhaul brought its own sims and probes with it
+— of which exactly **two** are wired to npm:
 
 | Command | What it does | Needs a server? |
 |---|---|---|
@@ -162,7 +162,7 @@ assertion checks, and one-off investigation instruments kept around as evidence
 exhaustive): `audio-assets-check`, `audio-creak-sim`, `bypass-drive`,
 `corridor-check`, `corridor-drive`, `engine-rpm-check`, `lane-plan`,
 `ramp-attach-sim`, `routegraph-check`, `size-budget`, `traffic-bias-check`,
-`traffic-merge-sim`, plus the overhaul lanes' sims (`mountain-traffic-sim`,
+`traffic-merge-sim`, plus the overhaul's own sims (`mountain-traffic-sim`,
 `rival-sim`, `whiteline-sim`, `console-fov-sim`, `testdrive-accel-sim`,
 `steer-response-sim`, `hail-sim`, `roster-check` and friends — check each
 header).
@@ -575,7 +575,8 @@ order:
    cars with early-outs on `active`, height difference, and squared distance.
 
 Response is positional depenetration plus velocity reflection, and — important
-for the handoff — world velocity is **written back into the body frame** at the
+for the hand-back to the physics step — world velocity is **written back into
+the body frame** at the
 end, since `physics.ts` integrates in body coordinates. The positional
 correction is capped per call (`CLAMP_STEP = 0.35`), because applying it whole
 teleports the car sideways.
@@ -630,7 +631,7 @@ ordered-dither `discard` on a per-instance attribute (no material clone).
 
 #### The rival ("the rabbit") and the No Hesi score — added 2026-08-28
 
-Two systems the rival-whiteline lane added on top of the fleet:
+Two systems built on top of the fleet:
 
 - **The rival** (`settings.rival`, off by default) is an optional persistent
   pace car that lives *in* the `npcs` array — collision needs no special case —
@@ -662,7 +663,7 @@ control.
   contact site in `collide.ts` already computed and threw away, maxed across
   walls, buildings and NPCs. It ignores speed *along* a surface, which is what
   separates kerbing a barrier from hitting one. Measurements behind the number
-  are in `docs/handoff/reports/clean-distance.md`.
+  are recorded with the constant in `engine.ts`.
 - **Persistence**: `Profile.cleanRunBest`, metres, written by `persist()` and
   scrubbed in `loadProfile` like every other stored number. The old
   `noHesiBest` held points and is deleted rather than converted.
@@ -898,7 +899,7 @@ full table.
 
 Caps only ever gate *down*: a user setting can turn something off, never on
 above its cap. Note that **`dashcam: true` on every tier including mobile** —
-that is an explicit call per AGENTS.md; motion blur is the mobile cut instead.
+that is deliberate; motion blur is the mobile cut instead.
 
 `worldTierCaps()` is a cached module-level duplicate resolution, because the
 world builders in `game/world/*` run inside startup and can't reach the `Game`
@@ -1092,39 +1093,33 @@ anything you commit into `public/` ships to every visitor, and binaries do not
 delta — each rebuild of a model adds a permanent full copy to history. Check
 the budget before committing a new asset. §3.
 
-### 6. `AGENTS.md`'s top block is machine-generated
-
-The `<!-- BEGIN:nextjs-agent-rules -->` block is written and re-added by
-`next dev`. Removing it from a diff only re-creates the uncommitted change.
-Commit it with your work to keep the tree clean. Do not hand-edit it out.
-
-### 7. Real per-NPC lights are banned
+### 6. Real per-NPC lights are banned
 
 Each spotlight multiplies the lit-shader cost of every surface it touches. The
 player's headlights are the entire dynamic-light budget. NPC illumination is
 instanced quads and per-instance wash attributes. §5.6.
 
-### 8. Light falloff is post-processing, not falloff
+### 7. Light falloff is post-processing, not falloff
 
 A hard edge on a light pool is almost never the light's falloff — it is the POV
 composite's blown-highlight clip (`smoothstep(.72, 1.02, luma)`) or its black
 crush (`col - .06`). **Brightening does not fix it; it grows the hard edge.**
-There is a `realistic-light` skill and a `car-light-reflections` skill for this
-exact class of problem — load them before touching any light.
+The rule holds for every light in the game: how a beam lands on a surface, and
+how a light pool fades, are decided in the post chain, not by the light.
 
-### 9. `LANE_FOLLOW_RATE` is coupled to corridor geometry
+### 8. `LANE_FOLLOW_RATE` is coupled to corridor geometry
 
 `corridor.ts` sizes every lane taper's steepness so a car tracking at
 `traffic.ts`'s `LANE_FOLLOW_RATE = 3.4` m/s never falls behind the pavement.
 Change one, change the other.
 
-### 10. `traffic.ts` lamp-wash tables must stay in lockstep with `highway.ts`
+### 9. `traffic.ts` lamp-wash tables must stay in lockstep with `highway.ts`
 
 The tables replicate the streetlight placement rules — tunnel and toll skips,
 gore gaps, tier thinning. Drift means cars washing under lamps that do not
 render.
 
-### 11. Chain `onBeforeCompile`, never clobber it
+### 10. Chain `onBeforeCompile`, never clobber it
 
 `mats.ts` composes four shader-patch families and the install order matters
 (`projectedUv` must come after the PBR upgrade because it replaces the hook).
@@ -1132,19 +1127,19 @@ Three keys its program cache on the hook's `toString()`, which is also why
 per-style shader variants are banned in `traffic.ts` — the paint reference rides
 in as a *uniform* to keep one compiled program for the whole fleet.
 
-### 12. `dashboard.ts`'s `drawInfo` change-gate
+### 11. `dashboard.ts`'s `drawInfo` change-gate
 
 The info panel short-circuits when nothing changed, comparing a fixed list of
 fields. **Anything new added to `drawInfo` must be added to that list too, or it
 will never repaint.**
 
-### 13. Don't clamp `car.z`
+### 12. Don't clamp `car.z`
 
 The corridor's loop splice folds z back into its band every frame. A clamp in
 `physics.ts` would pin the car short of the splice threshold.
 `test/corridor-drive.mjs` asserts the absence of one.
 
-### 14. `quiesce()` invalidates caller-side caches
+### 13. `quiesce()` invalidates caller-side caches
 
 If you cache anything it touches, invalidate on unpause — otherwise a resume
 comes back silent or dry and stays that way until the driving value happens to
@@ -1206,9 +1201,9 @@ row is obsolete — the dash panel now reads the live player (§5.8). The table
 is kept as a record of what was moving while the document was researched.*
 
 The body of this document was researched against `2b6e472` and describes what
-was **committed and stable** there. A dozen agents were mid-edit throughout, and
-three of their sweeps (`4891fdf`, `00878f9`, `51acadd`) landed while it was being
-written — so treat these specific areas as possibly ahead of the text above:
+was **committed and stable** there. The tree was under heavy parallel edit
+throughout, and three sweeps (`4891fdf`, `00878f9`, `51acadd`) landed while it
+was being written — so treat these specific areas as possibly ahead of the text above:
 
 | Area | State |
 |---|---|

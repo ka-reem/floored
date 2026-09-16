@@ -98,7 +98,7 @@ await page.evaluate(() => {
   };
   window.__daylight = () => { window.__neonx.setTime(11.5); };
 });
-// daylight: the owner judges bodywork gaps, and a night shot hides them
+// daylight: bodywork gaps are what this shoots, and a night shot hides them
 await page.evaluate(() => window.__daylight());
 await sleep(500);
 

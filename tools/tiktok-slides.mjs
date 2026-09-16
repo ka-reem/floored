@@ -1,9 +1,9 @@
 /* TikTok slide compositor — game frames in, postable 1080x1920 PNGs out.
 
-   The owner's pipeline is "screenshot the slide and post it", so the text has to
-   be BURNED IN and the frame has to already respect TikTok's overlays. See
-   .claude/skills/tiktok-slides/SKILL.md for why each number is what it is, and
-   RESEARCH.md next to it for the sources.
+   The posting workflow is "screenshot the slide and post it", so the text has
+   to be BURNED IN and the frame has to already respect TikTok's overlays. See
+   docs/tiktok-slides.md for why each number is what it is, and the sources
+   behind them.
 
    Two decisions worth knowing before you change anything:
 
@@ -30,12 +30,12 @@ const arg = (k, d) => {
   return i > -1 ? process.argv[i + 1] : d;
 };
 const SPEC = arg("spec");
-const OUT = arg("out", "/tmp/claude-0/slides");
+const OUT = arg("out", "/tmp/tiktok/slides");
 if (!SPEC) { console.error("need --spec <file.json>"); process.exit(1); }
 mkdirSync(OUT, { recursive: true });
 
 const W = 1080, H = 1920;
-/* The conservative union of conflicting sources — see SKILL.md. Outside it sit
+/* The conservative union of conflicting sources. Outside it sit
    the n/N counter, the action rail, and the dots + caption block. */
 const SAFE = { x: 90, y: 200, w: 810, h: 1220 };
 

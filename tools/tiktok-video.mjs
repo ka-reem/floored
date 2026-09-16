@@ -1,10 +1,9 @@
 /* TikTok video maker — frame-stepped game capture in, postable 1080x1920 MP4 out.
 
-   tiktok-slides.mjs makes stills. This makes the 7–15 s clips the owner asked
-   for ("videos with diff captions or captions changing"), in the same type
-   style, so a clip and a slide from the same account look like one voice.
+   tiktok-slides.mjs makes stills. This makes 7–15 s clips with changing
+   captions, in the same type style, so a clip and a slide from the same account look like one voice.
 
-   HOW IT CAPTURES. This box has no GPU: a game frame through SwiftShader takes
+   HOW IT CAPTURES. The build box has no GPU: a game frame through SwiftShader takes
    0.2–3 s, so recording the screen in real time is impossible. Instead the
    engine is put in FRAME-STEPPED mode (__neonx.setFixedDt, game/engine.ts —
    debug builds only): every __neonx.step() advances the sim by exactly 1/fps
@@ -65,8 +64,8 @@ const arg = (k, d) => {
 };
 const has = (k) => process.argv.includes("--" + k);
 const SPEC = arg("spec");
-const OUT = arg("out", "/tmp/claude-0/video");
-const FFMPEG = arg("ffmpeg", process.env.FFMPEG || "/tmp/claude-0/ffbin/node_modules/ffmpeg-static/ffmpeg");
+const OUT = arg("out", "/tmp/tiktok/video");
+const FFMPEG = arg("ffmpeg", process.env.FFMPEG || "./node_modules/ffmpeg-static/ffmpeg");
 if (!SPEC) { console.error("need --spec <file.json>"); process.exit(1); }
 mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

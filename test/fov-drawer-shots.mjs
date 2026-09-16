@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-/* Shots for the quick-drawer FOV row (owner: "field of view should be able to
-   be adjusted from the 3 dots").
+/* Shots for the quick-drawer FOV row — field of view, adjustable from the
+   3-dot drawer rather than only from SETTINGS.
 
    Two things to look at:
      1. the drawer itself, with the new FIELD OF VIEW row, at three viewports;
@@ -144,8 +144,8 @@ for (const [name, w, h] of [
   await advance(dpage, 500);
   await drawerCrop(dpage, `drawer-${name}-crop-tapped`);
   console.log("   after one tap:", JSON.stringify(await dpage.evaluate(() => window.__neonx.game.fovRow)));
-  /* Label OPTION B for the owner to choose between: the SAME live drawer with
-     only the row's text replaced in the DOM. Same CSS, same grid, a real
+  /* Label OPTION B, so the two wordings can be compared: the SAME live drawer
+     with only the row's text replaced in the DOM. Same CSS, same grid, a real
      reflow — the alternative wording, not a drawing of it. React restores the
      real label on the next render (closing the sheet below is one). */
   await dpage.evaluate(() => {

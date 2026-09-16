@@ -10,13 +10,13 @@ import type { Terrain } from "./terrain";
 import { worldTierCaps } from "../settings";
 import { Merge } from "./scenery";
 
-/* Continuous roadside density (the map-density lane).
+/* Continuous roadside density.
 
-   The transform pass gave the lap six lit districts; the owner's verdict was
-   that the space BETWEEN them still reads as the same empty road — what he
-   asked for was "trees and rendering and stuff", i.e. the continuous texture
-   a real orbital carries at its edges, not another landmark. This file is
-   that texture, in two registers:
+   The transform pass gave the lap six lit districts, but the space BETWEEN
+   them still read as the same empty road. What it was missing was not another
+   landmark — it was the continuous texture a real orbital carries at its
+   edges: trees and the rendering that goes with them. This file is that
+   texture, in two registers:
 
    VEGETATION — a full-lap planting pass. Naturally-clumped tree lines run
    along both shoulders wherever the world allows (a low-frequency density
@@ -445,12 +445,12 @@ export function buildRoadside(
      floats over a viaduct; the trees are simply the size the road's height
      demands.
 
-     THREE HEIGHTS, MIXED. Rendered as options, the owner asked for all of
-     them at once — "it can randomly spawn at 0 A or B, preferably A or B
-     tho, that way it has some randomness and feels diff". So each tree
-     draws a tier: 0 is the original planting, kept as the occasional young
-     tree whose top sits around the coping (a few give the line depth; a lot
-     of them would just be the bug he reported again), A is the height that
+     THREE HEIGHTS, MIXED. Rendered as three options, all three ship: a line
+     that randomly draws 0, A or B — weighted toward A and B — has variety a
+     single height cannot. So each tree draws a tier: 0 is the original
+     planting, kept as the occasional young tree whose top sits around the
+     coping (a few give the line depth; a lot of them would just be the
+     too-short-trees bug again), A is the height that
      puts the crown over the driver's eye, B the taller canopy the road runs
      inside. Weighted toward A and B. Stated as metres of CROWN TOP above the
      deck at the same z. */

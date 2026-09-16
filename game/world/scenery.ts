@@ -1237,7 +1237,7 @@ export function buildScenery(
   blob.dispose();
   trunk.dispose();
 
-  /* Third pass — the full-lap roadside density layer (map-density lane):
+  /* Third pass — the full-lap roadside density layer:
      continuous clumped tree lines, imposter ranks and near-road clutter
      filling the space BETWEEN the districts above. Runs last and draws only
      from its own forked stream (same contract as FX_DISTRICTS), so it can

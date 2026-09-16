@@ -44,7 +44,7 @@ const BUILD_REV =
  * The one thing a static export cannot carry is `headers()` below: there is no
  * server left to run it, and Next refuses the combination. Every header rule
  * that has to survive the move therefore ALSO lives in public/_headers, which
- * is Cloudflare's file for exactly this and which copies into out/ verbatim.
+ * is Cloudflare's file for exactly this and which copies into out/ unchanged.
  * If you add a rule to headers(), add it there too or it ships on Vercel only. */
 const STATIC_EXPORT = process.env.NEXT_OUTPUT === "export";
 

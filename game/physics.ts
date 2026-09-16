@@ -159,8 +159,8 @@ export interface HandbrakeTune {
   force: number;
   /** What the lever's force is multiplied by at FULL throttle. 1 = the pedal
    *  and the lever fight each other in the same FxR the way they used to;
-   *  0.4 means standing on it releases 60% of the lever, which is the owner's
-   *  "still push out power". Faded out at parking speed (see `minSpeed`) so
+   *  0.4 means standing on it releases 60% of the lever, so the car still
+   *  puts power down mid-slide. Faded out at parking speed (see `minSpeed`) so
    *  throttle can never drive out from under the lever in a car park. */
   thrRelief: number;
   /** Sideslip, degrees, the lever will hold with nothing pushing back. This
@@ -373,7 +373,7 @@ try {
    a car jammed against a parapet at a big yaw angle puts its forward probe
    out past the barrier, reads hF ≈ 0 against hB ≈ 10, and pegs `slope` at
    the -0.35 clamp: 19 degrees of nose-down lean on a car that is standing on
-   flat concrete. That is the "leans downward" the owner reported. It is a
+   flat concrete. That is the reported "car leans downward" symptom. It is a
    pure reporting bug — nothing in the handling model moved.
 
    The guard: a probe more than `maxRise` metres away from the ground under
@@ -471,8 +471,8 @@ function engineTorque(spec: PhysicsSpec, rpm: number) {
 }
 
 /* ---- Top end: how the car runs out of pull -----------------------------
-   The owner's note was "the speed needs to be dropped off a little bit,
-   especially at higher speeds". Measured with the real sim
+   Pull needs to fall off more, and especially so at high speed. Measured
+   with the real sim
    (test/topend-sim.mjs), the model's AIR was already honest and its THRUST
    was not:
 
@@ -1002,8 +1002,8 @@ export function stepPhysics(
     ? clamp(Fzf / FzT + 0.28 * lat, 0.62, 0.94)
     : clamp(Fzf / FzT + 0.1 * lat, 0.62, 0.88);
   /* The lever's own force, and how much of it the throttle lets go of. This
-     is the owner's "still push out power": at full throttle the lever keeps
-     only HB.thrRelief of its pull, so drive wins the FxR sum and the slide is
+     is what keeps the car putting power down mid-slide: at full throttle the
+     lever keeps only HB.thrRelief of its pull, so drive wins the FxR sum and the slide is
      sustained instead of scrubbed to a stop. Speed-gated through hbSpd so a
      stationary car cannot drive out from under its own parking brake. */
   const hbForce = hbLever * HB.force * lerp(1, HB.thrRelief, thr * hbSpd);

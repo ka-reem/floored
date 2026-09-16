@@ -1,8 +1,7 @@
 /* MOUNTAIN <-> HIGHWAY CLEARANCE HARNESS.
 
-   The owner: "the mountain is clipping with the road at the end of mountain
-   exit and the beginning of the mountain entrance its clipping with the main
-   highway".
+   The reported symptom: the mountain geometry clips into the main highway at
+   the end of the mountain exit and the beginning of the mountain entrance.
 
    So: measure, in metres, how far every piece of the mountain route sits from
    the main deck's pavement edge, all the way through both gores. A POSITIVE
@@ -166,7 +165,8 @@ for (const name of ["DIVERGE", "MERGE"]) {
   }
 }
 
-/* per-station dump around each gore, the shape the owner's diagram is drawn from */
+/* per-station dump around each gore — the numbers the clearance diagram is
+   drawn from */
 if (process.argv.includes("--dump")) {
   console.log("\n  s      z        hwR   shR   pavGap  wallGap  rockGap");
   for (const r of rows) {

@@ -7,8 +7,8 @@
    and the point the session stopped called out. Under it, the same drive
    against the clock, which is where "they slowed down HERE" is legible.
 
-   This is the deliverable: the owner looks at one image and sees the shape of
-   somebody's drive without watching a video of it.
+   This is the deliverable: one image that shows the shape of somebody's
+   drive without having to watch a video of it.
 
    Usage: node test/replay-plot.mjs test/artifacts/telemetry/session.json \
             docs/gallery/img/telemetry-replay.webp
@@ -76,8 +76,8 @@ const py = (x) => oy + (x - x0) * scX;
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
 const F = "DejaVu Sans, sans-serif";
 
-/* Speed ramp. RED IS SLOW on purpose: the thing the owner is hunting for is
-   where somebody bogged down, so that is what has to jump off the picture. */
+/* Speed ramp. RED IS SLOW on purpose: what this plot is read for is where
+   somebody bogged down, so that is what has to jump off the picture. */
 const STOPS = [
   [0, [214, 48, 60]], [40, [240, 122, 46]], [80, [232, 200, 70]],
   [130, [122, 214, 118]], [180, [72, 214, 214]], [240, [150, 190, 255]],
@@ -121,7 +121,8 @@ for (let i = 1; i < samples.length; i++) {
     `x2="${px(b.z).toFixed(1)}" y2="${py(b.x).toFixed(1)}" stroke="${col(b.kmh)}" ` +
     `stroke-width="3.4" stroke-linecap="round" opacity="0.95"/>`;
 }
-/* tunnel stretch, over the trace, so "he was in the tunnel here" is readable */
+/* tunnel stretch, over the trace, so "the driver was in the tunnel here" is
+   readable */
 let tun = "";
 for (let i = 1; i < samples.length; i++) {
   const a = samples[i - 1], b = samples[i];
@@ -251,8 +252,8 @@ console.log("wrote " + OUT);
 console.log(`  ${samples.length} samples, ${batches.length} batches, ${jsonBytes} B JSON, ` +
   `${(perMin / 1024).toFixed(2)} KB/min, ${crashes.length} crashes, ${nears.length} near misses`);
 
-/* the crop AGENTS.md asks for: the busiest 900 m of the map, big enough to
-   judge a crash marker in */
+/* the crop that makes it judgeable: the busiest 900 m of the map, big enough
+   to read a crash marker in */
 if (CROP && crashes.length) {
   const c0 = at(crashes[0].i);
   const cw = Math.min(W, 1000), cx = Math.max(0, Math.min(W - cw, px(c0.z) - cw / 2));

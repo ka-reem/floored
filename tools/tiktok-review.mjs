@@ -1,22 +1,22 @@
 /* Morning review page — every overnight set on one scrolling page.
 
-   The owner picks by looking, so the page is contact sheets and hooks, not
+   Picking is done by looking, so the page is contact sheets and hooks, not
    prose: one row per set (its 4-6 slides at thumbnail size, the hook, the
    angle), grouped by angle, with the video posters at the top. Sheets are
-   inlined as base64 so the page is one self-contained HTML the Artifact tool
-   can publish.
+   inlined as base64 so the page is one self-contained HTML file that can be
+   opened or hosted anywhere.
 
-   Usage: node tools/tiktok-review.mjs --batch /tmp/claude-0/batch \
-            [--video /path/to/clips] --out /tmp/claude-0/review.html
+   Usage: node tools/tiktok-review.mjs --batch /tmp/tiktok/batch \
+            [--video /path/to/clips] --out /tmp/tiktok/review.html
 */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 
 const arg = (k, d) => { const i = process.argv.indexOf("--" + k); return i > -1 ? process.argv[i + 1] : d; };
-const BATCH = arg("batch", "/tmp/claude-0/batch");
+const BATCH = arg("batch", "/tmp/tiktok/batch");
 const VIDEO = arg("video", "");
-const OUT = arg("out", "/tmp/claude-0/review.html");
+const OUT = arg("out", "/tmp/tiktok/review.html");
 
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 async function b64(file, width) {
@@ -44,7 +44,7 @@ if (VIDEO && existsSync(VIDEO)) {
 }
 
 /* Story angles are free text ("CG open loop", "AI voice funny"); the page
-   groups them into the handful of buckets the owner actually chooses between. */
+   groups them into the handful of buckets worth choosing between. */
 const BUCKET = [
   [/vision|debug|bug|confession|mistake|for humans/i, "AI vision & confessions"],
   [/AI|prompt|build story|series/i, "AI voice"],

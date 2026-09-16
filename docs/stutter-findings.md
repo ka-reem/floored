@@ -85,7 +85,7 @@ worse than no code.
 
 **Recommendation:** make these two assertions comparative, the way the
 neighbouring ones in the same file already are. That is a test change on a
-stochastic measure, so it is the owner's call, not mine.
+stochastic measure, so it is a judgement call worth making deliberately.
 
 ## `rival-sim` — "player held the lead for 3.07 s"
 Three seeds. This is the rival's unpassable mode, which the gallery's own

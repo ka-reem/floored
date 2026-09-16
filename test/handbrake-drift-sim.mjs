@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 /* Headless handbrake / drift bench.
 
-   The owner's report: "the hand brake doesn't perform that great, if we can
-   adjust it so that it can like help perform drifts so the car can drift a
-   bit and then like still push out power when handbrake is pulled to help it
-   do drift and correct the car."
+   The complaint: the handbrake does not do much. It should help the car
+   DRIFT — break the rear loose, keep power going down while it is held, and
+   let the driver correct out of the slide.
 
    Three things have to be true for that to be a drift rather than a scrub:
 

@@ -1,9 +1,8 @@
 /* Batch slide generator — a story list in, fifty finished sets out.
 
-   tools/tiktok-slides.mjs makes ONE set from ONE spec. Overnight the owner
-   wants "100 tiktok posts or whatever u think is ideal maybe 50", varied, so
-   he can "pick and choose myself in the morning". Hand-writing fifty specs is
-   the wrong shape; this reads a STORY LIST and does the rest:
+   tools/tiktok-slides.mjs makes ONE set from ONE spec. A useful overnight run
+   is fifty-odd varied sets to pick through afterwards, and hand-writing fifty
+   specs is the wrong shape; this reads a STORY LIST and does the rest:
 
      stories.json   [{ id, angle, caption, hashtags, slides:[...] }]
      frame index    every PNG under the frame dirs, tagged from its filename
@@ -11,11 +10,11 @@
    A slide's `img` is either a path, or a QUERY like "@toll night orbit" — words
    that must all appear in a frame's filename (hero-toll-plaza.png,
    lib-kaze-toll-side-night.png ...). Queries are resolved with a per-story
-   "no repeats" rule so a set never shows the same picture twice, which was the
-   owner's first complaint ("all 6 of the car photos are the same").
+   "no repeats" rule so a set never shows the same picture twice — the first
+   version's worst failure was six near-identical car photos in one set.
 
    Output: <out>/<id>/slide-NN.png + caption.txt, one contact sheet per set,
-   and INDEX.md listing every set with its hook — the thing he reads first.
+   and INDEX.md listing every set with its hook — the entry point for review.
 
    Usage: node tools/tiktok-batch.mjs --stories stories.json[,more.json] --out dir/
             [--frames dirA,dirB] [--only id1,id2]
@@ -27,8 +26,8 @@ import sharp from "sharp";
 
 const arg = (k, d) => { const i = process.argv.indexOf("--" + k); return i > -1 ? process.argv[i + 1] : d; };
 const STORIES = arg("stories");
-const OUT = arg("out", "/tmp/claude-0/batch");
-const SCRATCH = "/tmp/claude-0/-home-user-racing-game/d557af8b-cf5b-5327-b452-a82bf20b5727/scratchpad";
+const OUT = arg("out", "/tmp/tiktok/batch");
+const SCRATCH = process.env.TIKTOK_SCRATCH || "/tmp/tiktok/scratch";
 /* content/lib and content/vision exist only on the content-library branch —
    the checked-in frame library the TikTok session works from. */
 const FRAME_DIRS = arg("frames", [

@@ -1,9 +1,9 @@
 /* Where does N put you?
 
-   N (resetCar in game/engine.ts) is the only way out of a stuck car, and the
-   owner asked for it to mean ONE thing everywhere: "pressing n should reset
-   you on the nearest highway. so if im on the city road i can press n and
-   itll reset me to highway not keep me in the city."
+   N (resetCar in game/engine.ts) is the only way out of a stuck car, and it
+   has to mean ONE thing everywhere: reset onto the nearest HIGHWAY. Pressing
+   it on a city street lifts you out of the city rather than keeping you in
+   it.
 
    It used to have two answers — snap to the corridor from up on the deck, but
    look up the nearest STREET in the road net from down in the town. That

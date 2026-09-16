@@ -2,10 +2,9 @@
 
    hero-shots.mjs (driving cams) and hero-orbit.mjs (photo-mode rig) each carry
    a fixed table and each produce one look: one car, one paint, one traffic
-   level, a handful of stations. The owner's verdict on that batch was "notice
-   how all 6 of the car photos are the same", and the brief that followed was
-   "diff car angles, angles of the city, different spots, diff cars, whole
-   bunch of content, make it vary a lot".
+   level, a handful of stations. The result was six car photos that all read
+   as the same picture. What a batch actually needs is variety: different car
+   angles, angles of the city, different spots, different cars.
 
    So this one takes its SHOT LIST FROM A FILE and its car/paint/traffic from
    the command line, and one browser session shoots one batch. Everything the

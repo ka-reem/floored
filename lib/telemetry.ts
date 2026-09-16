@@ -1,7 +1,7 @@
 /* Drive telemetry — the replay that is not a video.
 
-   The owner wants to watch testers play. PostHog session replay records the
-   DOM, and this game is one <canvas>, so a replay without canvas capture is a
+   The point is to be able to watch testers play. PostHog session replay
+   records the DOM, and this game is one <canvas>, so a replay without canvas capture is a
    black rectangle where the driving is. Canvas capture is on for desktop only
    (see lib/analytics.ts): reading the canvas back forces a GPU pipeline sync,
    four times a second, on exactly the phones that have no frame time spare.
@@ -19,7 +19,7 @@
    marked, and where the session stopped.
 
    Discipline this file inherits and must not break:
-   - it goes through track() in lib/analytics.ts, so the owner opt-out
+   - it goes through track() in lib/analytics.ts, so the developer opt-out
      (`?owner=1`), the webdriver guard that keeps the harnesses out of the
      dashboard, and the "PostHog never loaded" no-op path all apply unchanged;
    - it accumulates NOTHING when analytics is not live. Opted out, blocked by

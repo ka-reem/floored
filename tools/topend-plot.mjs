@@ -5,7 +5,7 @@
      top-end-speed.png  — speed against time, today vs the three variants,
                           with the mph segment times called out. The main one.
      top-end-accel.png  — acceleration against speed, which is where the
-                          fall-off the owner described is actually visible.
+                          fall-off is actually visible.
 
    SVG is written by hand and rasterised with sharp (already a dependency);
    there is no plotting library in this repo and no GPU to spare.
@@ -64,7 +64,7 @@ function speedFigure() {
   o.push(txt(L, 62, "The car stops pulling sooner", { size: 42, weight: 700 }));
   o.push(txt(L, 102, "Speed against time, flat out from a standstill — today's physics and three ways of tapering it off.",
     { size: 23, fill: INK2 }));
-  o.push(txt(L, 134, "Flatter to the right = the drop-off the owner asked for. The dashed grey line is the car as it is today.",
+  o.push(txt(L, 134, "Flatter to the right = more drop-off at speed. The dashed grey line is the car as it is today.",
     { size: 23, fill: INK2 }));
 
   /* grid + axes */

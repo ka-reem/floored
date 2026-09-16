@@ -42,8 +42,8 @@ const txt = (x, y, s, o = {}) =>
     `${o.op ? ` opacity="${o.op}"` : ""}>${esc(s)}</text>`
   );
 
-/* Closing speed, in km/h, is the axis the owner reads: "how fast was I going
-   INTO the wall". 0 to 150 covers everything from a settling car to a
+/* Closing speed, in km/h, is the axis to read this on: how fast the car was
+   going INTO the wall. 0 to 150 covers everything from a settling car to a
    full-speed broadside. */
 const VMAX = 42;            // m/s of closing speed
 const N = 600;

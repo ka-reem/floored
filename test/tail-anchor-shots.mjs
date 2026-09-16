@@ -1,8 +1,8 @@
 /* Tail-anchor evidence shots for ONE style, before/after, from one session.
 
-   The owner's report: "rav4 tail lights need to be higher so its on the
-   acutal red light lamps are. and the bus ltail ights are not bright enoguh
-   theyre very idm or inside the bus". Both are the bake's blind fallback
+   Two reported symptoms: the suv's tail lights sit too low to land on the
+   red lamps painted on the shell, and the bus's read as very dim, as though
+   they were inside the bus. Both are the bake's blind fallback
    anchor (see TAIL_FIX in game/npcmodels.ts), so the honest evidence is the
    SAME frame with only that anchor changed.
 
@@ -39,7 +39,7 @@ const CAMS = arg("--cams", "pov:6,chase:5").split(",").map((s) => {
   return [c, Number(g || 6)];
 });
 /* every crop is upscaled to this width: the rear of a car 6 m ahead is only
-   ~200 px across at 1440, and the owner has to be able to see the lens */
+   ~200 px across at 1440, and the lens has to be big enough to judge */
 const CROP_W = Number(arg("--crop-width", 780));
 const OUT = arg("--out", path.join(process.cwd(), "test", "artifacts", "tail-anchor"));
 mkdirSync(OUT, { recursive: true });

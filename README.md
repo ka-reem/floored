@@ -1,5 +1,15 @@
 # FLOORED — 首都高 Night Drive (v3)
 
+> **Public mirror.** This is a cleaned copy of a private working repo. The
+> commit history is the real one — 770 commits over 32 days — but the
+> development gallery (~42 MB of test renders), internal working notes and the
+> Capacitor iOS project are not carried here, and the analytics key now comes
+> from the environment. Nothing about the game code itself was changed to
+> publish it.
+>
+> Much of this was written with AI assistance; the commits say so where that is
+> the case.
+
 Night driving through a **procedurally generated Japanese town** and the
 elevated expressway looping above it — a browser take on the "No Hesi" vibe.
 Sim-grade tire physics, 120 cars of AI traffic that yield, crash and wreck, an
@@ -19,14 +29,9 @@ drawer holding every secondary control.
 
 ## Development gallery
 
-[`docs/gallery/index.html`](docs/gallery/index.html) — 184 renders from the
-work itself, in 32 chapters, opening with an interactive build-up timeline of
-the whole project. The early chapters cover the donor-cabin surgery, the hole
-hunts, the decimation ladder and the asset budget; the later ones log the
-two-day overhaul — the map transform, the mountain pass, the dashcam clarity
-pass, the QA sweep and the fleet bakes. Clone and open it in a browser; it is
-a single self-contained page with no build step. It is excluded from the
-Vercel deployment via `.vercelignore` and is not part of the shipped game.
+The private repo carries `docs/gallery/index.html` — 184 renders from the work
+itself in 32 chapters, each one a before/after of a specific change with the
+measurements that justified it. It is ~42 MB of WebP and is not mirrored here.
 
 ## Run locally
 

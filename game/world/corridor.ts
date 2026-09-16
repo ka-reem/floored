@@ -1305,11 +1305,11 @@ export const OVERPASSES = [
     a rock shelf above the river bank, sweeps out over the water and back, and
     merges through a second east gore.
 
-    REBUILT 2026-09-08 (owner's pick, "option G"). It used to be a genuine
-    tōge: 5.40 m of pavement and a 17.4 m radius corner, entered off a deck
-    the player crosses at 200 km/h. The owner's verdict was "so hard to drive,
-    road is too tight", and the brief for the rebuild was "make it wide and
-    easier to drive". So the character changed deliberately — this is no
+    REBUILT 2026-09-08. It used to be a genuine tōge: 5.40 m of pavement and
+    a 17.4 m radius corner, entered off a deck the player crosses at 200 km/h.
+    That was simply too tight to drive — the road punished a car arriving at
+    deck speed — so the rebuild's brief was wide and easy. The character
+    changed deliberately — this is no
     longer a technical climb, it is a FAST SWEEPER: 11.00 m wide, 68.1 m
     worst radius, and a quarter of the steering rate (3.48 → 0.89 °/station).
     test/mountain-speed.mjs puts the consequence in one number: the pass used
@@ -1973,8 +1973,8 @@ export function signPlan(): SignSpec[] {
      through lanes a driver is actually in.
 
      GUIDE_H is the height, and 3.30 m is a ceiling, not a preference. The
-     face is two-tier now (textures.ts guideSignTexF, the owner's pick) and a
-     second tier has to be ADDED to the board or the type in the first one
+     face is two-tier now (textures.ts guideSignTexF) and a second tier has
+     to be ADDED to the board or the type in the first one
      shrinks. What stops it growing further is the crossing overpasses at
      z −912/−816/−720, whose soffit is 9.0 m: a mast is CLEAR + h + ARM_T +
      0.12 tall, so 3.30 m puts its top at 8.83 m and leaves 17 cm. Nothing on

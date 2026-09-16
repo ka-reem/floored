@@ -466,15 +466,15 @@ for (const cr of g.crossings) {
        bar was ≥ 28% extra road, which the old meander bought with a 13 m
        hairpin. The 2026-09-08 rebuild spends that budget the other way —
        radius instead of length — and inside a fixed 332 m z window the two
-       genuinely trade against each other, so this came down to 8% with the
-       owner's decision, not around it. Anything at or below 1.0 would mean
+       genuinely trade against each other, so this came down to 8% — the
+       radius won. Anything at or below 1.0 would mean
        the pass is a SHORTCUT, which would make the deck pointless. */
     if (mt.len < (MTN.mergeZ - MTN.divergeZ) * 1.08)
       bad("the pass is barely longer than the deck it bypasses — not a detour");
     if (maxG > 0.09) bad(`mtn grade ${f(maxG * 100)}% is steeper than 9%`);
-    /* The radius band IS the owner's brief, in numbers. The floor was 13 m
-       (drivable at all); it is now 55 m, because "so hard to drive, road is
-       too tight" is a defect report against anything tighter. The ceiling
+    /* The radius band IS the rebuild's brief, in numbers. The floor was 13 m
+       (drivable at all); it is now 55 m, because anything tighter is "so hard
+       to drive, road is too tight" — a defect, not a challenge. The ceiling
        stops the sweeper being flattened into a straight by some later tidy-
        up — at 160 m there is no corner left to drive. */
     if (minR < 55) bad(`mtn corner radius ${f(minR)} m is under 55 m — too tight to drive fast`);

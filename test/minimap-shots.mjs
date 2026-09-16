@@ -1,5 +1,5 @@
 /* Minimap photographer: both zoom framings, day and night, plus one in-situ
-   chase frame — the images behind docs/handoff/reports/minimap-polish.md.
+   chase frame.
 
    The map canvas is 172 px; a gallery image of it at 1:1 would be a stamp.
    So each map shot is blown up in-page 6x with imageSmoothing off — every

@@ -83,9 +83,9 @@ export const npcModelUrl = (style: string, base: string = BASE): string =>
    Those styles used to get a pair of lens quads authored here at load time,
    sized in metres off the bake's own anchors. That is gone. However it was
    sized, it was a rectangle laid over a car that already has its taillights
-   drawn on it, and it never matched them — the owner, looking at the fifth
-   attempt to make one fit: "just remove those rectangles then we don't need
-   that ... but keep the light glow."
+   drawn on it, and it never matched them. After five attempts to make one
+   fit, the rectangles went rather than the glow: the overlay was the part
+   that read as wrong, not the light.
 
    So there are exactly two ways a car's lamps light up now, and both of them
    are the car's own: a baked `_LAMP` tag, or (TEX_LENS below) its painted
@@ -100,10 +100,10 @@ export const npcModelUrl = (style: string, base: string = BASE): string =>
 export const SKIN_KIND = 5;
 
 /* ---- the car's own painted lens ------------------------------------------
-   The owner, on the authored quads: "u cant just overlay the taillight
-   rectangles over the actual red taillights ... shaped to the cars tailights
-   properly". Right — where the bake HAS a lamp, the lamp should be the thing
-   that lights up.
+   The authored quads were the wrong idea: a rectangle overlaid on a car that
+   already has red taillights painted on it will never be shaped like them.
+   Where the bake HAS a lamp, the lamp itself should be the thing that
+   lights up.
 
    Whether it has one is a question about the texture, not the geometry, and
    these bakes are low-poly: the lens is a few square centimetres of artwork
@@ -111,7 +111,7 @@ export const SKIN_KIND = 5;
    shape. What can is a per-PIXEL test in the fragment shader — and then the
    only thing decided here is which styles have a lens worth testing for.
 
-   That was measured offline over every bake (scratchpad probe: decode the
+   That was measured offline over every bake (an offline probe: decode the
    GLB's own base texture, sample the rear-facing triangles densely, and
    report the share of the rear panel that reads as saturated red):
 
@@ -138,16 +138,16 @@ export const SKIN_KIND = 5;
 const TEX_LENS = new Set(["taxi"]);
 
 /* ---- measured tail anchors ------------------------------------------------
-   The owner: "rav4 tail lights need to be higher so its on the acutal red
-   light lamps are. and the bus ltail ights are not bright enoguh theyre very
-   idm or inside the bus".
+   Two reported symptoms: the suv's tail lights sit too low to land on the
+   red lamps actually painted on the shell, and the bus's read as very dim,
+   as though they were inside the bus.
 
    Both are the SAME defect, and neither is a brightness problem. A hi-fi
    bake finds its lamp anchors from the donor's own lens triangles, but when
    that finder comes up with fewer than four per side it falls back to a blind
    guess — `[±W*0.34, H*0.45, -L*0.47]` (tools/build-hifi-models.mjs, `pair`).
-   The suv (Highlander shell — the owner's "rav4") and the bus are the only
-   two styles in the fleet running on that fallback, because their lens
+   The suv (a Highlander-shaped shell) and the bus are the only two styles
+   in the fleet running on that fallback, because their lens
    artwork is smoked/unpainted (suv) or missed by the red-texel test (bus).
    And these two are also the styles with no lit lens geometry at ALL, so the
    glow sprite IS their taillight — an anchor in the wrong place is not a
@@ -210,8 +210,8 @@ const SKIN_DEPTH = 0.40, SKIN_NZ = 0.30, SKIN_YBAND = 0.55;
    clouds are depthWrite:false but still depth-TESTED (traffic.ts mkCloud), and
    a Points sprite carries ONE depth for its whole quad. An anchor inside the
    bodywork has its entire glow discarded by the car's own rear panel — which
-   is exactly the "very dim or inside the bus" the owner reported — and an
-   anchor floating outboard draws a taillight that is visibly not attached to
+   is exactly the "very dim, or inside the bus" symptom — and an anchor
+   floating outboard draws a taillight that is visibly not attached to
    the car.
 
    So the anchor is seated on the shell the car actually has: cast a ray up +z
@@ -411,7 +411,7 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
     /* No baked tail lenses, but this bake paints its own: flag the rear panel
        and let the shader light the lens texels (see TEX_LENS). Nothing is
        authored for a style that fails this — it keeps its glow and no lit
-       lens, which is the owner's call over a rectangle that doesn't fit. */
+       lens — preferable to a rectangle that doesn't fit. */
     hasTailGeo = tagTexturedTailSkin(geo, lamps.tail);
   }
   /* Still no lit lens: the glow sprite IS this car's taillight, so its anchor
@@ -441,7 +441,7 @@ function extract(style: string, gltf: { scene: THREE.Object3D }): NpcModel | nul
 /** The styles a desktop-only HD variant is baked for (1024px atlas, gentler
     decimation) — tools/build-hifi-models.mjs --hd writes exactly these. */
 // the ItsDiyor modern heroes, plus the Mint-generated mhybrid that rides
-// beside them (owner's call, 2026-09-06: keep the old one AND add this)
+// beside them (both ship: the new shell is an addition, not a replacement)
 export const HD_STYLES = ["sedan", "hybrid", "compact", "suv", "mhybrid"];
 export const HD_BASE = "/models/cars-hd/";
 

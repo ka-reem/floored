@@ -58,8 +58,7 @@ const argOf = (k) => {
 };
 const has = (k) => argv.includes(k);
 const externalUrl = argOf("--url");
-const SCRATCH = process.env.CLAUDE_SCRATCHPAD ||
-  "/tmp/claude-0/-home-user-racing-game/d557af8b-cf5b-5327-b452-a82bf20b5727/scratchpad";
+const SCRATCH = process.env.QA_SCRATCH || "/tmp/floored-qa";
 const OUT = path.resolve(
   argOf("--out") || (existsSync(SCRATCH) ? path.join(SCRATCH, "qa") : path.join(process.cwd(), "test", "artifacts", "qa")),
 );

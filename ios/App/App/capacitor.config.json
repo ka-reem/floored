@@ -1,0 +1,30 @@
+{
+	"appId": "com.floored.game",
+	"appName": "Floored",
+	"webDir": "out",
+	"backgroundColor": "#05060c",
+	"ios": {
+		"scrollEnabled": false,
+		"backgroundColor": "#05060c",
+		"contentInset": "never"
+	},
+	"plugins": {
+		"SplashScreen": {
+			"launchAutoHide": false,
+			"backgroundColor": "#05060c",
+			"showSpinner": false
+		},
+		"StatusBar": {
+			"overlaysWebView": true,
+			"style": "DARK",
+			"backgroundColor": "#05060c"
+		}
+	},
+	"packageClassList": [
+		"AppPlugin",
+		"HapticsPlugin",
+		"ScreenOrientationPlugin",
+		"SplashScreenPlugin",
+		"StatusBarPlugin"
+	]
+}

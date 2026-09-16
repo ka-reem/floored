@@ -32,11 +32,10 @@
    highlander/, civil/), each an unzipped Sketchfab glTF export
    (scene.gltf + scene.bin + textures/). The donors are deliberately NOT in
    the repo (100MB+ of source for ~3MB of output); ATTRIBUTIONS.md carries
-   their licences and uids, docs/handoff/briefs/brief-npc-fleet.md the
-   sourcing history.
+   their licences and uids.
 
-   Two quality levels from one pipeline (the owner wants the new fleet on
-   MOBILE too, with desktop a step up):
+   Two quality levels from one pipeline, because the fleet has to run on
+   MOBILE too, with desktop a step up:
 
    - BASE (default): public/models/cars/<style>.glb — critical path, so
      hero donors are visibility-culled (interiors and all occluded geometry
@@ -262,7 +261,7 @@ function collectTris(doc, nodeFilter) {
 
 /* ---------------- Mint source: one Draco .glb, one atlas --------------- */
 /* Same `tris` shape collectTris produces, so everything downstream — wheel
-   strip, crease normals, fit, lamp extras, writer — is shared verbatim. */
+   strip, crease normals, fit, lamp extras, writer — is shared unchanged. */
 async function loadMintGlb(file) {
   const io = new NodeIO().registerExtensions(ALL_EXTENSIONS).registerDependencies({
     "draco3d.decoder": await draco3d.createDecoderModule(),
@@ -529,7 +528,7 @@ function stripWheels(tris, b, pack = false) {
 /* Rasterizes triangle ids into z-buffers from a sphere of orthographic
    viewpoints (plus low grazing rings so arches and sills survive). BLEND
    glass is treated as OPAQUE on purpose: whatever is only seen through
-   glass is exactly the interior the owner wants gone. */
+   glass is exactly the interior geometry this pass exists to drop. */
 function visibilityCull(tris, res = 420) {
   const dirs = [];
   const N = 36;
@@ -1342,9 +1341,9 @@ async function build(style, cfg) {
 }
 
 fs.mkdirSync(OUT, { recursive: true });
-/* --mint and --dl no longer contend for a slot: the owner's call (2026-09-06)
-   was to keep the ItsDiyor `hybrid` AND add the Mint shell beside it, so the
-   Mint table writes `mhybrid` and the two tables no longer share a key. */
+/* --mint and --dl no longer contend for a slot: the ItsDiyor `hybrid` is
+   KEPT and the Mint shell is added beside it, so the Mint table writes
+   `mhybrid` and the two tables no longer share a key. */
 const table = MINT ? MINT_STYLES : STYLES;
 const todo = Object.entries(table).filter(([s]) => !ONLY.length || ONLY.includes(s));
 if (!todo.length) {

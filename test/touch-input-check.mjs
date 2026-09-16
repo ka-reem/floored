@@ -1,4 +1,4 @@
-/* Headless proof for the mobile-input lane's stuck-steering / cross-finger
+/* Headless proof for the mobile-input stuck-steering / cross-finger
    fixes (bindPointerHold, watchdogTouchInput, SteerWheel in GameApp.tsx).
 
    Loads the real page under touch+coarse-pointer emulation so Game.isTouch

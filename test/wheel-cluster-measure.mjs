@@ -386,7 +386,7 @@ const PAGE_FN = function (opts) {
   }
   /* ---- FRAMING LANDMARKS, in screen pixels -------------------------------
      The occlusion numbers above answer "is it covered". They cannot answer
-     the owner's actual question, which is about ARRANGEMENT: in a real car
+     the real question, which is about ARRANGEMENT: in a real car
      the binnacle is read THROUGH the wheel's upper opening — the rim's top
      arc passes ABOVE the top of the cluster and the hub/spoke boss sits
      BELOW the dials. That is a statement about where three horizontal lines
@@ -446,9 +446,9 @@ const PAGE_FN = function (opts) {
     donorColumn: screenBox(find("column_0")),
   };
 
-  /* ---- the owner's REFERENCE-PHOTO ratios ---------------------------------
-     He sent a photograph of a BMW 3-series driver's-eye view. A photograph is
-     measured in pixels, so these are pixels — the landmarks above, normalised
+  /* ---- REFERENCE-PHOTO ratios --------------------------------------------
+     The reference is a photograph of a BMW 3-series driver's-eye view. A
+     photograph is measured in pixels, so these are pixels — the landmarks above, normalised
      by the wheel's own projected outer diameter D, plus the two the landmarks
      did not carry: the DIALS' span (the reference calls out the two main
      dials separately from the whole binnacle, which on that car has small
@@ -459,7 +459,7 @@ const PAGE_FN = function (opts) {
        rimAbove/D     0.13    boss top level with the bottom of the dials
 
      LEGIBILITY comes out here too, because "bigger wheel" and "readable
-     cluster" are the two halves of the ask and only one of them is an
+     cluster" are the two halves of the goal and only one of them is an
      occlusion number. Both heights are projected off the cluster's own raked
      plane rather than divided out of a distance, so the 26-degree rake and
      the yaw are in the answer: the digital speed is drawn 62/232 of a 0.19 m

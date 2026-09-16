@@ -142,8 +142,8 @@ await sharp({ create: { width: W, height: H, channels: 3, background: "#0a0c12" 
   .toFile(OUT);
 console.log("wrote " + OUT);
 
-/* …and the crop AGENTS.md asks for: just the zone core, both panels, so the
-   plaza is big enough to judge rather than 60 px of a 650 m plot. */
+/* …and the crop that makes it judgeable: just the zone core, both panels, so
+   the plaza is big enough to read rather than 60 px of a 650 m plot. */
 if (process.argv[4]) {
   const L = Math.round(x(TOLL.z0) - 12), R = Math.round(x(1600) + 12);
   const CW = R - L;

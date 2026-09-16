@@ -1,8 +1,8 @@
 /* One boot, every lever, both ways — the option sheet's raw frames.
 
-   Each mobile cap this lane adds is a quality/cost trade, and the owner
-   picks the trades. Judging them from separate builds would mean a boot per
-   lever per state, and a boot on this box is ten minutes; worse, two boots
+   Each mobile cap is a quality/cost trade, and the trades have to be judged
+   by looking. Judging them from separate builds would mean a boot per lever
+   per state, and a boot on this box is ten minutes; worse, two boots
    are two different runs, so any difference between them includes the
    renderer's own noise.
 

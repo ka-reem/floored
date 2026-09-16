@@ -78,7 +78,7 @@ const CLAMP_STEP = 0.35;
 const halfW = 1.88 / 2 - 0.005;    // player.ts: P.W / 2 - 0.005
 const halfL = 4.96 / 2 + 0.02;
 
-/** The constants collide.ts hardcoded before this lane. */
+/** The constants collide.ts hardcoded before this change. */
 const BEFORE = {
   normal: (vn) => 1.07,   // flat reflection: e = 0.07 at every speed
   scrub: () => 0.965,     // whole velocity, every frame of contact

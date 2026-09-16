@@ -1,4 +1,4 @@
-/* Proof shots for two owner items, from ONE page load and ONE frozen frame.
+/* Proof shots for two open items, from ONE page load and ONE frozen frame.
 
    #15 HOOD VIEW — the hood camera is a live knob (`window.__hoodCam`), so the
    old mount and the new one can be shot from the SAME frozen frame: nothing
@@ -22,7 +22,7 @@
      gainFloor  col += lift * vec3(1.02,1.05,.98) * (.72+.56*n1) — a green-
                 biased lift (G 1.05 against B 0.98) that only fires where luma
                 is under ~0.055, modulated by the same block noise. Dark floor
-                only, which is where he saw them.
+                only, which is where they were reported.
      shadowGrain  how much of the grain survives in the shadows.
 
    Counted as pixels where G leads both R and B by a margin, in the lower half
@@ -136,7 +136,7 @@ console.log("hood geometry", hoodGeom);
 
 /* ---------- #11 traffic density sweep ---------------------------------- */
 await setDt(1 / FPS);
-await setCam(3); // dashcam: the frame the owner judges in first
+await setCam(3); // dashcam: the frame a regression shows up in soonest
 const rows = [];
 for (const d of [0.5, 0.75, 1]) {
   await page.evaluate((d) => { window.__neonx.game.settings.traffic = d; }, d);

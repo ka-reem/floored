@@ -14,7 +14,7 @@
    from anything the engine reports, so it counts everything the browser does
    per frame, not just the parts the engine knows it is doing. Median is the
    honest "how does it feel" number; p95 is where a spike lives, and a spike is
-   what the owner reported at the toll plaza.
+   what was reported at the toll plaza.
 
    IMPORTANT: this box has no GPU. Chrome runs SwiftShader, so absolute frame
    times are far slower than any real machine and are meaningless on their own.
@@ -79,7 +79,8 @@ await page.evaluate(() => {
 await page.waitForFunction(() => window.__neonx?.game?.loaded, { timeout: 600000 });
 await sleep(10000); // let the async props and the HD fleet land
 
-/* Night: the lighting is the expensive half and the owner drives at night. */
+/* Night: the lighting is the expensive half, and night is when the game is
+   played. */
 await page.evaluate(() => window.__neonx.setTime(22.0));
 await sleep(2000);
 

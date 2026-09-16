@@ -11,7 +11,8 @@
    It also shoots each place TWICE — CAM_POV (the default, and the first frame
    to judge in) and CAM_CHASE (which fronts the rebuilt exterior and is where
    road WIDTH actually reads; a dashcam at night shows very little of the
-   pavement the driver is standing on). AGENTS.md: every camera ships.
+   pavement the driver is standing on). Every camera in the cycle ships, so
+   every camera is worth a frame.
 
    Usage: node test/mountain-compare.mjs --url http://localhost:3101 --label after
 */

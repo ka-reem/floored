@@ -49,13 +49,13 @@ const SKIP_CENSUS = process.argv.includes("--no-census");
    the note at the capture site. */
 const CTL = arg("--ctl", "");
 
-/* POV first: default view, and the frame the owner judges in. */
+/* POV first: the frame a regression shows up in soonest. */
 const ALL_CAMS = [["pov", 3], ["chase", 0], ["cockpit", 1], ["hood", 2], ["console", 4]];
 /* --cams pov,cockpit,console narrows the sheet, and it is worth knowing why
    you would: the FIRST switch to CHASE or HOOD makes the car's exterior
    visible, which compiles every program that shell's materials need. On a
    box with no GPU and no KHR_parallel_shader_compile that single frame takes
-   MINUTES — it cost this lane two runs before waitFrames() made it visible
+   MINUTES — it cost two whole runs before waitFrames() made it visible
    rather than merely slow. The three in-car views share an already-compiled
    set and cost seconds to move between. */
 const CAMS = (() => {

@@ -22,7 +22,7 @@ import { HX } from "./world/const";
    Two consumers now: the HUD overlay canvas (engine.ts), and the nav pane of
    the in-dash head unit (carscreen.ts), which draws the same map into an
    offscreen canvas at its own scale and cadence. `MiniMapOpts` is the whole
-   difference between them — the drawing below is shared verbatim, so the
+   difference between them — the drawing below is shared as-is, so the
    little map in the car and the big one on the glass can never drift apart.
 
    The HUD map has two framings (the Z key / a click on the map, engine.ts):

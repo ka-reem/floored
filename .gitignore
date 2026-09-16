@@ -1,8 +1,7 @@
 node_modules/
-# ...and the SYMLINK a git worktree needs. `node_modules/` matches the
-# directory only; a worktree has no node_modules of its own, so every lane
-# links the repo's, and that link is a file that walked straight past the
-# line above and into two commits before anyone noticed.
+# ...and the SYMLINK form of it. `node_modules/` matches the DIRECTORY only, so
+# a symlink named node_modules is a file, and a file walks straight past the
+# line above — which is how one reached two commits before anyone noticed.
 node_modules
 .next/
 out/
@@ -13,7 +12,6 @@ test/_*.mjs
 .DS_Store
 .vercel
 public/assets-staging/
-.claude/worktrees/
 
 # Built cockpit interiors ARE committed, unlike most build output: Vercel
 # deploys from git, so a gitignored interior means every visitor silently falls
@@ -34,5 +32,5 @@ public/assets-staging/
 # Keep an eye on history weight if the build is re-tuned often: binaries do not
 # delta, so each rebuild adds another full copy permanently.
 
-# scratch files the audit/probe agents drop while running in this tree
+# scratch files the audit/probe scripts drop while running in this tree
 test/.probe*.tmp.mjs

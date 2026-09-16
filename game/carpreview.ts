@@ -47,7 +47,7 @@ const cache = new Map<string, string>();
    current one — so art from a build where the cars looked different is
    dropped, never shown. And it is off entirely outside a production build:
    `next dev` evaluates next.config.mjs once at server start, so an HMR edit
-   to a car would not move the key, and a lane working on car art must never
+   to a car would not move the key, and anyone working on car art must never
    be shown a cached render of the old one.
 
    BUDGET. A shot is ~60 KB of base64; five cards in one paint is ~300 KB,
@@ -328,8 +328,8 @@ function pump() {
    That matters because a context is a capped resource: the browser allows
    only so many live at once and drops the OLDEST to stay under the cap. In a
    page whose main context is the game, the thing dropped is the game — which
-   is the "Graphics context lost" panel the owner is seeing in replays and
-   hitting himself. On a phone the memory alone is reason enough.
+   is the "Graphics context lost" panel that turns up in session replays.
+   On a phone the memory alone is reason enough.
 
    Releasing it is safe because the card art is CACHED (in memory and in the
    persisted `remember` store), so the studio is only ever needed again for a

@@ -60,7 +60,7 @@ for (const f of SRC) {
     try {
       txt = execFileSync("git", ["show", `${REF}:${f}`], { encoding: "utf8", maxBuffer: 1 << 26 });
     } catch {
-      continue; // signplan.ts does not exist before this lane
+      continue; // signplan.ts did not exist at that revision
     }
   } else {
     if (!existsSync(path.join(repo, f))) continue;
@@ -86,8 +86,8 @@ const { buildRamps, parapetGap } = await import(path.join(W, "ramps.js"));
 const { CONNECT_Z, RAMP_LEAD, LOOP_LEN, FRONT_X } = await import(path.join(W, "const.js"));
 const cor = getCorridor();
 
-/* signplan.ts is this lane's own module; when auditing an older ref it is not
-   there, so fall back to the plan highway.ts hard-coded at that revision —
+/* signplan.ts is new; when auditing an older ref it is not there, so fall
+   back to the plan highway.ts hard-coded at that revision —
    every board on the west post, which is the thing under audit. */
 let boardPlan, mastLat, MTN_BOARD_Z;
 try {

@@ -1,7 +1,6 @@
 {
   "name": "floored",
   "version": "3.0.0",
-  "private": true,
   "scripts": {
     "dev": "next dev",
     "prebuild": "node tools/build-pwa-icons.mjs",
@@ -36,5 +35,6 @@
     "puppeteer": "^24.0.0",
     "sharp": "^0.35.3",
     "typescript": "5.9.3"
-  }
+  },
+  "license": "MIT"
 }

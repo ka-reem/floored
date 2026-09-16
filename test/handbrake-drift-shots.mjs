@@ -4,7 +4,7 @@
    The frames are stitched into one strip so the angle is visible at a glance.
 
    Usage:
-     npx next dev --webpack -p 3152        (in the worktree, backgrounded)
+     npx next dev --webpack -p 3152        (backgrounded)
      node test/handbrake-drift-shots.mjs --url http://localhost:3152 --out /abs/dir
 */
 import { mkdirSync } from "node:fs";

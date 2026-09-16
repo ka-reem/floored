@@ -138,7 +138,7 @@ const capAt = (s, dirn, v) => {
   return cap;
 };
 
-/* SAT overlap on oriented boxes — obb2 from collide.ts, verbatim */
+/* SAT overlap on oriented boxes — obb2 from collide.ts, copied unchanged */
 function obb2(ax, az, afx, afz, aw, al, bx, bz, bfx, bfz, bw, bl) {
   const axes = [[afz, -afx], [afx, afz], [bfz, -bfx], [bfx, bfz]];
   const dx = ax - bx, dz = az - bz;

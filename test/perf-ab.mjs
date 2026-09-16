@@ -1,7 +1,7 @@
-/* Perf-lane A/B instrument.
+/* Perf A/B instrument.
 
    test/perf-probe.mjs measures the right thing (wall-clock frame time at
-   named places) but two of its columns cannot answer what this lane needed:
+   named places) but two of its columns cannot answer where the time goes:
 
      - `calls`/`tris` are read after the frame is over, and three resets
        renderer.info at the START of every render() call. The last render() of

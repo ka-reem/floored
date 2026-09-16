@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /* Headless top-end bench for the PLAYER car.
 
-   The owner's complaint is about SHAPE, not about a number: "the speed needs
-   to be dropped off a little bit ... especially at higher speeds". A real car
+   The complaint is about SHAPE, not about a number: pull needs to drop off
+   more, and especially so at high speed. A real car
    fights drag that grows as v^2 against thrust that FALLS once the engine is
    past peak power and the box is out of gears, so acceleration collapses at
    the top: 0-60 mph is brisk, 120-140 mph takes forever. This bench measures

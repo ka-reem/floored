@@ -14,7 +14,7 @@ import { rngFor, deckQuat, flatUnit, addInstanced, type Slot } from "./decals";
    over the deck as geometry that reads the corridor's own lane math, the
    same way the markings are.
 
-   Placement discipline is decals.ts's, verbatim: lattices whose pitch
+   Placement discipline is decals.ts's, unchanged: lattices whose pitch
    divides LOOP_LEN, per-slot dice from the folded lattice index so the two
    built copies of the splice dress identically, and one draw call per
    family. Unlike decals.ts nothing here downloads: every map is a canvas

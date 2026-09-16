@@ -1,21 +1,20 @@
 # The two-day overhaul — 2026-08-27 → 2026-08-29, in plain language
 
-What actually landed on `main` across the overnight wave, the day-2 wave, and
-the night wave, from the merge history (`git log --merges --since=2026-08-27`)
-and the lane reports in `docs/handoff/reports/`. Rollback point for all of it:
-the `pre-overnight-2026-08-28` branch (commit `6afff7b`).
+What actually landed on `main` across the three waves of work, taken from the
+merge history (`git log --merges --since=2026-08-27`). Rollback point for all
+of it: the `pre-overnight-2026-08-28` branch (commit `6afff7b`).
 
 The fastest way to *see* everything below: `docs/gallery/index.html`, one
-chapter per lane, 184 renders.
+chapter per workstream, 184 renders.
 
-## Wave 1 — the overnight overhaul (`ea0cbf7`, "nine of eleven cloud lanes")
+## Wave 1 — the overnight overhaul (`ea0cbf7`)
 
-Eleven cloud lanes ran in parallel overnight; nine landed real changes, merged
-through an integration branch with one real conflict (two lanes extending the
-same tier-cap table — both features kept), full verification green.
+Eleven workstreams ran in parallel; nine landed real changes, merged through an
+integration branch with one real conflict (two of them extending the same
+tier-cap table — both features kept), full verification green.
 
-- **The menus, redesigned** (ui-redesign) — the owner's "it just looks bad"
-  menu replaced by one design-token system: shared palette, spacing scale,
+- **The menus, redesigned** (ui-redesign) — the old menu simply looked bad;
+  it is replaced by one design-token system: shared palette, spacing scale,
   self-hosted Space Grotesk display type, and a viewfinder corner-frame with a
   pulsing status dot as the unique flair. Every element id the engine writes
   into is untouched.
@@ -74,16 +73,16 @@ same tier-cap table — both features kept), full verification green.
   industry with a lit flare stack, and the neon canyon with its 湾岸 gate.
   Zero downloads, everything merged/instanced, density riding a new
   `districts` tier cap.
-- **EXIT 4 — the mountain pass** (mountain-road, `bbbb1f2`) — the owner's own
-  idea shipped: 峠 Tōge, a curvy two-lane riverside road off the expressway
+- **EXIT 4 — the mountain pass** (mountain-road, `bbbb1f2`) — 峠 Tōge, a
+  curvy two-lane riverside road off the expressway
   and back onto it, with sparse oncoming traffic to dodge, corner speed caps,
   and a lay-by. Sited in the one taper-free window of the lap, now asserted
   per-seed by `test/lane-plan.mjs`.
 - **The fleet, baked and re-judged** (`7331275`, then `fc4fda1`, `084dbc4`,
   `8f85877`) — the hi-fi NPC fleet and the Volvo's rear were baked on the
-  laptop where Sketchfab answers. Then the owner drove it and called it: the
-  civil-pack taxi/police/van read "glitched and angled" and went back to the
-  Orchids bakes; the ItsDiyor sedans didn't clear the bar either and followed;
+  laptop where Sketchfab answers. Driving it settled the rest: the civil-pack
+  taxi/police/van read "glitched and angled" and went back to the Orchids
+  bakes; the ItsDiyor sedans didn't clear the bar either and followed;
   the HD desktop upgrade parked (`HD_STYLES` empty). What survived: the new
   **bus**, the emissive **lens lamps** that retire the glow sprites up close,
   and the rebuilt **Volvo rear** (0.78 MB, rear-biased decimation) that the
@@ -105,7 +104,7 @@ same tier-cap table — both features kept), full verification green.
   era timeline atop the progress page and a rolling summary of the night
   wave; 32 chapters, 184 renders.
 
-## The docs caught up (this lane, 2026-08-29)
+## The docs caught up (2026-08-29)
 
 README rewritten against the game as it is; GAME.md and DISABLED.md
 re-verified claim by claim with commits cited; ATTRIBUTIONS brought in line

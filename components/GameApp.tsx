@@ -26,9 +26,11 @@ type Screen = "main" | "garage" | "settings" | "controls" | "stats" | "credits" 
 /** The "Report a bug" link (pause + credits): a plain mailto with the
     subject filled in and the build — beta flag included — in the body, so a
     report always says which build it saw. Everything about the build's
-    identity comes from lib/build.ts; nothing here reads package.json. */
+    identity comes from lib/build.ts; nothing here reads package.json.
+
+    SET THE ADDRESS BELOW before shipping — it is a placeholder. */
 const BUG_MAILTO =
-  "mailto:bugs@example.invalid?subject=" + encodeURIComponent(`${NAME_VERSION} bug`) +
+  "mailto:you@example.com?subject=" + encodeURIComponent(`${NAME_VERSION} bug`) +
   "&body=" + encodeURIComponent(`${NAME_VERSION}\n\nWhat happened:\n`);
 
 /** The BETA mark: 試験版 · BETA on a small outline chip, sitting with the
@@ -157,11 +159,10 @@ if (typeof window !== "undefined") void loadEngine();
 /* Traffic density every SURVIVAL run is driven at, whatever the player's own
    slider says.
 
-   The owner asked for a fixed number ("find a good percentage for the survival
-   mode for traffic, and then it should be unchangeable") and the reason it has
-   to be fixed is the score: survival's number is a distance, kept as a
-   personal best, and a best set on an empty road is not the same achievement
-   as one set in traffic. A live slider would make the record meaningless.
+   The number is fixed and unchangeable, and the reason it has to be is the
+   score: survival's number is a distance, kept as a personal best, and a best
+   set on an empty road is not the same achievement as one set in traffic. A
+   live slider would make the record meaningless.
 
    0.75, and the value is NOT a taste call — it is the highest density that
    means the same thing on every device.
@@ -523,10 +524,9 @@ export default function GameApp() {
     /* WHICH MODE THIS PRESS STARTS, decided here and written before the world
        build rather than carried in a toggle the player set earlier.
 
-       The owner's call: "it should be like free drive instead of drive and
-       then [survival] should be like another game mode no on and off just
-       click it". So the board has two ways in, not one way in plus a switch,
-       and `endless` stops being a preference the player leaves lying around —
+       FREE DRIVE and SURVIVAL are two game modes, not one button plus an
+       on/off switch. So the board has two ways in, not one way in plus a
+       toggle, and `endless` stops being a preference the player leaves lying around —
        every press states it. Free drive presses clear it; survival presses
        set it. A player who last drove survival and then taps FREE DRIVE gets
        free drive, which a toggle could not promise.
@@ -776,8 +776,8 @@ export default function GameApp() {
       {/* HUD */}
       <div id="topbar" style={{ display: playing ? "flex" : "none" }}>
         {/* Passive telltales only: the tap-to-signal behavior these glyphs
-            briefly carried was removed at the owner's request — signals are
-            keyboard-only (Q/E). #topbar stays pointer-events:none, so the
+            briefly carried has been removed — signals are keyboard-only
+            (Q/E). #topbar stays pointer-events:none, so the
             bar can never intercept a driving touch. */}
         <span id="indL" className="ind">◀</span>
         <span id="clock">21:30</span>
@@ -910,7 +910,7 @@ export default function GameApp() {
 
       {/* ---------- menus ---------- */}
       {/* Home screen: a blue expressway guide-sign hung on a lit gantry over
-          the dashcam road (the owner's "Blue Route v2" direction; the kit is
+          the dashcam road ("Blue Route v2" styling; the kit is
           components/ui/Sign.tsx + app/ui-system.css). The rows are real
           buttons whose text still carries DRIVE / RIVAL / GARAGE / SETTINGS /
           CONTROLS — every headless test finds them by textContent. Before the
@@ -951,15 +951,14 @@ export default function GameApp() {
 
                     It used to be ENDLESS, a row with an ON/OFF badge that set
                     a preference the player then had to press DRIVE to use.
-                    The owner: "it should be like free drive instead of drive
-                    and then [survival] should be like another game mode no on
-                    and off just click it and it's like a drive til u crash".
-                    So the badge is gone and the row starts a run, the same as
-                    the one above it — the board offers two drives, and which
-                    one you pressed is what decides the rules.
+                    It is a game mode, not an on/off switch: you click it and
+                    you get a drive until you crash. So the badge is gone and
+                    the row starts a run, the same as the one above it — the
+                    board offers two drives, and which one you pressed is what
+                    decides the rules.
 
-                    The name is the owner's pick from four shot on this board;
-                    ENDLESS was his to reject ("i don't like the name"). */}
+                    SURVIVAL was picked from four names shot on this board;
+                    ENDLESS read as a mode setting rather than a drive. */}
                 <SignRow
                   glyph="ne"
                   jp="生存"
@@ -969,11 +968,11 @@ export default function GameApp() {
                 />
                 {/* The same setting the panel carries, surfaced here so the mode
                     is discoverable without going three screens deep. */}
-                {/* THE RIVAL IS HELD BACK for the beta, but the row STAYS —
-                    the owner: "rival dont remove it just say not available or
-                    something". A disabled <button>, so it keeps its place and
-                    its name in the destination list and reads NOT AVAILABLE
-                    where the ON/OFF chip used to be.
+                {/* THE RIVAL IS HELD BACK for the beta, but the row STAYS,
+                    reading NOT AVAILABLE rather than disappearing. A disabled
+                    <button>, so it keeps its place and its name in the
+                    destination list and reads NOT AVAILABLE where the ON/OFF
+                    chip used to be.
 
                     No onClick and no badge, deliberately: this was the only
                     control that wrote settings.rival outside the settings
@@ -1161,9 +1160,9 @@ export default function GameApp() {
 
 /* ================= settings, while it loads =================
 
-   The owner's idea, verbatim: "for loading on mobile u can like tell it to
-   pick settings while it loads if its loading for a while that way they're
-   doing stuff and not waiting."
+   Settings are offered DURING the load, so a wait that has to happen is
+   spent doing something rather than watching a bar. This matters most on
+   mobile, where the load is longest.
 
    WHAT IT MAY OFFER is decided by the world build, not by taste. Every row
    here writes ONLY `game.settings` (plus the profile) and is read live by
@@ -1222,10 +1221,10 @@ export default function GameApp() {
 
    IT WAS GATED BEHIND A DELAY AND THAT IS GONE. First 2500 ms, then 800 —
    both were guesses at "only show this if the load is slow enough to be
-   worth filling". The owner settled it after watching the 800 ms build:
-   "the settings need to show up right when the loading starts not like a few
-   seconds after which is happening now." So there is no gate: the rows are
-   in the first painted frame of the loading screen. A warm DRIVE is over
+   worth filling", and watching the 800 ms build settled it: a panel that
+   arrives seconds after the loading screen does reads as a glitch, not as an
+   offer. So there is no gate — the rows are in the first painted frame of
+   the loading screen. A warm DRIVE is over
    fast enough that the panel simply comes and goes with it, which costs
    nothing and is far cheaper than the player who left during the gap.
 
@@ -1265,9 +1264,9 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
         <i>saved as you pick</i>
       </div>
       <div className="loadSetRows">
-        {/* TOUCH ONLY. The owner: "on desktop dont show the controls bcs the
-            controls are only for mobile." Every option here — BUTTONS, WHEEL,
-            SLIDER — is an on-screen touch control; a desktop player steers
+        {/* TOUCH ONLY: the on-screen controls exist only for mobile, so the
+            row has no business on desktop. Every option here — BUTTONS,
+            WHEEL, SLIDER — is an on-screen touch control; a desktop player steers
             with WASD/arrows and steerMode does nothing for them, so the row
             was asking a question their answer could not change.
 
@@ -1361,9 +1360,8 @@ function LoadSettings({ game, onChange }: { game: Game; onChange: () => void }) 
             />
           </SignSrow>
         )}
-        {/* Held back for the beta, but kept in the list — the owner: "rival
-            dont remove it just say not available or something". Static
-            caption, no toggle: the profile scrub in settings.ts is what makes
+        {/* Held back for the beta, but kept in the list rather than removed,
+            reading NOT AVAILABLE. Static caption, no toggle: the profile scrub in settings.ts is what makes
             it true for players who already had it on, and upd() still calls
             syncRivalMode on every other row so the module flag keeps following
             the scrubbed profile and traffic.ts never claims the slot. */}
@@ -1507,8 +1505,7 @@ function analogSteerLive() {
 
 /* The analog steering wheel. Nothing but steering: the HORN boss that used
    to sit in the middle of it — a second horn control, a hand's width from
-   the HORN puck that is on screen in every steer mode — was removed at the
-   owner's request ("the horn button over the steering wheel remove it!").
+   the HORN puck that is on screen in every steer mode — has been removed.
    The horn itself is untouched: the #tcH puck and the F key both still
    write the same keydown["f"] they always did.
 
@@ -1614,10 +1611,10 @@ const SLIDER_NUB_HALF = 22;
    a press near an end IS an immediate lock, not a new origin to drag from.
 
    Feeds the same wheelVal/wheelPointer channel as SteerWheel (readInput picks
-   whichever of the two widgets the mode mounted), so every recovery layer the
-   mobile-input lane built — clearLatchedInput on pause/blur, and the frame
-   watchdog against hijacked gestures — covers this control with no new engine
-   state. Pointer discipline is the wheel's, verbatim: one owning pointer id,
+   whichever of the two widgets the mode mounted), so every mobile-input
+   recovery layer — clearLatchedInput on pause/blur, and the frame watchdog
+   against hijacked gestures — covers this control with no new engine state.
+   Pointer discipline is the wheel's, unchanged: one owning pointer id,
    a second finger neither re-bases nor releases, state committed before a
    try/caught setPointerCapture, and a window-level up/cancel fallback behind
    lostpointercapture. On release the value snaps to 0 (the engine's analog
@@ -1771,8 +1768,8 @@ function SteerSlider({ game }: { game: Game }) {
    (pucks — and in wheel mode the horn is also the wheel's own hub, which is
    where a driver's thumb already is), signals (the topbar telltales), music
    (MusicPlayer is
-   desktop-only by design — no phone headroom), interior light (owner ruled
-   out a touch button; the roof-band tap covers it), look-back (dead in the
+   desktop-only by design — no phone headroom), interior light (no touch
+   button by design; the roof-band tap covers it), look-back (dead in the
    shipped dashcam view). */
 function QuickDrawer({
   game, open, onClose,
@@ -1790,18 +1787,17 @@ function QuickDrawer({
   };
   // playing implies loaded, but a guard against a not-yet-built car is free
   if (!game.car) return null;
-  /* `lock: true` is a row that STAYS but cannot be tapped. The owner asked
-     for this shape explicitly — "rival dont remove it just say not available
-     or something same with the rain thing" — so a feature held back for the
-     beta keeps its place in the list and says so, rather than vanishing and
-     leaving the player wondering whether the game has it at all. */
+  /* `lock: true` is a row that STAYS but cannot be tapped. A feature held
+     back for the beta keeps its place in the list and says NOT AVAILABLE,
+     rather than vanishing and leaving the player wondering whether the game
+     has it at all. */
   const rows: { k: string; en: string; jp: string; state: string; on: boolean; lock?: boolean }[] = [
     { k: "l", en: "HEADLIGHTS", jp: "ライト", state: game.car.lightsMode.toUpperCase(),
       on: game.car.lightsMode === "on" },
     { k: "x", en: "MINIMAP", jp: "マップ", state: game.mmap ? "ON" : "OFF", on: game.mmap },
     { k: "z", en: "MAP ZOOM", jp: "ズーム", state: game.mmapZoom ? "LOOP" : "NEAR", on: game.mmapZoom },
-    /* Field of view — the owner asked for it "from the 3 dots". A STEPPED row,
-       not a slider: every other row here is a tap that routes through
+    /* Field of view, reachable from the quick sheet (the 3 dots) and not only
+       from SETTINGS. A STEPPED row, not a slider: every other row here is a tap that routes through
        uiKeyTap, i.e. it literally is a keyboard key (K), and that is what
        keeps a row and its key from ever drifting apart. The continuous
        58..100 slider is still in SETTINGS for anyone who wants an exact
@@ -1811,7 +1807,7 @@ function QuickDrawer({
 
        Here rather than at the bottom of the list because the sheet SCROLLS on
        a 390x664 phone (max-height: 100vh - 280px) — eleven rows do not fit —
-       and a control the owner asked to be able to reach should not be the one
+       and a control that exists to be reached quickly should not be the one
        below the fold. Beside MAP ZOOM is also where it belongs: both are "how
        much of the world do I see". */
     { k: "k", en: "FIELD OF VIEW", jp: "画角", state: game.fovRow.text, on: game.fovRow.changed },
@@ -2466,9 +2462,9 @@ function SettingsPanel({
                     honest way to change it mid-drive. Same contract as NEW TOWN
                     below: write the profile, then location.reload().
 
-                    Was developer-only behind SHOW_DEV_SETTINGS at both ends
-                    until the owner asked for it back: "ppl can adjust the
-                    setting for like laptop base mobile base like before". */}
+                    Was developer-only behind SHOW_DEV_SETTINGS at both ends;
+                    it is a player setting now, so a laptop or phone that
+                    detects wrong can be pinned to the right tier by hand. */}
                 <SignSrow stack name="Device tier" aside={s.tierOverride === "auto" ? `— detected "${game.renderTier}" \u00b7 reloads` : `— running "${game.renderTier}" \u00b7 reloads`} lit={L("tierOverride")}>
                   <SignSelect
                     aria-label="Device tier"

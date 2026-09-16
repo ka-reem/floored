@@ -987,7 +987,7 @@ function guideArrowDown(
   ctx.restore();
 }
 
-/** Advance guide board, FACE B (the owner's pick, 2026-09-08).
+/** Advance guide board, FACE B (shipped 2026-09-08).
 
     Two tiers. The upper one is the destination and nothing else — the exit
     number small above it, both scripts on one baseline — with the down-arrow

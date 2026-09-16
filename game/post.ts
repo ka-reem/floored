@@ -145,12 +145,13 @@ const POV_TUNE_DEFAULT = {
 /* Per-tier POV grade profiles. The dashcam identity is non-negotiable, but a
    phone shows this frame at a fifth of the visual angle, outdoors, off a
    1.1-1.35 DPR render — the same degrade strengths that read as "night
-   evidence footage" on a monitor read as "can't see the road" there (the
-   owner's exact complaint). So the mobile tiers keep every effect, at gentler
+   evidence footage" on a monitor read as "can't see the road" there — the
+   reported symptom, exactly. So the mobile tiers keep every effect, at gentler
    strengths, plus a slightly faster sensor: shallower/softer black crush,
    flatter midtone gamma where the road and cars sit, quieter grain, a lighter
    edge treatment, more bilinear over the half-res snap, a touch more sensor
-   gain (skyCrush unchanged — the sky-clouds lane tunes against 0.6), and a
+   gain (skyCrush unchanged — the sky and cloud passes are tuned against
+   0.6), and a
    shorter exposure so cars ahead don't double. All ALU-only deltas inside
    passes that already run on every tier: frame cost is unchanged.
    Selected by setPovProfile() (engine feeds the render tier); the values land

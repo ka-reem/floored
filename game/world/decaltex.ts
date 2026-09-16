@@ -1,9 +1,9 @@
 import * as THREE from "three";
 
-/* Texture generation + loading for the world-dressing decal pass (Lane H).
+/* Texture generation + loading for the world-dressing decal pass.
 
-   Lives in its own module rather than textures.ts (another lane owns edits
-   there). Two kinds of texture come out of here:
+   Lives in its own module rather than in textures.ts, which is already large
+   and unrelated. Two kinds of texture come out of here:
 
    - canvas-generated gradients (the streetlight ground-pool ellipse), and
    - the downsized photo decals under public/assets/decals/, which ship as a

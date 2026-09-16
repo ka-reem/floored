@@ -1,7 +1,7 @@
 /* Contact sheet — the judging surface for the library frames.
 
-   The owner judges pictures, not lists, and a lane judging its own frames
-   needs the same thing: twenty frames side by side, labelled, small enough
+   Frames are judged by looking, not by reading a list of filenames: twenty
+   frames side by side, labelled, small enough
    that "these two are the same picture" is obvious at a glance and big enough
    that a HUD leak or a clipped bumper still shows. 4 columns of 640x360 tiles
    with the file name burned into the corner.

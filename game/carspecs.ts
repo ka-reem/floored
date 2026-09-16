@@ -73,9 +73,8 @@ export const ACCEL_MULT = 2.7;
 /* ---- The arcade spec ---------------------------------------------------
    THIS IS THE CAR. It was a dev toggle (K in engine.ts) for most of its life
    — a way to cross the map or reach a corner quickly while shaking the game
-   out — and the owner, having driven it: "the test driving mode should be the
-   main mode when u start driving the game like it should always be on ... i
-   like that one." So the toggle is gone and every car is derived through here.
+   out — and it simply drives better than the stock spec did, so it became the
+   only spec. The toggle is gone and every car is derived through here.
 
    Note what did NOT come with it: the top-end taper and the driveline
    efficiency fall live in physics.ts on the thrust side, outside the spec, so
@@ -215,9 +214,8 @@ export interface Paint {
 
 /* APPEND-ONLY. Profiles persist `paintIx` as an index into this table
    (settings.ts normIx / engine.ts `% PAINTS.length`), so reordering or
-   removing a row silently repaints every saved car. The roster is the owner's
-   showroom row: silvers, deep blues, reds, black, white, and the odd louder
-   accent — all colours that read at night, where the env is nearly the only
+   removing a row silently repaints every saved car. The roster is a showroom
+   row: silvers, deep blues, reds, black, white, and the odd louder accent — all colours that read at night, where the env is nearly the only
    light on the bodywork (see carenv.ts). */
 export const PAINTS: Paint[] = [
   { name: "Midnight Indigo", hex: 0x2b4a8f, finish: "metallic" },

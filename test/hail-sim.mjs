@@ -200,7 +200,7 @@ function makeSim(seed) {
 
   /* laneClearAt, transcribed — including the PLAYER branch, which keeps its
      full closing-speed terms whatever envelope the NPC half was passed. That
-     rule is what makes a yield safe, so the sim must carry it verbatim. */
+     rule is what makes a yield safe, so the sim must carry it exactly. */
   function laneClearAt(n, s, off2, back = 13.5, fwd = 23.5, backC = 3.0, fwdC = 2.0) {
     for (const m of cars) {
       if (m === n || m.wreck) continue;

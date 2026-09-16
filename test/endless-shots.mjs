@@ -164,7 +164,7 @@ const browser = await puppeteer.launch({
 });
 for (const vp of VIEWPORTS) {
   const shots = await shoot(browser, vp);
-  // whole frames too — the owner judges the frame, not only the crop
+  // whole frames too — a crop alone hides what the rest of the frame did
   for (const [k, b64] of Object.entries(shots)) {
     writeFileSync(path.join(OUT, `endless-${vp.name}-${k}.png`), Buffer.from(b64, "base64"));
   }

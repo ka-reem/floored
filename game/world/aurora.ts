@@ -1068,7 +1068,7 @@ void main(){
     },
   };
   if (pinned) {
-    /* A pin reproduces one exact sky, so it takes the seed verbatim and skips
+    /* A pin reproduces one exact sky, so it takes the seed as given and skips
        the schedule entirely — envelope held open at 1 for the session. */
     api.roll = applyRoll(pin!);
     api.present = true;

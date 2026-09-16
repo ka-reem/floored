@@ -139,10 +139,9 @@ seeds the window value from the constant on first read and then reads the
 window value every frame. To ship it, change the constant.
 
 *Re-verified 2026-08-29: still `0` (engine.ts ~389) — and the framing changed.
-The chase camera is a player-facing view now (AGENTS.md owner update
-2026-08-28), and shake-off is the owner's explicit request ("third-person
-camera shake off", HANDOFF.md), so this is a deliberate ship decision, not a
-debug-camera shrug.*
+The chase camera is a player-facing view now (2026-08-28), and shake-off is a
+deliberate choice — third-person camera shake reads as noise, not as speed —
+so this is a ship decision, not a debug-camera shrug.*
 
 ### 3b. `TOWN_TRAFFIC = false` — the entire town driving model, parked
 
@@ -248,10 +247,10 @@ loader in `traffic.ts`, and `tools/build-hifi-models.mjs --hd` are all in
 place — but the style list is empty and `public/models/cars-hd/` does not
 exist, so nothing ever streams.
 
-Why: the owner's call after driving the 2026-08-28 hi-fi fleet. `8f85877`
-("the Orchids passenger fleet returns; HD upgrade parks"): the pack donors
-were out entirely, and *"the ItsDiyor moderns don't clear the owner's bar
-either — the old bakes read better"*. `HD_STYLES` empties *"so the desktop
+Why: driving the 2026-08-28 hi-fi fleet settled it. `8f85877` ("the Orchids
+passenger fleet returns; HD upgrade parks"): the pack donors were out
+entirely, and *"the ItsDiyor moderns don't clear the bar either — the old
+bakes read better"*. `HD_STYLES` empties *"so the desktop
 upgrade stays dormant until heroes worth streaming exist; the pipeline and
 the tier gate stay in place for that next bake."* Earlier the same day,
 `fc4fda1` had already sent taxi/police/van back to the Orchids bakes (the
@@ -420,15 +419,14 @@ in the settings panel. It persists across reloads like any other setting.
 
 ### Cameras
 
-*Updated 2026-08-29.* The old AGENTS.md rule — dashcam is the only view that
-ships — is **retired** by the owner (AGENTS.md update, 2026-08-28): every
-camera is player-facing now, so this table no longer lists disabled content,
+*Updated 2026-08-29.* The old rule — dashcam is the only view that ships — is
+**retired** (2026-08-28): every camera is player-facing now, so this table no longer lists disabled content,
 only the cycle. It stays because the §3a gate and the per-camera quirks below
 are still where "why does the chase cam not shake?" gets answered.
 
 | Index | Name | Status |
 |---|---|---|
-| 0 | CHASE | Player-facing. Its sensation effects are gated to 0 (§3a, owner request) |
+| 0 | CHASE | Player-facing. Its sensation effects are gated to 0 (§3a, deliberate) |
 | 1 | COCKPIT | Player-facing. Carries its own eye offset `COCKPIT_EYE_IMPORTED` and its own mirror framing (donor housing shown) |
 | 2 | HOOD | Player-facing |
 | 3 | **DASHCAM** — `CAM_POV` | **The default and most-played view.** `defaultProfile().camMode = 3` |
@@ -473,11 +471,11 @@ CONTROLS screen at `components/GameApp.tsx:294-312`.
 | **K** | test mode | see §7 |
 | **P** | music play / pause | desktop only — `music.enabled` is false on touch |
 | **, / .** | previous / next track | desktop only |
-| **I** | interior cabin light | desktop only, by explicit owner request; the roof-band tap covers touch |
+| **I** | interior cabin light | desktop only, deliberately; the roof-band tap covers touch |
 | Esc | pause menu | music pauses with it |
 
-On touch, the ⋯ overflow drawer (`components/GameApp.tsx`, mobile-controls
-lane) surfaces L / X / M / R / T / V / K / N through `uiKeyTap()` — the same
+On touch, the ⋯ overflow drawer (`components/GameApp.tsx`) surfaces
+L / X / M / R / T / V / K / N through `uiKeyTap()` — the same
 handlers, so a drawer row and its key cannot disagree — and the topbar's ◀ ▶
 telltales are the Q / E switches.
 
@@ -639,8 +637,8 @@ the donor."* Rebuild command in `.gitignore`.
 
 ### The development render gallery
 
-`docs/gallery/` — ~11 MB, 184 renders in 32 chapters as of 2026-08-29 (every
-overhaul lane contributed one), fronted by an interactive build-up timeline.
+`docs/gallery/` — ~11 MB, 184 renders in 32 chapters as of 2026-08-29 (one per
+workstream in the overhaul), fronted by an interactive build-up timeline.
 Committed and excluded from deploys via `.vercelignore`. Unreachable at
 runtime three times over (outside `public/`, not imported, not walked by the
 size budget). Browse it on GitHub or open `index.html` from a clone over
@@ -659,8 +657,8 @@ dashcam pass then softens, grains and crushes most of it toward black.
 
 **Status now:** `git branch -r` shows `origin/main` and active work branches
 only. Every branch below is gone from the remote. The 2026-08-29
-`cloud/branch-harvest` evaluation (`docs/handoff/reports/branch-harvest.md`,
-merged in `ff15914`) established by tree diff that the three old feature
+`cloud/branch-harvest` evaluation (merged in `ff15914`) established by tree
+diff that the three old feature
 branches were content-supersets of a pre-rewrite main — today's main already
 contains everything they carried, mostly improved — and they have since been
 deleted from the remote, along with `verify/cloud-pass-1` (74.6 MB of
@@ -786,14 +784,13 @@ and 5 are resolved; struck below with the fixing evidence. 4 and 6 stand.*
    still stands. Unticking it changes the road again.
 
 4. **`fenceOverdraw` is described as having no consumer, and now does.**
-   Still true 2026-08-29: `settings.ts` ~32 reads *"no consumer yet; the fence
-   lane gates on this"*, while `highway.ts` ~1263 consumes it (*"the
+   Still true 2026-08-29: `settings.ts` ~32 reads *"no consumer yet"*, while
+   `highway.ts` ~1263 consumes it (*"the
    fenceOverdraw cap finally gets its consumer"*). Harmless, but the comment
    misleads.
 
-5. ~~**The steer-response sim is modified in the working tree.**~~ That lane's
-   work landed; `test/steer-response-sim.mjs` is committed and the tree is
-   clean.
+5. ~~**The steer-response sim is modified in the working tree.**~~ That work
+   landed; `test/steer-response-sim.mjs` is committed and the tree is clean.
 
 6. **Not an accident, but easy to mistake for one:** `tools/build-cockpit.mjs`
    freezes the `mirror` role to the *retired* cut dash's frustum. It looks like

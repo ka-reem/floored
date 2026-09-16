@@ -1,8 +1,7 @@
 /* Is the harder LOD visible? Photographs, at the distances where it lands.
 
-   The owner's judgement on the first far tier was that it made no visible
-   difference, and his conclusion was to go further. This shoots whether the
-   further version is still invisible, which is the only question that matters
+   The first far tier made no visible difference at all, which is the reason
+   to go further. This shoots whether the further version is still invisible, which is the only question that matters
    — the triangle saving is already known.
 
    Method: park, freeze the clock, then for each distance find the car nearest

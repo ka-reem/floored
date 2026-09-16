@@ -463,7 +463,7 @@ export interface Mats {
       number came from a probe that was driving, and belonged to something
       else. test/pbr-hitch.mjs --noscans is that measurement.
 
-      It is NOT established that this is the stutter the owner reported. The
+      It is NOT established that this is the stutter that was reported. The
       burst those probes measured followed the CAMERA rather than the clock,
       and that is a separate question (test/program-source.mjs).
 
@@ -2338,7 +2338,7 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
       // the directory keeps ambientCG's "guardrail" name (see ATTRIBUTIONS.md);
       // this world has no guardrails, so the metal goes on the street furniture
       loadPbrSet("guardrail", undefined, true),
-      // Lane A world dressing (all CC0 — ambientCG): perforated fence,
+      // world dressing (all CC0 — ambientCG): perforated fence,
       // tunnel tile, corrugated canopy roof, brushed fascia, grated catwalk
       loadPbrSet("fence", undefined, true, true),
       loadPbrSet("tile"),
@@ -2443,7 +2443,7 @@ if (uWeatherK > 0.001 && uReliefK > 0.0) {
         await nextFrame();
       }
     }
-    /* Lane A dressing materials — straight art replacement, tuned tints kept
+    /* Dressing materials — straight art replacement, tuned tints kept
        as multipliers exactly like the concrete family above. */
     if (fenceSet.albedo) {
       upgradeSurface(fence, fenceSet, { repeat: [1, 1], normalScale: 0.8, roughness: 0.5 });

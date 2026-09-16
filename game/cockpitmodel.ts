@@ -94,10 +94,10 @@ export interface CockpitModelHandle {
 }
 
 /** The rim shrink the wheel-center pass measured, kept as its own factor so
-    the owner's framing scale below multiplies it rather than replacing it. */
+    the framing scale below multiplies it rather than replacing it. */
 const RIM_SHRINK = 0.97;
-/** Owner's framing call -- see the long note at the seat below. 1 is the real
-    car's 379.5 mm rim; 1.60 is the 607 mm one he picked off the render. */
+/** Framing scale -- see the long note at the seat below. 1 is the real car's
+    379.5 mm rim; 1.60 is the 607 mm one that ships. */
 const WHEEL_SCALE = 1.60;
 
 const BASE = "/models/cockpits/";
@@ -759,7 +759,7 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
        is 1.42 rather than 1.86 and the rim's arc lands 65% up the cluster
        face instead of 32% — straight across the digital speed. Measured
        rather than eyeballed (test/wheel-cluster-measure.mjs; the whole table
-       is in docs/handoff/reports/wheel-cluster.md): of the speed readout's
+       was measured off the donor cluster): of the speed readout's
        own pixels, 79% were behind the rim in COCKPIT and 12% in CONSOLE, at
        every steering angle, parked and at 120 km/h, on desktop and phone
        frames alike. Another 28 mm takes those to 4% and 0%, and the dashcam —
@@ -772,18 +772,18 @@ function wire(cockpit: Cockpit, scene: THREE.Group, man: Manifest): CockpitModel
        every millimetre here is a millimetre of gap between the wheel boss and
        the shroud behind it. At 56 mm the boss still covers it in all three
        in-car views (CONSOLE sees the most of it); much past that and the
-       wheel starts floating off its own column. WHEEL_SCALE is the owner's call and
-       deliberately not realistic. He sent a photograph of a BMW's
-       driver's-eye view and asked for the cluster to sit inside the wheel's
-       opening the way it does there. The sweep that answered it
+       wheel starts floating off its own column. WHEEL_SCALE is deliberately
+       not realistic. The target was a reference photograph of a BMW's
+       driver's-eye view, where the cluster sits INSIDE the wheel's opening.
+       The sweep that answered it
        (test/wheel-scale-shots.mjs, cameras untouched) found the rim's top arc
        starts 0.199 diameters BELOW the cluster's top edge and climbs as the
        wheel grows, crossing zero only at about 1.44 -- so every step short of
        that walks the arc UP ACROSS the dials and looks worse than shipping.
        1.30 matches the reference's binnacle proportion exactly (0.729 against
        0.73) and is the worst frame in the set. 1.60 is the first that reads
-       like the photograph, and he picked it off the render. It is a 607 mm
-       rim against a real S90's 370: a deliberate cheat, because the camera
+       like the photograph, and it is what ships. It is a 607 mm rim against
+       a real S90's 370: a deliberate cheat, because the camera
        cannot come forward far enough to make an honest one without reopening
        the settled mirror framing. Set WHEEL_SCALE to 1 for the real car's
        proportions; the near plane is never at risk either way, the closest

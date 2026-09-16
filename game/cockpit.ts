@@ -145,7 +145,7 @@ export interface Cockpit {
   hazardSwitch(imported: boolean): THREE.Object3D;
   /** Click volume for the wiper control — on the CONSOLE side of the dash,
       beside the head unit. Deliberately nowhere near the wheel rim: the
-      owner had every wheel-area click volume removed (signals, then
+      wheel-area click volumes have all been removed (signals, then
       hazards), so the rim band is retired ground for new targets. `imported`
       as above. */
   wiperSwitch(imported: boolean): THREE.Object3D;
@@ -1562,8 +1562,8 @@ export function buildCockpit(accent: number, mirrorTexture: THREE.Texture, carId
 
   /* Wiper stalk click zone. The real stalk is a wheel-column part (the
      donor's "Stalks" node lives at x 0.28..0.49, inside the rim band), and
-     the rim band is retired ground — the owner had every wheel-area click
-     volume removed. So the control hangs at the OTHER end of the
+     the rim band is retired ground — every wheel-area click volume has been
+     removed. So the control hangs at the OTHER end of the
      proven-visible strip: the CONSOLE side of the head unit, where the
      dashcam sees dash stack rather than wheel. Both positions measured by
      projecting through the live POV camera, same discipline as the volumes

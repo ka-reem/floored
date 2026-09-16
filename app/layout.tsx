@@ -112,8 +112,8 @@ export default function RootLayout({
             effect inits the client before the game emits anything. */}
         <PostHogProvider>{children}</PostHogProvider>
         {/* Vercel Web Analytics: ~1KB, cookieless visitor counting. The
-            numbers live in the Vercel dashboard's Analytics tab — the owner
-            flips the project-level switch there; without it this no-ops.
+            numbers live in the Vercel dashboard's Analytics tab — the
+            project-level switch is flipped there; without it this no-ops.
 
             GATED ON VERCEL, because its script lives at a path only Vercel
             serves. On any other host the browser asks for

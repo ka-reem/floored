@@ -4,7 +4,7 @@ import { getCorridor, tunnels, TOLL } from "./corridor";
 import { CONNECT_Z } from "./const";
 import { loadDecalMaps } from "./decaltex";
 
-/* Road-realism decal scatter (Lane H).
+/* Road-realism decal scatter.
 
    Cracked/patched asphalt and oil staining on the deck, manhole/drainage
    covers along the shoulders, and moisture streaks down the tunnel walls and

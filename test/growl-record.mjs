@@ -24,7 +24,7 @@
  *
  * The passage is on the open corridor, well clear of the tunnel, and the
  * script asserts the tunnel factor and the reverb wet gain are 0 for every
- * take — the owner asked for the tunnel's growl WITHOUT the tunnel's echo,
+ * take — the target is the tunnel's growl WITHOUT the tunnel's echo,
  * so an echo leaking into these files would invalidate the comparison.
  *
  * Usage: node test/growl-record.mjs --url http://localhost:3151 --out DIR
@@ -162,7 +162,7 @@ await page.evaluate(({ HZ, SCRIPT, DUR }) => {
     for (let d = -40; d < 900; d += 20) {
       const w = cor.wrapZ(z + d);
       if (cor.inTunnel(w, 60)) return false;          // a tunnel would add the
-      if (cor.inToll && cor.inToll(w)) return false;  // very reverb he doesn't want
+      if (cor.inToll && cor.inToll(w)) return false;  // exactly the reverb these takes must exclude
     }
     return true;
   };
@@ -469,8 +469,8 @@ function wav(samples, ch, rate) {
 }
 
 /* A spectrogram: log-frequency (30Hz-16kHz) up the Y axis, time across X,
-   magnitude as brightness. The owner judges by ear; this is only so he can
-   point at where the energy moved. Hand-rolled DFT + PNG encoder because the
+   magnitude as brightness. These takes are judged by ear; this only makes it
+   possible to point at where the energy moved. Hand-rolled DFT + PNG encoder because the
    sandbox has no numpy, no ffmpeg and no image libraries. */
 function spectrumPng(samples, ch, rate, title) {
   const W = 420, H = 200;

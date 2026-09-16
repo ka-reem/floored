@@ -2,8 +2,8 @@
 
    hero-shots.mjs captures the DRIVING cameras, and they all share a problem for
    content: every one of them looks down the road from behind or inside the car,
-   so six of them side by side read as the same picture. The owner said exactly
-   that: "notice how all 6 of the car photos are the same".
+   so six of them side by side read as the same picture — six car photos that
+   are all, effectively, one car photo.
 
    Photo mode (the O key) is the fix. It parks the sim, hides every scrap of HUD
    and hands over a free orbit rig — drag to swing, wheel to zoom. That gives the

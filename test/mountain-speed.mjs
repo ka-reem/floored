@@ -2,9 +2,8 @@
 
    "Wide and easier to drive" is a feel, and the two numbers that usually
    stand in for it — width and minimum radius — are single points on a road
-   with a hundred corners. This turns the WHOLE geometry into one number the
-   owner can compare: the fastest clean run through the pass that its curvature
-   allows.
+   with a hundred corners. This turns the WHOLE geometry into one comparable
+   number: the fastest clean run through the pass that its curvature allows.
 
    Method is the standard two-pass speed profile a racing line solver uses:
      1. cap each station at the speed its own curvature allows, v = √(µ·g·R),

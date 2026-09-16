@@ -749,8 +749,8 @@ const TUNNEL_TUNE_DEFAULT: TunnelTune = Object.fromEntries(
 ) as TunnelTune;
 
 /* ---- Open-road growl: the tunnel's TUBE without the tunnel's ECHO -------
-   The owner's ask, verbatim: "the tunnel has that loud deep growl, i want to
-   replicate that sound but not echoey like a tunnel."
+   The goal: the loud deep growl a tunnel gives, WITHOUT the echo that comes
+   with it.
 
    TUNNEL_TUNE_SPEC already splits those two halves: `wet` is the ECHO (the
    convolver tail) and `growl` is the TUBE (a resonant low-mid boost with the
@@ -779,10 +779,10 @@ const TUNNEL_TUNE_DEFAULT: TunnelTune = Object.fromEntries(
    window.__audioTune / window.__tunnel), so the three candidate settings can
    be A/B'd without a reload. Shipping a pick is one line: change the `d`
    values below. */
-/* SHIPPING VALUES ARE THE "chest" VARIANT, picked by the owner from four
-   recorded clips (see docs/handoff/reports/engine-growl.md). He asked for the
-   deep growl a tunnel gives without the tunnel's echo, and chest is the one
-   that adds a bottom octave rather than making the existing one louder: the
+/* SHIPPING VALUES ARE THE "chest" VARIANT, chosen from four recorded clips.
+   The target is the deep growl a tunnel gives without the tunnel's echo, and
+   chest is the one that adds a bottom octave rather than making the existing
+   one louder: the
    118Hz boost sits UNDER the engine's own 165Hz body peak, Q 2.2 keeps it a
    thump rather than a mud shelf, and the top is left fully open because a
    tunnel's dullness belongs to its echo -- without one, the same cut just
@@ -794,8 +794,8 @@ const ROAD_GROWL_SPEC = {
       the loudness, so on the open road it is a starting ceiling, not a
       target. 0 = today's engine, untouched.
 
-      Shipping at 8.0 rather than the 6.0 the recorded clip used: the owner
-      drove it and asked for a bit more. +2dB on a Q 2.2 peak is a clear step
+      Shipping at 8.0 rather than the 6.0 the recorded clip used — driven
+      back to back, 6.0 is a shade too polite. +2dB on a Q 2.2 peak is a clear step
       without being a different sound, and it stays under the ceiling because
       `trim` below hands half of it back broadband — so the extra is tone, not
       level, and the engine bus peak barely moves. Past ~10 the resonance
@@ -1403,8 +1403,8 @@ export class GameAudio {
          a saturated copy of it, so turning it up changes the harmonic
          content without changing the loudness. The first cut of this added
          the branch on top instead and the harder candidate came back 7dB
-         hotter than the reference, which would have decided the owner's A/B
-         by level rather than by character. */
+         hotter than the reference, which would have decided the A/B by level
+         rather than by character. */
       this.rgDry = ctx.createGain();
       this.rgDry.gain.value = 1 - ROAD_GROWL_DEFAULT.sat;
       this.rgSat = ctx.createWaveShaper();
@@ -2189,7 +2189,7 @@ export class GameAudio {
     o.stop(t + 0.035);
   }
 
-  /* ---- stalk click (lane O) — self-contained one-shot, no samples ---- */
+  /* ---- stalk click — self-contained one-shot, no samples ---- */
   /** Rate limit + counter for stalkClick(). The 70ms floor is under any
       humanly-repeatable G press (autorepeat is filtered at the key handler),
       so a rapid flash-to-pass volley clicks once per press without ever
@@ -2253,7 +2253,7 @@ export class GameAudio {
     o2.start(t);
     o2.stop(t + 0.032);
   }
-  /* ---- end stalk click (lane O) ---- */
+  /* ---- end stalk click ---- */
 
   /* ---- wiper sweep (cabin-wipers lane) — synthesized, no samples ----
      One half-stroke of the wiper: a soft servo/rubber swish. Fired by
@@ -2306,7 +2306,7 @@ export class GameAudio {
   }
   /* ---- end wiper sweep ---- */
 
-  /* ---- interior trim creaks (lane U) ----
+  /* ---- interior trim creaks ----
      Research notes (automotive: when does cabin trim actually creak?):
      Interior plastic creaks are stick-slip friction at trim interfaces —
      dashboard-to-A-pillar joints, door cards, the center console, parcel
@@ -2520,7 +2520,7 @@ export class GameAudio {
     const mask = (1 - 0.55 * smoothstep(8, 30, speed)) * (cabinCam ? 1 : 0.25);
     this.creakFire(now, axis, mask, strength, p, cabinCam);
   }
-  /* ---- end interior trim creaks (lane U) ---- */
+  /* ---- end interior trim creaks ---- */
 
   /** One-shot: play a decoded sample through gain (+ optional slight
       repitch for variety) into `dest`. Returns the source's duration/rate. */
@@ -2978,14 +2978,14 @@ export class GameAudio {
    *                  (skid chirp, ABS tick, road hum damping) still uses —
    *                  omitting it reproduces today's behavior exactly, since
    *                  max(slip, 0) === slip.
-   * @param axS/ayS  optional (lane U), CarState.axS/ayS — smoothed body-frame
+   * @param axS/ayS  optional, CarState.axS/ayS — smoothed body-frame
    *                  longitudinal/lateral acceleration, m/s^2. Drives ONLY
    *                  the interior trim creak one-shots (see the fenced lane-U
    *                  block); omitted -> derivatives stay 0 -> creaks silent.
-   * @param slope    optional (lane U), CarState.slope — road grade; its
+   * @param slope    optional, CarState.slope — road grade; its
    *                  derivative is the creak model's ramp-gore/grade-break
    *                  jolt input. Same omitted->silent behavior.
-   * @param cabinCam optional (lane U): true for in-cabin cameras (cockpit or
+   * @param cabinCam optional: true for in-cabin cameras (cockpit or
    *                  POV). Exterior cameras duck the creaks to 25%.
    */
   update(
@@ -3590,7 +3590,7 @@ export class GameAudio {
       this.nextDroplet = now; // fire promptly next time it starts raining, not after a stale delay
     }
 
-    // interior trim creaks (lane U): per-frame drive call into the fenced
+    // interior trim creaks: per-frame drive call into the fenced
     // block near tick() — one-shot triggers only, no sustained voice.
     this.trimCreaks(now, dt, speed, axS ?? 0, ayS ?? 0, slope ?? 0, cabinCam ?? false);
 
@@ -3676,8 +3676,8 @@ export class GameAudio {
       broadband. The saturation branch's output is scaled by 1/tanh(drive) so
       that raising `satDrive` changes the HARMONIC content at a fixed
       loudness instead of doubling as a second volume control — otherwise
-      "harder" and "louder" would be the same knob and the owner's A/B would
-      be decided by level rather than by character. */
+      "harder" and "louder" would be the same knob and any A/B would be
+      decided by level rather than by character. */
   private applyRoadGrowl() {
     const k = this.rg;
     this.sp(this.rgPeak.frequency, k.hz, 0.05);
