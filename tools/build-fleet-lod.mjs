@@ -45,6 +45,7 @@ import path from "node:path";
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : d; };
 const RATIO = Number(arg("--ratio", 0.2));
 const ERROR = Number(arg("--error", 0.02));
+const WELD = Number(arg("--weld", 0));
 const SRC = "public/models/cars";
 const OUT = arg("--out", "public/models/cars-far");
 
@@ -83,7 +84,7 @@ for (const f of readdirSync(SRC).filter((f) => f.endsWith(".glb")).sort()) {
      border stays unlocked so interior edges across old seams can collapse
      too; a hairline seam is not visible on a car that is a few dozen pixels. */
   await doc.transform(
-    weld(),
+    weld({ tolerance: WELD }),
     simplify({ simplifier: MeshoptSimplifier, ratio: RATIO, error: ERROR, lockBorder: false }),
     dedup(),
     /* GEOMETRY ONLY. traffic.ts draws every style through one shared

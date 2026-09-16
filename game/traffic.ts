@@ -6253,24 +6253,54 @@ export class Traffic {
   private renderInstances(player: CarState, night: boolean) {
     for (const st of this.styles) { st.n = 0; if (st.far) st.far.n = 0; }
     let wk = 0;
-    const WHEEL2 = 150 * 150;
-    /* Where a car swaps to its decimated body. 120 m, because that is well
-       past the range at which the decimation has anything left to take away.
-       A phone frame is 390 CSS px wide in portrait, and the camera's fov is
-       VERTICAL (68° at the constructor, 58-100 across the fov slider), so at
-       aspect 0.46 the horizontal fov is only ~35°: the frame is ~75 m wide at
-       120 m, and a 1.79 m car in it is about 9 px across — call it 20 px
+    /* Where wheels stop being drawn. 150 m -> 75 m.
+
+       The wheels are not a rounding error: wheelGeo() is a 12-segment tyre
+       plus two 10-segment rims and two 6-segment hubs, ~156 triangles, and
+       every car carries four (the box truck six). At the old cutoff that is
+       ~56k triangles a frame — about a third of what the whole fleet's BODIES
+       cost after the far tier, spent on parts that at 150 m are two pixels.
+
+       75 m is still well past the range at which a wheel is a distinguishable
+       round thing rather than a dark smudge under a sill, and it sits inside
+       the body swap below on purpose: a car loses its wheels first and its
+       interior panel density second, so neither change lands on the same
+       frame as the other and a car never visibly "pops" twice at once. */
+    const WHEEL2 = 75 * 75;
+    /* Where a car swaps to its decimated body. 120 m -> 65 m.
+
+       The owner's read of the first far tier was that it "made zero effect —
+       you can't really see those cars in a distance anyways", and he is right
+       about both halves: the change was invisible, which was the point, and
+       invisible means there was room left.
+
+       The obvious way to take that room is a harder bake, and it is a dead
+       end. Measured, three ways, on the same fourteen models:
+
+         shipped   ratio 0.20  error 0.02              mean 1545 tris/car
+                   ratio 0.07  error 0.09              mean 1548
+                   ratio 0.07  error 0.12  weld 0.004  mean 1544
+
+       Asking for 7% and being handed 39% every time means meshoptimizer is
+       stopped by the meshes' own attribute seams, not by the parameters.
+       There is nothing more to take out of the geometry.
+
+       So take it out of the DISTANCE instead, which costs no payload and no
+       bake. A phone frame is 390 CSS px wide in portrait and the camera's fov
+       is VERTICAL (68° at the constructor, 58-100 across the fov slider), so
+       at aspect 0.46 the horizontal fov is only ~35°: the frame is ~41 m wide
+       at 65 m, and a 1.79 m car in it is about 17 px across — call it 38 px
        along, seen at a three-quarter angle. What the far bake drops is
-       interior panel density; it is an edge collapse that locks the outline
-       (tools/build-fleet-lod.mjs), so at that size there is nothing on screen
-       left to lose. It sits INSIDE the wheel cutoff on purpose:
-       cars between 120 and 150 m keep their wheels (those come from the
-       shared wheel mesh, which this does not touch) so the swap changes the
-       body alone. Tunable live through `window.__npcLod.far` (metres) the
-       same way __npcLamp/__npcHalo are — 1e9 pins the whole fleet to its near
-       bodies, which is how test/fleet-lod-shots.mjs shoots both tiers of the
-       same frozen frame. */
-    const FAR_SWAP = 120;
+       interior panel density, by an edge collapse that locks the outline
+       (tools/build-fleet-lod.mjs), so the silhouette at that size is
+       unchanged and the panel lines it removes were never resolvable.
+
+       It sits OUTSIDE the wheel cutoff now rather than inside it, and that
+       swap of order is deliberate — see WHEEL2 above. Tunable live through
+       `window.__npcLod.far` (metres) the same way __npcLamp/__npcHalo are —
+       1e9 pins the whole fleet to its near bodies, which is how
+       test/fleet-lod-shots.mjs shoots both tiers of the same frozen frame. */
+    const FAR_SWAP = 65;
     const far2 = (((window as any).__npcLod?.far as number | undefined) ?? FAR_SWAP) ** 2;
     /* live lamp-level knobs (window.__npcLamp, see LAMP) — one vertex
        attribute write per car, so a change lands on the next frame with no
