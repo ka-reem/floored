@@ -693,22 +693,37 @@ const BACKSEAT_CAM = { x: 0, y: 1.30, z: -1.10, fov: 72, tilt: 0.04, yaw: 0 };
          its own glass. 0.22 leaves 14 cm of margin on the Volvo (z 1.46
          against a base at 1.32) and 14 cm on the Kaze (1.11 against 0.97).
 
-     dy  0.03 m over the beltline, so the lens sits just proud of the sheet
-         metal at the one place the bonnet is highest. Measured against the
-         hood curve in carshape.ts that is 7.7 cm of clearance at the mount on
-         the Volvo — enough that the Kaze's `hoodBulge` does not eat the lens,
-         not so much that it floats again.
+     dy  0.24 m over the beltline. This was 0.03, computed against
+         carshape.ts's hood curve, and it put the lens INSIDE the car: the
+         frame came back full of windscreen header and A-pillar. The player
+         car does not wear the procedural shape. It wears the imported donor
+         exterior, and test/hood-mount-probe.mjs — every exterior vertex
+         transformed into this same bodyG space, binned into 5 cm slices of z
+         along the centreline — says the donor's bonnet at the mount is at
+         y 0.997, not the 0.857 the parameters implied. 0.95 was 4.5 cm under
+         the sheet metal.
 
-   What that frames, at the 67-degree default lens: the nose crown (z 2.39,
-   y 0.58) lands 21.7 degrees below the horizon against a 33.5-degree half
-   frame, so the bonnet fills the bottom ~18% of the shot and the road starts
-   right above it. Raising dy puts MORE bonnet in frame, not less — the lens
-   sees further down the top surface — which is the opposite of the intuition
-   and the reason the old value showed none at all.
+         So every figure below is measured off that profile rather than off
+         the shell. The donor's bonnet runs from y 0.72 at the nose crown
+         (z 2.4) back to y 1.05 at the cowl (z 1.0), and the windscreen base
+         is at z ~0.98 — a good 45 cm forward of where glassShape() puts the
+         procedural one, which is the whole reason the first attempt missed.
+         At dz 0.21 the lens sits at z 1.45 with 16 cm of air under it.
+
+   What that frames, at the default lens (71.2 vertical, so a 35.6-degree half
+   frame): the bonnet is convex, so what bounds the shot is not the nose crown
+   but the silhouette — the tangent point, which lands at z 2.3 and 21.1
+   degrees below the horizon. The bonnet fills the bottom ~20% and the road
+   starts immediately above it.
+
+   Note which way dy moves that, because it is not the obvious one and it is
+   what made the first attempt's reasoning wrong: RAISING the lens shows LESS
+   bonnet, not more. A lower lens flattens the bonnet toward the horizon and
+   the silhouette climbs the frame.
 
    tilt is nose-down radians on top of the body's own pitch, at 0: the bonnet
    already sits low enough in frame that raking it up buys nothing. */
-const HOOD_CAM = { dy: 0.03, dz: 0.22, tilt: 0 };
+const HOOD_CAM = { dy: 0.24, dz: 0.21, tilt: 0 };
 
 /* ---------------------------------------------------------- cabin lighting --
 
