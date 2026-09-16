@@ -693,7 +693,16 @@ const BACKSEAT_CAM = { x: 0, y: 1.30, z: -1.10, fov: 72, tilt: 0.04, yaw: 0 };
          its own glass. 0.22 leaves 14 cm of margin on the Volvo (z 1.46
          against a base at 1.32) and 14 cm on the Kaze (1.11 against 0.97).
 
-     dy  0.24 m over the beltline. This was 0.03, computed against
+     dy  0.16 m over the beltline, dz 0.05. Both were higher and further
+         forward (0.24 / 0.21) until the owner saw that mount and asked for
+         more bonnet than it gave. Shot as a ladder off the profile below:
+         0.24/0.21 puts the bonnet across the bottom ~20% of the frame,
+         0.16/0.05 takes it to about a third, and 0.13/-0.10 is past the
+         useful end — the lens drops level with the cowl, the windscreen
+         frame starts intruding and the reflection band blows out. His pick
+         is the middle one.
+
+         dy was 0.03 originally, computed against
          carshape.ts's hood curve, and it put the lens INSIDE the car: the
          frame came back full of windscreen header and A-pillar. The player
          car does not wear the procedural shape. It wears the imported donor
@@ -723,7 +732,7 @@ const BACKSEAT_CAM = { x: 0, y: 1.30, z: -1.10, fov: 72, tilt: 0.04, yaw: 0 };
 
    tilt is nose-down radians on top of the body's own pitch, at 0: the bonnet
    already sits low enough in frame that raking it up buys nothing. */
-const HOOD_CAM = { dy: 0.24, dz: 0.21, tilt: 0 };
+const HOOD_CAM = { dy: 0.16, dz: 0.05, tilt: 0 };
 
 /* ---------------------------------------------------------- cabin lighting --
 
